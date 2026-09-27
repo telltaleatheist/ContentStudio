@@ -1,4 +1,4 @@
-import { Component, signal, OnInit, effect, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { Component, signal, computed, OnInit, effect, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
@@ -38,7 +38,7 @@ import {
 } from '../../features/transcript-link/transcript-link.types';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
-import { elapsedClock, itemAfter, laneBusyText, parkedText, stageLine, type GenerationProgressEvent } from '../../services/job-activity';
+import { elapsedClock, itemAfter, laneBusyText, laneReadAge, parkedText, stageLine, waitingTurnRows, type GenerationProgressEvent } from '../../services/job-activity';
 import { NotificationService } from '../../services/notification';
 import { CrucibleRefusal, CrucibleService } from '../../services/crucible';
 import type { CrucibleLanesView, LaneChip, ParkedJobResult } from '../../features/crucible/crucible.types';
@@ -107,6 +107,11 @@ export class Inputs implements OnInit, OnDestroy {
    */
   lanes = signal<LaneChip[]>([]);
   private offLanes: (() => void) | null = null;
+  /** Whether main is re-reading Crucible on a timer (only while work is queued, LEDGER #234). */
+  crucibleLive = signal(false);
+  private offReadiness: (() => void) | null = null;
+  /** The rows at the bottom of the queue for a job waiting behind another app's work (LEDGER #234). */
+  readonly waitingTurn = computed(() => waitingTurnRows(this.jobQueue.jobs(), this.lanes()));
   /** The last refusal the queue plan answered, said once rather than every second. */
   private lastPlanRefusal = '';
 
@@ -152,6 +157,8 @@ export class Inputs implements OnInit, OnDestroy {
   ngOnDestroy() {
     this.offLanes?.();
     this.offLanes = null;
+    this.offReadiness?.();
+    this.offReadiness = null;
     if (this.clockInterval !== null) clearInterval(this.clockInterval);
     this.clockInterval = null;
     // The run itself goes on (its jobs live in main and in JobQueueService); only this page's
@@ -170,6 +177,9 @@ export class Inputs implements OnInit, OnDestroy {
 
     // The lanes strip: main pushes every change; the first paint asks once.
     this.offLanes = this.crucible.onLanes((view: CrucibleLanesView) => this.lanes.set(view.lanes));
+    // Whether the chips are live or show when they were last read (LEDGER #234).
+    this.offReadiness = this.crucible.onReadiness((view) => this.crucibleLive.set(view.polling));
+    this.crucible.readiness().then((view) => this.crucibleLive.set(view.polling), () => undefined);
     this.crucible.lanes().then(
       (view) => this.lanes.set(view.lanes),
       // No bridge (a plain browser) or no Crucible layer: the strip simply has no chips.
@@ -1520,9 +1530,9 @@ export class Inputs implements OnInit, OnDestroy {
     if (lane.paused) return lane.runningJobId ? 'Paused (finishing a job)' : 'Paused, work waits';
     switch (lane.state) {
       case 'running': return 'Running a job';
-      case 'busy': return laneBusyText(lane.busyLine);
-      case 'idle': return 'Idle';
-      case 'unreachable': return 'Not answering';
+      case 'busy': return laneReadAge(laneBusyText(lane.busyLine), lane.readAt, this.crucibleLive(), this.now());
+      case 'idle': return laneReadAge('Idle', lane.readAt, this.crucibleLive(), this.now());
+      case 'unreachable': return laneReadAge('Not answering', lane.readAt, this.crucibleLive(), this.now());
       default: return 'Not read yet';
     }
   }

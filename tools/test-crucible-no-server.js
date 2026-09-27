@@ -35,7 +35,8 @@ const TOKEN = 'stopped-server-token-abcdefghijklmnopqrstuv-4321';
 async function invoke(channel, ...args) {
   const fn = handlers.get(channel);
   assert.ok(fn, `${channel} is registered`);
-  return fn({}, ...args);
+  // A window as Electron hands it: the queue count (LEDGER #234) is kept per sending window.
+  return fn({ sender: { id: 1, once: () => {} } }, ...args);
 }
 
 check('with a stopped local Crucible: boot starts the loops, they settle, readiness offers Start, and nothing is written', async () => {
@@ -107,6 +108,9 @@ check('every crucible:* channel answers the envelope with no server there, and n
     ['crucible:lanes'],
     ['crucible:queue-plan', [{ jobId: 'j1', fast: false }, { jobId: 'j2', fast: true }]],
     ['crucible:queue-plan', 'not a list'],
+    ['crucible:queue-count', 2],
+    ['crucible:queue-count', -1],
+    ['crucible:queue-count', 0],
     ['crucible:remove', 'mac'],
     ['crucible:remove', 'mac'],
   ];

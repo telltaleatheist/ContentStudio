@@ -33,16 +33,52 @@
  * BOOT. Nothing is awaited at boot: the first derivation is a timer started by
  * `start()`. Until it lands, `current()` answers from the registry alone,
  * reading no network.
+ *
+ * WHEN IT ASKS AGAIN (LEDGER #234). On a timer only while ContentStudio has work in its
+ * queue ({@link needsPolling}); otherwise on demand: at start, when the renderer asks (the
+ * Servers pane opening, Re-check), right before work is admitted or an immediate AI call
+ * runs (`freshWithin`), and when the registry or the selection changes.
  */
 import * as log from 'electron-log';
 import type { CrucibleLocalEngine } from './local-engine';
-import type { CrucibleProbes } from './probe';
+import { FRESH_PROBE_MS, type CrucibleProbes } from './probe';
 import type { CrucibleServers } from './servers';
 import { CrucibleRegistryError, CrucibleRoutingError } from './errors';
 import type { CrucibleEnginePresence, CrucibleInstallPlan, CrucibleReadinessView, RoutingView } from './wire';
 
-/** How often the answer is derived again on its own: often while AI can't run, rarely while it can. */
+/**
+ * How often the answer is derived again on its own WHILE {@link needsPolling} says to: often
+ * while AI can't run, less often while it can. With nothing queued there is no timer at all.
+ */
 export const READINESS_REFRESH_MS = { notReady: 10_000, ready: 30_000 } as const;
+
+/**
+ * THE ONE RULE FOR POLLING CRUCIBLE (LEDGER #234). Owen, 2026-09-26: "i dont think we need it
+ * polling crucible unless its waiting", made exact the same day: "it wont poll unless something
+ * is in the queue. if nothing is in the queue, it doesnt poll. if there are items in the queue,
+ * it polls". Before this, readiness re-derived every 30 s forever and the lanes read every
+ * server's activity every 15 s forever, so an idle ContentStudio logged another app's job
+ * progress while Owen was doing nothing.
+ *
+ * Both timers follow this and nothing else: readiness's own, and the lanes' preflight (which
+ * readiness switches through `onPolling`). What a running piece of work needs is not a poll and
+ * is not governed here: a lease's heartbeat, a job's event stream, a transcription's upload
+ * ticker. A start or install of the Crucible on this computer does count, because nothing else
+ * would carry its outcome to the banner.
+ */
+export interface PollingFacts {
+  /** Unfinished jobs in the renderer's queue (pending, running, parked, held), summed over windows. */
+  queued: number;
+  /** Jobs main's lanes are running, holding parked or keeping in line: covers a window that lost its list. */
+  laneWork: number;
+  /** A start or install of the Crucible on this computer is under way. */
+  bringingUp: boolean;
+}
+
+export function needsPolling(facts: PollingFacts): boolean {
+  return facts.queued > 0 || facts.laneWork > 0 || facts.bringingUp;
+}
+
 /** The install plan (host facts: nvidia-smi on Linux) is read at most this often. */
 const PLAN_CACHE_MS = 5 * 60_000;
 /** The local engine's own status (a CLI call) is read at most this often. */
@@ -101,8 +137,16 @@ export class CrucibleReadiness {
   private planCache: { at: number; plan: CrucibleInstallPlan } | null = null;
   private presenceCache: { at: number; presence: CrucibleEnginePresence } | null = null;
   private stopped = false;
+  private started = false;
+  /** A derivation has landed (the provisional answer is not one). */
+  private derivedOnce = false;
   private offRegistry: (() => void) | null = null;
   private readonly listeners = new Set<(view: CrucibleReadinessView) => void>();
+  /** Unfinished queue jobs per renderer window (keyed by the window), for {@link needsPolling}. */
+  private readonly queuedBy = new Map<string, number>();
+  private laneWork: () => number = () => 0;
+  private polling = false;
+  private readonly pollingListeners = new Set<(on: boolean) => void>();
 
   /** Replaceable by a keeper. */
   now: () => number = Date.now;
@@ -117,8 +161,9 @@ export class CrucibleReadiness {
     this.view = this.provisional();
   }
 
-  /** Begin deriving. Never awaited: boot does not wait on Crucible. */
+  /** Derive once now (the first answer the gate and banner need). Never awaited: boot does not wait on Crucible. */
   start(): void {
+    this.started = true;
     this.offRegistry = this.servers.onChange(() => this.refreshSoon());
     this.schedule(0);
   }
@@ -129,6 +174,106 @@ export class CrucibleReadiness {
     this.timer = null;
     this.offRegistry?.();
     this.offRegistry = null;
+    if (this.polling) {
+      this.polling = false;
+      for (const listener of this.pollingListeners) listener(false);
+    }
+  }
+
+  // ── polling (LEDGER #234) ──────────────────────────────────────────────
+
+  /** A window's count of unfinished queue jobs (0 forgets the window). */
+  setQueued(source: string, count: number): void {
+    if (Number.isFinite(count) && count > 0) this.queuedBy.set(source, Math.floor(count));
+    else this.queuedBy.delete(source);
+    this.pollingMayHaveChanged();
+  }
+
+  /** The lanes' count of jobs running, parked or in line (context.ts wires it). */
+  setLaneWork(count: () => number): void {
+    this.laneWork = count;
+  }
+
+  pollingFacts(): PollingFacts {
+    let queued = 0;
+    for (const count of this.queuedBy.values()) queued += count;
+    return { queued, laneWork: this.laneWork(), bringingUp: this.startingLine !== null || this.local.status().running };
+  }
+
+  /** Whether the timers run now. */
+  isPolling(): boolean {
+    return this.polling;
+  }
+
+  /** Told when polling turns on or off (the lanes' preflight follows it). Returns the unsubscribe. */
+  onPolling(listener: (on: boolean) => void): () => void {
+    this.pollingListeners.add(listener);
+    return () => this.pollingListeners.delete(listener);
+  }
+
+  /**
+   * Apply {@link needsPolling} to the facts now. Called whenever one of them may have changed:
+   * a window's queue count, the lanes' work, a start or install. Before `start()` (a CLI, a
+   * keeper that never started the app's loops) nothing polls.
+   */
+  pollingMayHaveChanged(): void {
+    if (!this.started || this.stopped) return;
+    const on = needsPolling(this.pollingFacts());
+    if (on === this.polling) return;
+    this.polling = on;
+    log.info(on
+      ? '[crucible] Work is queued: Crucible is checked on a timer until the queue is empty'
+      : '[crucible] Nothing is queued: Crucible is checked only when something asks');
+    if (on) {
+      // The first check of a queue is the fresh one taken right before its work is admitted
+      // (`freshWithin`); the timer starts after it, at the interval.
+      if (this.timer === null && this.deriving === null) this.schedule(this.intervalMs());
+    } else if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.publish({ ...this.view, polling: on });
+    for (const listener of this.pollingListeners) {
+      try {
+        listener(on);
+      } catch (err) {
+        log.warn(`[crucible] A polling listener failed: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * An answer no older than `maxAgeMs`, deriving one now if the last is older: right before a
+   * job is admitted or an immediate AI call runs, and wherever else an on-demand answer must be
+   * current. Never throws (a failed derivation is itself the answer). Outside the app's loops
+   * (before `start()`: a CLI) it contacts nothing and answers what it has.
+   */
+  async freshWithin(maxAgeMs: number = FRESH_PROBE_MS): Promise<CrucibleReadinessView> {
+    return this.freshCheck(maxAgeMs) ?? this.view;
+  }
+
+  /**
+   * {@link freshWithin} for the lanes' admission: null when there is nothing to wait for (the
+   * answer is fresh, or this process runs no readiness loop), so admission then takes no await.
+   */
+  freshCheck(maxAgeMs: number = FRESH_PROBE_MS): Promise<CrucibleReadinessView> | null {
+    if (!this.started || this.stopped) return null;
+    if (this.derivedOnce && this.deriving === null && this.now() - Date.parse(this.view.at) <= maxAgeMs) return null;
+    return this.refresh();
+  }
+
+  /**
+   * An install's progress event (context.ts forwards each one). The install being under way turns
+   * polling on; its end derives the answer now, which also turns polling off again when nothing
+   * is queued.
+   */
+  installEvent(kind: string): void {
+    this.pollingMayHaveChanged();
+    if (kind === 'done' || kind === 'failed') this.refreshSoon();
+  }
+
+  private intervalMs(): number {
+    return this.view.state === 'ready' ? this.refreshMs.ready : this.refreshMs.notReady;
   }
 
   // ── reads ──────────────────────────────────────────────────────────────
@@ -160,7 +305,10 @@ export class CrucibleReadiness {
       return view;
     })().finally(() => {
       this.deriving = null;
-      this.schedule(this.view.state === 'ready' ? this.refreshMs.ready : this.refreshMs.notReady);
+      this.derivedOnce = true;
+      this.pollingMayHaveChanged();
+      // The next derivation on its own only while something is queued (LEDGER #234).
+      if (this.polling && this.timer === null) this.schedule(this.intervalMs());
     });
     return this.deriving;
   }
@@ -206,6 +354,7 @@ export class CrucibleReadiness {
     this.startingLine = 'Starting Crucible on this computer...';
     this.startFailure = null;
     this.publish(this.answer('starting', 'Crucible is starting on this computer.', null));
+    this.pollingMayHaveChanged();
     void (async () => {
       try {
         const outcome = await this.local.startLocal();
@@ -260,6 +409,7 @@ export class CrucibleReadiness {
       busy: extra.busy ?? null,
       progress: state === 'starting' ? this.startingLine ?? this.installLine() : null,
       declined: this.declined,
+      polling: this.polling,
       at: new Date(this.now()).toISOString(),
     };
   }
@@ -312,7 +462,9 @@ export class CrucibleReadiness {
     }
     let silent: string | null = null;
     if (selected !== null) {
-      const answer = await this.probes.reach(selected);
+      // Every derivation is on demand or a poll tick 10 s or more apart, so its probe is a
+      // fresh one (a few seconds at most), never the 15 s cache (LEDGER #234).
+      const answer = await this.probes.reach(selected, FRESH_PROBE_MS);
       if (answer.reach === 'ready' || answer.reach === 'busy') {
         this.startFailure = null;
         const busy = answer.reach === 'busy' && answer.probe.outcome === 'ok' ? answer.probe.facts.busyLine : null;
@@ -372,7 +524,12 @@ export class CrucibleReadiness {
     const changed = !sameView(view, this.view);
     const previous = this.view;
     this.view = view;
-    if (!changed) return;
+    if (!changed) {
+      // Not polling, every derivation is one something asked for, and its time (`at`) is what
+      // the banner shows as "Checked at" (LEDGER #234): it goes out though nothing else changed.
+      if (!this.polling) this.pushToRenderer(view);
+      return;
+    }
     // The banner gets every change, progress included; the log only a change of state or of
     // who holds the card — a percentage ticking up is not a new fact every few minutes.
     if (previous === null || previous === undefined || logShapeOf(previous) !== logShapeOf(view)) {

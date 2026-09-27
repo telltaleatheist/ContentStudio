@@ -415,6 +415,11 @@ export interface CrucibleReadinessView {
   declined: boolean;
   /** ISO time this answer was derived. */
   at: string;
+  /**
+   * Whether it is being checked again on a timer: only while work is queued (LEDGER #234).
+   * False, `at` is the last time anything asked, and the banner says so rather than look live.
+   */
+  polling: boolean;
 }
 
 // ── the queue: lanes, parking, the fast pin (P3) ─────────────────────────────
@@ -469,6 +474,38 @@ export interface LaneChip {
   unreadReason: string | null;
   /** When the preflight last read this server (epoch ms), or null. */
   readAt: number | null;
+  /**
+   * What ANOTHER client is doing on this card, as the last preflight read it (LEDGER #234),
+   * or null: the card is free, ContentStudio's own work holds it, or it has not been read.
+   * The queue shows it as the row a parked job waits behind.
+   */
+  holder: CardHolder | null;
+}
+
+/** Another client's hold on a card, in the server's own facts. */
+export interface CardHolder {
+  /**
+   * `job` a job on the lane; `lease` the resident model reserved for a run; `claim` a
+   * streaming session holding the engine; `card` the server says it takes no work and
+   * names nothing.
+   */
+  kind: 'job' | 'lease' | 'claim' | 'card';
+  /** The client as the server names it ("crucible-cli/1.0.43"), or null when it did not say. */
+  client: string | null;
+  /** A job's type ("rvc"), or a lease's act ("translate"); null when there is none. */
+  what: string | null;
+  model: string | null;
+  /** The server's id for the hold (a job id, a lease id): a new id is a new holder. */
+  id: string | null;
+  /** 0..1, or null when the server gives none (a lease, a stream). */
+  progress: number | null;
+  /**
+   * Seconds left, estimated from how fast `progress` moved between this app's reads of the
+   * same hold (Crucible states no finish time). Null when it could not be estimated.
+   */
+  secondsLeft: number | null;
+  /** Why `secondsLeft` is null: `no-progress` (the server gives no progress), `measuring` (not yet two readings that moved). */
+  leftUnknown: 'no-progress' | 'measuring' | null;
 }
 
 /** `crucible:lanes` and its push: one chip per registered server. */

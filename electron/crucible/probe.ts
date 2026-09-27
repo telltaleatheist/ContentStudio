@@ -60,6 +60,12 @@ export const MIN_CRUCIBLE = '1.0.32';
 export const PROBE_TIMEOUT_MS = 3_000;
 /** How long a probe answers `reach()` before it is asked again (plan section 4: 15 s). The Test button bypasses it. */
 export const PROBE_CACHE_MS = 15_000;
+/**
+ * How old an answer may be where it must be current: right before work is admitted or an
+ * immediate AI call runs, and on every readiness derivation (LEDGER #234: with nothing queued
+ * nothing polls, so an on-demand answer cannot lean on a poll having happened).
+ */
+export const FRESH_PROBE_MS = 5_000;
 
 /** The capability classes ContentStudio reads off a server (plan sections 6.4, 8, 9, 10). */
 export const PROBED_CLASSES: readonly string[] = ['generate', 'analysis', 'decide', 'asr', 'align', 'denoise'];
@@ -278,10 +284,13 @@ export class CrucibleProbes {
     });
   }
 
-  /** A probe no older than {@link PROBE_CACHE_MS}. */
-  async reach(name: string): Promise<CrucibleProbeAnswer> {
+  /**
+   * A probe no older than `maxAgeMs` ({@link PROBE_CACHE_MS} unless a caller needs it fresher:
+   * readiness right before admitting work asks for a few seconds, LEDGER #234).
+   */
+  async reach(name: string, maxAgeMs: number = PROBE_CACHE_MS): Promise<CrucibleProbeAnswer> {
     const cached = this.cache.get(name);
-    if (cached !== undefined && this.now() - cached.at < PROBE_CACHE_MS) return cached;
+    if (cached !== undefined && this.now() - cached.at < Math.min(maxAgeMs, PROBE_CACHE_MS)) return cached;
     return this.test(name, false);
   }
 

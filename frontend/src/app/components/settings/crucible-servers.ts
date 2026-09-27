@@ -14,6 +14,7 @@ import {
   reachIsProblem,
   reachWord,
   readinessDoor,
+  readinessCheckedLine,
   readinessHeadline,
   residentLine,
   serverFactsLine,
@@ -146,7 +147,9 @@ export class CrucibleServers implements OnInit {
   ngOnInit(): void {
     void this.reload();
     void this.loadSetup();
-    void this.crucible.readiness().then((view) => this.readiness.set(view), () => undefined);
+    // Opening the pane asks for an answer derived now (LEDGER #234): with nothing queued nothing
+    // polls, so the last answer may be old. One probe; the rows' own probes share it.
+    void this.crucible.refreshReadiness().then((view) => this.readiness.set(view), () => undefined);
     const offServers = this.crucible.onServersChanged(() => {
       void this.reload(false);
       void this.loadSetup();
@@ -195,6 +198,11 @@ export class CrucibleServers implements OnInit {
 
   readinessHeadline(view: CrucibleReadinessView): string {
     return readinessHeadline(view);
+  }
+
+  /** "Checked at 3:14 PM. …" when the answer is old and nothing re-checks it; null otherwise. */
+  checkedLine(view: CrucibleReadinessView): string | null {
+    return readinessCheckedLine(view, Date.now());
   }
 
   readinessDoor(view: CrucibleReadinessView): string | null {

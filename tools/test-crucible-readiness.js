@@ -213,15 +213,19 @@ check('"Not now": remembered for the session, queueing is refused, an explicit S
   ctx.readiness.stop();
 });
 
-check('pushes only when the answer changes, and a registry change re-derives on its own', () => withFake({}, async (server) => {
+check('listeners hear only changes; an on-demand answer still reaches the banner with its time; a registry change re-derives on its own', () => withFake({}, async (server) => {
   const { ctx, pushed } = wired();
   const heard = [];
   ctx.readiness.onChange((view) => heard.push(view.state));
   ctx.readiness.start();
   await until(() => pushed.readiness.length === 1);
   assert.strictEqual(pushed.readiness[0].state, 'not-installed');
+  // LEDGER #234: nothing queued, so nothing polls, and a derivation someone asked for goes to the
+  // renderer even unchanged, so the banner's "Checked at" is the time it was really checked.
   await ctx.readiness.refresh();
-  assert.strictEqual(pushed.readiness.length, 1);
+  assert.strictEqual(pushed.readiness.length, 2);
+  assert.deepStrictEqual([pushed.readiness[1].state, pushed.readiness[1].polling], ['not-installed', false]);
+  assert.deepStrictEqual(heard, ['not-installed'], 'in-process listeners still hear only a change');
   ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   await until(() => ctx.readiness.current().state === 'ready');
   assert.deepStrictEqual(heard, ['not-installed', 'ready']);

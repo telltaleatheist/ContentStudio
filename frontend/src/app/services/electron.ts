@@ -788,6 +788,7 @@ declare global {
       crucibleReadinessStart: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
       crucibleLanes: () => Promise<CrucibleIpcResult<CrucibleLanesView>>;
       crucibleQueuePlan: (candidates: QueuePlanCandidate[]) => Promise<CrucibleIpcResult<QueuePlan>>;
+      crucibleQueueCount: (count: number) => Promise<CrucibleIpcResult<{ polling: boolean }>>;
       onCrucibleServersChanged: (callback: (change: CrucibleServersChangedPayload) => void) => () => void;
       onCrucibleReadiness: (callback: (view: CrucibleReadinessView) => void) => () => void;
       onCrucibleInstallProgress: (callback: (event: CrucibleInstallProgress) => void) => () => void;

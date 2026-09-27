@@ -212,6 +212,14 @@ export class CrucibleService {
     return this.unwrap(() => this.bridge.crucibleQueuePlan(candidates));
   }
 
+  /**
+   * Tell main how many unfinished jobs this window's queue holds. Crucible is checked on a timer
+   * only while that is above zero in some window (LEDGER #234).
+   */
+  queueCount(count: number): Promise<{ polling: boolean }> {
+    return this.unwrap(() => this.bridge.crucibleQueueCount(count));
+  }
+
   // ── pushes ─────────────────────────────────────────────────────────────
 
   onServersChanged(callback: (change: CrucibleServersChangedPayload) => void): () => void {
