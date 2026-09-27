@@ -1543,6 +1543,28 @@ a.ghost.link {
   background: var(--rp-pane);
 }
 
+/* The Video row's upload list: one line per recent upload, its Link button beside it.
+   The proposed match is first and outlined — an outline, never a fill (rule 1). */
+.uploads {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+
+  & + & { margin-top: 2px; }
+  &.proposed { border-color: var(--rp-ok); }
+}
+
 /* The thumbnail editor doubles as a file drop target.
  *
  * The dashed outline is only drawn WHILE A DRAG IS OVER IT, not permanently: a dashed box

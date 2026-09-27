@@ -30,6 +30,7 @@ import {
   resolveChosenMetadata,
 } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
+import { describeVideoSource, durationNote, matchFileName } from './video-source';
 import { YouTubePushApi, pushItemToYouTube, pushScheduleToYouTube } from './youtube-push';
 import { YouTubeUploadApi, uploadItemToYouTube } from './youtube-upload';
 import {
@@ -1501,10 +1502,30 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   });
 
   /**
-   * Find the YouTube draft that belongs to an item.
+   * The video file this item's report was made from (the Video row on the reports page).
+   *
+   * Every report starts from a video, so a report with no recorded path is a fault, and it
+   * is logged as one. There is no picker: the path is the run's record, not a choice.
+   */
+  ipcMain.handle('publish-video-source', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+      const source = describeVideoSource(generated, (p) => fs.existsSync(p));
+      if (source.problem) log.error(`[Publish] ${id}: ${source.problem}`);
+      return ok(source);
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Find the YouTube upload that belongs to an item.
    *
    * Returns the match plus the other recent uploads on the channel so the operator can
-   * override, and never auto-links: linking is a separate, explicit call.
+   * override, and never auto-links: linking is a separate, explicit call. The match goes
+   * by the report's own source file — its name, and its length read with ffprobe when the
+   * file is on disk — because the publish record's sourceFilename is empty on every item.
    */
   ipcMain.handle('publish-find-draft', async (_e, itemId: string, channelId: string) => {
     try {
@@ -1514,18 +1535,36 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const generated = requireGenerated(id);
       const chosen = store.get(id) ?? emptyChosenMetadata(id, generated.jobId);
       const resolved = resolveChosenMetadata(chosen, generated);
+      const source = describeVideoSource(generated, (p) => fs.existsSync(p));
+      if (source.problem) log.error(`[Publish] ${id}: ${source.problem}`);
+
+      let sourceDurationSec = resolved.sourceDurationSec;
+      let probeError: string | null = null;
+      if (sourceDurationSec === null && source.path && source.onDisk) {
+        try {
+          const probed = await probeAudio(source.path);
+          if (Number.isFinite(probed?.durationSec) && probed.durationSec > 0) {
+            sourceDurationSec = probed.durationSec;
+          } else {
+            probeError = `ffprobe reported a length of ${probed?.durationSec}`;
+          }
+        } catch (err: any) {
+          probeError = err?.message || String(err);
+        }
+        if (probeError) log.warn(`[Publish] ${id}: could not read the length of ${source.path}: ${probeError}`);
+      }
 
       const uploads = await listRecentUploads(channel);
       const candidates = toFillCandidates(uploads, channel);
+      const sourceFilename = matchFileName(resolved.sourceFilename, source);
 
-      const outcome = matchDraft(
-        { sourceFilename: resolved.sourceFilename, sourceDurationSec: resolved.sourceDurationSec },
-        candidates
-      );
+      const outcome = matchDraft({ sourceFilename, sourceDurationSec }, candidates);
 
       return ok({
         ...outcome,
-        sourceFilename: resolved.sourceFilename,
+        sourceFilename,
+        sourceDurationSec,
+        durationNote: sourceDurationSec === null ? durationNote(source, probeError) : null,
         candidateCount: candidates.length,
       });
     } catch (err: any) {

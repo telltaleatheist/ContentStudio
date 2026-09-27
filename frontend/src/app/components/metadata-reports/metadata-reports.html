@@ -399,8 +399,8 @@
 
           <!-- ═════ PUBLISH SETUP ═════
                The facts about the VIDEO that publishing needs and that nothing else in
-               this app sets: where it goes, whether it is monetized, the thumbnail and
-               (for Spreaker) the audio. Scheduling and sending live on the calendar —
+               this app sets: where it goes, whether it is monetized, the thumbnail, the
+               YouTube upload it is linked to (the Video row) and (for Spreaker) the audio. Scheduling and sending live on the calendar —
                this block states the schedule and points there, it does not set it. -->
           <section class="block setup-block">
             <div class="bhead">
@@ -737,6 +737,113 @@
                     </div>
                   }
                 </div>
+              }
+
+              <!-- ── VIDEO ── YouTube items only; the LINK tick opens it. The file this
+                   report was made from is the run's own record, never picked — a report
+                   without one has lost track of it, which is a fault and is amber. "Find on
+                   YouTube" reads the channel's recent uploads and PROPOSES one; only a click
+                   on an upload's Link links it. -->
+              @if (!publish.isPodcast()) {
+                <button class="fact"
+                        [class.open]="isFactOpen('video')"
+                        [class.next]="isNextAction('video')"
+                        (click)="toggleFact('video')">
+                  <span class="dot" [class]="'dot ' + (tickFor('video')?.state ?? 'unset')"></span>
+                  <span class="fact-l">Video</span>
+                  <span class="fact-v" [class.warn]="tickFor('video')?.state === 'warn'">{{ tickFor('video')?.value }}</span>
+                  @if (isNextAction('video')) { <span class="fact-do">check it</span> }
+                  <span class="chev">{{ isFactOpen('video') ? '▴' : '▾' }}</span>
+                </button>
+                @if (isFactOpen('video')) {
+                  <div class="editor" #videoRow>
+                    @if (publish.videoSource(); as source) {
+                      @if (source.problem) {
+                        <div class="banner warn">
+                          <mat-icon>warning_amber</mat-icon>
+                          <span><b>Video file lost</b> {{ source.problem }}</span>
+                        </div>
+                      } @else {
+                        <div class="thumb">
+                          <div class="thumb-facts">
+                            <span class="thumb-fn" [title]="source.path">{{ source.fileName }}</span>
+                            <span class="thumb-dim">made from this file</span>
+                          </div>
+                        </div>
+                        <div class="fld">
+                          <button class="ghost"
+                                  [disabled]="!source.onDisk"
+                                  [title]="source.onDisk ? source.path : 'Not on disk right now'"
+                                  (click)="showSourceInFolder()">Show in Folder</button>
+                        </div>
+                        @if (source.notice) {
+                          <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ source.notice }}</span></div>
+                        }
+                      }
+                    }
+
+                    @if (publish.videoId(); as videoId) {
+                      <div class="thumb">
+                        <div class="thumb-facts">
+                          <span class="thumb-fn">{{ publish.linkedVideoTitle() ?? 'Linked YouTube video' }}</span>
+                          <span class="thumb-dim num">{{ videoId }}</span>
+                        </div>
+                      </div>
+                      <div class="fld">
+                        <button class="ghost" (click)="openVideo(videoId)">Open on YouTube</button>
+                        <button class="ghost"
+                                [disabled]="publish.saving()"
+                                (click)="publish.unlinkVideo()">Unlink</button>
+                      </div>
+                    } @else {
+                      <div class="fld">
+                        <span class="why">Not linked to a YouTube upload yet.</span>
+                        <button class="ghost"
+                                [disabled]="publish.findingDraft() || publish.saving()"
+                                (click)="publish.findDraft()">
+                          @if (publish.findingDraft()) { Looking… } @else { Find on YouTube }
+                        </button>
+                      </div>
+
+                      @if (publish.draftSearch(); as search) {
+                        <div class="proposal">
+                          <div class="receipt-head">
+                            <mat-icon>{{ search.candidate ? 'help_outline' : 'search_off' }}</mat-icon>
+                            <strong>{{ search.candidate ? 'Proposed match — not linked' : 'No match — pick one' }}</strong>
+                            <span class="pane-head-spacer"></span>
+                            <button class="ghost" (click)="publish.dismissDraftSearch()">Close</button>
+                          </div>
+                          <p class="why">{{ search.reason }}</p>
+                          @if (search.durationNote) {
+                            <p class="why">{{ search.durationNote }}</p>
+                          }
+                          @if (uploadRows().length === 0) {
+                            <p class="why">The channel has no recent uploads.</p>
+                          }
+                          <ul class="uploads">
+                            @for (row of uploadRows(); track row.video.videoId) {
+                              <li class="upload" [class.proposed]="row.proposed">
+                                <div class="thumb-facts">
+                                  <span class="thumb-fn">{{ row.video.title }}</span>
+                                  <span class="thumb-dim num">{{ row.facts }}</span>
+                                </div>
+                                <button class="ghost"
+                                        [class.primary-ghost]="row.proposed"
+                                        [disabled]="publish.saving()"
+                                        [title]="'Link this report to ' + row.video.videoId"
+                                        (click)="linkUpload(row.video)">Link</button>
+                              </li>
+                            }
+                          </ul>
+                        </div>
+                      }
+                    }
+
+                    @if (publish.videoError(); as videoError) {
+                      <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ videoError }}</span></div>
+                    }
+                  </div>
+                }
               }
 
               <!-- ── EPISODE AUDIO ── Only for an item routed to Spreaker: an episode IS
