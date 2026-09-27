@@ -571,6 +571,22 @@ export interface ChosenMetadata {
   status: PublishStatus;
   updatedAt: string;         // ISO
   filledAt: string | null;   // ISO, when the extension last filled Studio
+
+  /**
+   * Uploads this item was taken off by "Mark as unpublished" (LEDGER #232), newest last. The
+   * record forgets the video so the item can be uploaded again; the old id and receipt are
+   * kept here so nothing about what was once sent is lost. Absent on records never unmarked.
+   */
+  retiredUploads?: RetiredUpload[];
+}
+
+/** One upload an item was taken off by "Mark as unpublished". */
+export interface RetiredUpload {
+  videoId: string | null;
+  channelId: string | null;
+  uploadReceipt: UploadReceipt | null;
+  pushedAt: string | null;
+  retiredAt: string;
 }
 
 /** A ChosenMetadata with generated values merged in -- what the extension actually consumes. */

@@ -980,12 +980,16 @@ export class MetadataReports implements OnInit, OnDestroy {
    * top of a fact would be a second answer to a question with one.
    */
   canMarkPublished(report: MetadataReport): boolean {
-    return !!report.itemId && !report.facts?.videoId && report.facts?.status !== 'published';
+    return !!report.itemId && report.facts?.status !== 'published';
   }
 
-  /** The mark is showing and can be taken back — again only where it IS a mark. */
+  /**
+   * Unpublished is the deciding factor for "send it again" (LEDGER #232): offered on a marked
+   * item AND on one linked to a YouTube video, and taking it forgets that video so the item is
+   * uploadable from the calendar again.
+   */
   canUnmarkPublished(report: MetadataReport): boolean {
-    return !!report.itemId && !report.facts?.videoId && report.facts?.status === 'published';
+    return !!report.itemId && (report.facts?.status === 'published' || !!report.facts?.videoId);
   }
 
   async setPublishedMark(report: MetadataReport, published: boolean, event: Event): Promise<void> {
@@ -996,7 +1000,7 @@ export class MetadataReports implements OnInit, OnDestroy {
     const res = await this.electron.publishMarkPublished(itemId, published);
     if (!res.success) {
       this.notificationService.error(
-        published ? 'Could not mark that item published' : 'Could not take the mark back',
+        published ? 'Could not mark that item published' : 'Could not mark it unpublished',
         res.error ?? 'The main process refused the write and gave no reason.',
       );
       return;
@@ -1007,10 +1011,10 @@ export class MetadataReports implements OnInit, OnDestroy {
     }
     await this.loadReports();
     this.notificationService.success(
-      published ? 'Marked published' : 'Mark taken back',
+      published ? 'Marked published' : 'Marked unpublished',
       published
         ? `"${report.displayTitle || report.name}" now counts as done and sinks in the list.`
-        : `"${report.displayTitle || report.name}" is back among the pending items.`,
+        : `"${report.displayTitle || report.name}" is no longer linked to a YouTube video and can be uploaded again from the calendar.`,
     );
   }
 
