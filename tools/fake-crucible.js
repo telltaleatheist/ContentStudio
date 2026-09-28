@@ -1498,7 +1498,7 @@ async function startFakeCrucible(options = {}) {
             }
             const row = models.find((m) => m.id === model);
             if (images.length > 0 && !(row?.modalities ?? ['text']).includes('image')) {
-                refusal(res, 400, 'model_text_only', `${model} reads text only; its manifest declares no image modality`, { model });
+                refusal(res, 400, 'model_text_only', `${model} reads text only; its manifest declares no image modality`, { model, image_models: models.filter((m) => (m.modalities ?? []).includes('image')).map((m) => m.id) });
                 return;
             }
             if (images.length > 0 && typeof options.imagesNotServed === 'string') {

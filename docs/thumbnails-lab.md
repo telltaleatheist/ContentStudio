@@ -92,12 +92,18 @@ run never reads them, its log line leaves them out, and the change-all menu does
 ## Where it stands (2026-09-28)
 - **No live run yet.** No Crucible call has been made; the scorer and the words were checked on the
   fake Crucible only.
-- **The Mac cannot score frames today.** No Mac model serves image decide (mlx-lm is text-only;
-  mlx-vlm had no logprobs). Crucible 1.0.54 is to add logprobs to mlx-vlm and a Mac entry for
-  `qwen3.5-9b-vl` (Owen's choice). Until then a Mac run is refused by name
-  (`refuse_images_not_served` or not installed), in the tab's words. The PC (vLLM) serves the
-  0.8B/2B/4B with images; the 9B with vision does not usefully fit its 24 GB card (~1,700 tokens of
-  KV, per its manifest), so on the PC pick the 4B.
+- **The Mac serves image decide from Crucible 1.0.54** (the coordinator's read-only check,
+  2026-09-28): `qwen3.5-9b-vl` installed and loadable, text + image. Before 1.0.54 no Mac model did
+  (mlx-lm is text-only; mlx-vlm had no logprobs), and an older Mac server refuses by name
+  (`refuse_images_not_served`). With a text-only model the refusal names the models that can read
+  pictures there (`details.image_models`). The PC (vLLM) serves the 0.8B/2B/4B with images; the 9B
+  with vision does not usefully fit its 24 GB card (~1,700 tokens of KV, per its manifest), so on
+  the PC pick the 4B.
+- **Expected speed on the Mac** (the maintainer's figures): a 640x360 frame is about 322 prompt
+  tokens; about 0.65-0.77 s per question, the first call after the load about 4 s; later
+  questions on the same image are cheaper. About 100 frames x 5 questions is about 7 minutes. The
+  tab shows "Scoring frame N of M" and has a Stop button. Decide never loads a model: the scorer
+  takes a lease (which loads it at 8,192) and holds it across every frame, releasing it at the end.
 - Measured on the rapture master (07:31-30:00, CPU only): 1,349 sampled, 738 repeats and 45 blurry
   removed, 566 kept, in 115 s.
 - The frame weights, the repeat threshold (8 of 256 bits) and the blur rule (35% of median) are

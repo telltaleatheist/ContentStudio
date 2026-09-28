@@ -101,7 +101,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.unsubscribe = this.electron.onThumbsProgress((event) => {
       const run = this.run();
       if (event.stage === 'sampling') this.progress.set(`Sampling frame ${event.done.toLocaleString()} of about ${event.total.toLocaleString()}`);
-      else if (run === null || run.runId === event.runId) this.progress.set(`Scored ${event.done} of ${event.total} frames`);
+      else if (run === null || run.runId === event.runId) this.progress.set(`Scoring frame ${Math.min(event.done + 1, event.total)} of ${event.total}`);
     });
     await this.attempt(async () => {
       this.items.set(await this.electron.thumbsListItems());
@@ -186,7 +186,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     const run = this.run();
     if (run === null) return;
     this.busy.set('scoring');
-    this.progress.set('Waiting for the Crucible server');
+    this.progress.set(`Loading the model, then scoring frame 1 of ${run.toScore.length}`);
     await this.attempt(async () => {
       const scored = await this.electron.thumbsScore(run.runId);
       this.run.set(scored);

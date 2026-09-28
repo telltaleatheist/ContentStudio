@@ -360,6 +360,7 @@ check('scoring: a text-only model is refused by Crucible, and the refusal names 
   const err = await rejection(scorer.scoreFrames({ deps, jobId: 'keeper-text', model: 'qwen3.5-9b', frames }));
   assert.strictEqual(err.code, 'model_text_only');
   assert.ok(/qwen3\.5-9b reads text only on "mac"/.test(err.message) && /Thumbnail frames/.test(err.message), err.message);
+  assert.ok(/"mac" can read pictures with: qwen3\.5-9b-vl, qwen3\.5-2b\./.test(err.message), 'the server\'s image_models are named');
   assert.strictEqual(server.decideBodies().length, 1, 'the first refusal stops the run');
 }));
 

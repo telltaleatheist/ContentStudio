@@ -365,6 +365,10 @@ export class ThumbnailLab {
     const style = this.getStyle().style;
     const outDir = path.join(run.item.reportFolder, OUTPUT_FOLDER);
     const results = [];
+    // The hidden canvas window lives for this batch only: a window left open would sit in
+    // BrowserWindow.getAllWindows() and keep "all windows closed" from ever firing.
+    const canvas = this.deps.canvas();
+    try {
     for (const v of variants) {
       if (!/^[A-Z]$/.test(v.letter)) throw new Error(`"${v.letter}" is not a variant letter.`);
       const frame = run.frames.find((f) => frameId(f) === v.frameId);
@@ -373,12 +377,15 @@ export class ThumbnailLab {
       if (!fs.existsSync(full)) await extractFullFrame(this.deps.ffmpeg, run.video, frame.t, full);
       const label = v.phrase === null ? 'no text' : `${v.kind ?? 'words'} - ${safeFileName(v.phrase)}`;
       const outStem = path.join(outDir, `${safeFileName(run.item.title)} - ${v.letter} (${label})`);
-      const r = await renderThumbnail({ canvas: this.deps.canvas(), frame: full, phrase: v.phrase, style, outStem });
+      const r = await renderThumbnail({ canvas, frame: full, phrase: v.phrase, style, outStem });
       results.push(
         r.ok
           ? { letter: v.letter, ok: true as const, path: r.path, bytes: r.bytes, format: r.format, picture: dataUrlOf(r.path), notes: r.notes, at: clock(frame.t) }
           : { letter: v.letter, ok: false as const, reason: r.reason, at: clock(frame.t) },
       );
+    }
+    } finally {
+      canvas.close();
     }
     log.info(`[ThumbnailLab] ${runId}: rendered ${results.filter((r) => r.ok).length} of ${results.length} into ${outDir}`);
     return { folder: outDir, results };

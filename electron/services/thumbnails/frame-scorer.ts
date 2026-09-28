@@ -72,7 +72,11 @@ export function plainScoringError(err: unknown, model: string): unknown {
   const where = server === null ? 'the server' : `"${server}"`;
   const said = typeof e?.message === 'string' ? e.message : String(err);
   if (code === 'model_text_only') {
-    return new ThumbnailScoringRefused(code, server, `${model} reads text only on ${where}, so it cannot look at frames. Pick a vision model on the Routing dialog's "Thumbnail frames" row. (${said})`, err);
+    // Crucible names the models that CAN read images there (`details.image_models`); say them.
+    const details = (e as { cause?: { details?: { image_models?: unknown } } }).cause?.details;
+    const able = Array.isArray(details?.image_models) ? (details!.image_models as unknown[]).filter((m): m is string => typeof m === 'string') : [];
+    const offer = able.length > 0 ? ` ${where} can read pictures with: ${able.join(', ')}.` : '';
+    return new ThumbnailScoringRefused(code, server, `${model} reads text only on ${where}, so it cannot look at frames.${offer} Pick a vision model on the Routing dialog's "Thumbnail frames" row. (${said})`, err);
   }
   if (code === 'refuse_images_not_served') {
     return new ThumbnailScoringRefused(code, server, `${where} cannot show pictures to ${model} yet. Pick another server for the routing, or another model on the "Thumbnail frames" row. (${said})`, err);
