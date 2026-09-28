@@ -106,13 +106,13 @@ check('a real pre-upgrade store migrates instead of throwing', () => {
   eq(m.notices.length, 4, 'notice count');
   eq(m.selections, { thumbnail_text: 'opus5' }, 'survivors');
   const resolved = routing.resolveMetadataRouting(m.selections);
-  eq(resolved.description, 'qwen38-27b', 'the 27B default as of 2026-08-23 (the 9B shipped misattributed claims)');
+  eq(resolved.description, 'qwen38-27b-8bit', 'the 27B default as of 2026-08-23 (the 9B shipped misattributed claims), the 8-bit build since 2026-09-28');
   eq(resolved.tags, 'qwen35-9b');
-  eq(resolved.titles, 'qwen38-27b', 'the shipped default, which is local as of the consolidation build');
+  eq(resolved.titles, 'qwen38-27b-8bit', 'the shipped default, which is local as of the consolidation build (8-bit since 2026-09-28)');
   eq(resolved.thumbnail_text, 'opus5', 'the one legal choice is KEPT');
   // chapters is a routed task AGAIN (per-field build, 2026-08-24); the stored cogito-14b
   // was dropped as a removed option, so it resolves to the shipped default.
-  eq(resolved.chapters, 'qwen38-27b', 'chapters resolve to the shipped default after the drop');
+  eq(resolved.chapters, 'qwen38-27b-8bit', 'chapters resolve to the shipped default after the drop');
 });
 
 check('an embedding-chapters store migrates too', () => {
@@ -244,8 +244,8 @@ check('the routing view carries the Runs on choice beside the fields', () => {
 check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
   eq(routing.describeRouting(resolved, null),
-    'titles=qwen3.8-27b-4bit, description=qwen3.8-27b-4bit, chapters=qwen3.8-27b-4bit, tags=qwen3.5-9b, ' +
-    'thumbnail_text=qwen3.8-27b-4bit, pinned_comment=qwen3.8-27b-4bit, server=(the selected server)');
+    'titles=qwen3.8-27b-8bit, description=qwen3.8-27b-8bit, chapters=qwen3.8-27b-8bit, tags=qwen3.5-9b, ' +
+    'thumbnail_text=qwen3.8-27b-8bit, pinned_comment=qwen3.8-27b-8bit, server=(the selected server)');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
@@ -278,14 +278,22 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
   const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
   eq(tags.modal, true, 'tags is a visible row (#204)');
   for (const task of routing.metadataRunTasks().filter((t) => t.modal && t.id !== 'tags')) {
-    for (const rung of ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
+    for (const rung of ['qwen38-27b-8bit', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
       if (!task.options.includes(rung)) {
         throw new Error(task.id + ' does not offer ' + rung + '; every big field offers every big rung');
       }
     }
   }
   const chapters = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters');
-  eq(chapters.options.join(','), 'qwen38-27b,sonnet5,opus5,haiku45,claude-cli,claude-cli-sonnet', 'chapters offer the capable rungs plus the subscription rungs');
+  eq(chapters.options.join(','), 'qwen38-27b-8bit,qwen38-27b,sonnet5,opus5,haiku45,claude-cli,claude-cli-sonnet', 'chapters offer the capable rungs plus the subscription rungs');
+  // 2026-09-28 (Owen is removing the 4-bit 27B from the Mac): every 27B row defaults to the 8-bit
+  // and offers it first; the 4-bit stays offered for the PC, labelled so.
+  for (const id of ['titles', 'description', 'chapters', 'thumbnail_text', 'pinned_comment']) {
+    const row = routing.METADATA_ROUTING_TASKS.find((t) => t.id === id);
+    eq([row.defaultOptionId, row.options[0], row.options.includes('qwen38-27b')], ['qwen38-27b-8bit', 'qwen38-27b-8bit', true], id + ':');
+  }
+  eq(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'].label, 'Qwen 27B (4-bit, PC)');
+  eq(routing.resolveMetadataRouting({ titles: 'qwen38-27b' }).titles, 'qwen38-27b', 'a stored 4-bit selection is kept as stored');
 });
 
 /**
@@ -309,7 +317,7 @@ check('the Thumbnails tab rows: their own group, vision-only frames on the 9B wi
   eq(frames.options.includes('qwen35-4b') && frames.options.includes('qwen35-2b'), true, 'the small vision models are selectable');
   const words = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words');
   const text = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_text');
-  eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs');
+  eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs (the 8-bit 27B first)');
   eq(words.defaultOptionId, 'qwen38-27b-8bit');
   // A metadata run's log line and ceiling never name them.
   const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
@@ -338,7 +346,7 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   // The dated id the old mapClaudeModelName sent, as a Crucible upstream id (plan 6.2).
   eq(routing.resolveChapterModelOption(cloud).model, 'anthropic/claude-haiku-4-5-20251001');
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8-27b-4bit');
+  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8-27b-8bit');
 
   const inventory = { server: 'mac', reachable: false, error: 'not answering', models: {}, anthropicConfigured: null };
   const view = routing.buildRoutingView({ titles: 'opus5' }, inventory, { routingServer: null, selectedServer: 'mac' });
@@ -367,10 +375,10 @@ check('compilation packaging follows the titles selection, on the Crucible id', 
   // The default titles rung is LOCAL, and since P2 its model IS the Crucible id the door
   // sends (plan 6.2): no prefix to add, and never renamed.
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8-27b-4bit');
-  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'qwen3.8-27b-4bit',
+  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8-27b-8bit');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'qwen3.8-27b-8bit',
     'a local option is the Crucible id, never renamed');
-  eq(routing.resolveCompilationPackagingOption(stock).crucibleModel, 'qwen3.8-27b-4bit');
+  eq(routing.resolveCompilationPackagingOption(stock).crucibleModel, 'qwen3.8-27b-8bit');
   eq(routing.resolveCompilationPackagingOption(cli).crucibleModel, null, 'claude -p is outside Crucible (#193)');
 });
 
@@ -954,7 +962,7 @@ check('the shipped defaults stay inside the two-model budget, chapters included'
   if (p.roster.models.length > 2) throw new Error('the shipped run loads ' + p.roster.summary);
   eq(p.roster.overBudget, false, 'the shipped defaults are over their own budget');
   eq(p.warnings.length, 0, 'the shipped defaults declared a warning: ' + p.warnings.join('; '));
-  if (!p.roster.byModel['qwen3.8-27b-4bit'].includes('chapters')) {
+  if (!p.roster.byModel['qwen3.8-27b-8bit'].includes('chapters')) {
     throw new Error('the chapter pipeline is not counted against the budget it spends');
   }
 });

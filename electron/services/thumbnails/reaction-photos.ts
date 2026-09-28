@@ -1,11 +1,8 @@
 /**
- * OWEN'S REACTION PHOTOS: the folder he points the Thumbnails tab at (store key
- * `thumbnailLab.reactionFolder`), read in place. Nothing is copied into the app or the repo.
- *
- * A photo is any PNG in the folder, listed by its name without `selfie ` and `.png` ("oh please").
- * Each is trimmed to the person (photo-trim.ts) with Electron's nativeImage, the one image codec
- * the main process already has. A missing folder, a folder with no PNGs, or a photo that cannot be
- * read is refused naming the folder or the file (Law 1).
+ * OWEN'S REACTION PHOTOS, READ: each photo of the app's library (photo-library.ts, since 2026-09-28;
+ * before that a folder read in place) is trimmed to the person (photo-trim.ts) with Electron's
+ * nativeImage, the one image codec the main process already has. A photo that cannot be read is
+ * refused naming the file (Law 1).
  */
 import { nativeImage } from 'electron';
 import * as fs from 'fs';
@@ -26,21 +23,6 @@ export interface TrimmedPhoto {
   height: number;
   /** A sentence when specks were dropped, else null. */
   note: string | null;
-}
-
-export function listReactionPhotos(folder: string): ReactionPhoto[] {
-  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) throw new Error(`The reaction photos folder is not there: ${folder}`);
-  const photos = fs.readdirSync(folder)
-    .filter((f) => /\.png$/i.test(f) && !f.startsWith('.'))
-    .map((f) => ({ name: photoName(f), file: path.join(folder, f) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  if (photos.length === 0) throw new Error(`The reaction photos folder has no PNG photos in it: ${folder}`);
-  const seen = new Set<string>();
-  for (const p of photos) {
-    if (seen.has(p.name)) throw new Error(`Two photos in ${folder} are both listed as "${p.name}"; rename one.`);
-    seen.add(p.name);
-  }
-  return photos;
 }
 
 const cache = new Map<string, { mtimeMs: number; photo: TrimmedPhoto }>();

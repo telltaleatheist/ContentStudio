@@ -25,6 +25,17 @@
  *     merge, so cutting the tree at SCENE_JOIN_FRACTION gives the same groups as merging the closest
  *     pair until none is close enough.
  *
+ *   - FRAGMENTS FOLDED (2026-09-28, Owen: "there are really only like 10 unique frames"). A moving
+ *     camera (the rapture story's trees and sky) changes most cells from second to second, so its
+ *     footage split into seven small scenes. Colour alone cannot tell those pieces from two
+ *     different short clips (measured: the sky pieces sit 0.68-0.78 apart, the pink-hair two-shot
+ *     and the woman against the sky 0.79), but TIME can: the pieces interleave inside one stretch
+ *     of the story. So two scenes fold into one when both are small (each an original group of at
+ *     most FRAGMENT_MAX_KEPT kept frames), their stretches of the story overlap or touch (within
+ *     FRAGMENT_TOUCH_SAMPLES sampling intervals), and they differ on average in at most
+ *     FRAGMENT_JOIN_FRACTION of the cells (looser than SCENE_JOIN_FRACTION); the closest such pair
+ *     first, until none is left. Big scenes never fold, so the two hosts' clips stay apart.
+ *
  * Scenes are numbered in order of first appearance. Tuned on "f1 - the rapture" (2026-09-24):
  * docs/thumbnails-lab.md has the groups it finds.
  *
@@ -52,6 +63,60 @@ export const CELL_COLOUR_TOLERANCE = 40;
  */
 export const SCENE_JOIN_FRACTION = 0.6;
 
+/** A group of at most this many kept frames is a possible fragment (see FRAGMENTS FOLDED). */
+export const FRAGMENT_MAX_KEPT = 10;
+
+/** Two fragments fold when their frames differ on average in at most this fraction of cells. */
+export const FRAGMENT_JOIN_FRACTION = 0.8;
+
+/** Two fragments' stretches "touch" when the gap between them is at most this many sampling intervals. */
+export const FRAGMENT_TOUCH_SAMPLES = 2;
+
+/**
+ * Fold small groups that interleave or touch in time and look alike at the looser bar (see
+ * FRAGMENTS FOLDED). `groups` are member indices into `frames` (time order not required); the
+ * result is the folded groups, members ascending, ordered by first member.
+ */
+export function foldFragments(
+  groups: readonly number[][],
+  frames: ReadonlyArray<{ t: number; colour: Uint8Array }>,
+  every: number,
+): number[][] {
+  const clusters = groups.map((members) => ({
+    members: [...members],
+    small: members.length <= FRAGMENT_MAX_KEPT,
+    first: Math.min(...members.map((m) => frames[m].t)),
+    last: Math.max(...members.map((m) => frames[m].t)),
+  }));
+  const touch = FRAGMENT_TOUCH_SAMPLES * every;
+  const mean = (a: number[], b: number[]): number => {
+    let sum = 0;
+    for (const i of a) for (const j of b) sum += signatureDistance(frames[i].colour, frames[j].colour);
+    return sum / (a.length * b.length);
+  };
+  for (;;) {
+    let best: { i: number; j: number; d: number } | null = null;
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const a = clusters[i];
+        const b = clusters[j];
+        if (!a.small || !b.small) continue;
+        if (a.first > b.last + touch || b.first > a.last + touch) continue;
+        const d = mean(a.members, b.members);
+        if (d <= FRAGMENT_JOIN_FRACTION && (best === null || d < best.d)) best = { i, j, d };
+      }
+    }
+    if (best === null) break;
+    const a = clusters[best.i];
+    const b = clusters[best.j];
+    a.members = [...a.members, ...b.members];
+    a.first = Math.min(a.first, b.first);
+    a.last = Math.max(a.last, b.last);
+    clusters.splice(best.j, 1);
+  }
+  return clusters.map((c) => c.members.sort((x, y) => x - y)).sort((x, y) => x[0] - y[0]);
+}
+
 /** Every scene offers at least this many frames to the vision model (or all it has, when fewer). */
 export const SCENE_FLOOR = 3;
 
@@ -62,8 +127,22 @@ function floorOf(s: { size: number; seconds: number }): number {
   return Math.min(s.seconds < SHORT_SCENE_SECONDS ? 1 : SCENE_FLOOR, s.size);
 }
 
-/** How many of a scene's best frames the "Best by scene" view shows. */
-export const SCENE_ROW_FRAMES = 4;
+/**
+ * How many frames a "Best by scene" row shows before "More from this scene" (Owen, 2026-09-28:
+ * "we dont need 25 of the same pictures"): the best, and the best one that looks clearly
+ * different from it (see sceneRows).
+ */
+export const SCENE_ROW_SHOWN = 2;
+
+/**
+ * The second frame of a row must differ from the best in at least this fraction of the signature's
+ * cells (a higher bar than the repeat filter's near-identical hash): measured on the rapture story,
+ * a talking-head scene's frames differ from each other by a median 0.12, and 0.15 is its upper
+ * quarter, a clearly different pose or framing. Or its expression reading differs by
+ * EXPRESSION_DIFFERENT levels or more.
+ */
+export const CLEARLY_DIFFERENT_FRACTION = 0.15;
+export const EXPRESSION_DIFFERENT = 1;
 
 /** The fraction of the two signatures' cells whose colour differs by more than the tolerance. */
 export function signatureDistance(a: Uint8Array, b: Uint8Array): number {
@@ -181,7 +260,7 @@ export function groupScenes<T extends { index: number; t: number; colour: Uint8A
   if (kept.length === 0) throw new Error('groupScenes: no frames were kept, so there are no scenes.');
   if (!(every > 0)) throw new Error(`groupScenes: a sampling interval of ${every} s is not a time.`);
   const ordered = [...kept].sort((a, b) => a.t - b.t || a.index - b.index);
-  const groups = averageLinkageGroups(ordered.map((f) => f.colour));
+  const groups = foldFragments(averageLinkageGroups(ordered.map((f) => f.colour)), ordered, every);
   const sceneOfKept = new Map<number, number>();
   groups.forEach((members, g) => members.forEach((m) => sceneOfKept.set(ordered[m].index, g)));
   const counts = new Array<number>(groups.length).fill(0);
@@ -284,35 +363,49 @@ export const SCENE_MIN_GAP_SECONDS = 4;
 
 export interface SceneRow {
   scene: number;
-  /** Frame ids, best first, at most SCENE_ROW_FRAMES. */
+  /** Shown by default: the best frame, then the best clearly different one (when there is one). */
   ids: string[];
+  /** The rest of the scene's ranked frames, best first (never two within SCENE_MIN_GAP_SECONDS): "More from this scene". */
+  more: string[];
   best: number;
 }
 
 /**
- * The "Best by scene" rows: for each scene, its best-ranked frames (at most `perRow`, never two
- * within SCENE_MIN_GAP_SECONDS), the scenes ordered by their best frame's score (ties: lower scene
- * number). `ranked` is best first and holds no rejected frame, so a scene whose frames were all
- * computer screens (or unreadable, or not scored) has no row; `empty` lists those scenes.
+ * The "Best by scene" rows: for each scene, the best-ranked frame, then the best-ranked frame that
+ * is clearly different from it (signature distance at least CLEARLY_DIFFERENT_FRACTION, or an
+ * expression EXPRESSION_DIFFERENT levels apart); a scene with none shows its best alone. Every other
+ * ranked frame of the scene (never two within SCENE_MIN_GAP_SECONDS) is in `more`. Scenes are
+ * ordered by their best frame's score (ties: lower scene number). `ranked` is best first and holds
+ * no rejected frame, so a scene whose frames were all computer screens (or unreadable, or not
+ * scored) has no row; `empty` lists those scenes.
  */
 export function sceneRows(
-  ranked: ReadonlyArray<{ id: string; t: number; score: number }>,
+  ranked: ReadonlyArray<{ id: string; t: number; score: number; reading?: { expression: number } }>,
   sceneOf: ReadonlyMap<string, number>,
   scenes: readonly number[],
-  perRow: number = SCENE_ROW_FRAMES,
+  signatureOf: ReadonlyMap<string, Uint8Array>,
 ): { rows: SceneRow[]; empty: number[] } {
-  const rows = new Map<number, SceneRow & { times: number[] }>();
+  const byScene = new Map<number, Array<(typeof ranked)[number]>>();
   for (const frame of ranked) {
     const scene = sceneOf.get(frame.id);
     if (scene === undefined) throw new Error(`sceneRows: frame ${frame.id} belongs to no scene.`);
-    const row = rows.get(scene) ?? { scene, ids: [], best: frame.score, times: [] };
-    rows.set(scene, row);
-    if (row.ids.length >= perRow || row.times.some((t) => Math.abs(t - frame.t) < SCENE_MIN_GAP_SECONDS)) continue;
-    row.ids.push(frame.id);
-    row.times.push(frame.t);
+    const list = byScene.get(scene) ?? [];
+    if (!list.some((f) => Math.abs(f.t - frame.t) < SCENE_MIN_GAP_SECONDS)) list.push(frame);
+    byScene.set(scene, list);
   }
-  const ordered = [...rows.values()]
-    .sort((a, b) => b.best - a.best || a.scene - b.scene)
-    .map(({ scene, ids, best }) => ({ scene, ids, best }));
-  return { rows: ordered, empty: scenes.filter((s) => !rows.has(s)) };
+  const sig = (id: string): Uint8Array => {
+    const s = signatureOf.get(id);
+    if (s === undefined) throw new Error(`sceneRows: frame ${id} has no signature.`);
+    return s;
+  };
+  const rows: SceneRow[] = [...byScene].map(([scene, list]) => {
+    const top = list[0];
+    const other = list.slice(1).find((f) =>
+      signatureDistance(sig(top.id), sig(f.id)) >= CLEARLY_DIFFERENT_FRACTION ||
+      (top.reading !== undefined && f.reading !== undefined && Math.abs(top.reading.expression - f.reading.expression) >= EXPRESSION_DIFFERENT));
+    const ids = other === undefined ? [top.id] : [top.id, other.id];
+    return { scene, ids, more: list.map((f) => f.id).filter((id) => !ids.includes(id)), best: top.score };
+  });
+  rows.sort((a, b) => b.best - a.best || a.scene - b.scene);
+  return { rows, empty: scenes.filter((s) => !byScene.has(s)) };
 }

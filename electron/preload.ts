@@ -715,7 +715,12 @@ const api = {
   thumbsSetPhotoNote: (name: string, note: string) => ipcRenderer.invoke('thumbs:set-photo-note', name, note),
   thumbsSuggest: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:suggest', runId, variants),
   thumbsCombine: (fav: unknown, how: unknown, rank: unknown) => ipcRenderer.invoke('thumbs:combine', fav, how, rank),
-  thumbsChoosePhotoFolder: () => ipcRenderer.invoke('thumbs:choose-photo-folder'),
+  thumbsChoosePhotos: () => ipcRenderer.invoke('thumbs:choose-photos'),
+  thumbsAddPhotos: (chosen: string[], replace: boolean) => ipcRenderer.invoke('thumbs:add-photos', chosen, replace),
+  thumbsRemovePhoto: (name: string) => ipcRenderer.invoke('thumbs:remove-photo', name),
+  thumbsCopyOldPhotos: () => ipcRenderer.invoke('thumbs:copy-old-photos'),
+  thumbsCopyOldLogo: () => ipcRenderer.invoke('thumbs:copy-old-logo'),
+  thumbsReleaseModel: () => ipcRenderer.invoke('thumbs:release-model'),
   thumbsShowFolder: (folder: string) => ipcRenderer.invoke('thumbs:show-folder', folder),
   onThumbsProgress: (callback: (event: { runId: string; stage: string; done: number; total: number }) => void) => {
     const listener = (_e: unknown, event: { runId: string; stage: string; done: number; total: number }) => callback(event);

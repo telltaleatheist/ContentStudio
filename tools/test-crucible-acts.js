@@ -88,6 +88,7 @@ check('every routing option that runs through Crucible names a Crucible id; clau
   const routing = require(path.join(REPO, 'dist', 'main', 'services', 'metadata', 'metadata-routing.js'));
   const expected = {
     'qwen38-27b': 'qwen3.8-27b-4bit',
+    'qwen38-27b-8bit': 'qwen3.8-27b-8bit',
     'qwen35-9b': 'qwen3.5-9b',
     'qwen35-4b': 'qwen3.5-4b',
     // The Thumbnails tab's vision rungs (#236): each a Crucible manifest that declares `image`.
@@ -106,7 +107,7 @@ check('every routing option that runs through Crucible names a Crucible id; clau
     assert.strictEqual(option.crucibleModel, expected[id], id);
     if (option.crucibleModel !== null) assert.strictEqual(option.model, option.crucibleModel, `${id} routes on its Crucible id`);
   }
-  assert.strictEqual(routing.SUMMARIZATION_MODEL, 'qwen3.8-27b-4bit');
+  assert.strictEqual(routing.SUMMARIZATION_MODEL, 'qwen3.8-27b-8bit');
 });
 
 run('crucible: every act sent is one the pinned release knows');
