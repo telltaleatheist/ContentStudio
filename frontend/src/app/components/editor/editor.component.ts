@@ -729,7 +729,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // The sidecar (if any) is the source of truth for the transcript: null → state 1
     // (Transcribe button), parsed → state 3 (preview). Loaded async so it never blocks
     // first paint; generation-guarded so a slow read can't land on a newer session.
-    void this.loadTranscriptForSession(zipPath, generation);
+    void this.loadTranscriptForSession(zipPath, generation, { initial: true });
   }
 
   /** Release ALL per-session state so a re-init cannot leak the previous session. */
@@ -5570,7 +5570,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * dropped. A parse/shape failure surfaces verbatim in the pane (state error), never a
    * silent empty transcript.
    */
-  private async loadTranscriptForSession(zipPath: string, generation: number): Promise<void> {
+  private async loadTranscriptForSession(
+    zipPath: string,
+    generation: number,
+    opts: { initial?: boolean } = {}
+  ): Promise<void> {
     let data: any;
     try {
       data = await this.host.loadTranscript({ zipPath });
@@ -5582,6 +5586,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
     if (generation !== this.bootstrapGeneration) return; // superseded by a newer session
+    // The opening read loses to a transcription started while it was in flight. Processing
+    // with "transcribe when finished" opens the session and starts the job at once, so this
+    // read usually lands AFTER the pane went 'running' — and, finding no sidecar yet, used to
+    // put the Transcribe button back over a live job, after which every progress event was
+    // ignored (Owen, 2026-09-28: "i didnt know it was running"). The job's completion reloads
+    // the sidecar itself, so nothing is lost by standing aside.
+    if (opts.initial && this.transcriptState === 'running') return;
     if (!data) { this.transcriptState = 'none'; this.cdr.detectChanges(); return; }
     try {
       this.ingestTranscript(data as Transcript);
