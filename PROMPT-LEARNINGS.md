@@ -874,3 +874,31 @@ The re-roll gate's text (LEDGER #201; docs/crucible/P9.md). Three kinds of block
   keep clause, the lines shape, the failing entries (the one place a wrong form may appear: as the
   input of a revision call). Not yet measured live: the calibration was stopped before a re-roll
   was sent (P9.md).
+
+## Part 13 — `shared/pipeline/thumbnails.yml` (added 2026-09-28, the Thumbnails tab)
+
+Two shapes, both for the Thumbnails tab only (docs/thumbnails-lab.md). The metadata run's
+`thumbnail-text.yml` field is untouched.
+
+**`text`**: the thumbnail words, one plain-text call on the `thumbnail_words` routing row. Owen's
+rules (2026-09-28), in positive form: 2-5 words in capitals; a complete thought to a stranger that
+leaves them wanting more; adds to the paired title rather than restating it; from the transcript
+(the subject's claim lightly paraphrased, or the host's reaction). Three kinds, one per A/B
+variant so the test compares ideas: CLAIM, STAKES, REACTION, `{per_kind}` (5) of each.
+- The answer shape is the kind's name alone on a line, its options under it, a blank line between
+  kinds (law 12). The parser tolerates `CLAIM:`, `**CLAIM**`, `## Claim`, list markers and quotes,
+  names in a warning any line before the first kind, warns on options outside 2-5 words (kept),
+  and never re-asks.
+- The three examples are Owen's own and come from ONE video (f2 - the rapture: Amanda Grace's
+  rapture advice). On that very video the model may hand them back verbatim; that is an echo of the
+  prompt, not a finding. Unmeasured: no live run yet (a live test needs Owen's OK).
+- The transcript comes first and the title right before the rules, so "adds to the title" is
+  read with the title in view.
+
+**`frames.*`**: the frame questions, asked of ONE frame per decide call on the `thumbnail_frames`
+row (a vision model): `screen` (choice video / screen, the one hard filter), `face` (yes/no),
+`expression` (score; `levels` holds five, blank to extreme, one per line), `eyes` (yes/no),
+`strong` (yes/no). One image per call because a question about several images is ambiguous about
+which one it means (Owen). The ranking weights live in code (frame-ranking.ts `RANK_WEIGHTS`), not
+here: they are arithmetic over the answers, not words a model reads. Unmeasured: no frame has been
+scored for real yet.
