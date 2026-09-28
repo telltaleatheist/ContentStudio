@@ -14,6 +14,7 @@ import { ProjectsService, ProjectEntry } from './services/projects.service';
 import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
 import { ProjectSetupModalComponent } from './project-setup-modal/project-setup-modal.component';
 import { WordMuteReport, muteSummary } from './model/mute-words';
+import { StrayFiller, findStrayFillers } from './model/stray-fillers';
 import { EditorManifest, EditorSegment } from './host-data/editor-manifest';
 import {
   TranscriptWord, Transcript, TranscriptGroup, TranscriptGroupView,
@@ -381,6 +382,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   muteWordsPill: { label: string; title: string; on: boolean; enabled: boolean } | null = null;
   /** The Mute words modal opened from the top bar, on the open session's project. */
   muteWordsSessionOpen = false;
+  /**
+   * Lone um/uh pieces the top bar's "Stray ums" button would cut (LEDGER #238), recomputed on
+   * transcript load and on every cut change so the count is always what a click removes.
+   */
+  strayFillers: StrayFiller[] = [];
   // File ▸ Export… chooser modal (pick Master FCPXML vs Stories).
   exportChooserOpen = false;
   // Mute the mic wherever the SCREEN track is speaking and the mic is not. ON by default:
@@ -993,6 +999,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Transcript group visibility + edited timecodes depend on the cut model — re-derive
     // them here so they stay in lockstep with every cut/undo/redo (no-op before load).
     this.recomputeVisibleGroups();
+    this.recomputeStrayFillers();
     // Every cut-model change persists (debounced; suppressed during load/restore).
     this.scheduleEditsSave();
   }
@@ -5724,6 +5731,67 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcriptWordCount = t.words.length;
     this.transcriptState = 'ready';
     this.recomputeVisibleGroups();
+    this.recomputeStrayFillers();
+  }
+
+  /**
+   * Every lone um/uh on a mic track that sits in a piece of its own, a cut on each side
+   * (model/stray-fillers.ts has the rule). A mic track is found as the mic-mute pass finds one:
+   * "mic" in its label or file, and not "screen". Its pieces are the manifest's segments that
+   * play the same file.
+   */
+  private recomputeStrayFillers(): void {
+    const t = this.transcript;
+    const fs = this.manifest?.frameSeconds;
+    if (!t || !fs || this.transcriptState !== 'ready') { this.strayFillers = []; return; }
+    const isCut = (start: number, end: number): boolean =>
+      this.cuts.some(c => c.startFrame * fs <= start + EPS && c.endFrame * fs >= end - EPS);
+    const found: StrayFiller[] = [];
+    for (const tr of t.tracks) {
+      const blob = `${tr.label || ''} ${tr.file || ''}`.toLowerCase();
+      if (!blob.includes('mic') || blob.includes('screen')) continue;
+      const segs: EditorSegment[] = [];
+      for (const list of this.originalSegsByTrack.values()) {
+        for (const seg of list) if (seg.file === tr.file) segs.push(seg);
+      }
+      found.push(...findStrayFillers(segs, tr.id, t.words, isCut));
+    }
+    this.strayFillers = found.sort((a, b) => a.start - b.start);
+  }
+
+  /** Top bar ▸ Stray ums: cut every one of them, as ONE undo step. */
+  cutStrayFillers(): void {
+    const fs = this.manifest?.frameSeconds;
+    if (!fs || this.strayFillers.length === 0) return;
+    const newCuts: Cut[] = [];
+    for (const f of this.strayFillers) {
+      const startFrame = Math.round(f.start / fs);
+      const endFrame = Math.round(f.end / fs);
+      if (endFrame > startFrame) newCuts.push({ startFrame, endFrame });
+    }
+    if (newCuts.length === 0) return;
+    const origTime = this.editedToOriginal(this.playheadTime);
+    this.pushUndo();
+    this.redoStack = [];
+    this.cuts = mergeCuts([...this.cuts, ...newCuts]);
+    this.rebuildEditedModel();       // recounts the strays and saves the edits
+    this.pruneBladeBoundaries();
+    this.clearSelection();
+    this.landPlayheadAfterEdit(this.originalToEdited(origTime), false);
+  }
+
+  /** The button's hover text: what a click does, or why it cannot. */
+  get strayFillersTitle(): string {
+    if (this.transcriptState !== 'ready') {
+      return 'Transcribe the session first — the stray ums are found from the transcript';
+    }
+    const n = this.strayFillers.length;
+    if (n === 0) {
+      return 'No lone um or uh left: every one is joined to other speech or already cut. ' +
+        '(A stray one is the only word in a piece of its own, with a cut on each side.)';
+    }
+    return `Cut ${n} lone um/uh piece${n === 1 ? '' : 's'} — each is the only word in a piece of ` +
+      'its own, with a cut on each side. One undo (⌘Z) brings them all back.';
   }
 
   /**

@@ -23,6 +23,7 @@
     "check:crucible": "node tools/check-crucible.js",
     "check:asr": "node tools/asr-checks.js",
     "check:mutes": "node tools/word-mute-checks.js",
+    "check:strays": "node tools/stray-filler-checks.js",
     "check:chaptering": "node tools/chaptering-checks.js",
     "check:reroll": "node tools/reroll-checks.js",
     "check:thumbnail": "node tools/thumbnail-checks.js && electron tools/thumbnail-fit-smoke.js",

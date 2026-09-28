@@ -32,6 +32,14 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
+    <!-- Stray ums (LEDGER #238): the count is exactly what a click cuts, as one undo step. -->
+    <button class="mic-mute-toggle mute-words-pill" *ngIf="sessionReady"
+            [class.off]="strayFillers.length === 0"
+            [disabled]="transcriptState !== 'ready' || strayFillers.length === 0"
+            (click)="cutStrayFillers()"
+            [title]="strayFillersTitle">
+      Stray ums: {{ transcriptState === 'ready' ? strayFillers.length : '—' }}
+    </button>
     <!-- Mute words for the open project (LEDGER #237): its saved choice at a glance, and the
          modal one click away. Beside Mic mute because both decide what an export silences. -->
     <button class="mic-mute-toggle mute-words-pill" *ngIf="muteWordsPill"
