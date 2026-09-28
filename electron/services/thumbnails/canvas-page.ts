@@ -11,8 +11,8 @@
  *   2. MEASURING the phrase in the chosen font (canvas measureText), after checking the font is
  *      really installed: a family the system lacks silently renders in a default face, so the
  *      page compares against two generic families and refuses a font that matches both.
- *   3. DRAWING the thumbnail: the frame, the vignette, the soft blurred and darkened patch, and the
- *      outlined letters, exactly where layout.ts placed them. The reserved slots are left EMPTY.
+ *   3. DRAWING the thumbnail: the frame, the vignette, the soft blurred and darkened patch, the
+ *      outlined letters, the reaction photo and the logo, exactly where layout.ts placed them.
  *
  * The page functions below are injected as source (`fn.toString()`), so each is SELF-CONTAINED:
  * no imports, no helpers from this module, nothing but its argument. They run in the page.
@@ -62,6 +62,7 @@ async function pageDraw(arg: {
   style: { font: string; fill: string; stroke: string; patch: boolean; patchDarken: number; vignette: boolean; vignetteStrength: number };
   plan: { size: number; capPx: number; strokePx: number; lines: Array<{ text: string; x: number; y: number }>; patches: Array<{ x: number; y: number; w: number; h: number }> } | null;
   reaction: { image: string; x: number; y: number; w: number; h: number; outlinePx: number } | null;
+  logo: { image: string; x: number; y: number; w: number; h: number } | null;
   jpegQuality: number | null;
 }): Promise<string> {
   const g = globalThis as any;
@@ -164,6 +165,14 @@ async function pageDraw(arg: {
     }
     ctx.drawImage(photo, r.x, r.y, r.w, r.h);
   }
+  const l = arg.logo;
+  if (l !== null) {
+    // Already downscaled to exactly w x h in the main process: drawn 1:1 on whole pixels, on top.
+    const logo = new g.Image();
+    logo.src = l.image;
+    await logo.decode();
+    ctx.drawImage(logo, l.x, l.y, l.w, l.h);
+  }
   return arg.jpegQuality === null ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', arg.jpegQuality);
 }
 
@@ -245,6 +254,7 @@ export class ThumbnailCanvas {
     style: ThumbnailStyle;
     plan: TextPlan | null;
     reaction: { image: string; x: number; y: number; w: number; h: number; outlinePx: number } | null;
+    logo: { image: string; x: number; y: number; w: number; h: number } | null;
     jpegQuality: number | null;
   }): Promise<string> {
     return this.call(pageDraw, {
@@ -262,6 +272,7 @@ export class ThumbnailCanvas {
       },
       plan: input.plan === null ? null : { size: input.plan.size, capPx: input.plan.capPx, strokePx: input.plan.strokePx, lines: input.plan.lines, patches: input.plan.linePatches },
       reaction: input.reaction,
+      logo: input.logo,
       jpegQuality: input.jpegQuality,
     });
   }

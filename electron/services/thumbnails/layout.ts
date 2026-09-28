@@ -3,8 +3,8 @@
  *
  * The inputs are the frame size, the face boxes a deterministic detector found (Apple Vision,
  * through canvas-page.ts; never the vision model's boxes, which are imprecise), the reserved slots
- * (Owen's reaction cut-out, bottom right, and the logo, top right: both reserved and rendered EMPTY
- * for now), the style, and the phrase's measurements at a reference size. The output is either a
+ * (Owen's reaction cut-out, bottom right, and the logo, top right: each avoided as its real drawn
+ * bounds when drawn, or as its whole space when not), the style, and the phrase's measurements at a reference size. The output is either a
  * placement the renderer draws exactly, or a plain refusal saying the phrase is too long.
  *
  * THE RULES (Owen, 2026-09-28):
@@ -68,7 +68,11 @@ export interface ThumbnailStyle {
   reactionOutlinePx: number;
   /** How much of the photo's height may run off the bottom of the picture (0 = none). */
   reactionBleed: number;
-  /** The logo: reserved and left empty. */
+  /**
+   * The logo's space. With a logo drawn, the logo file is fitted inside it (aspect kept, top and
+   * right edges anchored) and the text avoids the logo's drawn bounds; with none, the whole space
+   * stays clear.
+   */
   logoSlot: SlotFractions;
   /** The smallest capital-letter height allowed, as a fraction of the frame height. */
   minCapFraction: number;
@@ -91,8 +95,9 @@ export const DEFAULT_STYLE: ThumbnailStyle = {
   // the cut-out running off the bottom edge.
   reactionOutlinePx: 10,
   reactionBleed: 0.1,
-  // Where Owen's channel mark sits on his hand-made thumbnail (f2 - the rapture.png).
-  logoSlot: { x: 0.9, y: 0.03, w: 0.075, h: 0.13 },
+  // Owen's round badge on his hand-made thumbnail (f2 - the rapture.png, 1920x1080): x 1770-1870,
+  // y 50-150, so about 100 px across (5.2% of the width) with 50 px to the top and right edges.
+  logoSlot: { x: 0.922, y: 0.046, w: 0.052, h: 0.0925 },
   minCapFraction: 0.12,
   maxCapFraction: 0.2,
 };
@@ -243,6 +248,22 @@ export function placeReaction(photoW: number, photoH: number, style: ThumbnailSt
   return { x, y, w, h, outlinePx, avoid };
 }
 
+/**
+ * Where the logo is drawn: the file's picture (logoW x logoH, already trimmed to its visible
+ * pixels) fitted inside the logo space with its aspect kept, against the space's top and right
+ * edges. Sizes are whole pixels so the downscaled logo lands on the pixel grid (crisp).
+ */
+export function placeLogo(logoW: number, logoH: number, style: ThumbnailStyle, width: number, height: number): Rect {
+  if (!(logoW > 0 && logoH > 0)) throw new Error(`placeLogo: a ${logoW}x${logoH} logo has nothing to place.`);
+  const slot = slotRect(style.logoSlot, width, height);
+  const scale = Math.min(slot.w / logoW, slot.h / logoH);
+  const w = Math.max(1, Math.floor(logoW * scale));
+  const h = Math.max(1, Math.floor(logoH * scale));
+  const x = Math.round(slot.x + slot.w - w);
+  const y = Math.round(slot.y);
+  return { x, y, w, h };
+}
+
 /** A detected face box grown by FACE_PAD, clipped to the frame. */
 export function paddedFace(face: Rect, width: number, height: number): Rect {
   const x0 = Math.max(0, face.x - face.w * FACE_PAD.left);
@@ -337,6 +358,8 @@ export function planText(
   height: number,
   /** The chosen photo's drawn bounds (placeReaction `avoid`); null keeps the whole reaction space clear. */
   reactionAvoid: Rect | null = null,
+  /** The logo's drawn bounds (placeLogo); null keeps the whole logo space clear. */
+  logoAvoid: Rect | null = null,
 ): PlanResult {
   if (metrics.words.length === 0) throw new Error('planText: the phrase has no words.');
   if (metrics.wordWidths.length !== metrics.words.length) throw new Error('planText: the page measured a different number of words than the phrase has.');
@@ -347,7 +370,7 @@ export function planText(
   const obstacles = [
     ...faces.map((f) => paddedFace(f, width, height)),
     reactionAvoid ?? slotRect(style.reactionSlot, width, height),
-    slotRect(style.logoSlot, width, height),
+    logoAvoid ?? slotRect(style.logoSlot, width, height),
   ];
   const spaces = clearSpaces(width, height, obstacles);
   let best: { fit: Fit; space: Rect } | null = null;

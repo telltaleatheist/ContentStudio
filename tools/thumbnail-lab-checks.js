@@ -27,6 +27,13 @@
  *   - FACE-SAFE BOX: the text never touches a padded face or a reserved slot, sits bottom-left
  *     when it can, fits by shrinking, and a phrase that cannot keep the letter floor is REFUSED
  *     (never shrunk below it, never truncated).
+ *   - NOTHING LEFT OFF WITHOUT A CHOICE (2026-09-28): combine never makes a picture-only or
+ *     photo-less thumbnail unless "No text" was starred or "No photo" picked; with no starred words
+ *     A/B/C take the top claim, stakes and reaction, and with nothing written it refuses plainly; a
+ *     thumbnail with no photo chosen runs the photo suggestion first (fake Crucible) for its exact
+ *     words, re-runs it when the words changed, and is refused plainly with no photos folder; the
+ *     logo is fitted in its space with its aspect kept and the words avoid its drawn bounds; the
+ *     empty-space outlines are off by default and never drawn over a drawn photo or logo.
  *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
  *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
  *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
@@ -694,31 +701,69 @@ const FAV = {
   frames: ['f1', 'f2', 'f3', 'f4'],
   texts: [{ phrase: 'CLAIM ONE', kind: 'claim' }, { phrase: 'STAKES ONE', kind: 'stakes' }],
   photos: ['laugh', 'oh please'],
+  written: null,
 };
+const WRITTEN = { claim: ['TOP CLAIM', 'CLAIM TWO'], stakes: ['TOP STAKES'], reaction: ['TOP REACTION', 'REACTION TWO'] };
+const photoOf = (v) => (v.photo.pick === 'photo' ? v.photo.name : v.photo.pick === 'top' ? `top:${v.photo.of}` : 'none');
 
-check('combine, best package: every piece varies; short lists repeat from their start; photos follow the suggestion', () => {
+check('combine, best package: every piece varies; short lists repeat from their start; photos follow a suggestion made for these words only', () => {
   const r = combine.combine(FAV, { mode: 'best' });
   assert.ok(r.ok);
-  assert.deepStrictEqual(r.variants.map((v) => [v.letter, v.frameId, v.text.phrase, v.photo]), [
+  assert.deepStrictEqual(r.variants.map((v) => [v.letter, v.frameId, v.text.phrase, photoOf(v)]), [
     ['A', 'f1', 'CLAIM ONE', 'laugh'], ['B', 'f2', 'STAKES ONE', 'oh please'], ['C', 'f3', 'CLAIM ONE', 'laugh'],
   ]);
-  const rank = { A: ['horrified', 'oh please', 'laugh'], B: ['laugh', 'horrified', 'oh please'], C: ['horrified', 'ooh', 'laugh', 'oh please'] };
+  const rank = {
+    A: { text: 'CLAIM ONE', ranked: ['horrified', 'oh please', 'laugh'] },
+    B: { text: 'STAKES ONE', ranked: ['laugh', 'horrified', 'oh please'] },
+    C: { text: 'CLAIM ONE', ranked: ['horrified', 'ooh', 'laugh', 'oh please'] },
+  };
   const ranked = combine.combine(FAV, { mode: 'best' }, rank);
-  assert.deepStrictEqual(ranked.variants.map((v) => v.photo), ['oh please', 'laugh', 'laugh'], 'each variant takes its highest-ranked favourite');
-  const noFav = combine.combine({ ...FAV, photos: [] }, { mode: 'best' }, rank);
-  assert.deepStrictEqual(noFav.variants.map((v) => v.photo), ['horrified', 'laugh', 'horrified'], 'with no favourite photo, the top-ranked one');
-  const bare = combine.combine({ frames: ['f1'], texts: [], photos: [] }, { mode: 'best' });
-  assert.ok(bare.variants.every((v) => v.frameId === 'f1' && v.text.phrase === null && v.photo === null), 'no starred words means picture only');
-  assert.deepStrictEqual(combine.combine({ frames: [], texts: [], photos: [] }, { mode: 'best' }), { ok: false, reason: 'Star at least one frame first.' });
+  assert.deepStrictEqual(ranked.variants.map(photoOf), ['oh please', 'laugh', 'laugh'], 'each variant takes its highest-ranked favourite');
+  const stale = combine.combine(FAV, { mode: 'best' }, { ...rank, A: { text: 'OTHER WORDS', ranked: ['oh please', 'laugh'] } });
+  assert.deepStrictEqual(stale.variants.map(photoOf), ['laugh', 'laugh', 'laugh'], 'a ranking made for other words is ignored');
+  assert.deepStrictEqual(combine.combine({ frames: [], texts: [], photos: [], written: WRITTEN }, { mode: 'best' }), { ok: false, reason: 'Star at least one frame first.' });
+});
+
+check('combine never leaves words off without a starred "No text": no stars takes the top claim, stakes and reaction; nothing written is refused', () => {
+  const r = combine.combine({ frames: ['f1'], texts: [], photos: [], written: WRITTEN }, { mode: 'best' });
+  assert.ok(r.ok, r.reason);
+  assert.deepStrictEqual(r.variants.map((v) => [v.letter, v.text.phrase, v.text.kind]), [
+    ['A', 'TOP CLAIM', 'claim'], ['B', 'TOP STAKES', 'stakes'], ['C', 'TOP REACTION', 'reaction'],
+  ]);
+  assert.ok(r.variants.every((v) => v.text.phrase !== null), 'no picture-only variant without a choice');
+  for (const vary of ['frame', 'photo']) {
+    const t = combine.combine({ frames: ['f1', 'f2'], texts: [], photos: ['laugh', 'ooh'], written: WRITTEN }, { mode: 'test', vary });
+    assert.ok(t.ok && t.variants.every((v) => v.text.phrase === 'TOP CLAIM'), `test ${vary}: the held words are the top claim`);
+  }
+  const refused = combine.combine({ frames: ['f1'], texts: [], photos: [], written: null }, { mode: 'best' });
+  assert.deepStrictEqual(refused, { ok: false, reason: 'Write words first, or star “No text”.' });
+  assert.strictEqual(combine.combine({ frames: ['f1'], texts: [], photos: [], written: { claim: [], stakes: [], reaction: [] } }, { mode: 'test', vary: 'frame' }).reason, combine.WRITE_WORDS_FIRST);
+  const noStakes = combine.combine({ frames: ['f1'], texts: [], photos: [], written: { ...WRITTEN, stakes: [] } }, { mode: 'best' });
+  assert.ok(!noStakes.ok && /No stakes lines were written, so B has no words/.test(noStakes.reason), noStakes.reason);
+  const chosen = combine.combine({ frames: ['f1'], texts: [{ phrase: null, kind: null }], photos: [], written: null }, { mode: 'best' });
+  assert.ok(chosen.ok && chosen.variants.every((v) => v.text.phrase === null), 'a starred "No text" still makes picture-only thumbnails');
+});
+
+check('combine never leaves the photo off without a choice: no starred photo is "the top-ranked photo for these words"', () => {
+  const r = combine.combine({ ...FAV, photos: [] }, { mode: 'best' });
+  assert.deepStrictEqual(r.variants.map((v) => v.photo), [{ pick: 'top', of: 'A' }, { pick: 'top', of: 'B' }, { pick: 'top', of: 'C' }]);
+  const held = combine.combine({ ...FAV, photos: [] }, { mode: 'test', vary: 'text' });
+  assert.deepStrictEqual(held.variants.map((v) => v.photo), [{ pick: 'top', of: 'A' }, { pick: 'top', of: 'A' }], 'a held photo is A\'s top-ranked one on every variant');
+  for (const how of [{ mode: 'best' }, { mode: 'test', vary: 'frame' }, { mode: 'test', vary: 'text' }]) {
+    for (const photos of [[], ['laugh'], ['laugh', 'ooh']]) {
+      const out = combine.combine({ ...FAV, photos, written: WRITTEN }, how);
+      assert.ok(out.ok && out.variants.every((v) => v.photo.pick !== 'none'), `combine never picks "No photo" (${JSON.stringify(how)}, ${photos.length} starred)`);
+    }
+  }
 });
 
 check('combine, test one thing: two pieces held, the chosen one varies; fewer than two favourites of it is said plainly', () => {
   const text = combine.combine(FAV, { mode: 'test', vary: 'text' });
-  assert.deepStrictEqual(text.variants.map((v) => [v.frameId, v.text.phrase, v.photo]), [['f1', 'CLAIM ONE', 'laugh'], ['f1', 'STAKES ONE', 'laugh']], 'two favourites make two variants');
+  assert.deepStrictEqual(text.variants.map((v) => [v.frameId, v.text.phrase, photoOf(v)]), [['f1', 'CLAIM ONE', 'laugh'], ['f1', 'STAKES ONE', 'laugh']], 'two favourites make two variants');
   const frame = combine.combine(FAV, { mode: 'test', vary: 'frame' });
-  assert.deepStrictEqual(frame.variants.map((v) => [v.frameId, v.text.phrase, v.photo]), [['f1', 'CLAIM ONE', 'laugh'], ['f2', 'CLAIM ONE', 'laugh'], ['f3', 'CLAIM ONE', 'laugh']]);
-  const photo = combine.combine(FAV, { mode: 'test', vary: 'photo' }, { A: ['oh please', 'laugh'] });
-  assert.deepStrictEqual(photo.variants.map((v) => [v.frameId, v.text.phrase, v.photo]), [['f1', 'CLAIM ONE', 'oh please'], ['f1', 'CLAIM ONE', 'laugh']], 'photos in the suggestion\'s order');
+  assert.deepStrictEqual(frame.variants.map((v) => [v.frameId, v.text.phrase, photoOf(v)]), [['f1', 'CLAIM ONE', 'laugh'], ['f2', 'CLAIM ONE', 'laugh'], ['f3', 'CLAIM ONE', 'laugh']]);
+  const photo = combine.combine(FAV, { mode: 'test', vary: 'photo' }, { A: { text: 'CLAIM ONE', ranked: ['oh please', 'laugh'] } });
+  assert.deepStrictEqual(photo.variants.map((v) => [v.frameId, v.text.phrase, photoOf(v)]), [['f1', 'CLAIM ONE', 'oh please'], ['f1', 'CLAIM ONE', 'laugh']], 'photos in the suggestion\'s order');
   assert.deepStrictEqual(combine.combine({ ...FAV, photos: ['laugh'] }, { mode: 'test', vary: 'photo' }), { ok: false, reason: 'To test photos, star at least two photos.' });
 });
 
@@ -959,4 +1004,126 @@ check('story source, real fixture: "f1 - the rapture" of 2026-09-24 maps to 126 
   assert.ok(src.screenFile.endsWith('2026-09-24 screen capture.mp4'));
 });
 
-run('thumbnails tab: frame filters, sampling, the story source and link, ranking, words, face-safe layout, scoring, tone and photos, combine');
+// ── making the thumbnails: the photo suggestion runs first when needed; logo; placeholders (2026-09-28) ──
+
+const { saveTranscript } = services('metadata/saved-transcript.service.js');
+
+/** The lab over the fake Crucible with a saved transcript, a photos folder of named PNG files, and one open run. */
+function photoLab(root, deps, { folder = true } = {}) {
+  const video = path.join(root, 'complete', 'f2 - the rapture.mov');
+  fs.mkdirSync(path.dirname(video), { recursive: true });
+  fs.writeFileSync(video, 'a video');
+  saveTranscript({
+    outputDir: root, videoPath: video, durationSec: 4, whisperModel: 'keeper', words: null, speakerTagging: null,
+    segments: [{ index: 1, start: '00:00:01,000', end: '00:00:03,000', text: 'She says the rapture is here.' }],
+  });
+  const photosDir = path.join(root, 'selfies');
+  fs.mkdirSync(photosDir);
+  for (const p of PHOTOS) fs.writeFileSync(path.join(photosDir, `selfie ${p.name}.png`), 'listed by name only');
+  const settings = { outputDirectory: root, ...(folder ? { 'thumbnailLab.reactionFolder': photosDir } : {}) };
+  const progress = [];
+  const lab = new ThumbnailLab({
+    store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } },
+    userDataPath: path.join(root, 'userData'),
+    ffmpeg: FFMPEG,
+    ffprobe: FFPROBE,
+    canvas: () => { throw new Error('no canvas here'); },
+    scorer: () => deps,
+    aiManager: () => { throw new Error('no model here'); },
+    publishStore: { get: () => null, update: async () => { throw new Error('no link here'); } },
+    manifest: async () => { throw new Error('no manifest here'); },
+    progress: (e) => progress.push(e),
+  });
+  const item = {
+    jobId: 'job-1', itemId: 'itm-1', title: 'f2 - the rapture', createdAt: '', sourcePath: video, titles: ['A title'], promptSet: 'youtube-fireside',
+    hasTranscript: true, reportFolder: root, hook: 'She says the rapture is here.', description: 'A rapture claim.\n\nLinks', runStoryRef: null, problem: null,
+  };
+  lab.runs.set('run-1', { runId: 'run-1', item, frames: [], suggestion: null });
+  return { lab, progress, photosDir, settings };
+}
+
+const variant = (letter, phrase, photo) => ({ letter, frameId: 'f1', phrase, kind: phrase === null ? null : 'claim', photo });
+
+check('making: no photo starred and no suggestion yet runs the suggestion first for the variants\' words, then takes each one\'s top photo', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-make-'));
+  try {
+    const { lab, progress } = photoLab(root, deps);
+    const set = [
+      variant('A', "DON'T STAND UNDER A ROOF", { pick: 'top', of: 'A' }),
+      variant('B', 'MAYBE TOMORROW', { pick: 'top', of: 'B' }),
+      variant('C', 'THE RAPTURE IS HERE', { pick: 'none' }),
+    ];
+    const first = await lab.resolvePhotos('run-1', set);
+    assert.strictEqual(first.ran, true);
+    assert.deepStrictEqual(first.names, { A: 'horrified', B: 'oh please', C: null }, 'the top-ranked photo per variant; an explicit "No photo" stays none');
+    assert.deepStrictEqual(first.suggestion.texts, { A: "DON'T STAND UNDER A ROOF", B: 'MAYBE TOMORROW', C: 'THE RAPTURE IS HERE' });
+    assert.ok(progress.some((e) => e.stage === 'suggesting'), 'the progress line is told the suggestion is running');
+    assert.strictEqual(server.decideBodies().length, 4, 'the tone and one ranking per variant');
+
+    const again = await lab.resolvePhotos('run-1', set);
+    assert.strictEqual(again.ran, false, 'a suggestion made for these exact words is reused');
+    assert.strictEqual(server.decideBodies().length, 4);
+
+    const changed = await lab.resolvePhotos('run-1', [set[0], variant('B', 'SOMETHING ELSE', { pick: 'top', of: 'B' }), set[2]]);
+    assert.strictEqual(changed.ran, true, 'words changed since the suggestion: it runs again');
+    assert.strictEqual(changed.names.B, 'laugh');
+    assert.strictEqual(server.decideBodies().length, 8);
+
+    const chosen = await lab.resolvePhotos('run-1', [variant('A', 'X', { pick: 'photo', name: 'ooh' }), variant('B', 'Y', { pick: 'none' })]);
+    assert.deepStrictEqual([chosen.ran, chosen.names], [false, { A: 'ooh', B: null }], 'chosen photos need no suggestion');
+    assert.strictEqual(server.decideBodies().length, 8);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
+check('making: with no photos folder, a thumbnail waiting for its suggested photo is refused plainly; explicit choices still go through', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-nofolder-'));
+  try {
+    const { lab } = photoLab(root, deps, { folder: false });
+    const err = await rejection(lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'top', of: 'A' })]));
+    assert.strictEqual(err.message, 'Choose your reaction photos folder, or set each thumbnail to “No photo”.');
+    assert.strictEqual(server.decideBodies().length, 0);
+    const none = await lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'none' })]);
+    assert.deepStrictEqual(none.names, { A: null });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
+check('logo: fitted inside its space with its aspect kept, against the top and right edges, whole pixels; the text avoids its drawn bounds', () => {
+  const style = layout.validateStyle(layout.DEFAULT_STYLE);
+  const slot = layout.slotRect(style.logoSlot, 1280, 720);
+  assert.ok(Math.abs(slot.w / 1280 - 0.052) < 0.002 && Math.abs(slot.x + slot.w - 1280 * 0.974) < 1.5, `the default space matches the hand-made badge (${JSON.stringify(slot)})`);
+  const round = layout.placeLogo(2000, 2000, style, 1280, 720);
+  assert.strictEqual(round.w, round.h, 'a round badge stays round');
+  const wide = layout.placeLogo(400, 100, style, 1280, 720);
+  for (const r of [round, wide]) {
+    assert.ok(Number.isInteger(r.x) && Number.isInteger(r.y) && Number.isInteger(r.w) && Number.isInteger(r.h), JSON.stringify(r));
+    assert.ok(r.x >= slot.x - 0.5 && r.y >= slot.y - 0.5 && r.x + r.w <= slot.x + slot.w + 0.5 && r.y + r.h <= slot.y + slot.h + 0.5, `inside the space: ${JSON.stringify(r)}`);
+    assert.ok(Math.abs(r.x + r.w - (slot.x + slot.w)) <= 1 && Math.abs(r.y - slot.y) <= 0.5, 'top and right anchored');
+  }
+  assert.ok(Math.abs(wide.w / wide.h - 4) <= 4 / wide.h, `aspect kept (${wide.w}x${wide.h})`);
+  // A tall logo space: with the logo drawn small at its top, words may use the space below it.
+  const tall = { ...style, logoSlot: { x: 0.6, y: 0.03, w: 0.37, h: 0.9 }, reactionSlot: { x: 0.0, y: 0.0, w: 0.05, h: 0.05 } };
+  const logo = layout.placeLogo(400, 100, tall, 1280, 720);
+  const m = metricsFor('BIG WORDS');
+  const withLogo = layout.planText(m, [], tall, 1280, 720, null, logo);
+  const withSlot = layout.planText(m, [], tall, 1280, 720, null, null);
+  assert.ok(withLogo.ok && withSlot.ok);
+  assert.ok(!overlaps(withLogo.plan.patch, logo), 'the words clear the drawn logo');
+  assert.ok(withLogo.plan.size >= withSlot.plan.size, 'the words may use the space the logo does not cover');
+});
+
+check('placeholders: the empty photo and logo spaces are off by default, and never drawn over a slot that has a photo or logo', () => {
+  const ts = fs.readFileSync(path.join(REPO, 'frontend', 'src', 'app', 'components', 'thumbnails', 'thumbnails.ts'), 'utf8');
+  const html = fs.readFileSync(path.join(REPO, 'frontend', 'src', 'app', 'components', 'thumbnails', 'thumbnails.html'), 'utf8');
+  assert.ok(/readonly showSlots = signal\(false\);/.test(ts), 'showSlots starts off');
+  const boxes = html.match(/<span class="slot-box"[^\n]*/g) ?? [];
+  assert.strictEqual(boxes.length, 2);
+  assert.ok(/@if \(showSlots\(\) && res\.photo === null\) \{ <span class="slot-box" \[ngStyle\]="slotBox\('reactionSlot'\)"/.test(html), 'the photo box only when no photo was drawn');
+  assert.ok(/@if \(showSlots\(\) && !res\.logo\) \{ <span class="slot-box" \[ngStyle\]="slotBox\('logoSlot'\)"/.test(html), 'the logo box only when no logo was drawn');
+  assert.ok(/this\.logoOn\.set\(logo !== null\)/.test(ts), 'the logo switch is on whenever a logo is set');
+});
+
+run('thumbnails tab: frame filters, sampling, the story source and link, ranking, words, face-safe layout, scoring, tone and photos, combine, making (suggest first, logo, placeholders)');
