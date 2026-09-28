@@ -25,6 +25,7 @@ import {
   readMuteCatalog, loadProjectMuteSettings, saveProjectMuteSettings, ensureProjectMuteSettings,
 } from './mute-words';
 import { createEditorWindow, getEditorWindow } from './editor-window';
+import { sessionOfMaster, sessionVideoPatterns } from './session-sources';
 import { getMainWindow } from '../../main';
 
 /**
@@ -1303,16 +1304,12 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
       const dirPath = path.dirname(masterVideoPath);
       const masterFilename = path.basename(masterVideoPath, path.extname(masterVideoPath));
 
-      // Extract session/prefix from master video filename
-      // Extract everything before " master" (e.g., "2025-11-23 4 master" -> "2025-11-23 4")
-      let session = '';
-      const masterWordMatch = masterFilename.match(/^(.+?)\s+master$/i);
-      if (masterWordMatch) {
-        session = masterWordMatch[1].trim();
+      // Extract session/prefix from master video filename (session-sources.ts, shared with the
+      // Thumbnails tab): everything before " master", or the full filename without that suffix.
+      const { session, fromMasterSuffix } = sessionOfMaster(masterVideoPath);
+      if (fromMasterSuffix) {
         log.info(`Extracted session: "${session}" from master video: ${masterFilename}`);
       } else {
-        // No " master" suffix - use the full filename
-        session = masterFilename;
         log.info(`Using full filename as session: "${session}" from master video: ${masterFilename}`);
       }
 
@@ -1333,22 +1330,9 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
         'bluetooth': new RegExp(`^${escapedSession}.*(?:bluetooth|bt).*\\.(wav|mp3|aac|flac|ogg|m4a)$`, 'i')
       };
 
-      // Video file patterns to match (keys use camelCase to match frontend types)
-      const videoPatterns: { [key: string]: RegExp } = {
-        'cam1': new RegExp(`^${escapedSession}\\s+cam\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'cam2': new RegExp(`^${escapedSession}\\s+cam\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        // A capture recorded in one go has no number; one that was stopped and
-        // restarted is written as "... screen capture 1.mp4", "... 2.mp4", so the
-        // unnumbered and the "1" form both mean the FIRST part. Parts 2 and 3 are
-        // matched separately and become continuation sources, which the workflow
-        // splices onto part 1 before anything else looks at them.
-        'screenVideo': new RegExp(`^${escapedSession}\\s+screen\\s*capture(\\s*1)?\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'gameVideo': new RegExp(`^${escapedSession}\\s+game\\s*capture(\\s*1)?\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'screenVideo2': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'screenVideo3': new RegExp(`^${escapedSession}\\s+screen\\s*capture\\s*3\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'gameVideo2': new RegExp(`^${escapedSession}\\s+game\\s*capture\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
-        'gameVideo3': new RegExp(`^${escapedSession}\\s+game\\s*capture\\s*3\\.(mp4|mov|avi|mkv)$`, 'i')
-      };
+      // Video file patterns to match (keys use camelCase to match frontend types). The rule
+      // lives in session-sources.ts, where the Thumbnails tab reads it too.
+      const videoPatterns = sessionVideoPatterns(session);
 
       // Scan directory for matching audio and video files
       const items = fs.readdirSync(dirPath);
