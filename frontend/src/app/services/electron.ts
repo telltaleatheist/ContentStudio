@@ -494,6 +494,8 @@ export interface MetadataRoutingTask {
   selectedOptionId: string;
   /** Rendered as a row in the routing dialog. False = stored-entry-only (tags). */
   modal: boolean;
+  /** `thumbnails`: a Thumbnails-tab row (#236), shown apart and left out of change-all. */
+  group: 'metadata' | 'thumbnails';
 }
 
 /**
