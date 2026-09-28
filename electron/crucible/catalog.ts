@@ -39,6 +39,13 @@ export interface CatalogInventory {
   models: Record<string, ModelOfferView>;
   /** True when the server has an Anthropic key; null when its settings could not be read. */
   anthropicConfigured: boolean | null;
+  /**
+   * Crucible model id -> what the model may be sent (`text`, `image`), from `/v1/models`. The
+   * manifest's answer, the same on every host (the SDK's `ModelInfo.modalities`). Read by the
+   * Thumbnails tab's frame row, which offers image-reading models only. Absent on an inventory
+   * that could not be read.
+   */
+  modalities?: Record<string, readonly string[]>;
 }
 
 /**
@@ -63,10 +70,13 @@ export function inventoryOf(
     offers[row.id] = { offer: 'not-here', reason: row.reason };
   }
   const anthropic = settings?.upstreams.anthropic;
+  const modalities: Record<string, readonly string[]> = {};
+  for (const row of models) modalities[row.id] = row.modalities;
   return {
     server,
     reachable: true,
     models: offers,
+    modalities,
     anthropicConfigured: settings === null ? null : anthropic !== null && anthropic !== undefined && anthropic.configured,
   };
 }

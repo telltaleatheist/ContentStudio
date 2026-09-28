@@ -26,6 +26,7 @@ import {
 import {
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
+  metadataRunTasks,
   METADATA_ROUTING_OPTIONS,
   ResolvedMetadataRouting,
   resolveChapterModelOption,
@@ -326,7 +327,9 @@ export class MetadataGeneratorService {
        * two places that can disagree about whether an item fits.
        */
       const transcriptCeiling: 'local' | 'cloud' =
+        // The metadata rows only: the Thumbnails tab's rows are not part of this run (#236).
         (Object.entries(this.routing(params)) as [MetadataRoutingTaskId, string][])
+          .filter(([taskId]) => metadataRunTasks().some((task) => task.id === taskId))
           .every(([taskId, optionId]) => routingOption(taskId, optionId).kind === 'local')
           ? 'local'
           : 'cloud';

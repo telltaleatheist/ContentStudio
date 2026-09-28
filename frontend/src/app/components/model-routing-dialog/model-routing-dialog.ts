@@ -142,7 +142,10 @@ export type ModelRoutingDialogResult = boolean | undefined;
         <!-- One row per big field, each set to whatever the operator wants (per-field
              routing, 2026-08-24). Fields the small models own (tags) are not rows: their
              stored entries pass through Save untouched. -->
-        @for (task of modalTasks(); track task.id) {
+        @for (task of rowTasks(); track task.id) {
+          @if (task.id === thumbnailTasks()[0]?.id) {
+            <div class="group-heading">Thumbnails tab (testing). Not used by metadata runs.</div>
+          }
           <div class="routing-row">
             <div class="field-label">
               <span class="task-label">{{ task.label }}</span>
@@ -305,6 +308,15 @@ export type ModelRoutingDialogResult = boolean | undefined;
       &.unknown { color: var(--text-secondary); }
     }
 
+    .group-heading {
+      margin-top: 0.75rem;
+      padding-top: 0.6rem;
+      border-top: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
     .pipeline-note {
       display: flex;
       gap: 8px;
@@ -336,8 +348,16 @@ export class ModelRoutingDialog implements OnInit {
    */
   readonly tasks = signal<MetadataRoutingTask[]>([]);
 
-  /** The rows: the big determinative fields, in the registry's order. */
-  readonly modalTasks = computed(() => this.tasks().filter(task => task.modal));
+  /**
+   * The metadata run's rows, in the registry's order. The change-all menu covers these only: the
+   * Thumbnails tab's rows (#236) serve another page, and its frame row takes vision models only,
+   * so including it would leave change-all with nothing every row offers.
+   */
+  readonly modalTasks = computed(() => this.tasks().filter(task => task.modal && task.group !== 'thumbnails'));
+  /** The Thumbnails tab's rows, shown under their own heading after the metadata rows. */
+  readonly thumbnailTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'thumbnails'));
+  /** Every row the dialog shows, metadata first. */
+  readonly rowTasks = computed(() => [...this.modalTasks(), ...this.thumbnailTasks()]);
   readonly selections = signal<Record<string, string>>({});
   /**
    * The Crucible server the payload was judged against. The placeholder is never rendered —
