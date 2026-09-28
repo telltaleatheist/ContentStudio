@@ -217,6 +217,13 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    */
   'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
   /**
+   * THE 8-BIT 27B (2026-09-28, Owen: "isnt the 27b 8 bit available in crucible? we should use that
+   * if its available"). Installed on the Mac only (qwen3.8-27b-8bit, mlx); the PC holds the 4-bit.
+   * A separate option, not a quiet upgrade of `qwen38-27b`: a row routed to it on a server that
+   * lacks it is marked unavailable by the dialog and refused by name at call time.
+   */
+  'qwen38-27b-8bit': { kind: 'local', label: 'Qwen 27B (8-bit)', model: 'qwen3.8-27b-8bit', crucibleModel: 'qwen3.8-27b-8bit' },
+  /**
    * THE VISION RUNGS (2026-09-28), offered on the Thumbnails tab's frame row only. Each is a
    * Crucible manifest that declares `image`: the 9B and 27B with their vision towers served
    * (`-vl`, sharing their text twins' downloads) and the small 4B/2B/0.8B, which read images as
@@ -427,12 +434,12 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      * THE THUMBNAILS TAB'S WORDS (2026-09-28): 2-5 words in three kinds (claim, stakes,
      * reaction), written as a pair with the title the operator picks. Its own row, separate from
      * the metadata run's `thumbnail_text` field, which is untouched until Owen decides after
-     * testing. The same rungs as that field; the 27B by default like it.
+     * testing. The same rungs as that field, plus the 8-bit 27B, the default since 2026-09-28 (Owen).
      */
     id: 'thumbnail_words',
     label: 'Thumbnail words',
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b',
+    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'thumbnails',
   },
@@ -440,13 +447,13 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     /**
      * THE THUMBNAILS TAB'S TONE AND PHOTO SUGGESTION (2026-09-28): two text-only decide questions
      * (judge.ts). Its own row rather than the words row, because the words row offers cloud and
-     * claude -p rungs and a decide needs logprobs, which only a local Crucible model gives. The 9B
-     * by default (Owen: "default qwen3.5-9b on the Mac").
+     * claude -p rungs and a decide needs logprobs, which only a local Crucible model gives. The 8-bit
+     * 27B by default since 2026-09-28 (Owen: use the 27B 8-bit where it is available).
      */
     id: 'thumbnail_judge',
     label: 'Thumbnail tone and photo',
-    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b'],
-    defaultOptionId: 'qwen35-9b',
+    options: ['qwen38-27b-8bit', 'qwen35-9b', 'qwen35-4b', 'qwen38-27b'],
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'thumbnails',
   },

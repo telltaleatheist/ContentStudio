@@ -134,7 +134,8 @@ def near(a, b, tol=Fraction(1, 720000)):
     return abs(Fraction(a) - Fraction(b)) <= tol
 
 
-PAD = wm.MUTE_PAD_SECONDS
+LEAD = wm.MUTE_LEAD_SECONDS
+TRIM = wm.MUTE_TAIL_TRIM_SECONDS   # every test word is long enough for the full trim
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +187,17 @@ def check_rule():
 # 3. padding, clamp, merge, format
 # ---------------------------------------------------------------------------
 def check_numbers():
-    a, b = wm.pad_span(Fraction(2), Fraction(3))
-    check('pad: 50 ms each side by default', a == Fraction(195, 100) and b == Fraction(305, 100), (a, b))
-    check('pad: never before 0', wm.pad_span(Fraction(1, 100), Fraction(1, 10))[0] == 0)
+    a, b = wm.mute_span(Fraction(2), Fraction(3))
+    check('span: starts 50 ms before the word and ends 60 ms before its end', a == Fraction(195, 100) and b == Fraction(294, 100), (a, b))
+    check('span: never before 0', wm.mute_span(Fraction(1, 100), Fraction(1, 10))[0] == 0)
+    a, b = wm.mute_span(Fraction(2), Fraction(3), next_start=Fraction(29, 10))
+    check('span: never past the next word\'s start (the next word is never muted)', b == Fraction(29, 10), (a, b))
+    a, b = wm.mute_span(Fraction(2), Fraction(3), prev_end=Fraction(198, 100))
+    check('span: the lead never reaches back into the previous word', a == Fraction(198, 100), (a, b))
+    a, b = wm.mute_span(Fraction(2), Fraction(21, 10))
+    check('span: the trim is at most a third of a short word', b == Fraction(2) + Fraction(1, 10) * 2 / 3, (a, b))
+    check('span: a word the next one overlaps from its start leaves nothing to mute',
+          wm.mute_span(Fraction(2), Fraction(3), next_start=Fraction(195, 100)) is None)
     check('clamp: a mute is clipped to the clip\'s own source range',
           wm.quantize_clamp(Fraction(9), Fraction(11), Fraction(10), Fraction(20)) == (7200000, 7920000))
     check('clamp: nothing left outside the clip', wm.quantize_clamp(Fraction(1), Fraction(2), Fraction(10), Fraction(20)) is None)
@@ -220,7 +229,7 @@ def check_mapping():
     w_gone = ('motherfucker', 't0', fsec(1000), fsec(1012))     # inside what auto-editor removed
     w_screen = ('shit', 't1', fsec(1500), fsec(1512))            # screen audio -> the SSB clip
     master = build_master(SEGS)
-    sc = sidecar([w_plain, w_span, w_gone, w_screen])
+    sc = sidecar([w_plain, w_span, w_screen])
     plan = wp.plan_word_mutes(master, 'master', sc, s, CATALOG)
     final = copy.deepcopy(master)
     rep = wp.apply_word_mutes(final, plan, s, 'plain')
@@ -228,18 +237,20 @@ def check_mapping():
     c1 = cam[0][1]
     c2 = cam[1][1]
     check('map: a word lands on the lane -1 mic clip in that clip\'s SOURCE time (not timeline time)',
-          any(near(a, frames(360) - PAD) and near(b, frames(372) + PAD) for (a, b) in c1), c1)
+          any(near(a, frames(360) - LEAD) and near(b, frames(372) - TRIM) for (a, b) in c1), c1)
     check('map: a word spanning an auto-editor cut is muted on BOTH sides (clamped at each clip edge)',
-          any(near(a, frames(890) - PAD) and near(b, frames(900)) for (a, b) in c1)
-          and any(near(a, frames(1200)) and near(b, frames(1210) + PAD) for (a, b) in c2), (c1, c2))
-    gone = [n for n in rep['notMuted'] if n['word'] == 'motherfucker']
+          any(near(a, frames(890) - LEAD) and near(b, frames(900)) for (a, b) in c1)
+          and any(near(a, frames(1200)) and near(b, frames(1210) - TRIM) for (a, b) in c2), (c1, c2))
+    # Its own transcript: a word inside another word is not something the aligner produces.
+    rep_gone = wp.apply_word_mutes(copy.deepcopy(master), wp.plan_word_mutes(master, 'master', sidecar([w_gone]), s, CATALOG), s, 'plain')
+    gone = [n for n in rep_gone['notMuted'] if n['word'] == 'motherfucker']
     check('map: a word in a stretch auto-editor removed writes no mute and is reported, with its time and why',
-          gone and gone[0]['kind'] == 'failed' and 'auto-editor removed' in gone[0]['why'] and gone[0]['at'] is not None, rep['notMuted'])
+          gone and gone[0]['kind'] == 'failed' and 'auto-editor removed' in gone[0]['why'] and gone[0]['at'] is not None, rep_gone['notMuted'])
     ssb = mutes_on(final, '-2', 'r6')
     check('map: a screen-audio word lands on the screen clip (lane -2), not the mic clip',
-          any(ms for (_st, ms) in ssb) and not any(near(a, frames(1500) - PAD) for (a, _b) in c2), ssb)
+          any(ms for (_st, ms) in ssb) and not any(near(a, frames(1500) - LEAD) for (a, _b) in c2), ssb)
     check('report: counts matches, muted words and mutes written',
-          rep['matches'] == 4 and rep['muted'] == 3 and rep['mutesWritten'] == 4, rep)
+          rep['matches'] == 3 and rep['muted'] == 3 and rep['mutesWritten'] == 4, rep)
 
     # An EDITOR cut through the middle of a word, and one that swallows a word whole.
     w_mid = ('fuck', 't0', fsec(390), fsec(402))                # timeline 90f..102f
@@ -252,8 +263,8 @@ def check_mapping():
     pieces = mutes_on(final2)
     flat = [(st, m) for (st, ms) in pieces for m in ms]
     check('editor cut through a word: the parts on both sides of the cut are muted, each in its own clip piece',
-          any(near(m[0], frames(390) - PAD) and near(m[1], frames(395)) for (_st, m) in flat)
-          and any(near(m[0], frames(398)) and near(m[1], frames(402) + PAD) for (_st, m) in flat), flat)
+          any(near(m[0], frames(390) - LEAD) and near(m[1], frames(395)) for (_st, m) in flat)
+          and any(near(m[0], frames(398)) and near(m[1], frames(402) - TRIM) for (_st, m) in flat), flat)
     cut = [n for n in rep2['notMuted'] if n['kind'] == 'cut']
     check('editor cut over a whole word: no mute, and the word is listed as cut',
           len(cut) == 1 and rep2['muted'] == 1, rep2)
@@ -270,7 +281,15 @@ def check_mapping():
     final3 = copy.deepcopy(master)
     wp.apply_word_mutes(final3, wp.plan_word_mutes(master, 'master', sc3, s, CATALOG), s, 'plain')
     m3 = mutes_on(final3)[0][1]
-    check('merge: two padded words that overlap are written as ONE mute', len(m3) == 1, m3)
+    check('merge: two swears close together are written as ONE mute (no sliver between them)', len(m3) == 1, m3)
+
+    # A word the swear runs into: the mute stops at that word's start, even inside the swear.
+    sc4 = sidecar([('fuck', 't0', fsec(360), fsec(372)), ('you', 't0', fsec(371), fsec(378))])
+    final4 = copy.deepcopy(master)
+    wp.apply_word_mutes(final4, wp.plan_word_mutes(master, 'master', sc4, s, CATALOG), s, 'plain')
+    m4 = mutes_on(final4)[0][1]
+    check('next word: a mute never runs into the next unmuted word, even when the aligner overlaps them',
+          len(m4) == 1 and m4[0][1] <= frames(371) + Fraction(1, 720000), m4)
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +386,8 @@ def check_xml():
 
     # The sample: rebuild Owen's R+V mute from a word, on a tree identical to his minus the mute.
     tb = 720000
-    fs_ = (Fraction(15918331) + Fraction(4, 10)) / tb + wm.MUTE_PAD_SECONDS
-    fe_ = (Fraction(15918331 + 436401) - Fraction(4, 10)) / tb - wm.MUTE_PAD_SECONDS
+    fs_ = (Fraction(15918331) + Fraction(4, 10)) / tb + wm.MUTE_LEAD_SECONDS
+    fe_ = (Fraction(15918331 + 436401) - Fraction(4, 10)) / tb + wm.MUTE_TAIL_TRIM_SECONDS
     sc = {'schemaVersion': 1, 'frameSeconds': 0.1, 'tracks': [{'id': 't0', 'label': 'master', 'file': SAMPLE_FILE}],
           'words': [{'track': 't0', 'text': 'fucking', 'fileStart': float(fs_), 'fileEnd': float(fe_), 'timelineStart': 3.06}]}
     bare = sample_tree(False)
