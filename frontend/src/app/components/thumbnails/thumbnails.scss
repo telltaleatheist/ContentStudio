@@ -220,6 +220,17 @@
   }
 }
 
+.scene-row {
+  margin-bottom: 0.9rem;
+}
+
+.scene-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

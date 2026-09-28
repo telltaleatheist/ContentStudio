@@ -89,7 +89,7 @@
       <div class="row">
         <button mat-flat-button color="primary" (click)="score()" [disabled]="busy() !== null"
                 matTooltip="Asks the model on the Routing dialog's 'Thumbnail frames' row about each frame, one frame at a time">
-          <mat-icon>auto_awesome</mat-icon> {{ r.best ? 'Score again' : 'Score ' + r.toScore.length + ' frames' }}
+          <mat-icon>auto_awesome</mat-icon> {{ r.bestScenes ? 'Score again' : 'Score ' + r.toScore.length + ' frames' }}
         </button>
         @if (busy() === 'scoring') {
           <button mat-stroked-button (click)="stop()">Stop</button>
@@ -97,26 +97,38 @@
         }
         <span class="spacer"></span>
         <div class="toggle" role="tablist">
-          <button role="tab" [class.on]="view() === 'best'" [disabled]="!r.best" (click)="view.set('best')">Best {{ r.best?.length ?? 20 }}</button>
+          <button role="tab" [class.on]="view() === 'best'" [disabled]="!r.bestScenes" (click)="view.set('best')">Best by scene ({{ r.bestScenes?.length ?? r.scenes.length }})</button>
           <button role="tab" [class.on]="view() === 'all'" (click)="view.set('all')">All kept frames ({{ r.frames.length }})</button>
         </div>
       </div>
       <p class="hint">Click the frames you like to star them. Starred: {{ favFrames().length }}.</p>
-      <div class="grid">
-        @for (f of shownFrames(); track f.id) {
-          <button class="tile" [class.marked]="frameStar(f.id)" [class.dim]="f.flag === 'screen'" (click)="toggleFrame(f)" [matTooltip]="frameTip(f)">
-            <img [src]="f.small" [alt]="'Frame at ' + f.clock" loading="lazy" />
-            <span class="tile-foot">
-              <span class="clock">{{ f.clock }}</span>
-              @if (f.score !== null) { <span class="score">{{ percent(f.score) }}</span> }
-              @if (f.flag === 'screen') { <span class="flag">screen</span> }
-              @if (f.flag === 'unreadable') { <span class="flag">unreadable</span> }
-            </span>
-            @if (frameStar(f.id)) { <span class="letter"><mat-icon>star</mat-icon></span> }
-            <span class="zoom" (click)="look(f, $event)" matTooltip="Look closer"><mat-icon>zoom_in</mat-icon></span>
-          </button>
+      @if (view() === 'best' && r.bestScenes) {
+        @for (row of bestRows(); track row.scene) {
+          <div class="scene-row">
+            <p class="scene-label">{{ row.label }}</p>
+            <div class="grid">
+              @for (f of row.frames; track f.id) { <ng-container *ngTemplateOutlet="tile; context: { $implicit: f }" /> }
+            </div>
+          </div>
         }
-      </div>
+      } @else {
+        <div class="grid">
+          @for (f of r.frames; track f.id) { <ng-container *ngTemplateOutlet="tile; context: { $implicit: f }" /> }
+        </div>
+      }
+      <ng-template #tile let-f>
+        <button class="tile" [class.marked]="frameStar(f.id)" [class.dim]="f.flag === 'screen'" (click)="toggleFrame(f)" [matTooltip]="frameTip(f)">
+          <img [src]="f.small" [alt]="'Frame at ' + f.clock" loading="lazy" />
+          <span class="tile-foot">
+            <span class="clock">{{ f.clock }}</span>
+            @if (f.score !== null) { <span class="score">{{ percent(f.score) }}</span> }
+            @if (f.flag === 'screen') { <span class="flag">screen</span> }
+            @if (f.flag === 'unreadable') { <span class="flag">unreadable</span> }
+          </span>
+          @if (frameStar(f.id)) { <span class="letter"><mat-icon>star</mat-icon></span> }
+          <span class="zoom" (click)="look(f, $event)" matTooltip="Look closer"><mat-icon>zoom_in</mat-icon></span>
+        </button>
+      </ng-template>
       @if (preview(); as p) {
         <div class="preview">
           <img [src]="p.picture" [alt]="'Frame at ' + p.clock" />

@@ -60,8 +60,28 @@ disabled, with the reason.
   shots collapse to their sharpest frame; the threshold is tight so changes of expression
   survive), blur by Laplacian variance under 35% of the run's median. Face presence is NOT a CPU
   filter: the vision model answers it.
-- **Scoring** (frame-scorer.ts): at most 120 kept frames, spread across the range in rounds so
-  empty stretches do not leave the cap short. One frame per Crucible `POST /v1/decide` call,
+- **Scenes** (frame-scenes.ts, added 2026-09-28, same day; Owen: "grab a few scenes from each
+  unique shot"). The screen recording sits on a handful of clips for most of a story, and the repeat
+  filter only drops near-identical frames, so a talking head that moves a little survived dozens of
+  times. The kept frames are now grouped by how they LOOK, over the whole story (not by time: clips
+  alternate A B A B and every return joins its scene):
+  - *Signature*: each frame shrunk to 16x9 colour cells (area average of the 320x180 grid picture),
+    measured on the fly by the sampler on a second ffmpeg pipe (fd 3); nothing extra on disk.
+  - *Distance*: the fraction of cells whose colour moved by more than 40 (RGB distance). A fraction,
+    so a speaker moving or waving (a few cells) stays the same scene and a different clip (most
+    cells) does not.
+  - *Groups*: average-linkage clustering, cut where the average distance between two groups passes
+    0.6 (nearest-neighbour chain, O(n^2) for the ≤ 1,800 frames of a run). Average linkage keeps a
+    transition frame from chaining two clips together. No shot-boundary pass: appearance alone.
+  - *Screen time*: every SAMPLED frame (the repeats and blurry ones too) counts toward the scene it
+    looks most like, so "Scene 3 · 2:41 on screen" is the story's real time on that scene.
+  - Scenes are numbered by first appearance.
+- **Scoring** (frame-scorer.ts): at most 120 kept frames, shared across the scenes
+  (`allocateScoring`): every scene first gets 3 (all it has when fewer, so a one-frame scene still
+  gets one), the rest go one at a time to the scene with the most screen time per extra frame
+  (D'Hondt); within a scene the share is spread across that scene's own appearances, sharpest per
+  stretch. If there are more scenes than 3 each allows, every scene gets one in turn, longest on
+  screen first, and the run says so. One frame per Crucible `POST /v1/decide` call,
   five fixed-answer questions (thumbnails.yml `frames.*`): computer screen or video, a clear face,
   expression 1-5, eyes open, strong thumbnail. Since the SDK repin to Crucible 1.0.55 (2026-09-28)
   the five go as ITEMS of that one call (`transport.decideItems`, SDK `decideItems`): the frame is
@@ -76,9 +96,13 @@ disabled, with the reason.
   time). If the server is busy the tab says who holds it and does not queue.
 - **Ranking** (frame-ranking.ts): the screen answer is the one filter (P(screen) > 0.5 is
   rejected); everything else ranks: `score = P(face) × (0.45 × expression + 0.20 × eyes + 0.35 ×
-  strong)`. The **Best 20** are picked round-robin across eight sections of the range, never two
-  within 4 s. **All kept frames** shows every survivor (scored or not, screens dimmed) so Owen can
-  mark from anywhere; the tab works for browsing and marking even before (or without) scoring.
+  strong)`. **Best by scene** (since 2026-09-28, replacing the Best 20 picked across eight time
+  sections) shows one row per scene, labelled "Scene 3 · 2:41 on screen", with its top 4 frames
+  (never two within 4 s), the scenes ordered by their best frame's score. Computer-screen frames
+  stay out; a scene whose every scored frame was a screen (Owen's desktop, a document) has no row
+  and the scoring line names it. **All kept frames** shows every survivor (scored or not, screens
+  dimmed) so Owen can mark from anywhere; the tooltip names each frame's scene; the tab works for
+  browsing and marking even before (or without) scoring.
 
 Click a frame to mark it: the first three marked become A, B and C. The zoom icon shows it at 640 px.
 
@@ -205,14 +229,25 @@ run never reads them, its log line leaves them out, and the change-all menu does
   stretches, 749.7 s (screen capture 614.66-1488.33 s); 757 sampled, 420 repeats and 37 blurry
   removed, 300 kept, in 74 s. Every frame is a clean screen picture; some show Owen's desktop (a
   document, the player's frame), which the scorer's desktop question removes.
-- The frame weights, the repeat threshold (8 of 256 bits) and the blur rule (35% of median) are
-  declared starting points, not measurements.
+- Scenes on the same story (2026-09-28, CPU only, the tab's own findFrames run headless on a scratch
+  userData, read only on Owen's files): the 300 kept frames make **18 scenes** in 78 s: the two-shot
+  (52 kept, 2:54 on screen), the host alone (84, 3:02), the clip playing in a player window on the
+  desktop (48, 2:00), the vertical rapture-tip clip (17), the pink-hair two-shot (8), the woman
+  against the sky (9), the green-shirt vertical clip (35, 0:53), the pink-top vertical clip (14,
+  1:08), a man alone (1), two document scenes (1 + 7), and the tree-and-sky footage in seven small
+  groups (5, 8, 1, 2, 4, 3, 1: a moving camera changes most cells). 120 scored: 22, 23 and 16 from
+  the three long scenes, every small scene all it has up to 3. A looser cut (0.63+) merged the
+  documents into the player-window scene without joining the sky pieces, so 0.6 stays.
+- The frame weights, the repeat threshold (8 of 256 bits), the blur rule (35% of median) and the
+  scene cut (40 per cell, 0.6 of the cells) are declared starting points, tuned on one story.
 
 ## Checks
-`npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (35 checks: filters, real ffmpeg
+`npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (40 checks: filters, scenes
+(alternating clips, a moving speaker, a two-frame scene, the chain against the naive merge, the
+scoring budget, the per-scene rows), real ffmpeg
 sampling of a synthetic video inside given stretches only, the story source (regions minus cuts, the
 segment table, offset and drift, clipping, refusals), the unlinked report's picker and saved link on a
-synthetic session, the real 2026-09-24 rapture story as a read-only fixture when Callisto is mounted, ranking and diversity, the words prompt and parser, face-safe layout
+synthetic session, the real 2026-09-24 rapture story as a read-only fixture when Callisto is mounted, ranking, the words prompt and parser, face-safe layout
 and the too-long refusal, scoring over the real transport and lanes against the fake Crucible
 including each image refusal) and `tools/thumbnail-lab-render-smoke.js` under the electron binary
 (Impact measured, a missing font refused, renders inside YouTube's bounds, the reference frame's
@@ -231,5 +266,8 @@ self-check lines about thumbnails go with it. Until then both exist and do not t
   passes them through; nothing reads one back), so rate 1 stays, declared in the run's lines.
 - Owen's reaction photos: the slot is reserved; drawing a cut-out there is the next step.
 - A live run (below) to measure the scorer's usefulness and tune the weights.
+- Scenes: footage with a moving camera (the rapture story's trees and sky) splits into several
+  small scenes, each taking a floor of the scoring budget; desktop scenes (documents, the player
+  window) take their floor too, until the scorer rejects them.
 - Whether image-only (no text) should be the default for one arm.
 - The logo slot's default position is read off one hand-made thumbnail.

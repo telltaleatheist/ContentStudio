@@ -53,8 +53,6 @@ export interface ScoredFrame {
 
 export interface RankedFrame extends ScoredFrame {
   score: number;
-  /** Which of the range's sections the frame is in (0-based), for the diversity pick. */
-  section: number;
 }
 
 /** An answer as the SDK hands it back (camelCase), only the fields read here. */
@@ -126,15 +124,6 @@ export function rankScore(reading: FrameReading): number {
   return reading.pFace * (RANK_WEIGHTS.expression * expression + RANK_WEIGHTS.eyes * reading.pEyesOpen + RANK_WEIGHTS.strong * reading.pStrong);
 }
 
-/** How many equal sections the range is cut into for the diversity pick. */
-export const DIVERSITY_SECTIONS = 8;
-
-/** Two picks closer than this many seconds are the same moment; the later-ranked one waits. */
-export const MIN_PICK_GAP_SECONDS = 4;
-
-/** The number of frames the tab shows as "the best" (Owen: "present ~20 of the best"). */
-export const BEST_COUNT = 20;
-
 export interface RankResult {
   /** Every non-screen frame, best first. */
   ranked: RankedFrame[];
@@ -142,9 +131,11 @@ export interface RankResult {
   screens: ScoredFrame[];
 }
 
-export function rankFrames(frames: readonly ScoredFrame[], start: number, end: number): RankResult {
-  if (!(end > start)) throw new Error(`rankFrames: the range ${start}-${end} s is empty.`);
-  const width = (end - start) / DIVERSITY_SECTIONS;
+/**
+ * The frames ranked, best first, with the computer screens set aside. How the best are SHOWN (one
+ * row per scene, its top few) is frame-scenes.ts `sceneRows`.
+ */
+export function rankFrames(frames: readonly ScoredFrame[]): RankResult {
   const screens: ScoredFrame[] = [];
   const ranked: RankedFrame[] = [];
   for (const frame of frames) {
@@ -152,43 +143,10 @@ export function rankFrames(frames: readonly ScoredFrame[], start: number, end: n
       screens.push(frame);
       continue;
     }
-    const section = Math.min(DIVERSITY_SECTIONS - 1, Math.max(0, Math.floor((frame.t - start) / width)));
-    ranked.push({ ...frame, score: rankScore(frame.reading), section });
+    ranked.push({ ...frame, score: rankScore(frame.reading) });
   }
   // Best first; equal scores keep time order, so the ordering is fully determined.
   ranked.sort((a, b) => b.score - a.score || a.t - b.t);
   screens.sort((a, b) => a.t - b.t);
   return { ranked, screens };
-}
-
-/**
- * The best `count` frames with the range's sections taken in turn, so the grid shows different
- * parts of the video rather than twenty frames of its best minute. Round by round, each section
- * offers its best frame not yet picked and not within MIN_PICK_GAP_SECONDS of a pick; the round's
- * offers are taken best first. A section that runs out simply stops offering. The result is
- * returned best first.
- */
-export function pickDiverse(ranked: readonly RankedFrame[], count: number = BEST_COUNT): RankedFrame[] {
-  const bySection = new Map<number, RankedFrame[]>();
-  for (const frame of ranked) {
-    const list = bySection.get(frame.section) ?? [];
-    list.push(frame);
-    bySection.set(frame.section, list);
-  }
-  const picked: RankedFrame[] = [];
-  const tooClose = (frame: RankedFrame) => picked.some((p) => Math.abs(p.t - frame.t) < MIN_PICK_GAP_SECONDS);
-  while (picked.length < count) {
-    const offers: RankedFrame[] = [];
-    for (const list of bySection.values()) {
-      while (list.length > 0 && tooClose(list[0])) list.shift();
-      if (list.length > 0) offers.push(list.shift()!);
-    }
-    if (offers.length === 0) break;
-    offers.sort((a, b) => b.score - a.score || a.t - b.t);
-    for (const offer of offers) {
-      if (picked.length >= count) break;
-      if (!tooClose(offer)) picked.push(offer);
-    }
-  }
-  return picked.sort((a, b) => b.score - a.score || a.t - b.t);
 }
