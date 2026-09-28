@@ -63,8 +63,14 @@ disabled, with the reason.
 - **Scoring** (frame-scorer.ts): at most 120 kept frames, spread across the range in rounds so
   empty stretches do not leave the cap short. One frame per Crucible `POST /v1/decide` call,
   five fixed-answer questions (thumbnails.yml `frames.*`): computer screen or video, a clear face,
-  expression 1-5, eyes open, strong thumbnail. `missing: 'report'`; a frame whose answer lacks an
-  option letter is set aside and named. It runs as ONE lane job (like a metadata run: one job per
+  expression 1-5, eyes open, strong thumbnail. Since the SDK repin to Crucible 1.0.55 (2026-09-28)
+  the five go as ITEMS of that one call (`transport.decideItems`, SDK `decideItems`): the frame is
+  read once and each item answered as if asked alone (the maintainer's figure on the Mac: 1.9 s a
+  frame against 4.3 s). Items are choices, so the yes/no questions go as the server's own yesno
+  wording (`frames.statement`, Yes/No) and the expression as a choice over its five levels;
+  prompts.ts `frameAnswersOfItems` reads back P(yes) and the expected level. Never one prompt with
+  numbered slots. `missing: 'report'`; a frame whose answer lacks an option letter is set aside and
+  named. It runs as ONE lane job (like a metadata run: one job per
   card, waiting behind a running job), with one lease on the model, and as many calls at once as
   the engine states it admits (`activity().chat.maxInFlight`, capped at 8; none stated = one at a
   time). If the server is busy the tab says who holds it and does not queue.

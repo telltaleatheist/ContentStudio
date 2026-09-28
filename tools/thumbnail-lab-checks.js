@@ -21,7 +21,8 @@
  *   - FACE-SAFE BOX: the text never touches a padded face or a reserved slot, sits bottom-left
  *     when it can, fits by shrinking, and a phrase that cannot keep the letter floor is REFUSED
  *     (never shrunk below it, never truncated).
- *   - SCORING over the real transport and lanes: one image per decide call, the five questions,
+ *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
+ *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
  *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
  *     and a model that is not installed each surface with the model and the server named.
  *
@@ -258,14 +259,33 @@ check('words: the plain answer parses into three kinds; decoration stripped, off
   assert.throws(() => prompts.parseThumbnailWords('I cannot help with that.', 'x'), /no options under CLAIM, STAKES or REACTION/);
 });
 
-check('frames: the five questions come from thumbnails.yml; one frame per request body, missing: report', () => {
+check('frames: the five questions come from thumbnails.yml, packed as five ITEMS of one call with one frame, missing: report', () => {
   const q = prompts.frameQuestions();
   assert.deepStrictEqual(Object.keys(q), [...ranking.FRAME_QUESTIONS]);
   assert.deepStrictEqual(Object.keys(q.screen.options), ['video', 'screen']);
   assert.strictEqual(q.expression.levels.length, 5);
-  const body = prompts.frameDecideBody('QUJD');
+  const body = prompts.frameDecideItems('QUJD');
   assert.deepStrictEqual(body.images, ['QUJD']);
   assert.strictEqual(body.missing, 'report');
+  assert.strictEqual(body.items.length, 5, 'one item per question, in FRAME_QUESTIONS order');
+  assert.deepStrictEqual(body.items[0], { text: q.screen.instructions, options: q.screen.options });
+  assert.strictEqual(body.items[1].text, `Statement: ${q.face.instructions}\nIs this statement true of the image?`, 'a yes/no question is the statement the server\'s own yesno puts');
+  assert.deepStrictEqual(body.items[1].options, { yes: 'Yes', no: 'No' });
+  assert.deepStrictEqual(Object.entries(body.items[2].options), q.expression.levels.map((l, i) => [String(i + 1), l]), 'the expression scale as its five levels, keyed 1-5 in order');
+  assert.ok(body.items.every((item) => !/\b1\.|\bQ\d/.test(item.text)), 'no numbered slots in one prompt');
+});
+
+check('frames: the items\' answers read back as the five readings (P(yes), the expression as the sum of level x p)', () => {
+  const choice = (probabilities, missingLabels = []) => ({ type: 'choice', choice: '', probabilities, logprobs: {}, confidence: 0, labelMass: 1, missingLabels });
+  const answers = [
+    choice({ video: 0.8, screen: 0.2 }), choice({ yes: 0.9, no: 0.1 }), choice({ 1: 0, 2: 0, 3: 0.5, 4: 0.5, 5: 0 }),
+    choice({ yes: 0.6, no: 0.4 }), choice({ yes: 0.3, no: 0.7 }),
+  ];
+  assert.deepStrictEqual(ranking.readFrameAnswers(prompts.frameAnswersOfItems(answers)), { pScreen: 0.2, pFace: 0.9, expression: 3.5, pEyesOpen: 0.6, pStrong: 0.3 });
+  const noYes = [...answers];
+  noYes[1] = choice({ yes: null, no: 1 }, ['yes']);
+  assert.throws(() => ranking.readFrameAnswers(prompts.frameAnswersOfItems(noYes)), /"face" answer did not include yes/);
+  assert.throws(() => prompts.frameAnswersOfItems(answers.slice(0, 4)), /answered 4 items; 5 were asked/);
 });
 
 // ── face-safe box and fitting ───────────────────────────────────────────────
@@ -374,6 +394,10 @@ const VISION = [
 ];
 
 function decideProbs(q) {
+  // The frame items (all choices since 1.0.55): the screen pair, a yes/no statement, the 1-5 scale.
+  if (q.labels.includes('video')) return { video: 0.9, screen: 0.1 };
+  if (q.labels[0] === 'yes') return { yes: 0.8, no: 0.2 };
+  if (q.labels[0] === '1') return Object.fromEntries(q.labels.map((l, i) => [l, i === 3 ? 0.7 : 0.075]));
   if (q.type === 'choice') return { video: 0.9, screen: 0.1 };
   if (q.type === 'score') return Object.fromEntries(q.labels.map((l, i) => [l, i === 3 ? 0.7 : 0.075]));
   return { Yes: 0.8, No: 0.2 };
@@ -402,7 +426,7 @@ async function withFake(options, fn) {
   }
 }
 
-check('scoring: one image per decide call, the five questions, missing: report, at the engine\'s stated width', () => withFake({ chatMaxInFlight: 3 }, async (server, deps, frames) => {
+check('scoring: one image per decide call, the five questions as its items, missing: report, at the engine\'s stated width', () => withFake({ chatMaxInFlight: 3 }, async (server, deps, frames) => {
   const out = await scorer.scoreFrames({ deps, jobId: 'keeper-score', model: 'qwen3.5-9b-vl', frames });
   assert.strictEqual(out.scored.length, 5);
   assert.strictEqual(out.width, 3);
@@ -410,12 +434,22 @@ check('scoring: one image per decide call, the five questions, missing: report, 
   const bodies = server.decideBodies();
   assert.strictEqual(bodies.length, 5);
   assert.ok(bodies.every((b) => b.model === 'qwen3.5-9b-vl' && b.images.length === 1 && b.missing === 'report'));
-  assert.deepStrictEqual(Object.keys(bodies[0].questions), [...ranking.FRAME_QUESTIONS]);
+  assert.ok(bodies.every((b) => b.questions === undefined && Array.isArray(b.items) && b.items.length === 5), 'the items form: one call per frame, five items');
+  assert.deepStrictEqual(bodies[0].items.map((i) => Object.keys(i.options)), [['video', 'screen'], ['yes', 'no'], ['1', '2', '3', '4', '5'], ['yes', 'no'], ['yes', 'no']]);
   assert.deepStrictEqual(bodies.map((b) => Buffer.from(b.images[0], 'base64').toString()).sort(), frames.map((_, i) => `fake jpeg ${i}`));
   const r = out.scored[0].reading;
   assert.ok(r.pScreen < 0.2 && r.pFace > 0.7 && r.expression > 3 && r.expression < 5, JSON.stringify(r));
   const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
   assert.deepStrictEqual(loads.map((b) => [b.model, b.params.context]), [['qwen3.5-9b-vl', scorer.FRAME_LOAD_CONTEXT]]);
+}));
+
+check('scoring: an item whose answer lacks its yes label sets that frame aside, naming the question; the rest still score', () => withFake({
+  decideProbs: (q) => (q.labels[0] === 'yes' && /eyes open/.test(q.instructions) ? { no: 1 } : decideProbs(q)),
+}, async (server, deps, frames) => {
+  const out = await scorer.scoreFrames({ deps, jobId: 'keeper-missing', model: 'qwen3.5-9b-vl', frames: frames.slice(0, 2) });
+  assert.strictEqual(out.scored.length, 0);
+  assert.strictEqual(out.unreadable.length, 2);
+  assert.ok(out.unreadable.every((u) => /"eyes" answer did not include yes/.test(u.reason)), out.unreadable.map((u) => u.reason).join(' | '));
 }));
 
 check('scoring: an engine that states no admission limit gets one call at a time', () => withFake({}, async (server, deps, frames) => {
