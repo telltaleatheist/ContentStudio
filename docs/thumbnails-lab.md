@@ -220,7 +220,9 @@ self-check lines about thumbnails go with it. Until then both exist and do not t
 
 ## Open
 - When the alignment records no drift factor, read the screen's real retime from the session's
-  compound (its timeMap) instead of the master's rate.
+  compound (its timeMap) instead of the master's rate. Coordinator's rule (2026-09-28): only by
+  reusing an editor reader. None exists today (the generators write timeMaps and editor_export.py
+  passes them through; nothing reads one back), so rate 1 stays, declared in the run's lines.
 - Owen's reaction photos: the slot is reserved; drawing a cut-out there is the next step.
 - A live run (below) to measure the scorer's usefulness and tune the weights.
 - Whether image-only (no text) should be the default for one arm.
