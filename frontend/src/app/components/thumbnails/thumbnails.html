@@ -262,7 +262,7 @@
             <mat-icon>psychology</mat-icon> Suggest photos
           </button>
           @if (busy() === 'suggesting') { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>Reading the tone and ranking photos…</span> }
-          <button mat-stroked-button (click)="recombine()" [disabled]="busy() !== null">Combine again</button>
+          <button mat-stroked-button (click)="combineAgain()" [disabled]="busy() !== null">Combine again</button>
         </div>
         @if (suggestion(); as s) { <p class="line">{{ s.line }}</p> }
         <div class="variants">

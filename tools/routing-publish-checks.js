@@ -294,11 +294,11 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
  * upstream gives one), defaults to the 9B with vision (Owen), and judges a server that lists a
  * model as text-only "not here". The words row offers the thumbnail_text field's rungs.
  */
-check('the Thumbnails tab rows: their own group, vision-only frames on the 9B with vision, words on the 27B', () => {
+check('the Thumbnails tab rows: their own group, vision-only frames on the 9B with vision, words and tone/photo on the 8-bit 27B', () => {
   const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
   eq(rows.join(','), 'thumbnail_frames,thumbnail_words,thumbnail_judge');
   const judge = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_judge');
-  eq(judge.defaultOptionId, 'qwen35-9b');
+  eq(judge.defaultOptionId, 'qwen38-27b-8bit');
   eq(judge.options.every((id) => routing.METADATA_ROUTING_OPTIONS[id].kind === 'local'), true, 'decide needs logprobs: local rungs only');
   const frames = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_frames');
   eq(frames.defaultOptionId, 'qwen35-9b-vl');
@@ -310,7 +310,7 @@ check('the Thumbnails tab rows: their own group, vision-only frames on the 9B wi
   const words = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words');
   const text = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_text');
   eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs');
-  eq(words.defaultOptionId, 'qwen38-27b');
+  eq(words.defaultOptionId, 'qwen38-27b-8bit');
   // A metadata run's log line and ceiling never name them.
   const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
   eq(/thumbnail_frames|thumbnail_words|thumbnail_judge/.test(line), false, 'the metadata log line leaves them out');

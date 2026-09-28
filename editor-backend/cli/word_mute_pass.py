@@ -40,7 +40,9 @@
 #
 # HOW A WORD GETS THERE — through the timeline's own tables, never a linear offset:
 #   1. The word's aligned span in its SOURCE FILE (sidecar fileStart/fileEnd, Qwen3 forced
-#      aligner via Crucible) grows by MUTE_PAD_SECONDS each side.
+#      aligner via Crucible) becomes its mute span (core.word_mutes.mute_span): MUTE_LEAD_SECONDS
+#      before it, MUTE_TAIL_TRIM_SECONDS off its end, and never into the previous or next word
+#      on the same track — a neighbouring word is never muted to cover the swear.
 #   2. File time -> master timeline, through the file's flattened segment table
 #      (ManifestBuilder.leaves: every kept auto-editor segment's timeline start and source
 #      in-point). A word that spans a cut lands on BOTH sides; a stretch auto-editor removed maps
@@ -60,6 +62,7 @@
 # MUTED with the reason. The report is logged and returned for the screen.
 
 import sys
+import bisect
 from fractions import Fraction
 from pathlib import Path
 
@@ -77,14 +80,14 @@ from cli.editor_manifest import (  # noqa: E402
 )
 from core.word_mutes import (  # noqa: E402
     CUSTOM_GROUP_ID,
-    MUTE_PAD_SECONDS,
     WordMuteError,
     clock,
     format_ticks,
     match_groups,
     merge_spans,
     muted_at,
-    pad_span,
+    MUTE_BRIDGE_SECONDS,
+    mute_span,
     quantize_clamp,
     settings_active,
 )
@@ -299,10 +302,20 @@ def _projects(root, context):
 # ---------------------------------------------------------------------------
 # 1-3: the plan, on the PRISTINE master
 # ---------------------------------------------------------------------------
-def plan_word_mutes(pristine_tree, entry_name, sidecar, settings, catalog, pad=MUTE_PAD_SECONDS):
+def plan_word_mutes(pristine_tree, entry_name, sidecar, settings, catalog):
     """Every matched word with its targets: [(identity, roles, srcCh, u0, u1)] in each carrier
     clip's source time. A word with no target carries `problem` (code, plain reason)."""
     tracks = {t.get('id'): t for t in sidecar.get('tracks', [])}
+    # Every word's file span per track, in file order: a mute stops at its neighbours.
+    # Each entry: (fileStart, fileEnd, matched) — a matched neighbour is bridged to, not avoided.
+    spoken = {}
+    for w in sidecar['words']:
+        fs, fe = w.get('fileStart'), w.get('fileEnd')
+        if isinstance(fs, (int, float)) and isinstance(fe, (int, float)):
+            spoken.setdefault(w.get('track'), []).append(
+                (Fraction(fs), Fraction(fe), bool(match_groups(w.get('text'), catalog, settings))))
+    for spans in spoken.values():
+        spans.sort()
     matches = []
     for w in sidecar['words']:
         groups = match_groups(w.get('text'), catalog, settings)
@@ -350,7 +363,24 @@ def plan_word_mutes(pristine_tree, entry_name, sidecar, settings, catalog, pad=M
         base += declared
 
     for m in matches:
-        a, b = pad_span(m['fileStart'], m['fileEnd'], pad)
+        own = spoken.get(m['track'], [])
+        k = bisect.bisect_left(own, (m['fileStart'], m['fileEnd'], True))
+        k = next(i for i in range(max(0, k - 1), len(own))
+                 if own[i][0] == m['fileStart'] and own[i][1] == m['fileEnd'])
+        before = [(e, hit) for (_s, e, hit) in own[:k]]
+        prev = max(before) if before else None
+        nxt = own[k + 1] if k + 1 < len(own) else None
+        prev_end = prev[0] if prev is not None and not prev[1] else None
+        next_start = nxt[0] if nxt is not None and not nxt[2] else None
+        span = mute_span(m['fileStart'], m['fileEnd'], prev_end, next_start)
+        if span is None:
+            m['problem'] = ('overlaps-next',
+                            "its aligned time overlaps the words around it, and muting it would "
+                            "mute them too")
+            continue
+        a, b = span
+        if nxt is not None and nxt[2] and nxt[0] - m['fileEnd'] <= MUTE_BRIDGE_SECONDS:
+            b = max(b, nxt[0])   # the next word is muted too: close the gap between them
         spans = []
         for (ts, te, ss) in table.get(m['file'], []):
             s = max(a, ss)

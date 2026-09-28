@@ -547,6 +547,7 @@ const VISION = [
   { id: 'qwen3.5-9b-vl', paramsB: 9, installed: true, contextDefault: 16384, modalities: ['text', 'image'], weightsOf: 'qwen3.5-9b' },
   { id: 'qwen3.5-9b', paramsB: 9, installed: true, contextDefault: 16384, modalities: ['text'] },
   { id: 'qwen3.5-2b', paramsB: 2, installed: false, contextDefault: 16384, modalities: ['text', 'image'] },
+  { id: 'qwen3.8-27b-8bit', paramsB: 27, installed: true, contextDefault: 16384, modalities: ['text'] },
 ];
 
 function decideProbs(q) {

@@ -25,11 +25,17 @@ from pathlib import Path
 
 CATALOG_PATH = Path(__file__).with_name('mute_words.json')
 
-MUTE_PAD_SECONDS = Fraction(50, 1000)
-"""Added to EACH side of the aligned word span before it is muted. Owen's number to tune.
-Protects the word's attack and tail: the forced aligner places a word's edges to within a few
-tens of milliseconds, and a mute that starts on the aligner's exact edge lets the hard "f"
-through. 50 ms is short enough that the neighbouring words survive at normal speaking pace."""
+MUTE_LEAD_SECONDS = Fraction(50, 1000)
+"""Added BEFORE the aligned word span. Protects the word's attack: the forced aligner places a
+word's edges to within a few tens of milliseconds, and a mute that starts on the aligner's exact
+edge lets the hard "f" through. It never reaches back into the previous word on that track."""
+
+MUTE_TAIL_TRIM_SECONDS = Fraction(60, 1000)
+"""Taken OFF the end of the aligned word span (Owen, 2026-09-28: "it's cutting off the next word
+slightly. it would be preferable to have part of the harsh word unmuted than the next word
+muted"). The first build padded the end by 50 ms like the start, and at speaking pace that ran
+into the next word. The mute now stops this much before the aligner's end of the word — never
+more than a third of the word — and never past the next word's start on the same track."""
 
 MUTE_TIMEBASE = 720000
 """The denominator FCP itself writes mute times in (the sample: start="15918331/720000s").
@@ -240,9 +246,29 @@ def muted_at(group_ids, master_seconds, settings):
 # ---------------------------------------------------------------------------
 # Interval arithmetic and the <mute> number format
 # ---------------------------------------------------------------------------
-def pad_span(start, end, pad=MUTE_PAD_SECONDS):
-    """The word span grown by `pad` on each side, never before 0."""
-    return (max(Fraction(0), start - pad), end + pad)
+MUTE_BRIDGE_SECONDS = Fraction(250, 1000)
+"""Two matched words closer than this are muted as one: the mute runs from the first to the
+second instead of stopping short and letting a sliver through between them. Only between two
+matched words — a neighbour that is not being muted is never covered."""
+
+
+def mute_span(start, end, prev_end=None, next_start=None,
+              lead=MUTE_LEAD_SECONDS, tail_trim=MUTE_TAIL_TRIM_SECONDS):
+    """The stretch of the file a word's mute covers, or None when nothing is left.
+
+    Starts `lead` before the word, never before 0 and never before the END of the previous word
+    on the same track; ends `tail_trim` before the word's end (at most a third of the word) and
+    never after the START of the next word on the same track. The neighbours win over the word:
+    a swear whose aligned time overlaps the next word is muted short, or not at all, rather than
+    muting speech that is not the swear (Owen, 2026-09-28). Pass prev_end/next_start only for a
+    neighbour that is NOT itself matched; a matched neighbour is joined by `bridge_to`."""
+    a = max(Fraction(0), start - lead)
+    if prev_end is not None:
+        a = max(a, min(prev_end, start))
+    b = end - min(tail_trim, (end - start) / 3)
+    if next_start is not None:
+        b = min(b, next_start)
+    return (a, b) if b > a else None
 
 
 def merge_spans(spans):

@@ -459,19 +459,30 @@ export class Thumbnails implements OnInit, OnDestroy {
   }
 
   /** Lay the favourites out as A/B/C again (the main process's combine.ts), dropping hand swaps. */
-  async recombine(): Promise<void> {
+  /** How many times "Combine again" was pressed since the favourites last changed: each press rotates every list by one, so the layout actually changes. */
+  private turn = 0;
+
+  async combineAgain(): Promise<void> {
+    this.turn++;
+    await this.recombine(true);
+  }
+
+  async recombine(keepTurn = false): Promise<void> {
+    if (!keepTurn) this.turn = 0;
     this.results.set(null);
     if (this.favFrames().length === 0) {
       this.variants.set([]);
-      this.combineReason.set(null);
+      this.combineReason.set('Star at least one frame first.');
       return;
     }
+    const k = this.turn;
+    const rot = <T,>(list: readonly T[]): T[] => (list.length < 2 ? [...list] : [...list.slice(k % list.length), ...list.slice(0, k % list.length)]);
     const s = this.suggestion();
     const rank = s ? Object.fromEntries(Object.entries(s.photos).map(([l, r]) => [l, { text: s.texts[l] ?? null, ranked: r.map((x) => x.name) }])) : null;
     const w = this.words();
     await this.attempt(async () => {
       const out = await this.electron.thumbsCombine(
-        { frames: this.favFrames(), texts: this.favTexts(), photos: this.favPhotos(), written: w ? { claim: w.claim, stakes: w.stakes, reaction: w.reaction } : null },
+        { frames: rot(this.favFrames()), texts: rot(this.favTexts()), photos: rot(this.favPhotos()), written: w ? { claim: rot(w.claim), stakes: rot(w.stakes), reaction: rot(w.reaction) } : null },
         this.mode() === 'best' ? { mode: 'best' } : { mode: 'test', vary: this.vary() },
         rank,
       );
