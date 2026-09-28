@@ -29,6 +29,15 @@
 # with start/duration in the ref-clip's SOURCE time (the compound's own timeline — the domain of
 # the ref-clip's `start` attribute), the same way the sample's mute is in its clip's source time.
 #
+# THE ROLE ON A REF-CLIP IS THE MAIN ROLE, NOT THE SUBROLE (Owen, 2026-09-28). The first export
+# wrote role="dialogue.dialogue-1" — the subrole the compound's audio carries — and Final Cut
+# imported all 78 mutes and applied none of them: every word still played, although the file
+# validates against the 1.13 and 1.14 DTDs. The same export with role="dialogue" ("mute test
+# A") went silent at every word Owen checked. So a ref-clip's <audio-role-source> names the
+# MAIN role (`main_role`: everything before the first '.'), one container per main role. A
+# <clip>'s <audio-channel-source> keeps the full subrole, which is what Owen's own R+V sample
+# carries and Final Cut honours.
+#
 # HOW A WORD GETS THERE — through the timeline's own tables, never a linear offset:
 #   1. The word's aligned span in its SOURCE FILE (sidecar fileStart/fileEnd, Qwen3 forced
 #      aligner via Crucible) grows by MUTE_PAD_SECONDS each side.
@@ -414,10 +423,16 @@ def _container(el, tag, role, src_ch):
     return cont
 
 
+def main_role(role):
+    """'dialogue.dialogue-1' -> 'dialogue'. Final Cut applies a ref-clip's mute only under the
+    main role (see the header)."""
+    return role.split('.', 1)[0]
+
+
 def write_mutes(el, role, src_ch, tick_spans):
     """Append <mute start duration> elements (ticks on the 720000 grid) to `el`'s container."""
     tag = 'audio-role-source' if el.tag == 'ref-clip' else 'audio-channel-source'
-    cont = _container(el, tag, role, src_ch)
+    cont = _container(el, tag, main_role(role) if tag == 'audio-role-source' else role, src_ch)
     for (a, b) in tick_spans:
         ET.SubElement(cont, 'mute', {'start': format_ticks(a), 'duration': format_ticks(b - a)})
     return len(tick_spans)
@@ -474,8 +489,14 @@ def apply_word_mutes(final_tree, plan, settings, window_mode, context='timeline'
     clips = 0
     for b in buckets.values():
         n_clip = 0
-        for (role, src_ch) in sorted(b['spans']):
-            ticks = [quantize_clamp(s, e, b['lo'], b['hi']) for (s, e) in b['spans'][(role, src_ch)]]
+        spans_by = b['spans']
+        if b['el'].tag == 'ref-clip':
+            # One container per MAIN role: two subroles of one main role are one mute there.
+            spans_by = {}
+            for (role, src_ch), sp in b['spans'].items():
+                spans_by.setdefault((main_role(role), src_ch), []).extend(sp)
+        for (role, src_ch) in sorted(spans_by):
+            ticks = [quantize_clamp(s, e, b['lo'], b['hi']) for (s, e) in spans_by[(role, src_ch)]]
             ticks = merge_spans([t for t in ticks if t is not None])
             n_clip += write_mutes(b['el'], role, src_ch, ticks)
         written += n_clip
