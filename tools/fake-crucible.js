@@ -23,7 +23,7 @@
  *   upstreams ({anthropic: {key}}), faults ({refuse, resetAfterBytes, connectDelay}),
  *   installedJobTypes (['echo']), catalog, disabledClasses, failModuleWith,
  *   models, resident, loadMs, upstreamModels, chatReplies, asrInstalled, asr,
- *   decideProbs, decideMaxOptions, decideSelected, contextCeilings,
+ *   decideProbs, decideMaxOptions, decideSelected, imagesNotServed, chatMaxInFlight, contextCeilings,
  *   localModelChoices, and ContentStudio's own `legacyActs`, `port` and
  *   `setupUrls` (below).
  *
@@ -521,7 +521,7 @@ async function startFakeCrucible(options = {}) {
                 lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act,
                 since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
             },
-            chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] },
+            chat: { in_flight: 0, max_in_flight: options.chatMaxInFlight ?? null, max_in_flight_basis: options.chatMaxInFlight === undefined ? null : 'set by the keeper', rows: [] },
             slots: {
                 accelerated: {
                     busy: job === null && ownRunning.length === 0 ? 0 : 1, of: 1, queue_depth: ownQueued.length,
@@ -1480,6 +1480,29 @@ async function startFakeCrucible(options = {}) {
             }
             else {
                 refusal(res, 400, 'invalid_request', `question '${name}' has an unknown type`, { field: `questions.${name}.type` });
+                return;
+            }
+        }
+        // Images (PHASE22 §2.2, the Thumbnails tab 2026-09-28): the door's refusals before residency,
+        // in the server's order. `imagesNotServed` stands in for a server whose engine reads no
+        // images for a model its manifest says can (the Mac before 1.0.54's mlx-vlm logprobs).
+        const images = body['images'] ?? null;
+        if (images !== null) {
+            if (!Array.isArray(images) || images.some((i) => typeof i !== 'string' || i.length === 0 || /[^A-Za-z0-9+/=]/.test(i))) {
+                refusal(res, 400, 'invalid_request', 'images must be base64 image files', { field: 'images' });
+                return;
+            }
+            if (images.length > 8) {
+                refusal(res, 400, 'too_many_images', `at most 8 images per decision; got ${images.length}`, { max: 8, got: images.length });
+                return;
+            }
+            const row = models.find((m) => m.id === model);
+            if (images.length > 0 && !(row?.modalities ?? ['text']).includes('image')) {
+                refusal(res, 400, 'model_text_only', `${model} reads text only; its manifest declares no image modality`, { model });
+                return;
+            }
+            if (images.length > 0 && typeof options.imagesNotServed === 'string') {
+                refusal(res, 400, 'refuse_images_not_served', `${model} cannot read images on this server: ${options.imagesNotServed}`, { model });
                 return;
             }
         }

@@ -153,3 +153,14 @@ export function frameQuestions(): Record<(typeof FRAME_QUESTIONS)[number], Decid
     strong: { type: 'yesno', instructions: asset('frames.strong') },
   } as Record<(typeof FRAME_QUESTIONS)[number], DecideQuestion>;
 }
+
+/**
+ * THE ONE PLACE a frame's decide request body is packed (the Crucible maintainer, 2026-09-28: a
+ * later release adds "many-slot decide", several question items answered in one forward pass,
+ * with answers in today's per-question shape). Switching to it is a change to this function
+ * only: `readFrameAnswers` (frame-ranking.ts) reads the answers by question name and never
+ * knows how the request was packed.
+ */
+export function frameDecideBody(imageBase64: string): { state: string; images: string[]; questions: Record<string, DecideQuestion>; missing: 'report' } {
+  return { state: frameState(), images: [imageBase64], questions: frameQuestions(), missing: 'report' };
+}

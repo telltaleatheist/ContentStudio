@@ -26,6 +26,7 @@
     "check:chaptering": "node tools/chaptering-checks.js",
     "check:reroll": "node tools/reroll-checks.js",
     "check:thumbnail": "node tools/thumbnail-checks.js && electron tools/thumbnail-fit-smoke.js",
+    "check:thumbnail-lab": "node tools/thumbnail-lab-checks.js && electron tools/thumbnail-lab-render-smoke.js",
     "check:retired": "node tools/retired-components-checks.js",
     "check:legacy-gone": "node tools/check-legacy-runtime-gone.js",
     "check:p4": "node tools/p4-checks.js",

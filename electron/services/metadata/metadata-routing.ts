@@ -36,7 +36,17 @@ export type MetadataRoutingTaskId =
   | 'chapters'
   | 'tags'
   | 'thumbnail_text'
-  | 'pinned_comment';
+  | 'pinned_comment'
+  | 'thumbnail_frames'
+  | 'thumbnail_words';
+
+/**
+ * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
+ * `thumbnails` rows serve the Thumbnails tab (2026-09-28) and nothing else: a metadata job never
+ * reads them (its transcript ceiling, its log line and the dialog's change-all menu cover the
+ * metadata rows only), and the tab reads nothing else.
+ */
+export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
 
 export interface MetadataRoutingOption {
   /**
@@ -59,6 +69,14 @@ export interface MetadataRoutingOption {
    * and the transport sends exactly this id: nothing maps it to anything else downstream.
    */
   crucibleModel: string | null;
+  /**
+   * True when the model's manifest declares `image` among its modalities (crucible
+   * models/<id>.toml): it can be asked about a picture. Only such options are offered on a row
+   * that sends images (`thumbnail_frames`). Whether a given SERVER serves images for it is the
+   * server's answer, read at call time: a Mac whose engine cannot is refused by Crucible by name
+   * (`refuse_images_not_served`, `model_text_only`), and the refusal reaches the tab unchanged.
+   */
+  vision?: boolean;
   /**
    * THERE IS NO PER-OPTION HOST, AND NO PROMPT SHAPE TO CHOOSE, as of 2026-08-25.
    *
@@ -197,7 +215,19 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * states `thinking` (plan 1); the note about Ollama's generate endpoint went with Ollama.
    */
   'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
+  /**
+   * THE VISION RUNGS (2026-09-28), offered on the Thumbnails tab's frame row only. Each is a
+   * Crucible manifest that declares `image`: the 9B and 27B with their vision towers served
+   * (`-vl`, sharing their text twins' downloads) and the small 4B/2B/0.8B, which read images as
+   * well as text. The 4B option above is the same model: it is marked `vision` so the frame row can
+   * offer it, and its text rows are unaffected.
+   */
+  'qwen35-9b-vl': { kind: 'local', label: 'Qwen3.5 9B with vision', model: 'qwen3.5-9b-vl', crucibleModel: 'qwen3.5-9b-vl', vision: true },
+  'qwen35-2b': { kind: 'local', label: 'Qwen3.5 2B', model: 'qwen3.5-2b', crucibleModel: 'qwen3.5-2b', vision: true },
+  'qwen35-08b': { kind: 'local', label: 'Qwen3.5 0.8B', model: 'qwen3.5-0.8b', crucibleModel: 'qwen3.5-0.8b', vision: true },
+  'qwen38-27b-vl': { kind: 'local', label: 'Qwen 27B with vision', model: 'qwen3.8-27b-4bit-vl', crucibleModel: 'qwen3.8-27b-4bit-vl', vision: true },
 };
+METADATA_ROUTING_OPTIONS['qwen35-4b'].vision = true;
 
 export interface MetadataRoutingTask {
   id: MetadataRoutingTaskId;
@@ -206,6 +236,8 @@ export interface MetadataRoutingTask {
   options: string[];
   /** Runs when the stored setting has no entry for this task. Must be in `options`. */
   defaultOptionId: string;
+  /** The part of the app the row serves (see MetadataRoutingGroup). */
+  group: MetadataRoutingGroup;
   /**
    * Rendered as a row in the routing modal. The big determinative fields are rows
    * (operator's direction, 2026-08-24: "the big models that determine things like titles -
@@ -276,6 +308,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
+    group: 'metadata',
   },
   {
     id: 'description',
@@ -286,6 +319,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     // comparison). 9b/4b remain offered for the A/B.
     defaultOptionId: 'qwen38-27b',
     modal: true,
+    group: 'metadata',
   },
   {
     /**
@@ -308,6 +342,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
+    group: 'metadata',
   },
   {
     /**
@@ -338,6 +373,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     // using anything but claude -p for any ai calls ever if all routing is set to claude -p".
     // Every model a run can call is a row the operator can see.
     modal: true,
+    group: 'metadata',
   },
   {
     id: 'thumbnail_text',
@@ -347,6 +383,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
+    group: 'metadata',
   },
   {
     /**
@@ -362,6 +399,41 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
+    group: 'metadata',
+  },
+  {
+    /**
+     * THE THUMBNAILS TAB'S FRAME SCORER (2026-09-28): a vision model asked five fixed-answer
+     * questions about ONE frame per decide call (desktop or video, a clear face, how expressive,
+     * eyes open, a strong thumbnail). Decide needs a distribution, so only local models a Crucible
+     * server holds are offered, and only those whose manifest reads images (`vision`).
+     *
+     * The 9B with vision by default (Owen, 2026-09-28): Crucible 1.0.54 adds logprobs to mlx-vlm
+     * and a Mac entry for it. Before that, NO Mac model serves image decide (the maintainer:
+     * mlx-lm is text-only, mlx-vlm had no logprobs) and a run there is refused by name; the PC
+     * (vLLM) serves the 0.8B/2B/4B. The 9B's manifest says it does not usefully fit a 24 GB PC card
+     * (~1,700 tokens of KV), so on the PC pick the 4B.
+     */
+    id: 'thumbnail_frames',
+    label: 'Thumbnail frames (vision)',
+    options: ['qwen35-9b-vl', 'qwen35-4b', 'qwen35-2b', 'qwen35-08b', 'qwen38-27b-vl'],
+    defaultOptionId: 'qwen35-9b-vl',
+    modal: true,
+    group: 'thumbnails',
+  },
+  {
+    /**
+     * THE THUMBNAILS TAB'S WORDS (2026-09-28): 2-5 words in three kinds (claim, stakes,
+     * reaction), written as a pair with the title the operator picks. Its own row, separate from
+     * the metadata run's `thumbnail_text` field, which is untouched until Owen decides after
+     * testing. The same rungs as that field; the 27B by default like it.
+     */
+    id: 'thumbnail_words',
+    label: 'Thumbnail words',
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b',
+    modal: true,
+    group: 'thumbnails',
   },
 ];
 
@@ -523,6 +595,11 @@ export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, st
 
 /** Every task resolved to an option id — what generation actually runs. */
 export type ResolvedMetadataRouting = Record<MetadataRoutingTaskId, string>;
+
+/** The rows a METADATA run reads: every row of the `metadata` group, in table order. */
+export function metadataRunTasks(): MetadataRoutingTask[] {
+  return METADATA_ROUTING_TASKS.filter((task) => task.group === 'metadata');
+}
 
 function taskDef(taskId: string): MetadataRoutingTask | undefined {
   return METADATA_ROUTING_TASKS.find((t) => t.id === taskId);
@@ -878,7 +955,7 @@ export function resolveOperatorOption(
  * routing's server (LEDGER #222), or that it names none and the selected server runs the job.
  */
 export function describeRouting(routing: ResolvedMetadataRouting, server: string | null): string {
-  const models = METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+  const models = metadataRunTasks().map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
   return `${models}, server=${server === null ? '(the selected server)' : server}`;
 }
 
@@ -923,6 +1000,8 @@ export interface MetadataRoutingTaskView {
   selectedOptionId: string;
   /** Rendered as a row in the modal. False = stored-entry-only. */
   modal: boolean;
+  /** Which part of the app the row serves; the dialog shows the thumbnails rows apart. */
+  group: MetadataRoutingGroup;
 }
 
 /**
@@ -992,6 +1071,27 @@ export function optionAvailability(
   return { availability: 'not-here', note: offer.reason ?? `"${inventory.server}" does not offer ${option.crucibleModel}.` };
 }
 
+/**
+ * A frame-row option: as `optionAvailability`, and additionally NOT HERE when the server's model
+ * list says the model reads text only. The server's `modalities` are the manifest's (the same on
+ * every host), so a model that passes here can still be refused at call time by a server whose
+ * engine does not serve images; that refusal names the model and the server (Law 1).
+ */
+export function visionAvailability(
+  option: MetadataRoutingOption,
+  inventory: CatalogInventory
+): { availability: MetadataRoutingAvailability; note?: string } {
+  if (option.vision !== true || option.crucibleModel === null) {
+    return { availability: 'not-here', note: `${option.model} does not read images, so it cannot score frames.` };
+  }
+  const judged = optionAvailability(option, inventory);
+  const modalities = inventory.modalities?.[option.crucibleModel];
+  if (judged.availability !== 'unknown' && modalities !== undefined && !modalities.includes('image')) {
+    return { availability: 'not-here', note: `"${inventory.server}" lists ${option.crucibleModel} as reading text only.` };
+  }
+  return judged;
+}
+
 /** Is this availability one the dialog LISTS? `pullable` is listed: the server can hold it. */
 function offered(availability: MetadataRoutingAvailability): boolean {
   return availability === 'installed' || availability === 'pullable' || availability === 'upstream' || availability === 'outside';
@@ -1016,7 +1116,7 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory, r
       label: task.label,
       options: task.options.flatMap((id) => {
         const option = METADATA_ROUTING_OPTIONS[id];
-        const judged = optionAvailability(option, inventory);
+        const judged = task.id === 'thumbnail_frames' ? visionAvailability(option, inventory) : optionAvailability(option, inventory);
         if (!offered(judged.availability) && id !== resolved[task.id]) return [];
         return [{
           id,
@@ -1028,6 +1128,7 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory, r
       }),
       selectedOptionId: resolved[task.id],
       modal: task.modal,
+      group: task.group,
     })),
     chapters: {
       generationModel: chapterOption.model,

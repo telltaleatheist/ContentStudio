@@ -106,6 +106,13 @@ import type { CrucibleServers } from './servers';
  */
 export const ANTHROPIC_MAX_TOKENS = 16000;
 
+/**
+ * What one image is counted as when a decide call's need is sized (the Thumbnails tab's frames are
+ * 640x360: a Qwen vision tower reads that as roughly 300-600 tokens). A declared allowance, not a
+ * measurement: it only sizes the load; the server refuses a prompt that does not fit, by name.
+ */
+export const DECIDE_IMAGE_TOKENS = 1024;
+
 /** How often a streamed answer tells the stall clock it is alive (P3): a beat per second at most. */
 const BEAT_EVERY_MS = 1_000;
 
@@ -186,6 +193,13 @@ export interface DecideRequest {
   questions: Readonly<Record<string, DecideQuestion>>;
   /** Plan 0a, N7: `report` (null + missingLabels), with the floor the client's own rule. */
   missing?: 'refuse' | 'report';
+  /**
+   * Base64 image files read as part of the state, after its text (PHASE22-DECIDE; at most 8, and
+   * only on a model whose manifest reads images). The Thumbnails tab sends ONE frame per call.
+   * Every refusal about them (`model_text_only`, `too_many_images`, a server whose engine does not
+   * serve images) comes back as the server's own, naming the model and the server.
+   */
+  images?: readonly string[];
   /**
    * The context to load the scorer at when this job loads it (snap's states run to ~12k tokens plus
    * the questions, so the 9B loads at 16,384: plan 7.3's "Snap assign" row). Absent: the server's
@@ -484,18 +498,19 @@ export class CrucibleTransport {
       await this.venue(server, 'decide');
       job.server ??= server;
       const state = typeof request.state === 'string' ? request.state : JSON.stringify(request.state);
+      const images = request.images ?? [];
       request.trace?.push({
         what: request.what,
         model,
         chars: state.length,
         at: new Date().toISOString(),
-        prompt: `${state}\n\n[decide: ${Object.keys(request.questions).join(', ')}]`,
+        prompt: `${state}${images.length > 0 ? `\n\n[${images.length} image(s)]` : ''}\n\n[decide: ${Object.keys(request.questions).join(', ')}]`,
         server,
         maxTokens: 0,
         loadContext: request.loadContext ?? null,
         act: 'decide',
       });
-      const need = estimateTokens(state.length);
+      const need = estimateTokens(state.length) + images.length * DECIDE_IMAGE_TOKENS;
       let reensured = false;
       for (;;) {
         await job.hold(server, model, { act: 'decide', need, loadContext: request.loadContext, signal, hooks });
@@ -508,7 +523,11 @@ export class CrucibleTransport {
         try {
           const client = await this.host.factory.clientFor(server);
           const answer = await client.decide(
-            { model, state: request.state, questions: request.questions, ...(request.missing === undefined ? {} : { missing: request.missing }) },
+            {
+              model, state: request.state, questions: request.questions,
+              ...(request.missing === undefined ? {} : { missing: request.missing }),
+              ...(images.length === 0 ? {} : { images }),
+            },
             { act: 'decide', ...(signal === undefined ? {} : { signal }) },
           );
           hooks.beat();

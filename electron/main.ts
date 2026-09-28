@@ -24,6 +24,7 @@ import { retireOnce } from './retired-components';
 import { getSharedDir } from './services/editor/shared-paths';
 import { StreamMarksService } from './services/stream-marks/stream-marks.service';
 import { setupStreamMarksIpc } from './services/stream-marks/stream-marks-ipc';
+import { setupThumbnailLabIpc } from './services/thumbnails/thumbnail-lab-ipc';
 
 /**
  * ContentStudio - Main Electron Process
@@ -331,6 +332,10 @@ app.whenReady().then(async () => {
     // hotkey is what makes the first press of the night work without the app being focused.
     const streamMarks = new StreamMarksService(path.join(userDataPath, 'stream-marks'));
     setupStreamMarksIpc(store, streamMarks);
+
+    // The Thumbnails tab (testing, 2026-09-28): frames, words and renders for one item. Its model
+    // calls go through the same Crucible context as everything else (lanes, transport, routing).
+    setupThumbnailLabIpc(store, crucible, userDataPath);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

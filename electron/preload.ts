@@ -695,6 +695,24 @@ const api = {
   //
   // Nothing here returns an envelope. A bad id or a corrupt session file rejects with the
   // sentence naming the file, and the UI prints it.
+  // The Thumbnails tab (testing, 2026-09-28). Each answers { ok, value } or { ok: false, error }.
+  thumbsListItems: () => ipcRenderer.invoke('thumbs:list-items'),
+  thumbsFindFrames: (req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }) =>
+    ipcRenderer.invoke('thumbs:find-frames', req),
+  thumbsFramePicture: (runId: string, id: string) => ipcRenderer.invoke('thumbs:frame-picture', runId, id),
+  thumbsScore: (runId: string) => ipcRenderer.invoke('thumbs:score', runId),
+  thumbsStop: (runId: string) => ipcRenderer.invoke('thumbs:stop', runId),
+  thumbsWords: (runId: string, title: string) => ipcRenderer.invoke('thumbs:words', runId, title),
+  thumbsGetStyle: () => ipcRenderer.invoke('thumbs:get-style'),
+  thumbsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbs:set-style', style),
+  thumbsRender: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:render', runId, variants),
+  thumbsChooseVideo: () => ipcRenderer.invoke('thumbs:choose-video'),
+  thumbsShowFolder: (folder: string) => ipcRenderer.invoke('thumbs:show-folder', folder),
+  onThumbsProgress: (callback: (event: { runId: string; stage: string; done: number; total: number }) => void) => {
+    const listener = (_e: unknown, event: { runId: string; stage: string; done: number; total: number }) => callback(event);
+    ipcRenderer.on('thumbs:progress', listener);
+    return () => ipcRenderer.removeListener('thumbs:progress', listener);
+  },
   streamMarksList: () => ipcRenderer.invoke('stream-marks:list'),
   streamMarksGet: (id: string) => ipcRenderer.invoke('stream-marks:get', id),
   streamMarksLive: () => ipcRenderer.invoke('stream-marks:live'),

@@ -17,7 +17,7 @@
  *     the run's own median, because an absolute number means different things for a webcam, a
  *     screen capture and a phone clip.
  *   - REPEATS are found with a 256-bit difference hash (dHash on a 17x16 grid: each bit says
- *     whether a cell is brighter than its right neighbour). Two frames within
+ *     whether a cell is clearly brighter than its right neighbour). Two frames within
  *     DUPLICATE_MAX_BITS of each other are the same picture for a thumbnail's purpose. The
  *     threshold is TIGHT on purpose: a talking head changes only a few cells when the expression
  *     changes, and the expression is the whole point, so only genuinely held frames collapse.
@@ -27,6 +27,13 @@
 export const HASH_COLS = 17;
 export const HASH_ROWS = 16;
 export const HASH_BITS = (HASH_COLS - 1) * HASH_ROWS;
+
+/**
+ * A cell counts as brighter than its neighbour only by more than this many grey levels. Without it,
+ * a flat region (a wall, a dark background) gives bits decided by sensor and compression noise,
+ * and two copies of one held frame hash apart.
+ */
+export const HASH_DEAD_ZONE = 3;
 
 /**
  * Two frames whose hashes differ in at most this many of 256 bits are one picture. 8/256 is about
@@ -102,7 +109,7 @@ export function differenceHash(gray: Uint8Array, width: number, height: number):
   let bit = 0;
   for (let cy = 0; cy < HASH_ROWS; cy++) {
     for (let cx = 0; cx < HASH_COLS - 1; cx++) {
-      if (cells[cy * HASH_COLS + cx] > cells[cy * HASH_COLS + cx + 1]) hash[bit >> 3] |= 1 << (bit & 7);
+      if (cells[cy * HASH_COLS + cx] > cells[cy * HASH_COLS + cx + 1] + HASH_DEAD_ZONE) hash[bit >> 3] |= 1 << (bit & 7);
       bit++;
     }
   }
