@@ -125,13 +125,27 @@ export interface ThumbsStyle {
   maxCapFraction: number;
 }
 
+/**
+ * A variant's photo (combine.ts PhotoPick): a named photo, Owen's explicit "No photo", or the photo
+ * the suggestion ranks first for thumbnail `of`'s words (resolved when the thumbnails are made).
+ */
+export type ThumbsPhotoPick = { pick: 'photo'; name: string } | { pick: 'none' } | { pick: 'top'; of: string };
+
 export interface ThumbsVariantRequest {
   letter: string;
   frameId: string;
   phrase: string | null;
   kind: ThumbsWordKind | null;
-  /** A reaction photo's name ("oh please"), or null for none. */
-  photo: string | null;
+  photo: ThumbsPhotoPick;
+}
+
+/** The logo file as the tab shows it (lab-service.ts logo()). */
+export interface ThumbsLogo {
+  file: string;
+  name: string;
+  width: number;
+  height: number;
+  preview: string;
 }
 
 export interface ThumbsPhoto {
@@ -157,7 +171,19 @@ export interface ThumbsRanked {
 export interface ThumbsSuggestion {
   tone: ThumbsRanked[];
   photos: Record<string, ThumbsRanked[]>;
+  /** The words each ranking was made for: a ranking for other words is not used. */
+  texts: Record<string, string | null>;
   line: string;
+}
+
+/** Each variant's photo ranking with the words it was made for (combine.ts Rankings). */
+export type ThumbsRankings = Record<string, { text: string | null; ranked: string[] }>;
+
+/** The lines the model wrote, per kind (combine.ts WrittenWords). */
+export interface ThumbsWrittenWords {
+  claim: string[];
+  stakes: string[];
+  reaction: string[];
 }
 
 export interface ThumbsWordPick {
@@ -172,18 +198,31 @@ export interface ThumbsVariant {
   letter: string;
   frameId: string;
   text: ThumbsWordPick;
-  photo: string | null;
+  photo: ThumbsPhotoPick;
 }
 
 export type ThumbsCombineResult = { ok: true; variants: ThumbsVariant[] } | { ok: false; reason: string };
 
 export type ThumbsRenderResult =
-  | { letter: string; ok: true; path: string; bytes: number; format: 'png' | 'jpeg'; picture: string; notes: string[]; at: string }
+  | {
+      letter: string; ok: true; path: string; bytes: number; format: 'png' | 'jpeg'; picture: string; notes: string[]; at: string;
+      /** The photo drawn (null: none), and whether the logo was drawn. */
+      photo: string | null;
+      logo: boolean;
+    }
   | { letter: string; ok: false; reason: string; at: string };
+
+export interface ThumbsRenderOutcome {
+  folder: string;
+  results: ThumbsRenderResult[];
+  /** The suggestion the photos came from (run first when it had not run for these words), or null. */
+  suggestion: ThumbsSuggestion | null;
+  suggested: boolean;
+}
 
 export interface ThumbsProgress {
   runId: string;
-  stage: 'sampling' | 'filtering' | 'scoring';
+  stage: 'sampling' | 'filtering' | 'scoring' | 'suggesting' | 'drawing';
   done: number;
   total: number;
 }

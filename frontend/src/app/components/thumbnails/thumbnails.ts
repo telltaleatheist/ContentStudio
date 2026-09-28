@@ -9,6 +9,8 @@ import { ElectronService } from '../../services/electron';
 import type {
   ThumbsFrame,
   ThumbsItem,
+  ThumbsLogo,
+  ThumbsPhotoPick,
   ThumbsPhotos,
   ThumbsPiece,
   ThumbsRanked,
@@ -97,7 +99,13 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   readonly results = signal<ThumbsRenderResult[] | null>(null);
   readonly folder = signal<string | null>(null);
-  readonly showSlots = signal(true);
+  /** Outline the photo and logo spaces that were left empty on a render. Off unless Owen ticks it. */
+  readonly showSlots = signal(false);
+
+  /** Owen's logo file (saved in settings), or null when none is chosen. */
+  readonly logo = signal<ThumbsLogo | null>(null);
+  /** The per-render logo switch: on whenever a logo is set, until Owen switches it off. */
+  readonly logoOn = signal(false);
 
   private unsubscribe: (() => void) | null = null;
 
@@ -155,7 +163,9 @@ export class Thumbnails implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     this.unsubscribe = this.electron.onThumbsProgress((event) => {
       const run = this.run();
-      if (event.stage === 'sampling') this.progress.set(`Sampling frame ${event.done.toLocaleString()} of about ${event.total.toLocaleString()}`);
+      if (event.stage === 'suggesting') this.progress.set('No photo is starred, so first reading the tone and ranking the photos for these words');
+      else if (event.stage === 'drawing') this.progress.set(`Drawing thumbnail ${event.done + 1} of ${event.total}`);
+      else if (event.stage === 'sampling') this.progress.set(`Sampling frame ${event.done.toLocaleString()} of about ${event.total.toLocaleString()}`);
       else if (event.stage === 'filtering') this.progress.set(`Removing repeated and blurry frames from ${event.total.toLocaleString()}`);
       else if (run === null || run.runId === event.runId) this.progress.set(`Scoring frame ${Math.min(event.done + 1, event.total)} of ${event.total}`);
     });
@@ -167,6 +177,20 @@ export class Thumbnails implements OnInit, OnDestroy {
       const { style, stored } = await this.electron.thumbsGetStyle();
       this.style.set(style);
       this.styleStored.set(stored);
+    });
+    // Its own attempt: a saved logo file that has gone missing is said by name without hiding the rest.
+    await this.attempt(async () => this.setLogo(await this.electron.thumbsLogo()));
+  }
+
+  private setLogo(logo: ThumbsLogo | null): void {
+    this.logo.set(logo);
+    this.logoOn.set(logo !== null);
+  }
+
+  async chooseLogo(): Promise<void> {
+    await this.attempt(async () => {
+      const picked = await this.electron.thumbsChooseLogo();
+      if (picked !== null) this.setLogo(picked);
     });
   }
 
@@ -347,6 +371,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.busy.set('words');
     await this.attempt(async () => {
       this.words.set(await this.electron.thumbsWords(run.runId, this.title()));
+      await this.recombine();
     });
     this.busy.set(null);
   }
@@ -384,15 +409,41 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.busy.set(null);
   }
 
-  /** A variant's photo menu: ranked by its suggestion when there is one, else the folder's order. */
-  photoMenu(letter: string): Array<{ name: string; p: number | null }> {
-    const ranked: ThumbsRanked[] | undefined = this.suggestion()?.photos[letter];
-    if (ranked) return ranked;
-    return this.photos().photos.map((p) => ({ name: p.name, p: null }));
+  /** A variant's ranking, only when the suggestion ran for exactly its current words. */
+  private freshRanking(letter: string): ThumbsRanked[] | null {
+    const s = this.suggestion();
+    const v = this.variants().find((x) => x.letter === letter);
+    if (s === null || v === undefined || !(letter in s.texts) || s.texts[letter] !== v.text.phrase) return null;
+    return s.photos[letter] ?? null;
   }
 
-  photoPreview(name: string | null): string | null {
-    return name === null ? null : this.photos().photos.find((p) => p.name === name)?.preview ?? null;
+  /** A variant's photo menu: ranked by its suggestion when it is for these words, else the folder's order. */
+  photoMenu(letter: string): Array<{ name: string; p: number | null }> {
+    return this.freshRanking(letter) ?? this.photos().photos.map((p) => ({ name: p.name, p: null }));
+  }
+
+  photoKey(p: ThumbsPhotoPick): string {
+    return p.pick === 'photo' ? `photo:${p.name}` : p.pick === 'none' ? 'none:' : `top:${p.of}`;
+  }
+
+  swapPhoto(letter: string, key: string): void {
+    const colon = key.indexOf(':');
+    const kind = key.slice(0, colon);
+    const rest = key.slice(colon + 1);
+    const pick: ThumbsPhotoPick = kind === 'photo' ? { pick: 'photo', name: rest } : kind === 'none' ? { pick: 'none' } : { pick: 'top', of: rest };
+    this.swap(letter, { photo: pick });
+  }
+
+  /** The "top suggested" entry's label: the photo itself once ranked for these words. */
+  topLabel(of: string): string {
+    const top = this.freshRanking(of)?.[0];
+    const whose = `${of}'s words`;
+    return top ? `Top suggested for ${whose}:${top.name}${top.p !== null ? ' — ' + this.percent(top.p) + '%' : ''}` : `Top suggested for ${whose} (ranked when you make the thumbnails)`;
+  }
+
+  photoPreview(p: ThumbsPhotoPick): string | null {
+    const name = p.pick === 'photo' ? p.name : p.pick === 'top' ? this.freshRanking(p.of)?.[0]?.name ?? null : null;
+    return name === null ? null : this.photos().photos.find((x) => x.name === name)?.preview ?? null;
   }
 
   // ── combine ───────────────────────────────────────────────────────────────
@@ -416,10 +467,11 @@ export class Thumbnails implements OnInit, OnDestroy {
       return;
     }
     const s = this.suggestion();
-    const rank = s ? Object.fromEntries(Object.entries(s.photos).map(([l, r]) => [l, r.map((x) => x.name)])) : null;
+    const rank = s ? Object.fromEntries(Object.entries(s.photos).map(([l, r]) => [l, { text: s.texts[l] ?? null, ranked: r.map((x) => x.name) }])) : null;
+    const w = this.words();
     await this.attempt(async () => {
       const out = await this.electron.thumbsCombine(
-        { frames: this.favFrames(), texts: this.favTexts(), photos: this.favPhotos() },
+        { frames: this.favFrames(), texts: this.favTexts(), photos: this.favPhotos(), written: w ? { claim: w.claim, stakes: w.stakes, reaction: w.reaction } : null },
         this.mode() === 'best' ? { mode: 'best' } : { mode: 'test', vary: this.vary() },
         rank,
       );
@@ -447,14 +499,17 @@ export class Thumbnails implements OnInit, OnDestroy {
     const run = this.run();
     if (run === null || this.variants().length === 0) return;
     this.busy.set('rendering');
+    this.progress.set('Drawing…');
     await this.attempt(async () => {
       const out = await this.electron.thumbsRender(run.runId, this.variants().map((v) => ({
         letter: v.letter, frameId: v.frameId, phrase: v.text.phrase, kind: v.text.kind, photo: v.photo,
-      })));
+      })), { logo: this.logoOn() });
+      if (out.suggestion !== null) this.suggestion.set(out.suggestion);
       this.results.set(out.results);
       this.folder.set(out.folder);
     });
     this.busy.set(null);
+    this.progress.set(null);
   }
 
   async showFolder(): Promise<void> {

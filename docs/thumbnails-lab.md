@@ -112,7 +112,8 @@ Pick the title the words pair with (the report's titles). **Write words** makes 
 **Claim** (the subject's own claim, lightly paraphrased), **Stakes** (the stakes or the absurdity),
 **Reaction** (the host's reaction). A starts on the first claim, B on the first stakes, C on the
 first reaction; each can be switched to any option or to **No text (picture only)**, which is a
-recommended A/B arm. Off-brief options (outside 2-5 words) are kept and warned about.
+recommended A/B arm. Off-brief options (outside 2-5 words) are kept and warned about. A thumbnail is
+only ever picture-only when Owen chose "No text" (see Auto-combine).
 
 ### 4. Look (saved under the store key `thumbnailLab.style`)
 Font (default Impact; a font that is not installed is refused by name), letter and outline colour
@@ -120,8 +121,23 @@ Font (default Impact; a font that is not installed is refused by name), letter a
 (on/off, darkness), the dark edges (on/off, strength), the smallest and largest letter height
 (default 12% and 20% of the picture's height), the reaction photo's white outline (px at 1080p,
 default 10, 0 for none) and how much of it may run off the bottom (default 10% of its height), and
-the two reserved spaces as percentages: Owen's reaction photo (default bottom right, 69/55/29/43%)
-and the logo (top right, always drawn empty).
+the two spaces as percentages: Owen's reaction photo (default bottom right, 69/55/29/43%) and the
+logo (default top right, 92.2/4.6/5.2/9.25%: the badge on his hand-made "f2 - the rapture.png",
+1920x1080 x 1770-1870, y 50-150, so 66x66 px at 1280; a saved look keeps its own values).
+
+### The logo (added 2026-09-28, same day)
+- **File.** "Logo: Choose file…" beside the Reaction photos folder saves the file's path under the
+  store key `thumbnailLab.logo` (settings, never the repo; read in place). The tab shows its name,
+  size and a small picture, or "none chosen". A missing or unreadable file is refused naming it, on
+  choosing and on every render. Owen's: `/Volumes/Callisto/youtube data/Misc/final logos/deprecated/
+  logo-xl-blue-fixed-2mb.png` (2000x2000 PNG with alpha, a round badge).
+- **Drawing** (logo.ts, layout.ts `placeLogo`). The picture is cut to its visible pixels (any alpha),
+  fitted inside the logo space with its aspect kept, against the space's top and right edges, on
+  whole pixels; it is downscaled once in the main process (nativeImage, 'best') to exactly that size
+  and drawn 1:1 last, over everything, so a 2000 px badge lands crisp. The words avoid the logo's
+  drawn bounds; with no logo drawn they keep the whole logo space clear.
+- **Switch.** A "Logo" box beside "Make the thumbnails", on whenever a logo is set; off draws none.
+  No logo set: nothing is drawn and no placeholder.
 
 ### Reaction photos (added 2026-09-28, same day)
 - **Folder.** "Reaction photos: Choose folder…" under Words saves the folder under the store key
@@ -164,8 +180,10 @@ Deterministic, no model:
   smallest height, the phrase is **too long**: the tab says so for that variant and draws nothing.
   It never shrinks further and never truncates.
 - Saved in `<report folder>/thumbnail tests/` as `<title> - A (claim - DON'T STAND UNDER A
-  ROOF).png` and so on; shown large (with the empty spaces outlined, switchable) and at 360, 246
-  and 168 px wide for the phone glance test. This folder is deliberately NOT the week's
+  ROOF).png` and so on; shown large and at 360, 246 and 168 px wide for the phone glance test.
+  "Show the empty photo and logo spaces" starts OFF; ticked, it outlines only a space that was left
+  empty on that render (never one with a photo or logo drawn). Each result says which photo and
+  whether the logo was drawn. This folder is deliberately NOT the week's
   `thumbnails/` folder, so the publish pipeline never auto-attaches a test render.
 
 ### Favourites, tone, photo suggestion and auto-combine (added 2026-09-28, same day)
@@ -190,7 +208,20 @@ Deterministic, no model:
   percentage, and the top one (the top starred one, when any are starred) is pre-selected. No photo is
   hidden or blocked. Tone and the three photo questions run as one lane job holding one lease.
 - **Auto-combine** (combine.ts): the favourites become A, B and C, each piece swappable in its row
-  before saving; "Combine again" resets the swaps.
+  before saving; "Combine again" resets the swaps. NOTHING IS LEFT OFF WITHOUT A CHOICE (2026-09-28,
+  after a render came out with no words and no photo because none were starred):
+  - *Words*: starred lines are used as starred. With none starred, A, B and C take the top claim,
+    stakes and reaction the model wrote (a held line in "Test one thing" is the top claim). With none
+    starred and none written, combine refuses: "Write words first, or star “No text”." A kind with no
+    line written is refused naming it. "No text" only when starred or picked in the row.
+  - *Photos*: a variant with no photo starred shows "Top suggested for A's words" (its photo, with
+    the percentage, once the suggestion has run for those words). "Make the thumbnails" resolves it:
+    when the suggestion has not run for the variants' exact words (or the words, folder or photo list
+    changed since), it runs first, shown in the progress line with the clock ("No photo is starred,
+    so first reading the tone and ranking the photos for these words"), then each variant takes its
+    top-ranked photo. A held photo in "Test one thing" is A's top one on every variant. No photos
+    folder: "Choose your reaction photos folder, or set each thumbnail to “No photo”." "No photo" is
+    only Owen's pick in the row. A ranking made for other words is never used, by combine or render.
   - *Best package*: each thumbnail takes a different favourite frame, words and photo (a short list
     repeats from its start).
   - *Test one thing*: two pieces stay the same on every thumbnail and the chosen one (frame, words
@@ -242,16 +273,21 @@ run never reads them, its log line leaves them out, and the change-all menu does
   scene cut (40 per cell, 0.6 of the cells) are declared starting points, tuned on one story.
 
 ## Checks
-`npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (40 checks: filters, scenes
+`npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (47 checks: filters, scenes
 (alternating clips, a moving speaker, a two-frame scene, the chain against the naive merge, the
 scoring budget, the per-scene rows), real ffmpeg
 sampling of a synthetic video inside given stretches only, the story source (regions minus cuts, the
 segment table, offset and drift, clipping, refusals), the unlinked report's picker and saved link on a
 synthetic session, the real 2026-09-24 rapture story as a read-only fixture when Callisto is mounted, ranking, the words prompt and parser, face-safe layout
 and the too-long refusal, scoring over the real transport and lanes against the fake Crucible
-including each image refusal) and `tools/thumbnail-lab-render-smoke.js` under the electron binary
-(Impact measured, a missing font refused, renders inside YouTube's bounds, the reference frame's
-face found and avoided).
+including each image refusal; combine never picture-only or photo-less without a choice, its
+refusals; the photo suggestion run first, reused and re-run on changed words over the fake
+Crucible, and the no-folder refusal; the logo placement and the words avoiding it; the empty-space
+outlines off by default) and `tools/thumbnail-lab-render-smoke.js` under the electron binary (12:
+Impact measured, a missing font refused, renders inside YouTube's bounds, the logo cut to its
+visible pixels and drawn only in its place with its aspect kept, a missing or unreadable logo
+refused, the reference frame's face found and avoided, and the evidence renders with text, photo
+and logo).
 
 ## Retiring the old THUMBNAIL TEXT OPTIONS field (Owen decides after testing)
 If this tab's words win: drop `thumbnail_text` from each channel's `fields:` list (the field stops
@@ -264,10 +300,9 @@ self-check lines about thumbnails go with it. Until then both exist and do not t
   compound (its timeMap) instead of the master's rate. Coordinator's rule (2026-09-28): only by
   reusing an editor reader. None exists today (the generators write timeMaps and editor_export.py
   passes them through; nothing reads one back), so rate 1 stays, declared in the run's lines.
-- Owen's reaction photos: the slot is reserved; drawing a cut-out there is the next step.
 - A live run (below) to measure the scorer's usefulness and tune the weights.
 - Scenes: footage with a moving camera (the rapture story's trees and sky) splits into several
   small scenes, each taking a floor of the scoring budget; desktop scenes (documents, the player
   window) take their floor too, until the scorer rejects them.
 - Whether image-only (no text) should be the default for one arm.
-- The logo slot's default position is read off one hand-made thumbnail.
+- The logo space's default is read off one hand-made thumbnail ("f2 - the rapture.png").

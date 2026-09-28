@@ -12,8 +12,10 @@
  *      desktop answer rejects screens, and the best view shows each scene's top few frames.
  *   3. Write words: three kinds (claim, stakes, reaction), several each, paired with the title the
  *      operator picks from the item's report.
- *   4. Render three variants deterministically, each with words or none, into a folder beside the
- *      item's report: `<report folder>/thumbnail tests/`.
+ *   4. Render three variants deterministically into a folder beside the item's report:
+ *      `<report folder>/thumbnail tests/`. Words, photo and logo are each on the thumbnail unless
+ *      Owen chose otherwise (combine.ts): a variant with no photo chosen takes the top-ranked photo
+ *      for its words, and the photo suggestion is run first when it has not run for those words.
  *
  * STATE. A run lives in memory (and its frames in userData/thumbnail-lab/<item>/<run>/), because
  * this is a testing tab: a restarted app starts a new run. The frame cache for an item keeps only
@@ -54,7 +56,8 @@ import { dataUrlOf, type ThumbnailCanvas } from './canvas-page';
 import type { AIManagerService } from '../metadata/ai-manager.service';
 import { listReactionPhotos, photoPreview, trimmedPhoto } from './reaction-photos';
 import { draftNotes, judgeThumbnails, type Ranked } from './judge';
-import { combine, type CombineMode, type Favourites } from './combine';
+import { combine, type CombineMode, type Favourites, type PhotoPick, type Rankings } from './combine';
+import { logoAt, logoPreview, readLogo } from './logo';
 
 /** The store key holding the tab's look (font, colours, slots). Absent: DEFAULT_STYLE, said in the view. */
 export const STYLE_STORE_KEY = 'thumbnailLab.style';
@@ -68,6 +71,12 @@ export const PHOTO_FOLDER_STORE_KEY = 'thumbnailLab.reactionFolder';
  * draft, until he saves one; a photo with neither has no note, and the legend lists its name alone.
  */
 export const PHOTO_NOTES_STORE_KEY = 'thumbnailLab.reactionNotes';
+
+/** The store key holding the path of Owen's logo file. Absent: none chosen (nothing drawn, no placeholder). */
+export const LOGO_STORE_KEY = 'thumbnailLab.logo';
+
+/** The refusal when a thumbnail needs its photo suggested and no photos folder is set. */
+export const CHOOSE_PHOTOS_OR_NONE = 'Choose your reaction photos folder, or set each thumbnail to “No photo”.';
 
 /** The folder beside an item's report the renders go into. */
 export const OUTPUT_FOLDER = 'thumbnail tests';
@@ -187,6 +196,35 @@ interface Run {
   bestScenes: SceneRow[] | null;
   scoring: LabRunView['scoring'];
   controller: AbortController | null;
+  /** The last photo suggestion, with the words and the photo list it was made for. */
+  suggestion: StoredSuggestion | null;
+}
+
+/** A photo suggestion and exactly what it was made from, so one made for other words is never used. */
+export interface StoredSuggestion {
+  folder: string;
+  names: string[];
+  /** Each variant's words when it ran (null: picture only). */
+  texts: Record<string, string | null>;
+  tone: Ranked[];
+  photos: Record<string, Ranked[]>;
+  line: string;
+}
+
+/** The suggestion as the tab gets it: the rankings, the words they are for, the tone line. */
+export interface LabSuggestion {
+  tone: Ranked[];
+  photos: Record<string, Ranked[]>;
+  texts: Record<string, string | null>;
+  line: string;
+}
+
+export interface LabVariantRequest {
+  letter: string;
+  frameId: string;
+  phrase: string | null;
+  kind: WordKind | null;
+  photo: PhotoPick;
 }
 
 export interface LabDeps {
@@ -204,7 +242,7 @@ export interface LabDeps {
   };
   /** The editor's timeline manifest for a compounds zip (PythonService.editorManifest). */
   manifest: (zipPath: string) => Promise<unknown>;
-  progress: (event: { runId: string; stage: 'sampling' | 'filtering' | 'scoring'; done: number; total: number }) => void;
+  progress: (event: { runId: string; stage: 'sampling' | 'filtering' | 'scoring' | 'suggesting' | 'drawing'; done: number; total: number }) => void;
 }
 
 function frameId(frame: { index: number }): string {
@@ -422,7 +460,7 @@ export class ThumbnailLab {
     const run: Run = {
       runId, item, source, video, dir, start: sampled.start, end: sampled.end, frames: kept, toScore: new Set(toScore.map(frameId)),
       scenes, sceneOf: new Map(scenes.flatMap((s) => s.frames.map((f) => [frameId(f), s.number] as const))),
-      lines, ranked: null, readings: new Map(), flags: new Map(), bestScenes: null, scoring: null, controller: null,
+      lines, ranked: null, readings: new Map(), flags: new Map(), bestScenes: null, scoring: null, controller: null, suggestion: null,
     };
     this.runs.set(runId, run);
     return this.view(run, true);
@@ -605,10 +643,11 @@ export class ThumbnailLab {
    * The tone, and the photos ranked for each variant from its words (judge.ts), on the
    * `thumbnail_judge` row. The ranking is every photo, in order; nothing is left out.
    */
-  async suggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<{ tone: Ranked[]; photos: Record<string, Ranked[]>; line: string }> {
+  async suggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<LabSuggestion> {
     const run = this.run(runId);
     const folder = this.photoFolder();
     if (folder === null) throw new Error('Choose the reaction photos folder first.');
+    const names = listReactionPhotos(folder).map((p) => p.name);
     const option = this.routed('thumbnail_judge');
     if (option.crucibleModel === null) throw new Error(`The tone and photo row names ${option.label}, which is not a Crucible model.`);
     if (run.item.promptSet === null) throw new Error(`${run.item.title} names no prompt set, so nothing says whose channel it is.`);
@@ -627,18 +666,82 @@ export class ThumbnailLab {
         description: run.item.description,
         transcript: record.segments.map((s, i) => transcriptLine(srtSeconds(s.start, `caption ${i + 1}`), s.text)),
       },
-      photos: this.notesFor(listReactionPhotos(folder).map((p) => p.name)),
+      photos: this.notesFor(names),
       variants,
     });
     const top = out.tone[0];
     const line = `The tone reads as ${top.name} (${Math.round((top.p ?? 0) * 100)}%), on ${out.model} on "${out.server}".`;
     log.info(`[ThumbnailLab] ${runId}: ${line} Photos: ${Object.entries(out.photos).map(([l, r]) => `${l}=${r[0].name}`).join(', ')}`);
-    return { tone: out.tone, photos: out.photos, line };
+    const texts = Object.fromEntries(variants.map((v) => [v.letter, v.text]));
+    run.suggestion = { folder, names, texts, tone: out.tone, photos: out.photos, line };
+    return { tone: out.tone, photos: out.photos, texts, line };
   }
 
   /** The starting layout of A/B/C from the favourites (combine.ts). */
-  combine(fav: Favourites, how: CombineMode, rank: Record<string, readonly string[]> | null) {
+  combine(fav: Favourites, how: CombineMode, rank: Rankings | null) {
     return combine(fav, how, rank);
+  }
+
+  /**
+   * Each variant's photo name (null only for an explicit "No photo"). A `top` pick takes the photo
+   * the suggestion ranks first for that variant's words; when the run has no suggestion, or its
+   * suggestion was made for other words, another photo list or another folder, the suggestion is
+   * run first for these variants' words (and replaces the old one). With no photos folder, a `top`
+   * pick is refused: nothing picks a photo for Owen from nothing.
+   */
+  async resolvePhotos(runId: string, variants: readonly LabVariantRequest[]): Promise<{ names: Record<string, string | null>; suggestion: LabSuggestion | null; ran: boolean }> {
+    const run = this.run(runId);
+    const tops = variants.filter((v): v is LabVariantRequest & { photo: { pick: 'top'; of: string } } => v.photo.pick === 'top');
+    const textOf = (letter: string): string | null => {
+      const v = variants.find((x) => x.letter === letter);
+      if (v === undefined) throw new Error(`Thumbnail ${letter}'s words decide a photo here, and there is no thumbnail ${letter} in this set.`);
+      return v.phrase;
+    };
+    let ran = false;
+    if (tops.length > 0) {
+      const folder = this.photoFolder();
+      if (folder === null) throw new Error(CHOOSE_PHOTOS_OR_NONE);
+      const names = listReactionPhotos(folder).map((p) => p.name);
+      const s = run.suggestion;
+      const fresh = s !== null && s.folder === folder && s.names.join('\n') === names.join('\n')
+        && tops.every((v) => v.photo.of in s.texts && s.texts[v.photo.of] === textOf(v.photo.of) && s.photos[v.photo.of] !== undefined);
+      if (!fresh) {
+        this.deps.progress({ runId, stage: 'suggesting', done: 0, total: variants.length });
+        await this.suggest(runId, variants.map((v) => ({ letter: v.letter, text: v.phrase })));
+        ran = true;
+      }
+    }
+    const s = run.suggestion;
+    const out: Record<string, string | null> = {};
+    for (const v of variants) {
+      out[v.letter] = v.photo.pick === 'photo' ? v.photo.name : v.photo.pick === 'none' ? null : s!.photos[v.photo.of][0].name;
+    }
+    return { names: out, suggestion: s === null ? null : { tone: s.tone, photos: s.photos, texts: s.texts, line: s.line }, ran };
+  }
+
+  // ── the logo ──────────────────────────────────────────────────────────────
+
+  /** The saved logo path, or null when none has been chosen. */
+  logoFile(): string | null {
+    const file = this.deps.store.get(LOGO_STORE_KEY);
+    if (file === undefined || file === null || file === '') return null;
+    if (typeof file !== 'string') throw new Error(`The saved logo is not a file path: ${JSON.stringify(file)}`);
+    return file;
+  }
+
+  /** The logo as the tab shows it (file name, size, a small picture), or null for none. A saved file that is gone or unreadable throws naming it. */
+  logo(): { file: string; name: string; width: number; height: number; preview: string } | null {
+    const file = this.logoFile();
+    if (file === null) return null;
+    const logo = readLogo(file);
+    return { file, name: logo.name, width: logo.fileWidth, height: logo.fileHeight, preview: logoPreview(logo) };
+  }
+
+  /** Save the logo file, after reading it (an unreadable file is refused, not saved). */
+  setLogo(file: string) {
+    readLogo(file);
+    this.deps.store.set(LOGO_STORE_KEY, file);
+    return this.logo();
   }
 
   private photoNamed(name: string) {
@@ -661,39 +764,61 @@ export class ThumbnailLab {
     return style;
   }
 
-  /** Step 4: three variants. Each is rendered or refused on its own; one refusal does not stop the others. */
-  async render(runId: string, variants: Array<{ letter: string; frameId: string; phrase: string | null; kind: WordKind | null; photo: string | null }>) {
+  /**
+   * Step 4: the variants. Each is rendered or refused on its own; one refusal does not stop the
+   * others. `logo` is the tab's per-render switch: on draws the saved logo on every variant (and is
+   * refused when none is saved), off draws none.
+   */
+  async render(runId: string, variants: LabVariantRequest[], options: { logo: boolean }) {
     const run = this.run(runId);
     if (variants.length === 0) throw new Error('Mark at least one frame to render.');
     if (run.item.reportFolder === null) throw new Error(`${run.item.title} has no report folder recorded, so there is nowhere beside it to save the thumbnails.`);
+    if (typeof options?.logo !== 'boolean') throw new Error(`The logo switch must be on or off, got ${JSON.stringify(options?.logo)}.`);
+    for (const v of variants) {
+      if (!/^[A-Z]$/.test(v.letter)) throw new Error(`"${v.letter}" is not a variant letter.`);
+      if (!run.frames.some((f) => frameId(f) === v.frameId)) throw new Error(`Frame ${v.frameId} is not in this run.`);
+    }
+    let logo: ReturnType<typeof readLogo> | null = null;
+    if (options.logo) {
+      const file = this.logoFile();
+      if (file === null) throw new Error('The logo is switched on, and no logo file is chosen. Choose the logo file, or switch the logo off.');
+      logo = readLogo(file);
+    }
     const style = this.getStyle().style;
+    const photos = await this.resolvePhotos(runId, variants);
     const outDir = path.join(run.item.reportFolder, OUTPUT_FOLDER);
     const results = [];
     // The hidden canvas window lives for this batch only: a window left open would sit in
     // BrowserWindow.getAllWindows() and keep "all windows closed" from ever firing.
     const canvas = this.deps.canvas();
     try {
-    for (const v of variants) {
-      if (!/^[A-Z]$/.test(v.letter)) throw new Error(`"${v.letter}" is not a variant letter.`);
-      const frame = run.frames.find((f) => frameId(f) === v.frameId);
-      if (frame === undefined) throw new Error(`Frame ${v.frameId} is not in this run.`);
+    for (const [i, v] of variants.entries()) {
+      this.deps.progress({ runId, stage: 'drawing', done: i, total: variants.length });
+      const frame = run.frames.find((f) => frameId(f) === v.frameId)!;
       const full = path.join(run.dir, 'full', `${v.frameId}.png`);
       if (!fs.existsSync(full)) await extractFullFrame(this.deps.ffmpeg, run.video, frame.t, full);
-      const photo = v.photo === null ? null : this.photoNamed(v.photo);
+      const photoName = photos.names[v.letter];
+      const photo = photoName === null ? null : this.photoNamed(photoName);
       const words = v.phrase === null ? 'no text' : `${v.kind ?? 'words'} - ${safeFileName(v.phrase)}`;
       const label = photo === null ? words : `${words}, ${safeFileName(photo.name)}`;
       const outStem = path.join(outDir, `${safeFileName(run.item.title)} - ${v.letter} (${label})`);
-      const r = await renderThumbnail({ canvas, frame: full, phrase: v.phrase, style, photo, outStem });
+      const r = await renderThumbnail({
+        canvas, frame: full, phrase: v.phrase, style, photo, outStem,
+        logo: logo === null ? null : { width: logo.width, height: logo.height, at: (w, h) => logoAt(logo!, w, h) },
+      });
       results.push(
         r.ok
-          ? { letter: v.letter, ok: true as const, path: r.path, bytes: r.bytes, format: r.format, picture: dataUrlOf(r.path), notes: r.notes, at: clock(frame.t) }
+          ? {
+              letter: v.letter, ok: true as const, path: r.path, bytes: r.bytes, format: r.format, picture: dataUrlOf(r.path), notes: r.notes, at: clock(frame.t),
+              photo: photoName, logo: r.logo !== null,
+            }
           : { letter: v.letter, ok: false as const, reason: r.reason, at: clock(frame.t) },
       );
     }
     } finally {
       canvas.close();
     }
-    log.info(`[ThumbnailLab] ${runId}: rendered ${results.filter((r) => r.ok).length} of ${results.length} into ${outDir}`);
-    return { folder: outDir, results };
+    log.info(`[ThumbnailLab] ${runId}: rendered ${results.filter((r) => r.ok).length} of ${results.length} into ${outDir}${photos.ran ? ' (the photo suggestion ran first)' : ''}`);
+    return { folder: outDir, results, suggestion: photos.suggestion, suggested: photos.ran };
   }
 }

@@ -192,6 +192,16 @@
           <button mat-stroked-button (click)="notesOpen.set(!notesOpen())">{{ notesOpen() ? 'Hide notes' : 'Edit notes' }}</button>
         }
       </div>
+      <div class="row">
+        <span class="label">Logo:</span>
+        @if (logo(); as lg) {
+          <img class="logo-thumb" [src]="lg.preview" [alt]="lg.name" />
+          <span [matTooltip]="lg.file">{{ lg.name }} ({{ lg.width }}x{{ lg.height }})</span>
+        } @else {
+          <span>none chosen</span>
+        }
+        <button mat-stroked-button (click)="chooseLogo()" [disabled]="busy() !== null">Choose file…</button>
+      </div>
       @if (photos().photos.length > 0) {
         <p class="hint">Click the photos you like to star them.</p>
         <div class="photo-pick">
@@ -273,14 +283,15 @@
                 </select>
               </label>
               <label class="field"><span class="label">Photo</span>
-                <select [ngModel]="v.photo ?? ''" (ngModelChange)="swap(v.letter, { photo: $event === '' ? null : $event })">
-                  <option value="">No photo</option>
+                <select [ngModel]="photoKey(v.photo)" (ngModelChange)="swapPhoto(v.letter, $event)">
+                  <option [value]="'top:' + (v.photo.pick === 'top' ? v.photo.of : v.letter)">{{ topLabel(v.photo.pick === 'top' ? v.photo.of : v.letter) }}</option>
+                  <option value="none:">No photo</option>
                   @for (p of photoMenu(v.letter); track p.name) {
-                    <option [value]="p.name">{{ favPhotos().includes(p.name) ? '★ ' : '' }}{{ p.name }}{{ p.p !== null ? ' — ' + percent(p.p) + '%' : '' }}</option>
+                    <option [value]="'photo:' + p.name">{{ favPhotos().includes(p.name) ? '★ ' : '' }}{{ p.name }}{{ p.p !== null ? ' — ' + percent(p.p) + '%' : '' }}</option>
                   }
                 </select>
               </label>
-              @if (photoPreview(v.photo); as pic) { <img class="photo-thumb" [src]="pic" [alt]="v.photo" /> }
+              @if (photoPreview(v.photo); as pic) { <img class="photo-thumb" [src]="pic" [alt]="'Photo for ' + v.letter" /> }
             </div>
           }
         </div>
@@ -320,7 +331,7 @@
             <input type="number" min="5" max="50" step="1" [ngModel]="pct(s.maxCapFraction)" (ngModelChange)="setStyle('maxCapFraction', $event / 100)" /></label>
           @for (slot of ['reactionSlot', 'logoSlot']; track slot) {
             <div class="slot">
-              <span class="label">{{ slot === 'reactionSlot' ? 'Your reaction photo' : 'Logo (kept empty for now)' }}, % of the picture:</span>
+              <span class="label">{{ slot === 'reactionSlot' ? 'Your reaction photo' : 'Logo (fitted inside, top right)' }}, % of the picture:</span>
               @for (k of ['x', 'y', 'w', 'h']; track k) {
                 <label class="mini"><span>{{ k === 'x' ? 'left' : k === 'y' ? 'top' : k === 'w' ? 'width' : 'height' }}</span>
                   <input type="number" min="0" max="100" step="0.5" [ngModel]="pct($any(s)[slot][k])" (ngModelChange)="setSlot($any(slot), $any(k), $event)" /></label>
@@ -343,7 +354,10 @@
         <button mat-flat-button color="primary" (click)="render()" [disabled]="busy() !== null || variants().length === 0">
           <mat-icon>image</mat-icon> Make {{ variants().length === 1 ? 'the thumbnail' : 'the ' + variants().length + ' thumbnails' }}
         </button>
-        @if (busy() === 'rendering') { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>Drawing…</span> }
+        @if (busy() === 'rendering') { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>{{ progress() }}</span> }
+        <label class="check" [matTooltip]="logo() ? logo()!.name : 'Choose the logo file under Reaction photos first'">
+          <input type="checkbox" [checked]="logoOn()" [disabled]="logo() === null" (change)="logoOn.set(!logoOn())" /> Logo
+        </label>
         <label class="check"><input type="checkbox" [checked]="showSlots()" (change)="showSlots.set(!showSlots())" /> Show the empty photo and logo spaces</label>
         @if (folder() && results()) { <button mat-stroked-button (click)="showFolder()">Open folder</button> }
       </div>
@@ -355,10 +369,8 @@
             <div class="result-body">
               <div class="big">
                 <img [src]="res.picture" [alt]="'Thumbnail ' + res.letter" />
-                @if (showSlots()) {
-                  <span class="slot-box" [ngStyle]="slotBox('reactionSlot')">your photo</span>
-                  <span class="slot-box" [ngStyle]="slotBox('logoSlot')">logo</span>
-                }
+                @if (showSlots() && res.photo === null) { <span class="slot-box" [ngStyle]="slotBox('reactionSlot')">empty photo space</span> }
+                @if (showSlots() && !res.logo) { <span class="slot-box" [ngStyle]="slotBox('logoSlot')">empty logo space</span> }
               </div>
               <div class="phones">
                 @for (wpx of phoneWidths; track wpx) {
@@ -366,7 +378,7 @@
                 }
               </div>
             </div>
-            <p class="line">{{ fileName(res.path) }} · {{ kb(res.bytes) }} {{ res.format.toUpperCase() }}</p>
+            <p class="line">{{ fileName(res.path) }} · {{ kb(res.bytes) }} {{ res.format.toUpperCase() }} · photo: {{ res.photo ?? 'none (your choice)' }} · logo: {{ res.logo ? 'on' : 'off' }}</p>
             @for (n of res.notes; track n) { <p class="line warn">{{ n }}</p> }
           } @else {
             <p class="line warn">{{ res.reason }}</p>
