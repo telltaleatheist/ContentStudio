@@ -108,6 +108,35 @@ Deterministic, no model:
   and 168 px wide for the phone glance test. This folder is deliberately NOT the week's
   `thumbnails/` folder, so the publish pipeline never auto-attaches a test render.
 
+### Favourites, tone, photo suggestion and auto-combine (added 2026-09-28, same day)
+- **Favourites.** Owen stars a few of each piece: frames in the grid, word lines (and "No text"),
+  reaction photos. Starring replaces the old "mark three frames".
+- **Photo notes.** "Edit notes" under Reaction photos: one line per photo saying what it shows and
+  when it fits, saved under the store key `thumbnailLab.reactionNotes` (with the folder setting,
+  never in the repo). Until Owen saves one, a photo shows its draft from thumbnails.yml
+  `photo.drafts`, marked "(draft)" (laugh / chuckle / uh oh laughing: light topics only, never for
+  deaths or real victims; horrified / thats not good / this is wrong: serious; oh please / are you
+  kidding me / exaspirated: dismissive; eww: disgust; head slap: facepalm; oh wow / ooh:
+  surprised). A photo with neither is listed by its name alone.
+- **Tone** (judge.ts, decide, text only): the report's description hook and description (without
+  the links below it) and the first 60 caption lines; one choice question, "What is the tone of this
+  video?", over the list in thumbnails.yml `tone.options` (mocking, absurd, outraged, alarming,
+  disgusted, incredulous, hypocrisy exposed, sombre, pitiful, lighthearted; Owen edits it, at most
+  26). The tab shows the top tone and its probability in one line.
+- **Photo suggestion** (decide, text only, once per variant): the hook and description, the tone,
+  that variant's words (or "none, the thumbnail is a picture only") and a legend of every photo with
+  its note; "Which reaction photo fits this thumbnail?" with the photo names as the answers. The
+  probabilities ARE the ranking: the variant's photo menu lists every photo in that order with its
+  percentage, and the top one (the top starred one, when any are starred) is pre-selected. No photo is
+  hidden or blocked. Tone and the three photo questions run as one lane job holding one lease.
+- **Auto-combine** (combine.ts): the favourites become A, B and C, each piece swappable in its row
+  before saving; "Combine again" resets the swaps.
+  - *Best package*: each thumbnail takes a different favourite frame, words and photo (a short list
+    repeats from its start).
+  - *Test one thing*: two pieces stay the same on every thumbnail and the chosen one (frame, words
+    or photo) changes, so the A/B test measures that piece alone; it needs at least two favourites
+    of that piece and makes as many thumbnails as there are (up to three).
+
 ## Routing (the routing table is the only model authority)
 Two rows under "Thumbnails tab (testing)" in the Routing dialog, in their own group: a metadata
 run never reads them, its log line leaves them out, and the change-all menu does not touch them.
@@ -115,6 +144,9 @@ run never reads them, its log line leaves them out, and the change-all menu does
   gives one). Default **Qwen3.5 9B with vision** (`qwen3.5-9b-vl`); also 4B, 2B, 0.8B and the 27B
   with vision. A server that lists a model as text-only shows it as not here.
 - **Thumbnail words**: the thumbnail_text rungs (27B default, 9B, Sonnet, Opus, Haiku, claude -p).
+- **Thumbnail tone and photo**: the tone and photo decides. Its own row rather than the words row,
+  because the words row offers cloud and claude -p, and a decide needs logprobs, which only a local
+  Crucible model gives. Default Qwen3.5 9B; also 4B and 27B.
 
 ## Where it stands (2026-09-28)
 - **No live run yet.** No Crucible call has been made; the scorer and the words were checked on the

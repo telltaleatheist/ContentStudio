@@ -38,7 +38,8 @@ export type MetadataRoutingTaskId =
   | 'thumbnail_text'
   | 'pinned_comment'
   | 'thumbnail_frames'
-  | 'thumbnail_words';
+  | 'thumbnail_words'
+  | 'thumbnail_judge';
 
 /**
  * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
@@ -432,6 +433,20 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Thumbnail words',
     options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
+    modal: true,
+    group: 'thumbnails',
+  },
+  {
+    /**
+     * THE THUMBNAILS TAB'S TONE AND PHOTO SUGGESTION (2026-09-28): two text-only decide questions
+     * (judge.ts). Its own row rather than the words row, because the words row offers cloud and
+     * claude -p rungs and a decide needs logprobs, which only a local Crucible model gives. The 9B
+     * by default (Owen: "default qwen3.5-9b on the Mac").
+     */
+    id: 'thumbnail_judge',
+    label: 'Thumbnail tone and photo',
+    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b'],
+    defaultOptionId: 'qwen35-9b',
     modal: true,
     group: 'thumbnails',
   },

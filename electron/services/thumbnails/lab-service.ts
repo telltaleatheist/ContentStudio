@@ -35,12 +35,21 @@ import { DEFAULT_STYLE, validateStyle, type ThumbnailStyle } from './layout';
 import { dataUrlOf, type ThumbnailCanvas } from './canvas-page';
 import type { AIManagerService } from '../metadata/ai-manager.service';
 import { listReactionPhotos, photoPreview, trimmedPhoto } from './reaction-photos';
+import { draftNotes, judgeThumbnails, type Ranked } from './judge';
+import { combine, type CombineMode, type Favourites } from './combine';
 
 /** The store key holding the tab's look (font, colours, slots). Absent: DEFAULT_STYLE, said in the view. */
 export const STYLE_STORE_KEY = 'thumbnailLab.style';
 
 /** The store key holding the folder of Owen's reaction photos. Absent: none chosen yet (not a default). */
 export const PHOTO_FOLDER_STORE_KEY = 'thumbnailLab.reactionFolder';
+
+/**
+ * Owen's note per reaction photo (name -> note), stored with the folder setting, never in the repo.
+ * A photo with no stored note shows the draft from thumbnails.yml `photo.drafts`, marked as a
+ * draft, until he saves one; a photo with neither has no note, and the legend lists its name alone.
+ */
+export const PHOTO_NOTES_STORE_KEY = 'thumbnailLab.reactionNotes';
 
 /** The folder beside an item's report the renders go into. */
 export const OUTPUT_FOLDER = 'thumbnail tests';
@@ -56,6 +65,9 @@ export interface LabItem {
   promptSet: string | null;
   hasTranscript: boolean;
   reportFolder: string | null;
+  /** The report's description hook and description (for the tone and the photo suggestion). */
+  hook: string;
+  description: string;
   /** Why the item cannot be used, in plain words; null when it can. */
   problem: string | null;
 }
@@ -143,7 +155,7 @@ export class ThumbnailLab {
     return dir;
   }
 
-  private routed(task: 'thumbnail_frames' | 'thumbnail_words'): MetadataRoutingOption {
+  private routed(task: 'thumbnail_frames' | 'thumbnail_words' | 'thumbnail_judge'): MetadataRoutingOption {
     const resolved = resolveMetadataRouting(this.deps.store.get('metadataRouting'));
     return routingOption(task, resolved[task]);
   }
@@ -182,6 +194,8 @@ export class ThumbnailLab {
           promptSet: typeof raw._prompt_set === 'string' ? raw._prompt_set : (typeof job.prompt_set === 'string' ? job.prompt_set : null),
           hasTranscript,
           reportFolder: typeof raw.txt_path === 'string' ? path.dirname(raw.txt_path) : null,
+          hook: typeof raw.description_hook === 'string' ? raw.description_hook : '',
+          description: typeof raw.description === 'string' ? raw.description : '',
           problem,
         });
       }
@@ -364,17 +378,86 @@ export class ThumbnailLab {
     return folder;
   }
 
-  /** The folder's photos, trimmed, each with a small picture for the picker. */
-  photos(): { folder: string | null; photos: Array<{ name: string; preview: string; note: string | null }> } {
+  private storedNotes(): Record<string, string> {
+    const stored = this.deps.store.get(PHOTO_NOTES_STORE_KEY);
+    if (stored === undefined || stored === null) return {};
+    if (typeof stored !== 'object' || Array.isArray(stored) || Object.values(stored).some((v) => typeof v !== 'string')) {
+      throw new Error(`The saved reaction photo notes are not a list of name: note (${JSON.stringify(stored).slice(0, 120)}).`);
+    }
+    return stored as Record<string, string>;
+  }
+
+  /** Each photo's note: Owen's saved one, else the draft (marked), else none. */
+  private notesFor(names: readonly string[]): Array<{ name: string; note: string | null; draft: boolean }> {
+    const stored = this.storedNotes();
+    const drafts = draftNotes();
+    return names.map((name) =>
+      stored[name] !== undefined ? { name, note: stored[name], draft: false }
+      : drafts[name] !== undefined ? { name, note: drafts[name], draft: true }
+      : { name, note: null, draft: false });
+  }
+
+  /** Save one photo's note (an empty note is saved as empty: the legend then lists the name alone). */
+  setPhotoNote(name: string, note: string): void {
+    const folder = this.photoFolder();
+    if (folder === null) throw new Error('No reaction photos folder is set.');
+    if (!listReactionPhotos(folder).some((p) => p.name === name)) throw new Error(`There is no reaction photo "${name}" in ${folder}.`);
+    this.deps.store.set(PHOTO_NOTES_STORE_KEY, { ...this.storedNotes(), [name]: note.trim() });
+  }
+
+  /** The folder's photos, trimmed, each with a small picture for the picker and its note. */
+  photos(): { folder: string | null; photos: Array<{ name: string; preview: string; trim: string | null; note: string | null; draft: boolean }> } {
     const folder = this.photoFolder();
     if (folder === null) return { folder: null, photos: [] };
+    const list = listReactionPhotos(folder);
+    const notes = this.notesFor(list.map((p) => p.name));
     return {
       folder,
-      photos: listReactionPhotos(folder).map((p) => {
+      photos: list.map((p, i) => {
         const trimmed = trimmedPhoto(p);
-        return { name: p.name, preview: photoPreview(trimmed), note: trimmed.note };
+        return { name: p.name, preview: photoPreview(trimmed), trim: trimmed.note, note: notes[i].note, draft: notes[i].draft };
       }),
     };
+  }
+
+  /**
+   * The tone, and the photos ranked for each variant from its words (judge.ts), on the
+   * `thumbnail_judge` row. The ranking is every photo, in order; nothing is left out.
+   */
+  async suggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<{ tone: Ranked[]; photos: Record<string, Ranked[]>; line: string }> {
+    const run = this.run(runId);
+    const folder = this.photoFolder();
+    if (folder === null) throw new Error('Choose the reaction photos folder first.');
+    const option = this.routed('thumbnail_judge');
+    if (option.crucibleModel === null) throw new Error(`The tone and photo row names ${option.label}, which is not a Crucible model.`);
+    if (run.item.promptSet === null) throw new Error(`${run.item.title} names no prompt set, so nothing says whose channel it is.`);
+    const channel = promptAssets().channel(run.item.promptSet);
+    const terms = (channel.brandTerms ?? []).map((t) => t.trim()).filter((t) => t.length > 0);
+    if (terms.length === 0) throw new Error(`The prompt set "${channel.name}" declares no brand_terms, so nothing says who its creator is.`);
+    const { record } = loadSavedTranscript(this.outputDir(), run.item.sourcePath!);
+    const out = await judgeThumbnails({
+      deps: this.deps.scorer(),
+      jobId: `${runId}-judge-${Date.now()}`,
+      model: option.crucibleModel,
+      tone: {
+        channel: channel.name,
+        creator: terms.join(', '),
+        hook: run.item.hook,
+        description: run.item.description,
+        transcript: record.segments.map((s, i) => transcriptLine(srtSeconds(s.start, `caption ${i + 1}`), s.text)),
+      },
+      photos: this.notesFor(listReactionPhotos(folder).map((p) => p.name)),
+      variants,
+    });
+    const top = out.tone[0];
+    const line = `The tone reads as ${top.name} (${Math.round((top.p ?? 0) * 100)}%), on ${out.model} on "${out.server}".`;
+    log.info(`[ThumbnailLab] ${runId}: ${line} Photos: ${Object.entries(out.photos).map(([l, r]) => `${l}=${r[0].name}`).join(', ')}`);
+    return { tone: out.tone, photos: out.photos, line };
+  }
+
+  /** The starting layout of A/B/C from the favourites (combine.ts). */
+  combine(fav: Favourites, how: CombineMode, rank: Record<string, readonly string[]> | null) {
+    return combine(fav, how, rank);
   }
 
   private photoNamed(name: string) {

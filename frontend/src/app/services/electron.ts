@@ -32,8 +32,12 @@ import type {
 import type {
   ThumbsAnswer,
   ThumbsItem,
+  ThumbsCombineMode,
+  ThumbsCombineResult,
   ThumbsPhotos,
   ThumbsProgress,
+  ThumbsSuggestion,
+  ThumbsWordPick,
   ThumbsRenderResult,
   ThumbsRun,
   ThumbsStyle,
@@ -1105,6 +1109,9 @@ declare global {
       thumbsRender: (runId: string, variants: ThumbsVariantRequest[]) => Promise<ThumbsAnswer<{ folder: string; results: ThumbsRenderResult[] }>>;
       thumbsChooseVideo: () => Promise<ThumbsAnswer<string | null>>;
       thumbsPhotos: () => Promise<ThumbsAnswer<ThumbsPhotos>>;
+      thumbsSetPhotoNote: (name: string, note: string) => Promise<ThumbsAnswer<void>>;
+      thumbsSuggest: (runId: string, variants: Array<{ letter: string; text: string | null }>) => Promise<ThumbsAnswer<ThumbsSuggestion>>;
+      thumbsCombine: (fav: { frames: string[]; texts: ThumbsWordPick[]; photos: string[] }, how: ThumbsCombineMode, rank: Record<string, string[]> | null) => Promise<ThumbsAnswer<ThumbsCombineResult>>;
       thumbsChoosePhotoFolder: () => Promise<ThumbsAnswer<string | null>>;
       thumbsShowFolder: (folder: string) => Promise<ThumbsAnswer<void>>;
       onThumbsProgress: (callback: (event: ThumbsProgress) => void) => () => void;
@@ -2593,6 +2600,13 @@ export class ElectronService {
   }
   thumbsChooseVideo(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChooseVideo()); }
   thumbsPhotos(): Promise<ThumbsPhotos> { return this.thumbs(this.thumbsBridge.thumbsPhotos()); }
+  thumbsSetPhotoNote(name: string, note: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsSetPhotoNote(name, note)); }
+  thumbsSuggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<ThumbsSuggestion> {
+    return this.thumbs(this.thumbsBridge.thumbsSuggest(runId, variants));
+  }
+  thumbsCombine(fav: { frames: string[]; texts: ThumbsWordPick[]; photos: string[] }, how: ThumbsCombineMode, rank: Record<string, string[]> | null): Promise<ThumbsCombineResult> {
+    return this.thumbs(this.thumbsBridge.thumbsCombine(fav, how, rank));
+  }
   thumbsChoosePhotoFolder(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChoosePhotoFolder()); }
   thumbsShowFolder(folder: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsShowFolder(folder)); }
   onThumbsProgress(callback: (event: ThumbsProgress) => void): () => void {

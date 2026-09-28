@@ -86,10 +86,10 @@
           <button role="tab" [class.on]="view() === 'all'" (click)="view.set('all')">All kept frames ({{ r.frames.length }})</button>
         </div>
       </div>
-      <p class="hint">Click a frame to mark it. The first three marked become thumbnails A, B and C. Marked: {{ marked().length }} of 3.</p>
+      <p class="hint">Click the frames you like to star them. Starred: {{ favFrames().length }}.</p>
       <div class="grid">
         @for (f of shownFrames(); track f.id) {
-          <button class="tile" [class.marked]="letterOf(f.id)" [class.dim]="f.flag === 'screen'" (click)="toggleMark(f)" [matTooltip]="frameTip(f)">
+          <button class="tile" [class.marked]="frameStar(f.id)" [class.dim]="f.flag === 'screen'" (click)="toggleFrame(f)" [matTooltip]="frameTip(f)">
             <img [src]="f.small" [alt]="'Frame at ' + f.clock" loading="lazy" />
             <span class="tile-foot">
               <span class="clock">{{ f.clock }}</span>
@@ -97,7 +97,7 @@
               @if (f.flag === 'screen') { <span class="flag">screen</span> }
               @if (f.flag === 'unreadable') { <span class="flag">unreadable</span> }
             </span>
-            @if (letterOf(f.id); as letter) { <span class="letter">{{ letter }}</span> }
+            @if (frameStar(f.id)) { <span class="letter"><mat-icon>star</mat-icon></span> }
             <span class="zoom" (click)="look(f, $event)" matTooltip="Look closer"><mat-icon>zoom_in</mat-icon></span>
           </button>
         }
@@ -113,7 +113,7 @@
       }
     </section>
 
-    <!-- 3. The words -->
+    <!-- 3. Words -->
     <section class="step">
       <h3><span class="num">3</span> Words</h3>
       <p class="hint">The words are written to go with one title, so pick the title this test pairs them with.</p>
@@ -133,64 +133,137 @@
         @if (busy() === 'words') { <span class="progress"><span class="spinner"></span>Writing…</span> }
       </div>
       @if (words(); as w) {
-        <p class="line">Written by {{ w.model }}.</p>
+        <p class="line">Written by {{ w.model }}. Click the lines you like to star them.</p>
         @for (warning of w.warnings; track warning) { <p class="line warn">{{ warning }}</p> }
         <div class="kinds">
           @for (k of kinds; track k) {
             <div class="kind">
               <span class="kind-name">{{ kindLabel[k] }}</span>
-              @for (o of w[k]; track o) { <span class="option">{{ o }}</span> }
+              @for (o of w[k]; track o) {
+                <button class="option" [class.on]="isFavText({ phrase: o, kind: k })" (click)="toggleText({ phrase: o, kind: k })">
+                  @if (isFavText({ phrase: o, kind: k })) { <mat-icon>star</mat-icon> } {{ o }}
+                </button>
+              }
               @if (w[k].length === 0) { <span class="hint">none</span> }
             </div>
           }
         </div>
+        <button class="option inline" [class.on]="isFavText({ phrase: null, kind: null })" (click)="toggleText({ phrase: null, kind: null })">
+          @if (isFavText({ phrase: null, kind: null })) { <mat-icon>star</mat-icon> } No text (picture only)
+        </button>
       }
-      @if (markedFrames().length > 0) {
-        <div class="variants">
-          @for (m of markedFrames(); track m.letter) {
-            <div class="variant">
-              <span class="letter-inline">{{ m.letter }}</span>
-              <img [src]="m.frame.small" [alt]="'Frame at ' + m.frame.clock" />
-              <span class="clock">{{ m.frame.clock }}</span>
-              <select [ngModel]="choiceKey(m.letter)" (ngModelChange)="setChoice(m.letter, $event)">
-                <option value="none">No text (picture only)</option>
-                @if (words(); as w) {
-                  @for (k of kinds; track k) {
-                    <optgroup [label]="kindLabel[k]">
-                      @for (o of w[k]; track o) { <option [value]="k + '|' + o">{{ o }}</option> }
-                    </optgroup>
-                  }
-                }
-              </select>
-            </div>
-            @if (photos().photos.length > 0) {
-              <div class="photo-pick" role="radiogroup" [attr.aria-label]="'Reaction photo for ' + m.letter">
-                <button class="photo none" [class.on]="!photoChoice()[m.letter]" (click)="setPhoto(m.letter, null)">No photo</button>
-                @for (p of photos().photos; track p.name) {
-                  <button class="photo" [class.on]="photoChoice()[m.letter] === p.name" (click)="setPhoto(m.letter, p.name)" [matTooltip]="p.name">
-                    <img [src]="p.preview" [alt]="p.name" />
-                    <span>{{ p.name }}</span>
-                  </button>
-                }
-              </div>
-            }
+    </section>
+
+    <!-- 4. Reaction photos -->
+    <section class="step">
+      <h3><span class="num">4</span> Reaction photos</h3>
+      <div class="row">
+        <span class="label">Folder:</span>
+        <span>{{ photos().folder ?? 'none chosen' }}</span>
+        <button mat-stroked-button (click)="choosePhotoFolder()" [disabled]="busy() !== null">Choose folder…</button>
+        @if (photos().photos.length > 0) {
+          <button mat-stroked-button (click)="notesOpen.set(!notesOpen())">{{ notesOpen() ? 'Hide notes' : 'Edit notes' }}</button>
+        }
+      </div>
+      @if (photos().photos.length > 0) {
+        <p class="hint">Click the photos you like to star them.</p>
+        <div class="photo-pick">
+          @for (p of photos().photos; track p.name) {
+            <button class="photo" [class.on]="favPhotos().includes(p.name)" (click)="togglePhoto(p.name)" [matTooltip]="p.note ?? p.name">
+              <img [src]="p.preview" [alt]="p.name" />
+              <span>{{ favPhotos().includes(p.name) ? '★ ' : '' }}{{ p.name }}</span>
+            </button>
           }
         </div>
+        @for (p of photos().photos; track p.name) {
+          @if (p.trim) { <p class="line hint">{{ p.trim }}</p> }
+        }
+        @if (notesOpen()) {
+          <p class="hint">A note says what the photo shows and when it fits. The photo suggestion reads these notes. Drafts are marked until you save your own.</p>
+          <div class="notes">
+            @for (p of photos().photos; track p.name) {
+              <label class="note">
+                <span class="note-name">{{ p.name }}{{ p.draft ? ' (draft)' : '' }}</span>
+                <input type="text" #noteBox [value]="p.note ?? ''" (keydown.enter)="saveNote(p.name, noteBox.value)" />
+                <button mat-stroked-button (click)="saveNote(p.name, noteBox.value)">Save</button>
+              </label>
+            }
+          </div>
+        }
       }
+    </section>
+
+    <!-- 5. Combine -->
+    <section class="step">
+      <h3><span class="num">5</span> Combine</h3>
       <div class="row">
-        <span class="label">Reaction photos:</span>
-        <span>{{ photos().folder ?? 'no folder chosen' }}</span>
-        <button mat-stroked-button (click)="choosePhotoFolder()" [disabled]="busy() !== null">Choose folder…</button>
+        <div class="toggle" role="tablist">
+          <button role="tab" [class.on]="mode() === 'best'" (click)="setMode('best')">Best package</button>
+          <button role="tab" [class.on]="mode() === 'test'" (click)="setMode('test')">Test one thing</button>
+        </div>
+        @if (mode() === 'test') {
+          <label class="field inline-field"><span class="label">Vary</span>
+            <select [ngModel]="vary()" (ngModelChange)="setVary($event)">
+              @for (pc of pieces; track pc) { <option [value]="pc">{{ pieceLabel[pc] }}</option> }
+            </select>
+          </label>
+        }
       </div>
-      @for (p of photos().photos; track p.name) {
-        @if (p.note) { <p class="line hint">{{ p.note }}</p> }
+      <p class="hint">
+        @if (mode() === 'best') {
+          Best package: each thumbnail takes a different favourite frame, words and photo, to find the strongest whole thumbnail.
+        } @else {
+          Test one thing: the other two pieces stay the same on every thumbnail and only {{ pieceLabel[vary()] }} changes, so the A/B test tells you whether that piece matters.
+        }
+      </p>
+      @if (combineReason(); as reason) { <p class="line warn">{{ reason }}</p> }
+      @if (favFrames().length === 0) { <p class="hint">Star at least one frame in step 2 to start.</p> }
+      @if (variants().length > 0) {
+        <div class="row">
+          <button mat-stroked-button (click)="suggest()" [disabled]="busy() !== null || photos().photos.length < 2"
+                  matTooltip="Reads the video's tone, then ranks the photos for each thumbnail's words, on the Routing dialog's 'Thumbnail tone and photo' row">
+            <mat-icon>psychology</mat-icon> Suggest photos
+          </button>
+          @if (busy() === 'suggesting') { <span class="progress"><span class="spinner"></span>Reading the tone and ranking photos…</span> }
+          <button mat-stroked-button (click)="recombine()" [disabled]="busy() !== null">Combine again</button>
+        </div>
+        @if (suggestion(); as s) { <p class="line">{{ s.line }}</p> }
+        <div class="variants">
+          @for (v of variants(); track v.letter) {
+            <div class="variant">
+              <span class="letter-inline">{{ v.letter }}</span>
+              @if (framesById().get(v.frameId); as f) { <img [src]="f.small" [alt]="'Frame at ' + f.clock" /> }
+              <label class="field"><span class="label">Frame</span>
+                <select [ngModel]="v.frameId" (ngModelChange)="swap(v.letter, { frameId: $event })">
+                  @for (id of favFrames(); track id) { <option [value]="id">{{ framesById().get(id)?.clock }}</option> }
+                </select>
+              </label>
+              <label class="field"><span class="label">Words</span>
+                <select [ngModel]="pickKey(v.text)" (ngModelChange)="swapText(v.letter, $event)">
+                  @for (t of allTexts(); track pickKey(t)) {
+                    <option [value]="pickKey(t)">{{ t.phrase === null ? 'No text (picture only)' : (isFavText(t) ? '★ ' : '') + t.phrase }}</option>
+                  }
+                </select>
+              </label>
+              <label class="field"><span class="label">Photo</span>
+                <select [ngModel]="v.photo ?? ''" (ngModelChange)="swap(v.letter, { photo: $event === '' ? null : $event })">
+                  <option value="">No photo</option>
+                  @for (p of photoMenu(v.letter); track p.name) {
+                    <option [value]="p.name">{{ favPhotos().includes(p.name) ? '★ ' : '' }}{{ p.name }}{{ p.p !== null ? ' — ' + percent(p.p) + '%' : '' }}</option>
+                  }
+                </select>
+              </label>
+              @if (photoPreview(v.photo); as pic) { <img class="photo-thumb" [src]="pic" [alt]="v.photo" /> }
+            </div>
+          }
+        </div>
       }
     </section>
 
     <!-- 4. The look -->
     <section class="step">
       <h3 class="clickable" (click)="styleOpen.set(!styleOpen())">
-        <span class="num">4</span> Look
+        <span class="num">6</span> Look
         <mat-icon>{{ styleOpen() ? 'expand_less' : 'expand_more' }}</mat-icon>
         <span class="hint">{{ styleStored() ? 'your saved look' : 'the default look' }}</span>
       </h3>
@@ -238,10 +311,10 @@
 
     <!-- 5. The thumbnails -->
     <section class="step">
-      <h3><span class="num">5</span> Thumbnails</h3>
+      <h3><span class="num">7</span> Thumbnails</h3>
       <div class="row">
-        <button mat-flat-button color="primary" (click)="render()" [disabled]="busy() !== null || marked().length === 0">
-          <mat-icon>image</mat-icon> Make {{ marked().length === 1 ? 'the thumbnail' : 'the ' + marked().length + ' thumbnails' }}
+        <button mat-flat-button color="primary" (click)="render()" [disabled]="busy() !== null || variants().length === 0">
+          <mat-icon>image</mat-icon> Make {{ variants().length === 1 ? 'the thumbnail' : 'the ' + variants().length + ' thumbnails' }}
         </button>
         @if (busy() === 'rendering') { <span class="progress"><span class="spinner"></span>Drawing…</span> }
         <label class="check"><input type="checkbox" [checked]="showSlots()" (change)="showSlots.set(!showSlots())" /> Show the empty photo and logo spaces</label>

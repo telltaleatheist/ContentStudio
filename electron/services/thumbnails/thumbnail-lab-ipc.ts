@@ -61,6 +61,9 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
   ipcMain.handle('thumbs:get-style', () => answer('reading the look', () => lab.getStyle()));
   ipcMain.handle('thumbs:set-style', (_e, style: unknown) => answer('saving the look', () => lab.setStyle(style)));
   ipcMain.handle('thumbs:photos', () => answer('reading the reaction photos', () => lab.photos()));
+  ipcMain.handle('thumbs:set-photo-note', (_e, name: string, note: string) => answer('saving a photo note', () => lab.setPhotoNote(name, note)));
+  ipcMain.handle('thumbs:suggest', (_e, runId: string, variants) => answer('suggesting photos', () => lab.suggest(runId, variants)));
+  ipcMain.handle('thumbs:combine', (_e, fav, how, rank) => answer('combining', () => lab.combine(fav, how, rank)));
   ipcMain.handle('thumbs:choose-photo-folder', (event) =>
     answer('choosing the reaction photos folder', async () => {
       const win = BrowserWindow.fromWebContents(event.sender);

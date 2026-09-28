@@ -902,3 +902,12 @@ row (a vision model): `screen` (choice video / screen, the one hard filter), `fa
 which one it means (Owen). The ranking weights live in code (frame-ranking.ts `RANK_WEIGHTS`), not
 here: they are arithmetic over the answers, not words a model reads. Unmeasured: no frame has been
 scored for real yet.
+
+**`tone.*`** and **`photo.*`** (added the same day): two text-only decide questions on the
+`thumbnail_judge` row. `tone.options` is the tone list, one per line (it is also the answer set, so
+each line is both the option's name and its description; at most 26). `photo.drafts` holds Owen's
+draft note per photo (`name: note`), shown until he saves his own in the tab; the notes are what the
+photo question reads in its legend, so a note says what the photo shows and when it fits, in
+positive form ("light topics only, never for deaths or real victims" states the use as a limit on
+the photo, not a wrong example). `photo.no_text` is what the state says for a picture-only variant.
+Unmeasured.

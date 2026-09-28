@@ -10,31 +10,32 @@ import type {
   ThumbsFrame,
   ThumbsItem,
   ThumbsPhotos,
+  ThumbsPiece,
+  ThumbsRanked,
   ThumbsRenderResult,
   ThumbsRun,
   ThumbsStyle,
+  ThumbsSuggestion,
+  ThumbsVariant,
   ThumbsWordKind,
+  ThumbsWordPick,
   ThumbsWords,
 } from './thumbnails.types';
 
-/** The three A/B variants, in the order frames are marked. */
-const LETTERS = ['A', 'B', 'C'] as const;
-/** The kind each variant starts on once words arrive: one idea per variant, so the test compares ideas. */
-const DEFAULT_KIND: Record<string, ThumbsWordKind> = { A: 'claim', B: 'stakes', C: 'reaction' };
 const KIND_LABEL: Record<ThumbsWordKind, string> = { claim: 'Claim', stakes: 'Stakes', reaction: 'Reaction' };
 /** The "glance test": the widths a thumbnail is seen at on a phone. */
 const PHONE_WIDTHS = [360, 246, 168];
+const NO_TEXT: ThumbsWordPick = { phrase: null, kind: null };
 
-/** One variant's words: a phrase with its kind, or no text (an image-only A/B arm). */
-interface WordChoice {
-  phrase: string | null;
-  kind: ThumbsWordKind | null;
+function pickKey(p: ThumbsWordPick): string {
+  return p.phrase === null ? 'none' : `${p.kind}|${p.phrase}`;
 }
 
 /**
  * THE THUMBNAILS TAB (testing, 2026-09-28). One page, top to bottom: pick a video, find frames,
- * mark three, write words paired with a title, make the three thumbnails. Every model call and
- * every file is the main process's (lab-service.ts); this page only shows and asks.
+ * star favourite frames, words and photos, let the tab combine them into A, B and C (every piece
+ * swappable), and make the thumbnails. Every model call and every file is the main process's
+ * (lab-service.ts); this page only shows and asks.
  */
 @Component({
   selector: 'app-thumbnails',
@@ -44,10 +45,12 @@ interface WordChoice {
   styleUrls: ['./thumbnails.scss'],
 })
 export class Thumbnails implements OnInit, OnDestroy {
-  readonly letters = LETTERS;
   readonly phoneWidths = PHONE_WIDTHS;
   readonly kinds: ThumbsWordKind[] = ['claim', 'stakes', 'reaction'];
   readonly kindLabel = KIND_LABEL;
+  readonly pieces: ThumbsPiece[] = ['frame', 'text', 'photo'];
+  readonly pieceLabel: Record<ThumbsPiece, string> = { frame: 'the frame', text: 'the words', photo: 'the photo' };
+  readonly pickKey = pickKey;
 
   readonly items = signal<ThumbsItem[]>([]);
   readonly itemKey = signal<string>('');
@@ -57,26 +60,33 @@ export class Thumbnails implements OnInit, OnDestroy {
   end = '';
 
   readonly run = signal<ThumbsRun | null>(null);
-  readonly busy = signal<null | 'finding' | 'scoring' | 'words' | 'rendering'>(null);
+  readonly busy = signal<null | 'finding' | 'scoring' | 'words' | 'suggesting' | 'rendering'>(null);
   readonly progress = signal<string | null>(null);
   readonly error = signal<string | null>(null);
   readonly view = signal<'best' | 'all'>('all');
-  /** Frame ids marked, in order: index 0 is A. */
-  readonly marked = signal<string[]>([]);
   readonly preview = signal<{ id: string; clock: string; picture: string } | null>(null);
 
   readonly title = signal<string>('');
   readonly words = signal<ThumbsWords | null>(null);
-  readonly choices = signal<Record<string, WordChoice>>({});
+
+  // Favourites, in the order starred.
+  readonly favFrames = signal<string[]>([]);
+  readonly favTexts = signal<ThumbsWordPick[]>([]);
+  readonly favPhotos = signal<string[]>([]);
+
+  readonly photos = signal<ThumbsPhotos>({ folder: null, photos: [] });
+  readonly notesOpen = signal(false);
+  readonly suggestion = signal<ThumbsSuggestion | null>(null);
+
+  readonly mode = signal<'best' | 'test'>('best');
+  readonly vary = signal<ThumbsPiece>('text');
+  readonly variants = signal<ThumbsVariant[]>([]);
+  readonly combineReason = signal<string | null>(null);
 
   readonly style = signal<ThumbsStyle | null>(null);
   readonly styleStored = signal(false);
   readonly styleOpen = signal(false);
   readonly styleNote = signal<string | null>(null);
-
-  readonly photos = signal<ThumbsPhotos>({ folder: null, photos: [] });
-  /** Each variant's reaction photo by name, or absent for none. */
-  readonly photoChoice = signal<Record<string, string | null>>({});
 
   readonly results = signal<ThumbsRenderResult[] | null>(null);
   readonly folder = signal<string | null>(null);
@@ -95,9 +105,13 @@ export class Thumbnails implements OnInit, OnDestroy {
     }
     return run.frames;
   });
-  readonly markedFrames = computed(() => {
-    const byId = this.framesById();
-    return this.marked().map((id, i) => ({ letter: LETTERS[i], frame: byId.get(id)! })).filter((m) => m.frame !== undefined);
+  /** Every word line the model wrote, plus "no text", for a variant's text menu. */
+  readonly allTexts = computed<ThumbsWordPick[]>(() => {
+    const w = this.words();
+    const out: ThumbsWordPick[] = [NO_TEXT];
+    if (w) for (const k of this.kinds) for (const phrase of w[k]) out.push({ phrase, kind: k });
+    for (const f of this.favTexts()) if (!out.some((o) => pickKey(o) === pickKey(f))) out.push(f);
+    return out;
   });
 
   constructor(private readonly electron: ElectronService) {}
@@ -111,7 +125,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     await this.attempt(async () => {
       this.items.set(await this.electron.thumbsListItems());
       const first = this.items().find((i) => i.problem === null);
-      if (first) this.itemKey.set(`${first.jobId}/${first.itemId}`);
+      if (first) this.pickItem(`${first.jobId}/${first.itemId}`);
       this.photos.set(await this.electron.thumbsPhotos());
       const { style, stored } = await this.electron.thumbsGetStyle();
       this.style.set(style);
@@ -135,15 +149,17 @@ export class Thumbnails implements OnInit, OnDestroy {
   pickItem(key: string): void {
     this.itemKey.set(key);
     this.resetRun();
-    const item = this.item();
-    this.title.set(item?.titles[0] ?? '');
+    this.title.set(this.item()?.titles[0] ?? '');
   }
 
   private resetRun(): void {
     this.run.set(null);
-    this.marked.set([]);
+    this.favFrames.set([]);
+    this.favTexts.set([]);
     this.words.set(null);
-    this.choices.set({});
+    this.suggestion.set(null);
+    this.variants.set([]);
+    this.combineReason.set(null);
     this.results.set(null);
     this.preview.set(null);
   }
@@ -172,16 +188,14 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.busy.set('finding');
     this.progress.set('Starting ffmpeg');
     this.resetRun();
-    if (!this.title()) this.title.set(item.titles[0] ?? '');
     await this.attempt(async () => {
-      const run = await this.electron.thumbsFindFrames({
+      this.run.set(await this.electron.thumbsFindFrames({
         jobId: item.jobId,
         itemId: item.itemId,
         video: this.useOtherVideo() ? this.otherVideo() : null,
         start: this.start.trim() || null,
         end: this.end.trim() || null,
-      });
-      this.run.set(run);
+      }));
       this.view.set('all');
     });
     this.busy.set(null);
@@ -194,8 +208,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.busy.set('scoring');
     this.progress.set(`Loading the model, then scoring frame 1 of ${run.toScore.length}`);
     await this.attempt(async () => {
-      const scored = await this.electron.thumbsScore(run.runId);
-      this.run.set(scored);
+      this.run.set(await this.electron.thumbsScore(run.runId));
       this.view.set('best');
     });
     this.busy.set(null);
@@ -207,24 +220,33 @@ export class Thumbnails implements OnInit, OnDestroy {
     if (run !== null) await this.attempt(() => this.electron.thumbsStop(run.runId));
   }
 
-  toggleMark(frame: ThumbsFrame): void {
-    const marked = this.marked();
-    if (marked.includes(frame.id)) {
-      this.marked.set(marked.filter((id) => id !== frame.id));
-    } else if (marked.length < LETTERS.length) {
-      this.marked.set([...marked, frame.id]);
-    } else {
-      this.error.set('Three frames are marked already. Click one of them to unmark it first.');
-      return;
-    }
-    this.error.set(null);
-    this.results.set(null);
-    this.applyDefaultWords();
+  // ── favourites ────────────────────────────────────────────────────────────
+
+  toggleFrame(frame: ThumbsFrame): void {
+    const fav = this.favFrames();
+    this.favFrames.set(fav.includes(frame.id) ? fav.filter((id) => id !== frame.id) : [...fav, frame.id]);
+    void this.recombine();
   }
 
-  letterOf(id: string): string | null {
-    const i = this.marked().indexOf(id);
-    return i < 0 ? null : LETTERS[i];
+  frameStar(id: string): number | null {
+    const i = this.favFrames().indexOf(id);
+    return i < 0 ? null : i + 1;
+  }
+
+  isFavText(p: ThumbsWordPick): boolean {
+    return this.favTexts().some((f) => pickKey(f) === pickKey(p));
+  }
+
+  toggleText(p: ThumbsWordPick): void {
+    const fav = this.favTexts();
+    this.favTexts.set(this.isFavText(p) ? fav.filter((f) => pickKey(f) !== pickKey(p)) : [...fav, p]);
+    void this.recombine();
+  }
+
+  togglePhoto(name: string): void {
+    const fav = this.favPhotos();
+    this.favPhotos.set(fav.includes(name) ? fav.filter((n) => n !== name) : [...fav, name]);
+    void this.recombine();
   }
 
   async look(frame: ThumbsFrame, event: Event): Promise<void> {
@@ -247,74 +269,122 @@ export class Thumbnails implements OnInit, OnDestroy {
       `strong thumbnail ${this.percent(r.pStrong)}%, computer screen ${this.percent(r.pScreen)}%`;
   }
 
+  // ── words ─────────────────────────────────────────────────────────────────
+
   async writeWords(): Promise<void> {
     const run = this.run();
     if (run === null || !this.title()) return;
     this.busy.set('words');
     await this.attempt(async () => {
       this.words.set(await this.electron.thumbsWords(run.runId, this.title()));
-      this.choices.set({});
-      this.applyDefaultWords();
     });
     this.busy.set(null);
   }
 
-  /** Each marked variant without a choice gets its own kind's first option. */
-  private applyDefaultWords(): void {
-    const words = this.words();
-    if (words === null) return;
-    const next = { ...this.choices() };
-    this.marked().forEach((_, i) => {
-      const letter = LETTERS[i];
-      if (next[letter] !== undefined) return;
-      const kind = DEFAULT_KIND[letter];
-      const first = words[kind][0];
-      next[letter] = first === undefined ? { phrase: null, kind: null } : { phrase: first, kind };
-    });
-    this.choices.set(next);
-  }
-
-  choiceKey(letter: string): string {
-    const c = this.choices()[letter];
-    return c === undefined || c.phrase === null ? 'none' : `${c.kind}|${c.phrase}`;
-  }
-
-  setChoice(letter: string, key: string): void {
-    const [kind, ...rest] = key.split('|');
-    this.choices.set({ ...this.choices(), [letter]: key === 'none' ? { phrase: null, kind: null } : { phrase: rest.join('|'), kind: kind as ThumbsWordKind } });
-    this.results.set(null);
-  }
-
-  async render(): Promise<void> {
-    const run = this.run();
-    if (run === null || this.marked().length === 0) return;
-    this.busy.set('rendering');
-    await this.attempt(async () => {
-      const variants = this.marked().map((frameId, i) => {
-        const letter = LETTERS[i];
-        const c = this.choices()[letter] ?? { phrase: null, kind: null };
-        return { letter, frameId, phrase: c.phrase, kind: c.kind, photo: this.photoChoice()[letter] ?? null };
-      });
-      const out = await this.electron.thumbsRender(run.runId, variants);
-      this.results.set(out.results);
-      this.folder.set(out.folder);
-    });
-    this.busy.set(null);
-  }
+  // ── photos ────────────────────────────────────────────────────────────────
 
   async choosePhotoFolder(): Promise<void> {
     await this.attempt(async () => {
       const picked = await this.electron.thumbsChoosePhotoFolder();
       if (picked !== null) {
-        this.photoChoice.set({});
+        this.favPhotos.set([]);
+        this.suggestion.set(null);
         this.photos.set(await this.electron.thumbsPhotos());
+        await this.recombine();
       }
     });
   }
 
-  setPhoto(letter: string, name: string | null): void {
-    this.photoChoice.set({ ...this.photoChoice(), [letter]: name });
+  async saveNote(name: string, note: string): Promise<void> {
+    await this.attempt(async () => {
+      await this.electron.thumbsSetPhotoNote(name, note);
+      this.photos.set(await this.electron.thumbsPhotos());
+    });
+  }
+
+  /** The tone, and each variant's photos ranked from its words; the top favourite (or top) is pre-selected. */
+  async suggest(): Promise<void> {
+    const run = this.run();
+    if (run === null || this.variants().length === 0) return;
+    this.busy.set('suggesting');
+    await this.attempt(async () => {
+      this.suggestion.set(await this.electron.thumbsSuggest(run.runId, this.variants().map((v) => ({ letter: v.letter, text: v.text.phrase }))));
+      await this.recombine();
+    });
+    this.busy.set(null);
+  }
+
+  /** A variant's photo menu: ranked by its suggestion when there is one, else the folder's order. */
+  photoMenu(letter: string): Array<{ name: string; p: number | null }> {
+    const ranked: ThumbsRanked[] | undefined = this.suggestion()?.photos[letter];
+    if (ranked) return ranked;
+    return this.photos().photos.map((p) => ({ name: p.name, p: null }));
+  }
+
+  photoPreview(name: string | null): string | null {
+    return name === null ? null : this.photos().photos.find((p) => p.name === name)?.preview ?? null;
+  }
+
+  // ── combine ───────────────────────────────────────────────────────────────
+
+  setMode(mode: 'best' | 'test'): void {
+    this.mode.set(mode);
+    void this.recombine();
+  }
+
+  setVary(piece: ThumbsPiece): void {
+    this.vary.set(piece);
+    void this.recombine();
+  }
+
+  /** Lay the favourites out as A/B/C again (the main process's combine.ts), dropping hand swaps. */
+  async recombine(): Promise<void> {
     this.results.set(null);
+    if (this.favFrames().length === 0) {
+      this.variants.set([]);
+      this.combineReason.set(null);
+      return;
+    }
+    const s = this.suggestion();
+    const rank = s ? Object.fromEntries(Object.entries(s.photos).map(([l, r]) => [l, r.map((x) => x.name)])) : null;
+    await this.attempt(async () => {
+      const out = await this.electron.thumbsCombine(
+        { frames: this.favFrames(), texts: this.favTexts(), photos: this.favPhotos() },
+        this.mode() === 'best' ? { mode: 'best' } : { mode: 'test', vary: this.vary() },
+        rank,
+      );
+      if (out.ok === true) {
+        this.variants.set(out.variants);
+        this.combineReason.set(null);
+      } else {
+        this.variants.set([]);
+        this.combineReason.set((out as { reason: string }).reason);
+      }
+    });
+  }
+
+  swap(letter: string, change: Partial<ThumbsVariant>): void {
+    this.variants.set(this.variants().map((v) => (v.letter === letter ? { ...v, ...change } : v)));
+    this.results.set(null);
+  }
+
+  swapText(letter: string, key: string): void {
+    const pick = this.allTexts().find((p) => pickKey(p) === key) ?? NO_TEXT;
+    this.swap(letter, { text: pick });
+  }
+
+  async render(): Promise<void> {
+    const run = this.run();
+    if (run === null || this.variants().length === 0) return;
+    this.busy.set('rendering');
+    await this.attempt(async () => {
+      const out = await this.electron.thumbsRender(run.runId, this.variants().map((v) => ({
+        letter: v.letter, frameId: v.frameId, phrase: v.text.phrase, kind: v.text.kind, photo: v.photo,
+      })));
+      this.results.set(out.results);
+      this.folder.set(out.folder);
+    });
+    this.busy.set(null);
   }
 
   async showFolder(): Promise<void> {

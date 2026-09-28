@@ -296,7 +296,10 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
  */
 check('the Thumbnails tab rows: their own group, vision-only frames on the 9B with vision, words on the 27B', () => {
   const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
-  eq(rows.join(','), 'thumbnail_frames,thumbnail_words');
+  eq(rows.join(','), 'thumbnail_frames,thumbnail_words,thumbnail_judge');
+  const judge = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_judge');
+  eq(judge.defaultOptionId, 'qwen35-9b');
+  eq(judge.options.every((id) => routing.METADATA_ROUTING_OPTIONS[id].kind === 'local'), true, 'decide needs logprobs: local rungs only');
   const frames = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_frames');
   eq(frames.defaultOptionId, 'qwen35-9b-vl');
   for (const id of frames.options) {
@@ -310,7 +313,7 @@ check('the Thumbnails tab rows: their own group, vision-only frames on the 9B wi
   eq(words.defaultOptionId, 'qwen38-27b');
   // A metadata run's log line and ceiling never name them.
   const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
-  eq(/thumbnail_frames|thumbnail_words/.test(line), false, 'the metadata log line leaves them out');
+  eq(/thumbnail_frames|thumbnail_words|thumbnail_judge/.test(line), false, 'the metadata log line leaves them out');
   // Judged against the server's own modalities: text-only is "not here", with the server named.
   const inventory = {
     server: 'mac', reachable: true, anthropicConfigured: false,

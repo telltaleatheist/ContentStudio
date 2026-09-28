@@ -92,10 +92,48 @@ export interface ThumbsVariantRequest {
   photo: string | null;
 }
 
+export interface ThumbsPhoto {
+  name: string;
+  preview: string;
+  /** A sentence when the trim dropped specks, else null. */
+  trim: string | null;
+  /** Owen's note, or the draft (draft: true), or null for none. */
+  note: string | null;
+  draft: boolean;
+}
+
 export interface ThumbsPhotos {
   folder: string | null;
-  photos: Array<{ name: string; preview: string; note: string | null }>;
+  photos: ThumbsPhoto[];
 }
+
+export interface ThumbsRanked {
+  name: string;
+  p: number | null;
+}
+
+export interface ThumbsSuggestion {
+  tone: ThumbsRanked[];
+  photos: Record<string, ThumbsRanked[]>;
+  line: string;
+}
+
+export interface ThumbsWordPick {
+  phrase: string | null;
+  kind: ThumbsWordKind | null;
+}
+
+export type ThumbsPiece = 'frame' | 'text' | 'photo';
+export type ThumbsCombineMode = { mode: 'best' } | { mode: 'test'; vary: ThumbsPiece };
+
+export interface ThumbsVariant {
+  letter: string;
+  frameId: string;
+  text: ThumbsWordPick;
+  photo: string | null;
+}
+
+export type ThumbsCombineResult = { ok: true; variants: ThumbsVariant[] } | { ok: false; reason: string };
 
 export type ThumbsRenderResult =
   | { letter: string; ok: true; path: string; bytes: number; format: 'png' | 'jpeg'; picture: string; notes: string[]; at: string }

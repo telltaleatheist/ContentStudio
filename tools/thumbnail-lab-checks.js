@@ -428,4 +428,98 @@ check('scoring: a model that is not installed is refused naming it and the serve
   assert.strictEqual(server.decideBodies().length, 0);
 }));
 
-run('thumbnails tab: frame filters, sampling, ranking, words, face-safe layout, scoring over the door');
+// ── tone and photo suggestion ───────────────────────────────────────────────
+
+const judge = services('thumbnails/judge.js');
+const combine = services('thumbnails/combine.js');
+
+const PHOTOS = [
+  { name: 'laugh', note: 'laughing; light topics only, never for deaths or real victims' },
+  { name: 'horrified', note: 'horrified; serious topics' },
+  { name: 'oh please', note: 'dismissive; for a claim that is not worth believing' },
+  { name: 'ooh', note: null },
+];
+
+check('tone and photo: the lists and drafts come from thumbnails.yml; the states fill every slot', () => {
+  const tones = judge.toneOptions();
+  assert.deepStrictEqual(tones.slice(0, 3), ['mocking', 'absurd', 'outraged']);
+  assert.strictEqual(tones.length, 10);
+  const drafts = judge.draftNotes();
+  assert.ok(/never for deaths or real victims/.test(drafts['uh oh laughing']) && /serious/.test(drafts['this is wrong']) && /facepalm/.test(drafts['head slap']));
+  assert.deepStrictEqual(judge.legendLines(PHOTOS.slice(2)), ['oh please: dismissive; for a claim that is not worth believing', 'ooh']);
+  const tone = judge.toneState({ channel: 'Fireside', creator: 'owen morgan', hook: 'A hook.', description: 'The body.\n\n🔥 Support the Show: https://x', transcript: ['[0:01] a', '[0:02] b'] });
+  assert.ok(!/\{[a-z_]+\}/.test(tone) && tone.includes('The body.') && !tone.includes('Support the Show'), 'the links under the description are left out');
+  const photo = judge.photoState({ channel: 'Fireside', creator: 'owen morgan', summary: 'S', tone: 'mocking', text: null, photos: PHOTOS });
+  assert.ok(!/\{[a-z_]+\}/.test(photo) && /picture only/.test(photo) && photo.includes('ooh\n') === false && photo.endsWith('ooh'));
+});
+
+check('tone and photo: a ranking is most probable first, an unrated option last, nothing dropped', () => {
+  const r = judge.rankingOf({ probabilities: { a: 0.2, b: null, c: 0.7, d: 0.1 } }, ['a', 'b', 'c', 'd'], 'x');
+  assert.deepStrictEqual(r.map((x) => x.name), ['c', 'a', 'd', 'b']);
+  assert.strictEqual(r[3].p, null);
+  assert.throws(() => judge.rankingOf({ probabilities: { a: null, b: null } }, ['a', 'b'], 'The answer'), /rated none/);
+});
+
+function judgeProbs(q, state) {
+  if (q.labels.includes('mocking')) return Object.fromEntries(q.labels.map((l) => [l, l === 'absurd' ? 0.55 : l === 'mocking' ? 0.3 : 0.15 / 8]));
+  const serious = /DON'T STAND UNDER A ROOF/.test(state);
+  const top = serious ? 'horrified' : /MAYBE TOMORROW/.test(state) ? 'oh please' : 'laugh';
+  return Object.fromEntries(q.labels.map((l) => [l, l === top ? 0.6 : l === 'ooh' ? 0.25 : 0.05]));
+}
+
+check('tone and photo over the door: one job, text-only decides on the judge model, tone first, a ranking per variant', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
+  const out = await judge.judgeThumbnails({
+    deps, jobId: 'keeper-judge', model: 'qwen3.5-9b',
+    tone: { channel: 'Fireside', creator: 'owen morgan', hook: 'She says the rapture is here.', description: 'A rapture claim.\n\nLinks', transcript: ['[0:01] hello'] },
+    photos: PHOTOS,
+    variants: [{ letter: 'A', text: "DON'T STAND UNDER A ROOF" }, { letter: 'B', text: 'MAYBE TOMORROW' }, { letter: 'C', text: null }],
+  });
+  assert.strictEqual(out.tone[0].name, 'absurd');
+  assert.ok(Math.abs(out.tone[0].p - 0.55) < 1e-6);
+  assert.deepStrictEqual([out.photos.A[0].name, out.photos.B[0].name, out.photos.C[0].name], ['horrified', 'oh please', 'laugh']);
+  assert.deepStrictEqual(out.photos.A.map((r) => r.name).sort(), PHOTOS.map((p) => p.name).sort(), 'every photo is ranked, none hidden');
+  assert.strictEqual(out.photos.A[1].name, 'ooh');
+  const bodies = server.decideBodies();
+  assert.strictEqual(bodies.length, 4);
+  assert.ok(bodies.every((b) => b.model === 'qwen3.5-9b' && !b.images && b.missing === 'report'));
+  assert.ok(bodies.slice(1).every((b) => /The tone of the video: absurd/.test(b.state)), 'the photo states carry the tone just read');
+  assert.ok(/ooh$/m.test(bodies[1].state) && /oh please: dismissive/.test(bodies[1].state), 'the legend lists every photo with its note');
+  const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
+  assert.deepStrictEqual(loads.map((b) => b.model), ['qwen3.5-9b'], 'one load, one lease');
+}));
+
+// ── auto-combine ────────────────────────────────────────────────────────────
+
+const FAV = {
+  frames: ['f1', 'f2', 'f3', 'f4'],
+  texts: [{ phrase: 'CLAIM ONE', kind: 'claim' }, { phrase: 'STAKES ONE', kind: 'stakes' }],
+  photos: ['laugh', 'oh please'],
+};
+
+check('combine, best package: every piece varies; short lists repeat from their start; photos follow the suggestion', () => {
+  const r = combine.combine(FAV, { mode: 'best' });
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.variants.map((v) => [v.letter, v.frameId, v.text.phrase, v.photo]), [
+    ['A', 'f1', 'CLAIM ONE', 'laugh'], ['B', 'f2', 'STAKES ONE', 'oh please'], ['C', 'f3', 'CLAIM ONE', 'laugh'],
+  ]);
+  const rank = { A: ['horrified', 'oh please', 'laugh'], B: ['laugh', 'horrified', 'oh please'], C: ['horrified', 'ooh', 'laugh', 'oh please'] };
+  const ranked = combine.combine(FAV, { mode: 'best' }, rank);
+  assert.deepStrictEqual(ranked.variants.map((v) => v.photo), ['oh please', 'laugh', 'laugh'], 'each variant takes its highest-ranked favourite');
+  const noFav = combine.combine({ ...FAV, photos: [] }, { mode: 'best' }, rank);
+  assert.deepStrictEqual(noFav.variants.map((v) => v.photo), ['horrified', 'laugh', 'horrified'], 'with no favourite photo, the top-ranked one');
+  const bare = combine.combine({ frames: ['f1'], texts: [], photos: [] }, { mode: 'best' });
+  assert.ok(bare.variants.every((v) => v.frameId === 'f1' && v.text.phrase === null && v.photo === null), 'no starred words means picture only');
+  assert.deepStrictEqual(combine.combine({ frames: [], texts: [], photos: [] }, { mode: 'best' }), { ok: false, reason: 'Star at least one frame first.' });
+});
+
+check('combine, test one thing: two pieces held, the chosen one varies; fewer than two favourites of it is said plainly', () => {
+  const text = combine.combine(FAV, { mode: 'test', vary: 'text' });
+  assert.deepStrictEqual(text.variants.map((v) => [v.frameId, v.text.phrase, v.photo]), [['f1', 'CLAIM ONE', 'laugh'], ['f1', 'STAKES ONE', 'laugh']], 'two favourites make two variants');
+  const frame = combine.combine(FAV, { mode: 'test', vary: 'frame' });
+  assert.deepStrictEqual(frame.variants.map((v) => [v.frameId, v.text.phrase, v.photo]), [['f1', 'CLAIM ONE', 'laugh'], ['f2', 'CLAIM ONE', 'laugh'], ['f3', 'CLAIM ONE', 'laugh']]);
+  const photo = combine.combine(FAV, { mode: 'test', vary: 'photo' }, { A: ['oh please', 'laugh'] });
+  assert.deepStrictEqual(photo.variants.map((v) => [v.frameId, v.text.phrase, v.photo]), [['f1', 'CLAIM ONE', 'oh please'], ['f1', 'CLAIM ONE', 'laugh']], 'photos in the suggestion\'s order');
+  assert.deepStrictEqual(combine.combine({ ...FAV, photos: ['laugh'] }, { mode: 'test', vary: 'photo' }), { ok: false, reason: 'To test photos, star at least two photos.' });
+});
+
+run('thumbnails tab: frame filters, sampling, ranking, words, face-safe layout, scoring, tone and photos, combine');

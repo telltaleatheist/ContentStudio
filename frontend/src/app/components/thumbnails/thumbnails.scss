@@ -542,3 +542,92 @@
     }
   }
 }
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.3rem 0.5rem;
+  border: 2px solid transparent;
+  border-radius: var(--border-radius);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+
+  mat-icon {
+    font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+    color: var(--primary-orange);
+  }
+
+  &.on {
+    border-color: var(--primary-orange);
+  }
+
+  &.inline {
+    align-self: flex-start;
+  }
+}
+
+.step > .photo-pick {
+  margin: 0;
+}
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+
+  .note {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .note-name {
+    min-width: 11rem;
+    font-weight: 600;
+  }
+
+  input {
+    flex: 1;
+    font: inherit;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+  }
+}
+
+.inline-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.variant {
+  flex-wrap: wrap;
+
+  .field select {
+    min-width: 0;
+    max-width: 22rem;
+  }
+
+  .photo-thumb {
+    width: auto;
+    height: 64px;
+    aspect-ratio: auto;
+    object-fit: contain;
+  }
+}
+
+.tile .letter mat-icon {
+  font-size: 1rem;
+  width: 1rem;
+  height: 1rem;
+}

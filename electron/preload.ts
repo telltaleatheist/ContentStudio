@@ -708,6 +708,9 @@ const api = {
   thumbsRender: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:render', runId, variants),
   thumbsChooseVideo: () => ipcRenderer.invoke('thumbs:choose-video'),
   thumbsPhotos: () => ipcRenderer.invoke('thumbs:photos'),
+  thumbsSetPhotoNote: (name: string, note: string) => ipcRenderer.invoke('thumbs:set-photo-note', name, note),
+  thumbsSuggest: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:suggest', runId, variants),
+  thumbsCombine: (fav: unknown, how: unknown, rank: unknown) => ipcRenderer.invoke('thumbs:combine', fav, how, rank),
   thumbsChoosePhotoFolder: () => ipcRenderer.invoke('thumbs:choose-photo-folder'),
   thumbsShowFolder: (folder: string) => ipcRenderer.invoke('thumbs:show-folder', folder),
   onThumbsProgress: (callback: (event: { runId: string; stage: string; done: number; total: number }) => void) => {
