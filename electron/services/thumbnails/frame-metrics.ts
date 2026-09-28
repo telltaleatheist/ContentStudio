@@ -51,8 +51,9 @@ export const BLUR_FRACTION_OF_MEDIAN = 0.35;
 
 /**
  * How many frames at most go to the vision model in one run (Owen: "e.g. ~100"). When more survive
- * the cheap filters, the kept frames are thinned evenly across the range (`thinAcrossRange`), so
- * the cap never concentrates the scoring on one stretch.
+ * the cheap filters, the cap is shared across the story's SCENES (frame-scenes.ts
+ * `allocateScoring`: a floor for every scene, the rest by screen time) and each scene's share is
+ * thinned across its own time on screen (`thinAcrossRange`).
  */
 export const MAX_FRAMES_TO_SCORE = 120;
 
@@ -64,6 +65,8 @@ export interface FrameMeasure {
   t: number;
   hash: Uint8Array;
   sharpness: number;
+  /** The scene signature: the frame as SIG_COLS x SIG_ROWS RGB cells (frame-scenes.ts). */
+  colour: Uint8Array;
 }
 
 export type FrameDrop = { index: number; t: number; reason: 'blurry' | 'repeat'; of?: number };

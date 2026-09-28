@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
@@ -112,14 +112,17 @@ export class Thumbnails implements OnInit, OnDestroy {
   readonly sessionStories = computed<ThumbsStoryChoice[]>(() => this.allChoices().filter((c) => c.projectFolder === this.pickSession()));
   readonly pickedStory = computed<ThumbsStoryChoice | null>(() => this.sessionStories().find((c) => this.storyKey(c) === this.pickStory()) ?? null);
   readonly framesById = computed(() => new Map((this.run()?.frames ?? []).map((f) => [f.id, f])));
-  readonly shownFrames = computed<ThumbsFrame[]>(() => {
+  /** The best view: one row per scene (its top frames), scenes ordered by their best frame. */
+  readonly bestRows = computed<Array<{ scene: number; label: string; frames: ThumbsFrame[] }>>(() => {
     const run = this.run();
-    if (run === null) return [];
-    if (this.view() === 'best' && run.best !== null) {
-      const byId = this.framesById();
-      return run.best.map((id) => byId.get(id)).filter((f): f is ThumbsFrame => f !== undefined);
-    }
-    return run.frames;
+    if (run === null || run.bestScenes === null) return [];
+    const byId = this.framesById();
+    const labels = new Map(run.scenes.map((s) => [s.number, s.label]));
+    return run.bestScenes.map((row) => ({
+      scene: row.scene,
+      label: labels.get(row.scene) ?? `Scene ${row.scene}`,
+      frames: row.ids.map((id) => byId.get(id)).filter((f): f is ThumbsFrame => f !== undefined),
+    }));
   });
   /** Every word line the model wrote, plus "no text", for a variant's text menu. */
   readonly allTexts = computed<ThumbsWordPick[]>(() => {
@@ -130,12 +133,30 @@ export class Thumbnails implements OnInit, OnDestroy {
     return out;
   });
 
-  constructor(private readonly electron: ElectronService) {}
+  readonly elapsed = signal(0);
+  readonly elapsedLabel = computed(() => {
+    const s = this.elapsed();
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  });
+  private elapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly electron: ElectronService) {
+    effect(() => {
+      const working = this.busy() !== null;
+      untracked(() => {
+        if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
+        this.elapsedTimer = null;
+        this.elapsed.set(0);
+        if (working) this.elapsedTimer = setInterval(() => this.elapsed.update((n) => n + 1), 1000);
+      });
+    });
+  }
 
   async ngOnInit(): Promise<void> {
     this.unsubscribe = this.electron.onThumbsProgress((event) => {
       const run = this.run();
       if (event.stage === 'sampling') this.progress.set(`Sampling frame ${event.done.toLocaleString()} of about ${event.total.toLocaleString()}`);
+      else if (event.stage === 'filtering') this.progress.set(`Removing repeated and blurry frames from ${event.total.toLocaleString()}`);
       else if (run === null || run.runId === event.runId) this.progress.set(`Scoring frame ${Math.min(event.done + 1, event.total)} of ${event.total}`);
     });
     await this.attempt(async () => {
@@ -151,6 +172,7 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.unsubscribe?.();
+    if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
   }
 
   private async attempt(fn: () => Promise<void>): Promise<void> {
@@ -237,7 +259,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     const item = this.item();
     if (item === null) return;
     this.busy.set('finding');
-    this.progress.set('Reading the story and its screen recording');
+    this.progress.set("Building the editor's timeline map for this session — this can take a few minutes, longer while the editor is processing");
     this.resetRun();
     await this.attempt(async () => {
       this.run.set(await this.electron.thumbsFindFrames({
@@ -312,8 +334,8 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   frameTip(frame: ThumbsFrame): string {
     const r = frame.reading;
-    if (r === null) return `${frame.clock}: not scored`;
-    return `${frame.clock}: face ${this.percent(r.pFace)}%, expression ${r.expression.toFixed(1)} of 5, eyes open ${this.percent(r.pEyesOpen)}%, ` +
+    if (r === null) return `${frame.clock}, scene ${frame.scene}: not scored`;
+    return `${frame.clock}, scene ${frame.scene}: face ${this.percent(r.pFace)}%, expression ${r.expression.toFixed(1)} of 5, eyes open ${this.percent(r.pEyesOpen)}%, ` +
       `strong thumbnail ${this.percent(r.pStrong)}%, computer screen ${this.percent(r.pScreen)}%`;
   }
 

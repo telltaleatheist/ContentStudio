@@ -57,7 +57,24 @@ export interface ThumbsFrame {
   score: number | null;
   reading: ThumbsReading | null;
   flag: 'screen' | 'unreadable' | null;
-  section: number | null;
+  /** The scene the frame belongs to (1-based, by first appearance). */
+  scene: number;
+}
+
+export interface ThumbsScene {
+  number: number;
+  seconds: number;
+  /** "Scene 3 · 2:41 on screen". */
+  label: string;
+  kept: number;
+  scoring: number;
+}
+
+/** One row of the best view: a scene's best frames, best first. */
+export interface ThumbsSceneRow {
+  scene: number;
+  ids: string[];
+  best: number;
 }
 
 export interface ThumbsRun {
@@ -69,7 +86,8 @@ export interface ThumbsRun {
   lines: string[];
   frames: ThumbsFrame[];
   toScore: string[];
-  best: string[] | null;
+  scenes: ThumbsScene[];
+  bestScenes: ThumbsSceneRow[] | null;
   scoring: { server: string; model: string; line: string } | null;
 }
 
@@ -165,7 +183,7 @@ export type ThumbsRenderResult =
 
 export interface ThumbsProgress {
   runId: string;
-  stage: 'sampling' | 'scoring';
+  stage: 'sampling' | 'filtering' | 'scoring';
   done: number;
   total: number;
 }
