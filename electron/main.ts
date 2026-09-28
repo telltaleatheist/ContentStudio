@@ -22,6 +22,8 @@ import { setAsrVenueResolver } from './services/transcription/crucible-transcrip
 import { resolveUserDataPath } from './user-data-path';
 import { retireOnce } from './retired-components';
 import { getSharedDir } from './services/editor/shared-paths';
+import { StreamMarksService } from './services/stream-marks/stream-marks.service';
+import { setupStreamMarksIpc } from './services/stream-marks/stream-marks-ipc';
 
 /**
  * ContentStudio - Main Electron Process
@@ -321,6 +323,14 @@ app.whenReady().then(async () => {
     // SDK client for its engine, and the in-flight ledger. Until this runs every transcription
     // is refused `crucible_not_connected`.
     setAsrVenueResolver(crucible.asrVenue);
+
+    // Stream marks: the live-stream story boundaries Owen used to keep in Notepad, one JSON
+    // file per session under userData. Constructed here with its directory for the same
+    // reason YouTubeAuthService takes userDataPath — it makes the store runnable against a
+    // temp folder — and set up BEFORE the windows exist, because registering its global
+    // hotkey is what makes the first press of the night work without the app being focused.
+    const streamMarks = new StreamMarksService(path.join(userDataPath, 'stream-marks'));
+    setupStreamMarksIpc(store, streamMarks);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

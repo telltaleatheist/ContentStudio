@@ -17,6 +17,7 @@ import { RelinkModalComponent } from './relink-modal/relink-modal.component';
 import { EnvironmentModalComponent } from './environment-modal/environment-modal.component';
 import { MuteWordsModalComponent } from './mute-words-modal/mute-words-modal.component';
 import { WordMuteReportComponent } from './mute-words-modal/word-mute-report.component';
+import { StreamMarksImportModalComponent } from './stream-marks-import-modal/stream-marks-import-modal.component';
 import { ProjectsService } from './services/projects.service';
 import { ArchiveService } from './services/archive.service';
 
@@ -31,7 +32,8 @@ import { ArchiveService } from './services/archive.service';
     RelinkModalComponent,
     EnvironmentModalComponent,
     MuteWordsModalComponent,
-    WordMuteReportComponent
+    WordMuteReportComponent,
+    StreamMarksImportModalComponent
   ],
   imports: [
     CommonModule,
@@ -47,7 +49,8 @@ import { ArchiveService } from './services/archive.service';
     RelinkModalComponent,
     EnvironmentModalComponent,
     MuteWordsModalComponent,
-    WordMuteReportComponent
+    WordMuteReportComponent,
+    StreamMarksImportModalComponent
   ],
   // Module-scoped, not providedIn: 'root' — same reason as ProjectsService. These belong to
   // the editor and have to travel with it; a root provider would keep resolving through the
