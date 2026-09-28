@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
@@ -130,12 +130,30 @@ export class Thumbnails implements OnInit, OnDestroy {
     return out;
   });
 
-  constructor(private readonly electron: ElectronService) {}
+  readonly elapsed = signal(0);
+  readonly elapsedLabel = computed(() => {
+    const s = this.elapsed();
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  });
+  private elapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly electron: ElectronService) {
+    effect(() => {
+      const working = this.busy() !== null;
+      untracked(() => {
+        if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
+        this.elapsedTimer = null;
+        this.elapsed.set(0);
+        if (working) this.elapsedTimer = setInterval(() => this.elapsed.update((n) => n + 1), 1000);
+      });
+    });
+  }
 
   async ngOnInit(): Promise<void> {
     this.unsubscribe = this.electron.onThumbsProgress((event) => {
       const run = this.run();
       if (event.stage === 'sampling') this.progress.set(`Sampling frame ${event.done.toLocaleString()} of about ${event.total.toLocaleString()}`);
+      else if (event.stage === 'filtering') this.progress.set(`Removing repeated and blurry frames from ${event.total.toLocaleString()}`);
       else if (run === null || run.runId === event.runId) this.progress.set(`Scoring frame ${Math.min(event.done + 1, event.total)} of ${event.total}`);
     });
     await this.attempt(async () => {
@@ -151,6 +169,7 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.unsubscribe?.();
+    if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
   }
 
   private async attempt(fn: () => Promise<void>): Promise<void> {
@@ -237,7 +256,7 @@ export class Thumbnails implements OnInit, OnDestroy {
     const item = this.item();
     if (item === null) return;
     this.busy.set('finding');
-    this.progress.set('Reading the story and its screen recording');
+    this.progress.set("Building the editor's timeline map for this session — this can take a few minutes, longer while the editor is processing");
     this.resetRun();
     await this.attempt(async () => {
       this.run.set(await this.electron.thumbsFindFrames({

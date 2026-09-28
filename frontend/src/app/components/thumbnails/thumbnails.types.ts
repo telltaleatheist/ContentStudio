@@ -165,7 +165,7 @@ export type ThumbsRenderResult =
 
 export interface ThumbsProgress {
   runId: string;
-  stage: 'sampling' | 'scoring';
+  stage: 'sampling' | 'filtering' | 'scoring';
   done: number;
   total: number;
 }

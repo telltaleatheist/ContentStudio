@@ -75,7 +75,7 @@
         <button mat-flat-button color="primary" (click)="findFrames()" [disabled]="busy() !== null || !story()?.link || changingLink()">
           <mat-icon>search</mat-icon> Find frames
         </button>
-        @if (busy() === 'finding' && progress()) { <span class="progress"><span class="spinner"></span>{{ progress() }}</span> }
+        @if (busy() === 'finding' && progress()) { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>{{ progress() }}</span> }
       </div>
     }
   </section>
@@ -93,7 +93,7 @@
         </button>
         @if (busy() === 'scoring') {
           <button mat-stroked-button (click)="stop()">Stop</button>
-          <span class="progress"><span class="spinner"></span>{{ progress() }}</span>
+          <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>{{ progress() }}</span>
         }
         <span class="spacer"></span>
         <div class="toggle" role="tablist">
@@ -145,7 +145,7 @@
                 matTooltip="Uses the model on the Routing dialog's 'Thumbnail words' row">
           <mat-icon>edit_note</mat-icon> {{ words() ? 'Write new words' : 'Write words' }}
         </button>
-        @if (busy() === 'words') { <span class="progress"><span class="spinner"></span>Writing…</span> }
+        @if (busy() === 'words') { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>Writing…</span> }
       </div>
       @if (words(); as w) {
         <p class="line">Written by {{ w.model }}. Click the lines you like to star them.</p>
@@ -239,7 +239,7 @@
                   matTooltip="Reads the video's tone, then ranks the photos for each thumbnail's words, on the Routing dialog's 'Thumbnail tone and photo' row">
             <mat-icon>psychology</mat-icon> Suggest photos
           </button>
-          @if (busy() === 'suggesting') { <span class="progress"><span class="spinner"></span>Reading the tone and ranking photos…</span> }
+          @if (busy() === 'suggesting') { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>Reading the tone and ranking photos…</span> }
           <button mat-stroked-button (click)="recombine()" [disabled]="busy() !== null">Combine again</button>
         </div>
         @if (suggestion(); as s) { <p class="line">{{ s.line }}</p> }
@@ -331,7 +331,7 @@
         <button mat-flat-button color="primary" (click)="render()" [disabled]="busy() !== null || variants().length === 0">
           <mat-icon>image</mat-icon> Make {{ variants().length === 1 ? 'the thumbnail' : 'the ' + variants().length + ' thumbnails' }}
         </button>
-        @if (busy() === 'rendering') { <span class="progress"><span class="spinner"></span>Drawing…</span> }
+        @if (busy() === 'rendering') { <span class="progress"><span class="spinner"></span><span class="elapsed">{{ elapsedLabel() }}</span>Drawing…</span> }
         <label class="check"><input type="checkbox" [checked]="showSlots()" (change)="showSlots.set(!showSlots())" /> Show the empty photo and logo spaces</label>
         @if (folder() && results()) { <button mat-stroked-button (click)="showFolder()">Open folder</button> }
       </div>

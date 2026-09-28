@@ -187,7 +187,7 @@ export interface LabDeps {
   };
   /** The editor's timeline manifest for a compounds zip (PythonService.editorManifest). */
   manifest: (zipPath: string) => Promise<unknown>;
-  progress: (event: { runId: string; stage: 'sampling' | 'scoring'; done: number; total: number }) => void;
+  progress: (event: { runId: string; stage: 'sampling' | 'filtering' | 'scoring'; done: number; total: number }) => void;
 }
 
 function frameId(frame: { index: number }): string {
@@ -376,6 +376,7 @@ export class ThumbnailLab {
       signal: controller.signal,
       onProgress: (done, total) => this.deps.progress({ runId, stage: 'sampling', done, total }),
     });
+    this.deps.progress({ runId, stage: 'filtering', done: 0, total: sampled.frames.length });
     const filtered = filterFrames(sampled.frames);
     const keptIds = new Set(filtered.kept.map(frameId));
     const kept = sampled.frames.filter((f) => keptIds.has(frameId(f)));
