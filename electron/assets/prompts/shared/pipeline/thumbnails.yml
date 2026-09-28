@@ -1,0 +1,118 @@
+text: |-
+  Below is the transcript of a video on the YouTube channel "{channel}". The video was made by the channel's creator, known as {creator}. He is the host: he plays clips of other people and speaks throughout as their commentator. The people, the claims and the events in the clips are the video's subject.
+
+  The transcript, one line per caption, with the time each starts:
+  {transcript}
+
+  Write the words that go on this video's thumbnail. The thumbnail sits beside this title, and the viewer reads the two together:
+  {title}
+
+  Every option:
+  - is 2 to 5 words, in capital letters;
+  - reads as a complete thought to a stranger who has never heard of the video, and leaves them wanting to know more;
+  - adds something the title leaves unsaid, so the title and the words together say more than either one alone;
+  - comes from the transcript: a claim the subject actually makes, lightly paraphrased, or the host's own reaction to it.
+
+  Write three kinds of option, {per_kind} of each:
+
+  CLAIM: the subject's own claim or advice, lightly paraphrased, stated the way the subject means it. Example: DON'T STAND UNDER A ROOF (a preacher's advice for surviving the rapture).
+  STAKES: the stakes or the absurdity the claim leads to, in the fewest words. Example: MAYBE TOMORROW (a rapture that keeps not arriving).
+  REACTION: the host's reaction to the subject, as a viewer would feel it. Example: SHE'S SERIOUS
+
+  Answer in exactly this shape: the kind's name alone on a line, its options one per line under it, and a blank line before the next kind.
+
+  CLAIM
+  option
+  option
+
+  STAKES
+  option
+  option
+
+  REACTION
+  option
+  option
+
+frames:
+  state: |-
+    The image is one frame taken from a video.
+  screen:
+    instructions: |-
+      What does this frame show?
+    video: |-
+      A picture from a video: a camera shot of a person or a scene, or two camera shots side by side.
+    screen: |-
+      A computer screen: a desktop, a web browser, an app window, a document, a menu or any other interface.
+  face: |-
+    A human face is clearly visible in this frame and large enough to read its expression.
+  expression:
+    instructions: |-
+      How strong is the expression on the largest face in this frame?
+    levels: |-
+      blank and neutral
+      mild
+      clear
+      strong
+      extreme
+  eyes: |-
+    The largest face in this frame has its eyes open.
+  strong: |-
+    This frame would make a strong YouTube thumbnail.
+
+tone:
+  state: |-
+    Below is what a video on the YouTube channel "{channel}" is about. The video was made by the channel's creator, known as {creator}, who comments throughout on the people and claims in it.
+
+    The description's opening line:
+    {hook}
+
+    The description:
+    {description}
+
+    The opening of the transcript:
+    {transcript}
+  question: |-
+    What is the tone of this video?
+  options: |-
+    mocking
+    absurd
+    outraged
+    alarming
+    disgusted
+    incredulous
+    hypocrisy exposed
+    sombre
+    pitiful
+    lighthearted
+
+photo:
+  state: |-
+    A thumbnail is being made for a video on the YouTube channel "{channel}". The creator, known as {creator}, puts a photo of his own reaction in the corner of each thumbnail.
+
+    What the video is about:
+    {summary}
+
+    The tone of the video: {tone}
+
+    The words on this thumbnail: {text}
+
+    The creator's reaction photos, one per line, each with what it shows and when it fits:
+    {legend}
+  question: |-
+    Which reaction photo fits this thumbnail?
+  no_text: |-
+    none, the thumbnail is a picture only
+  drafts: |-
+    laugh: laughing; light topics only, never for deaths or real victims
+    chuckle: laughing; light topics only, never for deaths or real victims
+    uh oh laughing: laughing; light topics only, never for deaths or real victims
+    horrified: horrified; serious topics
+    thats not good: worried; serious topics
+    this is wrong: disapproving; serious topics
+    oh please: dismissive; for a claim that is not worth believing
+    are you kidding me: dismissive; for a claim that is not worth believing
+    exaspirated: dismissive and fed up; for a claim that is not worth believing
+    eww: disgusted
+    head slap: facepalm; for something foolish
+    oh wow: surprised
+    ooh: surprised

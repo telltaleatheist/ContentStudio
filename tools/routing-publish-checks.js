@@ -252,7 +252,8 @@ check('the shipped defaults are all local, and the big fields share one model', 
   }
   // Tags is a modal row since #204 but keeps its own small default (the 9B), so the
   // one-model rule is asserted over the big fields — the five that write prose.
-  const big = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal && t.id !== 'tags').map((t) => resolved[t.id]);
+  // The metadata rows only: the Thumbnails tab's rows (#236) are not part of a metadata run.
+  const big = routing.metadataRunTasks().filter((t) => t.modal && t.id !== 'tags').map((t) => resolved[t.id]);
   if (new Set(big).size !== 1) {
     throw new Error('the big fields default to ' + new Set(big).size + ' models; one model is the shipped state');
   }
@@ -272,11 +273,11 @@ check('the shipped defaults are all local, and the big fields share one model', 
  * not among them.
  */
 check('the modal is per-field: five big rows plus tags, cloud rungs on every big row', () => {
-  const modal = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => t.id);
+  const modal = routing.metadataRunTasks().filter((t) => t.modal).map((t) => t.id);
   eq(modal.join(','), 'titles,description,chapters,tags,thumbnail_text,pinned_comment');
   const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
   eq(tags.modal, true, 'tags is a visible row (#204)');
-  for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal && t.id !== 'tags')) {
+  for (const task of routing.metadataRunTasks().filter((t) => t.modal && t.id !== 'tags')) {
     for (const rung of ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
       if (!task.options.includes(rung)) {
         throw new Error(task.id + ' does not offer ' + rung + '; every big field offers every big rung');
@@ -285,6 +286,49 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
   }
   const chapters = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters');
   eq(chapters.options.join(','), 'qwen38-27b,sonnet5,opus5,haiku45,claude-cli,claude-cli-sonnet', 'chapters offer the capable rungs plus the subscription rungs');
+});
+
+/**
+ * THE THUMBNAILS TAB'S ROWS (#236, 2026-09-28): their own group, so a metadata run never reads
+ * them. The frame row offers ONLY image-reading local models (decide needs a distribution; no
+ * upstream gives one), defaults to the 9B with vision (Owen), and judges a server that lists a
+ * model as text-only "not here". The words row offers the thumbnail_text field's rungs.
+ */
+check('the Thumbnails tab rows: their own group, vision-only frames on the 9B with vision, words on the 27B', () => {
+  const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
+  eq(rows.join(','), 'thumbnail_frames,thumbnail_words,thumbnail_judge');
+  const judge = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_judge');
+  eq(judge.defaultOptionId, 'qwen35-9b');
+  eq(judge.options.every((id) => routing.METADATA_ROUTING_OPTIONS[id].kind === 'local'), true, 'decide needs logprobs: local rungs only');
+  const frames = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_frames');
+  eq(frames.defaultOptionId, 'qwen35-9b-vl');
+  for (const id of frames.options) {
+    const option = routing.METADATA_ROUTING_OPTIONS[id];
+    if (option.vision !== true || option.kind !== 'local') throw new Error(id + ' is offered for frames but is not a local vision model');
+  }
+  eq(frames.options.includes('qwen35-4b') && frames.options.includes('qwen35-2b'), true, 'the small vision models are selectable');
+  const words = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words');
+  const text = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_text');
+  eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs');
+  eq(words.defaultOptionId, 'qwen38-27b');
+  // A metadata run's log line and ceiling never name them.
+  const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
+  eq(/thumbnail_frames|thumbnail_words|thumbnail_judge/.test(line), false, 'the metadata log line leaves them out');
+  // Judged against the server's own modalities: text-only is "not here", with the server named.
+  const inventory = {
+    server: 'mac', reachable: true, anthropicConfigured: false,
+    models: { 'qwen3.5-9b-vl': { offer: 'pullable', reason: null }, 'qwen3.5-4b': { offer: 'installed', reason: null } },
+    modalities: { 'qwen3.5-9b-vl': ['text', 'image'], 'qwen3.5-4b': ['text'] },
+  };
+  const view = routing.buildRoutingView(undefined, inventory, { routingServer: null, selectedServer: 'mac' });
+  const row = view.tasks.find((t) => t.id === 'thumbnail_frames');
+  eq(row.group, 'thumbnails');
+  eq(row.options.find((o) => o.id === 'qwen35-9b-vl').availability, 'pullable', 'the default is listed, not downloaded yet');
+  eq(row.options.some((o) => o.id === 'qwen35-4b'), false, 'a text-only reading is not offered');
+  const judged = routing.visionAvailability(routing.METADATA_ROUTING_OPTIONS['qwen35-4b'], inventory);
+  eq(judged.availability, 'not-here');
+  eq(/"mac" lists qwen3.5-4b as reading text only/.test(judged.note), true, judged.note);
+  eq(routing.visionAvailability(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'], inventory).availability, 'not-here', 'a text model is never a frame scorer');
 });
 
 check('chapter resolution reads the chapters entry, and the view carries the modal flags', () => {
