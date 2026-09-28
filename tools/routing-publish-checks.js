@@ -309,7 +309,7 @@ check('the Thumbnails tab rows: their own group, vision-only frames on the 9B wi
   eq(frames.options.includes('qwen35-4b') && frames.options.includes('qwen35-2b'), true, 'the small vision models are selectable');
   const words = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words');
   const text = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_text');
-  eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs');
+  eq(words.options.join(','), ['qwen38-27b-8bit', ...text.options].join(','), 'the words row offers the 8-bit 27B, then the thumbnail_text rungs');
   eq(words.defaultOptionId, 'qwen38-27b-8bit');
   // A metadata run's log line and ceiling never name them.
   const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
