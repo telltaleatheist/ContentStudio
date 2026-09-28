@@ -268,7 +268,7 @@ export function isDriftWarning(driftPct: number): boolean {
  * `weekFolderOfProject`, which keys on the literal `files` parent. A date-shaped-name rule
  * would claim weeks the archive never created.
  */
-function weekFolderOfExport(videoPath: string): string | null {
+export function weekFolderOfExport(videoPath: string): string | null {
   const clean = videoPath.replace(/[\\/]+$/, '');
   const completeDir = path.dirname(clean);
   if (path.basename(completeDir) !== 'complete') return null;
