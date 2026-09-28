@@ -112,14 +112,17 @@ export class Thumbnails implements OnInit, OnDestroy {
   readonly sessionStories = computed<ThumbsStoryChoice[]>(() => this.allChoices().filter((c) => c.projectFolder === this.pickSession()));
   readonly pickedStory = computed<ThumbsStoryChoice | null>(() => this.sessionStories().find((c) => this.storyKey(c) === this.pickStory()) ?? null);
   readonly framesById = computed(() => new Map((this.run()?.frames ?? []).map((f) => [f.id, f])));
-  readonly shownFrames = computed<ThumbsFrame[]>(() => {
+  /** The best view: one row per scene (its top frames), scenes ordered by their best frame. */
+  readonly bestRows = computed<Array<{ scene: number; label: string; frames: ThumbsFrame[] }>>(() => {
     const run = this.run();
-    if (run === null) return [];
-    if (this.view() === 'best' && run.best !== null) {
-      const byId = this.framesById();
-      return run.best.map((id) => byId.get(id)).filter((f): f is ThumbsFrame => f !== undefined);
-    }
-    return run.frames;
+    if (run === null || run.bestScenes === null) return [];
+    const byId = this.framesById();
+    const labels = new Map(run.scenes.map((s) => [s.number, s.label]));
+    return run.bestScenes.map((row) => ({
+      scene: row.scene,
+      label: labels.get(row.scene) ?? `Scene ${row.scene}`,
+      frames: row.ids.map((id) => byId.get(id)).filter((f): f is ThumbsFrame => f !== undefined),
+    }));
   });
   /** Every word line the model wrote, plus "no text", for a variant's text menu. */
   readonly allTexts = computed<ThumbsWordPick[]>(() => {
@@ -312,8 +315,8 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   frameTip(frame: ThumbsFrame): string {
     const r = frame.reading;
-    if (r === null) return `${frame.clock}: not scored`;
-    return `${frame.clock}: face ${this.percent(r.pFace)}%, expression ${r.expression.toFixed(1)} of 5, eyes open ${this.percent(r.pEyesOpen)}%, ` +
+    if (r === null) return `${frame.clock}, scene ${frame.scene}: not scored`;
+    return `${frame.clock}, scene ${frame.scene}: face ${this.percent(r.pFace)}%, expression ${r.expression.toFixed(1)} of 5, eyes open ${this.percent(r.pEyesOpen)}%, ` +
       `strong thumbnail ${this.percent(r.pStrong)}%, computer screen ${this.percent(r.pScreen)}%`;
   }
 

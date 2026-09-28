@@ -6,9 +6,10 @@
  *      finished export (camera and screen together). An item with no link gets a picker (editor
  *      session, then story), and the choice is saved as the item's link: the publish selection
  *      record's `transcriptRef`, the same field the Inputs page and regeneration use.
- *   2. Find frames: ffmpeg samples ~1/s, the cheap filters drop repeats and blurry frames, the
- *      routed vision model scores what is left (at most MAX_FRAMES_TO_SCORE, spread evenly), the
- *      desktop answer rejects screens, the rest is ranked and ~20 are picked across the sections.
+ *   2. Find frames: ffmpeg samples ~1/s, the cheap filters drop repeats and blurry frames, what is
+ *      left is grouped into SCENES by how it looks (frame-scenes.ts), the routed vision model
+ *      scores at most MAX_FRAMES_TO_SCORE of it (every scene some, the rest by screen time), the
+ *      desktop answer rejects screens, and the best view shows each scene's top few frames.
  *   3. Write words: three kinds (claim, stakes, reaction), several each, paired with the title the
  *      operator picks from the item's report.
  *   4. Render three variants deterministically, each with words or none, into a folder beside the
@@ -28,8 +29,9 @@ import { OutputHandlerService } from '../metadata/output-handler.service';
 import { inspectSavedTranscript, loadSavedTranscript } from '../metadata/saved-transcript.service';
 import { promptAssets } from '../metadata/prompt-assets';
 import { resolveMetadataRouting, routingOption, type MetadataRoutingOption } from '../metadata/metadata-routing';
-import { MAX_FRAMES_TO_SCORE, filterFrames, thinAcrossRange } from './frame-metrics';
-import { BEST_COUNT, pickDiverse, rankFrames, type FrameReading, type RankedFrame } from './frame-ranking';
+import { MAX_FRAMES_TO_SCORE, filterFrames } from './frame-metrics';
+import { rankFrames, type FrameReading, type RankedFrame } from './frame-ranking';
+import { SCENE_FLOOR, allocateScoring, framesToScore, groupScenes, sceneRows, type Scene, type SceneRow } from './frame-scenes';
 import { clock, extractFullFrame, probeVideo, sampleFrames, type SampledFrame } from './frame-sampler';
 import { resolveStorySource, type StorySource } from './story-source';
 import {
@@ -134,7 +136,18 @@ export interface LabFrameView {
   reading: FrameReading | null;
   /** 'screen' when the model read it as a computer screen (rejected), 'unreadable' when its answer was. */
   flag: 'screen' | 'unreadable' | null;
-  section: number | null;
+  /** The scene the frame belongs to (1-based, by first appearance). */
+  scene: number;
+}
+
+/** One scene of the run: how long the story shows it, how many frames it kept and sends to scoring. */
+export interface LabSceneView {
+  number: number;
+  seconds: number;
+  /** "Scene 3 · 2:41 on screen". */
+  label: string;
+  kept: number;
+  scoring: number;
 }
 
 export interface LabRunView {
@@ -146,10 +159,12 @@ export interface LabRunView {
   end: number;
   lines: string[];
   frames: LabFrameView[];
-  /** Frame ids the scorer reads (the kept frames, thinned to the cap). */
+  /** Frame ids the scorer reads (the kept frames, shared across the scenes up to the cap). */
   toScore: string[];
-  /** Once scored: the ~20 best, spread across the range, best first. */
-  best: string[] | null;
+  /** The scenes, in order of first appearance. */
+  scenes: LabSceneView[];
+  /** Once scored: one row per scene with its best frames, scenes ordered by their best frame. */
+  bestScenes: SceneRow[] | null;
   scoring: { server: string; model: string; line: string } | null;
 }
 
@@ -163,11 +178,13 @@ interface Run {
   end: number;
   frames: SampledFrame[];
   toScore: Set<string>;
+  scenes: Scene<SampledFrame>[];
+  sceneOf: Map<string, number>;
   lines: string[];
   ranked: RankedFrame[] | null;
   readings: Map<string, FrameReading>;
   flags: Map<string, 'screen' | 'unreadable'>;
-  best: string[] | null;
+  bestScenes: SceneRow[] | null;
   scoring: LabRunView['scoring'];
   controller: AbortController | null;
 }
@@ -198,6 +215,11 @@ function srtSeconds(value: string, what: string): number {
   const m = /^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/.exec(value.trim());
   if (!m) throw new Error(`${what}: "${value}" is not a caption time.`);
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, '0')) / 1000;
+}
+
+/** "Scene 3 · 2:41 on screen". */
+function sceneLabel(scene: { number: number; seconds: number }): string {
+  return `Scene ${scene.number} · ${clock(scene.seconds).replace(/^0(\d:)/, '$1')} on screen`;
 }
 
 function safeFileName(text: string): string {
@@ -379,21 +401,27 @@ export class ThumbnailLab {
     const filtered = filterFrames(sampled.frames);
     const keptIds = new Set(filtered.kept.map(frameId));
     const kept = sampled.frames.filter((f) => keptIds.has(frameId(f)));
-    const toScore = thinAcrossRange(kept, sampled.start, sampled.end, MAX_FRAMES_TO_SCORE);
+    const scenes = groupScenes(kept, sampled.frames, sampled.every);
+    const allocation = allocateScoring(scenes.map((s) => ({ number: s.number, size: s.frames.length, seconds: s.seconds })), MAX_FRAMES_TO_SCORE);
+    const toScore = framesToScore(scenes, allocation.quota);
     const blurry = filtered.dropped.filter((d) => d.reason === 'blurry').length;
     const repeats = filtered.dropped.filter((d) => d.reason === 'repeat').length;
     const lines = [
       ...source.lines,
       `Sampled ${sampled.frames.length} frames across those stretches (${clock(sampled.seconds)} of the screen recording, between ${clock(sampled.start)} and ${clock(sampled.end)} of it; one every ${sampled.every.toFixed(sampled.every === 1 ? 0 : 1)} s).`,
       `Removed ${repeats} repeated and ${blurry} blurry frames; ${kept.length} kept.`,
+      `The kept frames look like ${scenes.length} different scene${scenes.length === 1 ? '' : 's'} (grouped by their colours and layout; a clip that comes back joins its scene).`,
       toScore.length < kept.length
-        ? `${toScore.length} of them, spread evenly across the story, will be scored (the most one run scores is ${MAX_FRAMES_TO_SCORE}).`
+        ? allocation.short
+          ? `${toScore.length} of them will be scored (the most one run scores is ${MAX_FRAMES_TO_SCORE}). There are too many scenes for ${SCENE_FLOOR} each, so every scene gets at least one, the longest on screen first.`
+          : `${toScore.length} of them will be scored (the most one run scores is ${MAX_FRAMES_TO_SCORE}): up to ${SCENE_FLOOR} from every scene, the rest shared by time on screen.`
         : `All ${kept.length} will be scored.`,
     ];
     log.info(`[ThumbnailLab] ${runId} for ${item.title}: ${lines.join(' ')}`);
     const run: Run = {
       runId, item, source, video, dir, start: sampled.start, end: sampled.end, frames: kept, toScore: new Set(toScore.map(frameId)),
-      lines, ranked: null, readings: new Map(), flags: new Map(), best: null, scoring: null, controller: null,
+      scenes, sceneOf: new Map(scenes.flatMap((s) => s.frames.map((f) => [frameId(f), s.number] as const))),
+      lines, ranked: null, readings: new Map(), flags: new Map(), bestScenes: null, scoring: null, controller: null,
     };
     this.runs.set(runId, run);
     return this.view(run, true);
@@ -419,11 +447,18 @@ export class ThumbnailLab {
           score: ranked?.score ?? null,
           reading: run.readings.get(id) ?? null,
           flag: run.flags.get(id) ?? null,
-          section: ranked?.section ?? null,
+          scene: run.sceneOf.get(id)!,
         };
       }),
       toScore: run.frames.map(frameId).filter((id) => run.toScore.has(id)),
-      best: run.best,
+      scenes: run.scenes.map((s) => ({
+        number: s.number,
+        seconds: s.seconds,
+        label: sceneLabel(s),
+        kept: s.frames.length,
+        scoring: s.frames.filter((f) => run.toScore.has(frameId(f))).length,
+      })),
+      bestScenes: run.bestScenes,
       scoring: run.scoring,
     };
   }
@@ -452,18 +487,22 @@ export class ThumbnailLab {
         onProgress: (done, total) => this.deps.progress({ runId, stage: 'scoring', done, total }),
       });
       run.readings = new Map(outcome.scored.map((s) => [s.id, s.reading]));
-      const { ranked, screens } = rankFrames(outcome.scored, run.start, run.end);
+      const { ranked, screens } = rankFrames(outcome.scored);
       run.flags = new Map([
         ...screens.map((s) => [s.id, 'screen'] as const),
         ...outcome.unreadable.map((u) => [u.id, 'unreadable'] as const),
       ]);
       run.ranked = ranked;
-      run.best = pickDiverse(ranked, BEST_COUNT).map((r) => r.id);
+      const rows = sceneRows(ranked, run.sceneOf, run.scenes.map((s) => s.number));
+      run.bestScenes = rows.rows;
+      const noRow = rows.empty.length > 0
+        ? ` ${rows.empty.length === 1 ? 'Scene' : 'Scenes'} ${rows.empty.join(', ')} ${rows.empty.length === 1 ? 'has' : 'have'} no frame to show (every scored frame was a computer screen or unreadable).`
+        : '';
       const unreadable = outcome.unreadable.length > 0 ? ` ${outcome.unreadable.length} frame(s) could not be read and were set aside (${outcome.unreadable.map((u) => `${clock(u.t)}: ${u.reason}`).join('; ')}).` : '';
       run.scoring = {
         server: outcome.server,
         model: outcome.model,
-        line: `Scored ${outcome.scored.length} frames on ${outcome.model} on "${outcome.server}" (${outcome.widthBasis}). ${screens.length} were computer screens and are left out.${unreadable}`,
+        line: `Scored ${outcome.scored.length} frames on ${outcome.model} on "${outcome.server}" (${outcome.widthBasis}). ${screens.length} were computer screens and are left out.${unreadable}${noRow}`,
       };
       log.info(`[ThumbnailLab] ${runId}: ${run.scoring.line}`);
       return this.view(run, false);

@@ -14,8 +14,14 @@
  *     saved as the selection record's transcriptRef, frames come only from the story's stretches,
  *     and an untrusted alignment, a missing or split screen recording and a renamed story are
  *     refused by name. The real 2026-09-24 session is read (never written) as a fixture reference.
- *   - RANKING: the desktop answer is the one filter, everything else ranks; the ~20 best come from
- *     every section of the range; a frame with a missing option letter is unreadable, not guessed.
+ *   - SCENES (2026-09-28): kept frames group by how they look across the whole story (alternating
+ *     clips rejoin their scene, a speaker moving inside a clip does not split it, a scene of two
+ *     frames stays its own); the nearest-neighbour chain gives the same groups as merging the
+ *     closest pair; every sampled frame counts toward a scene's time on screen; the scoring cap is
+ *     shared with a floor per scene and the rest by screen time.
+ *   - RANKING: the desktop answer is the one filter, everything else ranks; the best view is one
+ *     row per scene with its top frames, scenes ordered by their best frame, screen-only scenes
+ *     left out and named; a frame with a missing option letter is unreadable, not guessed.
  *   - TEXT: the words prompt fills every slot from thumbnails.yml; the plain-text answer parses into
  *     the three kinds with decoration stripped and off-brief options warned about, never dropped.
  *   - FACE-SAFE BOX: the text never touches a padded face or a reserved slot, sits bottom-left
@@ -42,6 +48,7 @@ const services = (name) => require(path.join(DIST, 'services', name));
 services('metadata/prompt-assets.js').initPromptAssets(path.join(REPO, 'electron', 'assets', 'prompts'));
 const metrics = services('thumbnails/frame-metrics.js');
 const ranking = services('thumbnails/frame-ranking.js');
+const scenes = services('thumbnails/frame-scenes.js');
 const layout = services('thumbnails/layout.js');
 const prompts = services('thumbnails/prompts.js');
 const sampler = services('thumbnails/frame-sampler.js');
@@ -133,6 +140,126 @@ check('filtering: thinning keeps the cap and spreads it across the range, sharpe
   for (let i = 1; i < filled.length; i++) assert.ok(filled[i].t > filled[i - 1].t, 'time order');
 });
 
+// ── scenes ─────────────────────────────────────────────────────────────────
+
+/** A 16x9 colour signature: a background painter, then an optional speaker block of cells. */
+function sig(background, speaker = null, noiseSeed = 1) {
+  const out = new Uint8Array(scenes.SIG_BYTES);
+  let s = noiseSeed;
+  for (let y = 0; y < scenes.SIG_ROWS; y++) for (let x = 0; x < scenes.SIG_COLS; x++) {
+    const c = background(x, y);
+    for (let k = 0; k < 3; k++) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      out[(y * scenes.SIG_COLS + x) * 3 + k] = Math.max(0, Math.min(255, c[k] + (s % 11) - 5));
+    }
+  }
+  if (speaker) {
+    for (let y = speaker.y; y < speaker.y + 5; y++) for (let x = speaker.x; x < speaker.x + 3; x++) {
+      out.set(speaker.colour, (y * scenes.SIG_COLS + x) * 3);
+    }
+  }
+  return out;
+}
+// Clip A: a studio (navy left, red right) with a host who moves around; clip B: a garden (green
+// over grey) with a different host; clip C: a white document page on dark grey, two frames only.
+const studio = (x) => (x < 8 ? [30, 40, 110] : [150, 30, 30]);
+const garden = (x, y) => (y < 5 ? [40, 140, 50] : [120, 120, 120]);
+const page = (x) => (x >= 5 && x < 11 ? [235, 235, 235] : [40, 40, 40]);
+const skin = [210, 160, 130];
+
+check('scenes: alternating clips rejoin their scene, a moving speaker does not split one, a two-frame scene stays its own', () => {
+  const kept = [];
+  let t = 0;
+  const add = (colour, scene) => { kept.push({ index: kept.length, t: t++, colour, sharpness: 10, scene }); };
+  // A B A B C A: the host in A walks from the left edge to the right; B's host shifts a little.
+  for (let round = 0; round < 3; round++) {
+    for (let k = 0; k < 6; k++) add(sig(studio, { x: (round * 6 + k) % 13, y: 2, colour: skin }, 10 + t), 'A');
+    if (round < 2) for (let k = 0; k < 4; k++) add(sig(garden, { x: 6 + (k % 2), y: 3, colour: [90, 60, 50] }, 50 + t), 'B');
+    if (round === 1) for (let k = 0; k < 2; k++) add(sig(page, null, 90 + t), 'C');
+  }
+  const sampled = kept.map((f) => ({ index: f.index, colour: f.colour }));
+  // A dropped repeat of the page, sampled but not kept, counts toward the page's time on screen.
+  sampled.push({ index: 999, colour: sig(page, null, 7) });
+  const got = scenes.groupScenes(kept, sampled, 1);
+  assert.strictEqual(got.length, 3, `three scenes (got ${got.map((s) => s.frames.map((f) => f.scene).join('')).join(' | ')})`);
+  assert.deepStrictEqual(got.map((s) => [...new Set(s.frames.map((f) => f.scene))]), [['A'], ['B'], ['C']], 'each scene is one clip, numbered by first appearance');
+  assert.deepStrictEqual(got.map((s) => s.frames.length), [18, 8, 2]);
+  assert.deepStrictEqual(got.map((s) => s.seconds), [18, 8, 3], 'screen time counts the sampled repeat');
+  const moved = scenes.signatureDistance(sig(studio, { x: 0, y: 2, colour: skin }), sig(studio, { x: 12, y: 2, colour: skin }));
+  assert.ok(moved < scenes.SCENE_JOIN_FRACTION, `the host crossing the frame changes ${moved.toFixed(2)} of the cells`);
+  assert.ok(scenes.signatureDistance(sig(studio), sig(garden)) > scenes.SCENE_JOIN_FRACTION, 'two clips differ in most cells');
+  assert.throws(() => scenes.signatureDistance(new Uint8Array(3), sig(studio)), /signature is 432 bytes/);
+});
+
+check('scenes: the nearest-neighbour chain gives the same groups as merging the closest pair until none is close enough', () => {
+  const backgrounds = [studio, garden, page, (x, y) => [(x * 15) % 255, (y * 25) % 255, 90], () => [200, 190, 60]];
+  let seed = 3;
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const sigs = [];
+  for (let i = 0; i < 70; i++) {
+    const bg = backgrounds[Math.floor(rand() * backgrounds.length)];
+    sigs.push(sig(bg, rand() < 0.7 ? { x: Math.floor(rand() * 13), y: Math.floor(rand() * 4), colour: [Math.floor(rand() * 255), 120, 90] } : null, i + 1));
+  }
+  const naive = (join) => {
+    let clusters = sigs.map((_, i) => [i]);
+    const d = (a, b) => scenes.signatureDistance(sigs[a], sigs[b]);
+    const avg = (A, B) => { let sum = 0; for (const a of A) for (const b of B) sum += d(a, b); return sum / (A.length * B.length); };
+    for (;;) {
+      let best = Infinity, bi = -1, bj = -1;
+      for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) { const v = avg(clusters[i], clusters[j]); if (v < best) { best = v; bi = i; bj = j; } }
+      if (bi < 0 || best > join) break;
+      clusters[bi] = clusters[bi].concat(clusters[bj]).sort((a, b) => a - b);
+      clusters.splice(bj, 1);
+    }
+    return clusters.sort((a, b) => a[0] - b[0]);
+  };
+  for (const join of [0.2, 0.4, scenes.SCENE_JOIN_FRACTION, 0.8]) {
+    assert.deepStrictEqual(scenes.averageLinkageGroups(sigs, join), naive(join), `the groups at a cut of ${join}`);
+  }
+  assert.deepStrictEqual(scenes.averageLinkageGroups([sigs[0]]), [[0]], 'one frame is one scene');
+  assert.throws(() => scenes.averageLinkageGroups([]), /no frames to group/);
+});
+
+check('scenes: the scoring cap is shared: a floor for every scene (all of a tiny one), the rest by screen time, the total unchanged', () => {
+  const list = [
+    { number: 1, size: 200, seconds: 400 },
+    { number: 2, size: 80, seconds: 160 },
+    { number: 3, size: 2, seconds: 2 },
+    { number: 4, size: 30, seconds: 30 },
+    { number: 5, size: 1, seconds: 1 },
+  ];
+  const { quota, short } = scenes.allocateScoring(list, 60);
+  const q = list.map((s) => quota.get(s.number));
+  assert.strictEqual(short, false);
+  assert.strictEqual(q.reduce((a, b) => a + b, 0), 60, `the cap is used exactly (${q})`);
+  assert.deepStrictEqual([q[2], q[4]], [2, 1], 'a tiny scene sends all it has');
+  assert.ok(q[0] > q[1] && q[1] > q[3] && q[3] >= scenes.SCENE_FLOOR, `longer on screen, more frames (${q})`);
+  const rest = [q[0] - 3, q[1] - 3, q[3] - 3];
+  assert.ok(Math.abs(rest[0] / rest[1] - 400 / 160) < 0.5, `the rest follows screen time (${rest})`);
+  // Under the cap, everything is scored.
+  const all = scenes.allocateScoring(list.slice(2), 60).quota;
+  assert.deepStrictEqual([...all.values()], [2, 30, 1]);
+  // More scenes than the floors allow: one each, longest on screen first, and the run says so.
+  const many = Array.from({ length: 30 }, (_, i) => ({ number: i + 1, size: 5, seconds: 100 - i }));
+  const tight = scenes.allocateScoring(many, 20);
+  assert.strictEqual(tight.short, true);
+  assert.deepStrictEqual([...tight.quota.values()], [...Array(20).fill(1), ...Array(10).fill(0)]);
+  assert.throws(() => scenes.allocateScoring(list, 0), /not a count/);
+});
+
+check('scenes: the frames scored are each scene\'s share, spread across that scene\'s own time on screen', () => {
+  const mk = (t, sharpness = 10) => ({ t, sharpness });
+  const sceneList = [
+    { number: 1, frames: Array.from({ length: 40 }, (_, i) => mk(i < 20 ? i : 500 + i)), sampled: 40, seconds: 40 },
+    { number: 2, frames: [mk(100), mk(101)], sampled: 2, seconds: 2 },
+  ];
+  const picked = scenes.framesToScore(sceneList, new Map([[1, 6], [2, 2]]));
+  assert.strictEqual(picked.length, 8);
+  const one = picked.filter((f) => f.t < 100 || f.t >= 500);
+  assert.ok(one.some((f) => f.t < 20) && one.some((f) => f.t >= 500), 'both of scene 1\'s visits are sampled');
+  for (let i = 1; i < picked.length; i++) assert.ok(picked[i].t > picked[i - 1].t, 'time order');
+});
+
 // ── sampling (real ffmpeg, synthetic video) ─────────────────────────────────
 
 check('sampling: one frame a second inside the stretches only, both JPEG sizes written, times in the source video', async () => {
@@ -153,6 +280,8 @@ check('sampling: one frame a second inside the stretches only, both JPEG sizes w
     assert.ok(out.frames.some((f) => f.t >= 60), 'the far stretch was sampled');
     assert.strictEqual(new Set(out.frames.map((f) => f.index)).size, out.frames.length, 'every frame has its own number');
     assert.ok(out.frames.every((f) => fs.existsSync(f.large) && fs.existsSync(f.small) && f.sharpness > 0));
+    assert.ok(out.frames.every((f) => f.colour instanceof Uint8Array && f.colour.length === scenes.SIG_BYTES), 'every frame carries its 16x9 colour signature (the second pipe)');
+    assert.ok(out.frames.some((f) => f.colour.some((v) => v > 200)) && out.frames.some((f) => f.colour.some((v) => v < 60)), 'the signature holds the test pattern\'s colours, not zeros');
     assert.strictEqual(fs.readdirSync(outDir).length, out.frames.length * 2, 'the frames decoded between two stretches are not left on disk');
     const odd = path.join(dir, 'square.mp4');
     execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=640x640:rate=25:duration=3', '-pix_fmt', 'yuv420p', odd]);
@@ -186,27 +315,35 @@ check('ranking: the desktop answer is the one filter; face, expression, eyes and
     { id: 'noface', t: 40, reading: reading({ pFace: 0.05, expression: 5, pStrong: 0.9 }) },
     { id: 'shut', t: 50, reading: reading({ expression: 5, pStrong: 0.9, pEyesOpen: 0.05 }) },
   ];
-  const r = ranking.rankFrames(frames, 0, 60);
+  const r = ranking.rankFrames(frames);
   assert.deepStrictEqual(r.screens.map((f) => f.id), ['desk']);
   assert.deepStrictEqual(r.ranked.map((f) => f.id), ['wild', 'shut', 'blank', 'noface']);
   assert.ok(r.ranked.every((f) => f.score >= 0 && f.score <= 1));
 });
 
-check('ranking: the ~20 best come from every section, never two picks within 4 s', () => {
+check('ranking: the best view is one row per scene, its top frames (never two within 4 s), scenes ordered by their best frame; a screens-only scene is named', () => {
   const frames = [];
-  for (let i = 0; i < 400; i++) {
-    // The first eighth of the range scores highest; a naive top-20 would all come from there.
-    const early = i < 50;
-    frames.push({ id: `f${i}`, t: i, reading: reading({ expression: early ? 5 : 2 + (i % 3), pStrong: early ? 0.99 : 0.3 + (i % 7) / 10 }) });
+  const sceneOf = new Map();
+  // Scene 1: many good frames; scene 2: one excellent frame; scene 3: middling; scene 4: only screens.
+  for (let i = 0; i < 40; i++) { frames.push({ id: `a${i}`, t: i, reading: reading({ expression: 4, pStrong: 0.5 + (i % 5) / 20 }) }); sceneOf.set(`a${i}`, 1); }
+  frames.push({ id: 'b0', t: 100, reading: reading({ expression: 5, pStrong: 0.99 }) }); sceneOf.set('b0', 2);
+  for (let i = 0; i < 6; i++) { frames.push({ id: `c${i}`, t: 200 + i * 10, reading: reading({ expression: 2, pStrong: 0.3 }) }); sceneOf.set(`c${i}`, 3); }
+  for (let i = 0; i < 3; i++) { frames.push({ id: `d${i}`, t: 300 + i, reading: reading({ pScreen: 0.9 }) }); sceneOf.set(`d${i}`, 4); }
+  const { ranked, screens } = ranking.rankFrames(frames);
+  assert.strictEqual(screens.length, 3);
+  const { rows, empty } = scenes.sceneRows(ranked, sceneOf, [1, 2, 3, 4]);
+  assert.deepStrictEqual(rows.map((r) => r.scene), [2, 1, 3], 'scenes ordered by their best frame\'s score');
+  assert.deepStrictEqual(empty, [4], 'the scene of computer screens has no row, and is named');
+  assert.deepStrictEqual(rows.map((r) => r.ids.length), [1, scenes.SCENE_ROW_FRAMES, scenes.SCENE_ROW_FRAMES]);
+  const byId = new Map(ranked.map((f) => [f.id, f]));
+  for (const row of rows) {
+    const got = row.ids.map((id) => byId.get(id));
+    for (let k = 1; k < got.length; k++) assert.ok(got[k - 1].score >= got[k].score, 'best first within a row');
+    for (const a of got) for (const b of got) if (a !== b) assert.ok(Math.abs(a.t - b.t) >= scenes.SCENE_MIN_GAP_SECONDS, `${a.id} and ${b.id} are the same moment`);
+    assert.strictEqual(row.best, got[0].score);
   }
-  const { ranked } = ranking.rankFrames(frames, 0, 400);
-  const best = ranking.pickDiverse(ranked, 20);
-  assert.strictEqual(best.length, 20);
-  const sections = new Set(best.map((f) => f.section));
-  assert.strictEqual(sections.size, ranking.DIVERSITY_SECTIONS, `sections used: ${[...sections]}`);
-  const times = best.map((f) => f.t).sort((a, b) => a - b);
-  for (let i = 1; i < times.length; i++) assert.ok(times[i] - times[i - 1] >= ranking.MIN_PICK_GAP_SECONDS, `${times[i - 1]} and ${times[i]} are too close`);
-  for (let i = 1; i < best.length; i++) assert.ok(best[i - 1].score >= best[i].score, 'best first');
+  assert.ok(rows.every((r) => r.ids.every((id) => !id.startsWith('d'))), 'no rejected frame in any row');
+  assert.throws(() => scenes.sceneRows(ranked, new Map(), [1]), /belongs to no scene/);
 });
 
 check('ranking: an answer with a missing option letter is unreadable and names the question; a full one reads', () => {
@@ -727,6 +864,11 @@ check('story link: an unlinked report gets the picker (never a name match); the 
     assert.ok(/^Sampled (3[3-7]) frames across those stretches \(00:35 of the screen recording/.test(sampledLine), sampledLine);
     assert.ok(run.frames.length >= 3, `${run.frames.length} frames kept after the repeat filter`);
     assert.ok(run.frames.every((f) => spans.some(([a, b]) => f.t >= a - 1e-6 && f.t < b)), `frames outside the story: ${run.frames.map((f) => f.t).join(', ')}`);
+    assert.ok(run.scenes.length >= 1 && run.frames.every((f) => run.scenes.some((s) => s.number === f.scene)), 'every kept frame is in a scene');
+    assert.strictEqual(run.scenes.reduce((sum, s) => sum + s.kept, 0), run.frames.length);
+    assert.ok(run.scenes.every((s) => /^Scene \d+ · \d+:\d{2} on screen$/.test(s.label)), run.scenes.map((s) => s.label).join(' | '));
+    assert.ok(run.lines.some((l) => /^The kept frames look like \d+ different scenes?/.test(l)), run.lines.join(' | '));
+    assert.strictEqual(run.bestScenes, null, 'nothing is ranked before scoring');
     assert.ok(run.lines[0].startsWith('Story "f1 - the rapture" (story 2 of session 2026-01-05)') && run.lines[0].includes('5 stretches'), run.lines[0]);
     assert.ok(run.lines.some((l) => /records no drift factor/.test(l)), 'the rate with no drift factor is declared');
     assert.ok(run.lines.some((l) => /^10\.0 s of the story fall outside the screen recording/.test(l)), run.lines.join(' | '));

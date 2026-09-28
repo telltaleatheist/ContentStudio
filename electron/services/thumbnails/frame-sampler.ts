@@ -5,7 +5,9 @@
  * are given; for a story, the pieces of the screen recording it is made of, story-source.ts),
  * written twice as JPEG (640x360 for the vision model and the large view, 320x180 for the grid)
  * and streamed once more as small grey frames straight into frame-metrics.ts, so the sharpness and
- * the repeat hash are measured without writing a third copy to disk.
+ * the repeat hash are measured without writing a third copy to disk. A fourth branch streams each
+ * frame as 16x9 colour cells (the grid picture shrunk by area average) on a second pipe (fd 3):
+ * the scene signature frame-scenes.ts groups by.
  *
  * The rate is capped: stretches holding more than MAX_SAMPLES seconds are sampled MAX_SAMPLES
  * times, evenly, and the result says the rate it used (Law 8), so a two-hour master is not 7,200
@@ -18,7 +20,9 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { Readable } from 'stream';
 import { differenceHash, laplacianVariance, type FrameMeasure } from './frame-metrics';
+import { SIG_BYTES, SIG_COLS, SIG_ROWS } from './frame-scenes';
 
 /** One frame a second (Owen: "~1 per second"). */
 export const SAMPLE_EVERY_SECONDS = 1;
@@ -194,7 +198,7 @@ export async function sampleFrames(req: {
       const t = pass.start + k * every;
       const n = String(first + k + 1).padStart(5, '0');
       if (pass.spans.some((s) => t >= s.start - 1e-6 && t < s.end)) {
-        measures.push({ index: first + k, t, hash: decoded[k].hash, sharpness: decoded[k].sharpness });
+        measures.push({ index: first + k, t, hash: decoded[k].hash, sharpness: decoded[k].sharpness, colour: decoded[k].colour });
         req.onProgress?.(measures.length, count);
       } else {
         // Between two stretches of the pass: decoded, never kept.
@@ -224,26 +228,38 @@ function samplePass(
   pass: { start: number; end: number },
   every: number,
   first: number,
-): Promise<Array<{ hash: FrameMeasure['hash']; sharpness: number }>> {
+): Promise<Array<{ hash: FrameMeasure['hash']; sharpness: number; colour: Uint8Array }>> {
   const fps = 1 / every;
   const args = [
     '-hide_banner', '-nostdin', '-v', 'error',
     '-ss', pass.start.toFixed(3), '-t', (pass.end - pass.start).toFixed(3), '-i', req.video,
     '-filter_complex',
-    `[0:v]fps=${fps.toFixed(6)},split=3[a][b][c];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h}[small];[c]scale=${GREY_WIDTH}:${GREY_HEIGHT},format=gray[g]`,
+    `[0:v]fps=${fps.toFixed(6)},split=3[a][b][c];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h},split=2[small][s2];` +
+      `[s2]scale=${SIG_COLS}:${SIG_ROWS}:flags=area,format=rgb24[col];[c]scale=${GREY_WIDTH}:${GREY_HEIGHT},format=gray[g]`,
     '-map', '[big]', '-q:v', '3', '-start_number', String(first + 1), path.join(req.outDir, 'f%05d.jpg'),
     '-map', '[small]', '-q:v', '5', '-start_number', String(first + 1), path.join(req.outDir, 's%05d.jpg'),
     '-map', '[g]', '-f', 'rawvideo', 'pipe:1',
+    '-map', '[col]', '-f', 'rawvideo', 'pipe:3',
   ];
   const out: Array<{ hash: FrameMeasure['hash']; sharpness: number }> = [];
+  const colours: Uint8Array[] = [];
   const frameBytes = GREY_WIDTH * GREY_HEIGHT;
   return new Promise((resolve, reject) => {
-    const child = spawn(req.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(req.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+    const [, stdout, stderr, colourPipe] = child.stdio as unknown as [null, Readable, Readable, Readable];
+    let colourPending: Buffer = Buffer.alloc(0);
+    colourPipe.on('data', (chunk: Buffer) => {
+      colourPending = colourPending.length === 0 ? chunk : Buffer.concat([colourPending, chunk]);
+      while (colourPending.length >= SIG_BYTES) {
+        colours.push(new Uint8Array(colourPending.subarray(0, SIG_BYTES)));
+        colourPending = colourPending.subarray(SIG_BYTES);
+      }
+    });
     const abort = () => child.kill('SIGKILL');
     req.signal?.addEventListener('abort', abort, { once: true });
     let pending: Buffer = Buffer.alloc(0);
     let err = '';
-    child.stdout.on('data', (chunk: Buffer) => {
+    stdout.on('data', (chunk: Buffer) => {
       pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
       while (pending.length >= frameBytes) {
         const gray = new Uint8Array(pending.subarray(0, frameBytes));
@@ -251,13 +267,15 @@ function samplePass(
         out.push({ hash: differenceHash(gray, GREY_WIDTH, GREY_HEIGHT), sharpness: laplacianVariance(gray, GREY_WIDTH, GREY_HEIGHT) });
       }
     });
-    child.stderr.on('data', (d) => { err += d.toString(); });
+    stderr.on('data', (d: Buffer) => { err += d.toString(); });
     child.on('error', (e) => reject(new Error(`ffmpeg could not be started (${req.ffmpeg}): ${e.message}`)));
     child.on('close', (code) => {
       req.signal?.removeEventListener('abort', abort);
       if (req.signal?.aborted) reject(new Error('Stopped.'));
       else if (code !== 0) reject(new Error(`ffmpeg failed while sampling ${path.basename(req.video)} from ${clock(pass.start)} to ${clock(pass.end)} (exit ${code}): ${err.trim().slice(-400)}`));
-      else resolve(out);
+      else if (colours.length !== out.length) {
+        reject(new Error(`ffmpeg streamed ${out.length} grey frames and ${colours.length} colour signatures for ${path.basename(req.video)} from ${clock(pass.start)} to ${clock(pass.end)}; they must match.`));
+      } else resolve(out.map((m, k) => ({ ...m, colour: colours[k] })));
     });
   });
 }
