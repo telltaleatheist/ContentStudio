@@ -220,6 +220,18 @@ check('scenes: the nearest-neighbour chain gives the same groups as merging the 
   assert.throws(() => scenes.averageLinkageGroups([]), /no frames to group/);
 });
 
+check('scenes: a scene on screen under SHORT_SCENE_SECONDS offers one frame, not the full floor', () => {
+  const list = [
+    { number: 1, size: 200, seconds: 400 },
+    { number: 2, size: 20, seconds: scenes.SHORT_SCENE_SECONDS - 1 },
+    { number: 3, size: 20, seconds: scenes.SHORT_SCENE_SECONDS },
+  ];
+  const { quota } = scenes.allocateScoring(list, 10);
+  assert.strictEqual(quota.get(2), 1, `a ${scenes.SHORT_SCENE_SECONDS - 1} s scene gets one (${[...quota.values()]})`);
+  assert.ok(quota.get(3) >= scenes.SCENE_FLOOR, `a ${scenes.SHORT_SCENE_SECONDS} s scene keeps the floor (${[...quota.values()]})`);
+  assert.strictEqual([...quota.values()].reduce((a, b) => a + b, 0), 10);
+});
+
 check('scenes: the scoring cap is shared: a floor for every scene (all of a tiny one), the rest by screen time, the total unchanged', () => {
   const list = [
     { number: 1, size: 200, seconds: 400 },
@@ -232,7 +244,7 @@ check('scenes: the scoring cap is shared: a floor for every scene (all of a tiny
   const q = list.map((s) => quota.get(s.number));
   assert.strictEqual(short, false);
   assert.strictEqual(q.reduce((a, b) => a + b, 0), 60, `the cap is used exactly (${q})`);
-  assert.deepStrictEqual([q[2], q[4]], [2, 1], 'a tiny scene sends all it has');
+  assert.deepStrictEqual([q[2], q[4]], [1, 1], 'a tiny scene, on screen a second or two, sends one frame');
   assert.ok(q[0] > q[1] && q[1] > q[3] && q[3] >= scenes.SCENE_FLOOR, `longer on screen, more frames (${q})`);
   const rest = [q[0] - 3, q[1] - 3, q[3] - 3];
   assert.ok(Math.abs(rest[0] / rest[1] - 400 / 160) < 0.5, `the rest follows screen time (${rest})`);

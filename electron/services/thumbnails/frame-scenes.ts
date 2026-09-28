@@ -55,6 +55,13 @@ export const SCENE_JOIN_FRACTION = 0.6;
 /** Every scene offers at least this many frames to the vision model (or all it has, when fewer). */
 export const SCENE_FLOOR = 3;
 
+/** A scene on screen for less than this many seconds offers one frame, not SCENE_FLOOR (Owen 2026-09-28: a few seconds of moving sky is not worth three scoring slots). */
+export const SHORT_SCENE_SECONDS = 10;
+
+function floorOf(s: { size: number; seconds: number }): number {
+  return Math.min(s.seconds < SHORT_SCENE_SECONDS ? 1 : SCENE_FLOOR, s.size);
+}
+
 /** How many of a scene's best frames the "Best by scene" view shows. */
 export const SCENE_ROW_FRAMES = 4;
 
@@ -207,7 +214,7 @@ export function groupScenes<T extends { index: number; t: number; colour: Uint8A
 
 /**
  * How many frames each scene sends to the vision model, `cap` in all. Every scene first gets
- * SCENE_FLOOR (or all its frames, when it has fewer); the rest go one at a time to the scene with
+ * SCENE_FLOOR, or one when it was on screen under SHORT_SCENE_SECONDS (never more than it has); the rest go one at a time to the scene with
  * the most screen time per extra frame already given (D'Hondt: seconds / (extra + 1)), never more
  * than a scene has. When the floors alone exceed the cap (a story of very many scenes), the scenes
  * take one frame each in rounds, longest on screen first, until the cap is reached; `short` then
@@ -221,14 +228,14 @@ export function allocateScoring(scenes: ReadonlyArray<{ number: number; size: nu
     for (const s of scenes) quota.set(s.number, s.size);
     return { quota, short: false };
   }
-  const floors = scenes.reduce((sum, s) => sum + Math.min(SCENE_FLOOR, s.size), 0);
+  const floors = scenes.reduce((sum, s) => sum + floorOf(s), 0);
   if (floors > cap) {
     const byTime = [...scenes].sort((a, b) => b.seconds - a.seconds || a.number - b.number);
     let given = 0;
     for (let round = 0; given < cap; round++) {
       for (const s of byTime) {
         if (given >= cap) break;
-        if (round < Math.min(SCENE_FLOOR, s.size)) {
+        if (round < floorOf(s)) {
           quota.set(s.number, quota.get(s.number)! + 1);
           given++;
         }
@@ -236,14 +243,14 @@ export function allocateScoring(scenes: ReadonlyArray<{ number: number; size: nu
     }
     return { quota, short: true };
   }
-  for (const s of scenes) quota.set(s.number, Math.min(SCENE_FLOOR, s.size));
+  for (const s of scenes) quota.set(s.number, floorOf(s));
   for (let left = cap - floors; left > 0; left--) {
     let pick: { number: number; size: number; seconds: number } | null = null;
     let pickValue = -1;
     for (const s of scenes) {
       const q = quota.get(s.number)!;
       if (q >= s.size) continue;
-      const value = s.seconds / (q - Math.min(SCENE_FLOOR, s.size) + 1);
+      const value = s.seconds / (q - floorOf(s) + 1);
       if (value > pickValue) {
         pickValue = value;
         pick = s;
