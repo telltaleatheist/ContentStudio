@@ -34,6 +34,15 @@
  *     words, re-runs it when the words changed, and is refused plainly with no photos folder; the
  *     logo is fitted in its space with its aspect kept and the words avoid its drawn bounds; the
  *     empty-space outlines are off by default and never drawn over a drawn photo or logo.
+ *   - 2026-09-28 (Owen ran the tab): text shrinks to fit on up to three lines at a 7% floor ("TAKE
+ *     YOUR CLOTHES OFF" fits where it was refused); the reaction photos and logo are copied into the
+ *     app's library (add, duplicate refused then replaced, remove, the one-click copy offer from the
+ *     old folder setting, originals untouched) on a CONTENTSTUDIO_USER_DATA scratch folder; a
+ *     "top-ranked" photo is drawn from the top 3 with a stated seed, reproducibly, avoiding repeats;
+ *     the best view shows 2 frames per scene (the best and the best clearly different one) with the
+ *     rest behind "More", and small interleaved fragments of one moving shot fold into one scene;
+ *     the words and the tone/photo steps share one held lease on one model, released when the frame
+ *     scorer needs the vision model.
  *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
  *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
  *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
@@ -340,29 +349,76 @@ check('ranking: the desktop answer is the one filter; face, expression, eyes and
   assert.ok(r.ranked.every((f) => f.score >= 0 && f.score <= 1));
 });
 
-check('ranking: the best view is one row per scene, its top frames (never two within 4 s), scenes ordered by their best frame; a screens-only scene is named', () => {
+check('ranking: the best view shows 2 frames per scene (the best, then the best clearly different one), the rest behind "More"; scenes ordered by their best frame; a screens-only scene is named', () => {
   const frames = [];
   const sceneOf = new Map();
-  // Scene 1: many good frames; scene 2: one excellent frame; scene 3: middling; scene 4: only screens.
-  for (let i = 0; i < 40; i++) { frames.push({ id: `a${i}`, t: i, reading: reading({ expression: 4, pStrong: 0.5 + (i % 5) / 20 }) }); sceneOf.set(`a${i}`, 1); }
-  frames.push({ id: 'b0', t: 100, reading: reading({ expression: 5, pStrong: 0.99 }) }); sceneOf.set('b0', 2);
-  for (let i = 0; i < 6; i++) { frames.push({ id: `c${i}`, t: 200 + i * 10, reading: reading({ expression: 2, pStrong: 0.3 }) }); sceneOf.set(`c${i}`, 3); }
-  for (let i = 0; i < 3; i++) { frames.push({ id: `d${i}`, t: 300 + i, reading: reading({ pScreen: 0.9 }) }); sceneOf.set(`d${i}`, 4); }
+  const sigOf = new Map();
+  // Scene 1: a host who barely moves (frames 0-29), then walks across (30-39): the second shown frame
+  // is the best of the walk, not the near-twin of the best. Scene 2: one excellent frame. Scene 3:
+  // middling frames that all look alike and read alike (no clearly different frame: one shown).
+  // Scene 4: only screens.
+  for (let i = 0; i < 40; i++) {
+    frames.push({ id: `a${i}`, t: i * 5, reading: reading({ expression: 4, pStrong: 0.95 - i / 100 }) });
+    sceneOf.set(`a${i}`, 1);
+    sigOf.set(`a${i}`, sig(studio, { x: i < 30 ? 2 : 10, y: 2, colour: skin }, 10 + i));
+  }
+  frames.push({ id: 'b0', t: 1000, reading: reading({ expression: 5, pStrong: 0.99 }) }); sceneOf.set('b0', 2); sigOf.set('b0', sig(garden));
+  for (let i = 0; i < 6; i++) { frames.push({ id: `c${i}`, t: 2000 + i * 10, reading: reading({ expression: 2, pStrong: 0.3 }) }); sceneOf.set(`c${i}`, 3); sigOf.set(`c${i}`, sig(page, null, i + 1)); }
+  for (let i = 0; i < 3; i++) { frames.push({ id: `d${i}`, t: 3000 + i, reading: reading({ pScreen: 0.9 }) }); sceneOf.set(`d${i}`, 4); sigOf.set(`d${i}`, sig(page)); }
   const { ranked, screens } = ranking.rankFrames(frames);
   assert.strictEqual(screens.length, 3);
-  const { rows, empty } = scenes.sceneRows(ranked, sceneOf, [1, 2, 3, 4]);
+  const { rows, empty } = scenes.sceneRows(ranked, sceneOf, [1, 2, 3, 4], sigOf);
   assert.deepStrictEqual(rows.map((r) => r.scene), [2, 1, 3], 'scenes ordered by their best frame\'s score');
   assert.deepStrictEqual(empty, [4], 'the scene of computer screens has no row, and is named');
-  assert.deepStrictEqual(rows.map((r) => r.ids.length), [1, scenes.SCENE_ROW_FRAMES, scenes.SCENE_ROW_FRAMES]);
+  assert.strictEqual(scenes.SCENE_ROW_SHOWN, 2);
+  const one = rows.find((r) => r.scene === 1);
+  assert.deepStrictEqual(one.ids, ['a0', 'a30'], 'the best, then the best frame that looks clearly different (the walk), not its near-twin a1');
+  assert.ok(scenes.signatureDistance(sigOf.get('a0'), sigOf.get('a1')) < scenes.CLEARLY_DIFFERENT_FRACTION, 'a1 is a near-twin');
+  assert.strictEqual(one.more.length, 38, 'every other frame of the scene is behind "More from this scene"');
+  assert.deepStrictEqual(rows.find((r) => r.scene === 3).ids, ['c0'], 'no clearly different frame: the best alone');
+  assert.strictEqual(rows.find((r) => r.scene === 3).more.length, 5);
+  // An expression apart counts as clearly different even where the picture barely moves.
+  const faces = [
+    { id: 'e0', t: 0, score: 0.9, reading: { expression: 4 } },
+    { id: 'e1', t: 10, score: 0.8, reading: { expression: 3.8 } },
+    { id: 'e2', t: 20, score: 0.7, reading: { expression: 2.5 } },
+  ];
+  const still = new Map(faces.map((f, i) => [f.id, sig(studio, { x: 2, y: 2, colour: skin }, i + 1)]));
+  const r2 = scenes.sceneRows(faces, new Map(faces.map((f) => [f.id, 1])), [1], still);
+  assert.deepStrictEqual(r2.rows[0].ids, ['e0', 'e2'], 'the expression reading 1.5 levels apart');
   const byId = new Map(ranked.map((f) => [f.id, f]));
   for (const row of rows) {
-    const got = row.ids.map((id) => byId.get(id));
-    for (let k = 1; k < got.length; k++) assert.ok(got[k - 1].score >= got[k].score, 'best first within a row');
+    const got = [...row.ids, ...row.more].map((id) => byId.get(id));
     for (const a of got) for (const b of got) if (a !== b) assert.ok(Math.abs(a.t - b.t) >= scenes.SCENE_MIN_GAP_SECONDS, `${a.id} and ${b.id} are the same moment`);
-    assert.strictEqual(row.best, got[0].score);
   }
-  assert.ok(rows.every((r) => r.ids.every((id) => !id.startsWith('d'))), 'no rejected frame in any row');
-  assert.throws(() => scenes.sceneRows(ranked, new Map(), [1]), /belongs to no scene/);
+  assert.ok(rows.every((r) => [...r.ids, ...r.more].every((id) => !id.startsWith('d'))), 'no rejected frame in any row');
+  assert.throws(() => scenes.sceneRows(ranked, new Map(), [1], sigOf), /belongs to no scene/);
+});
+
+check('scenes: small pieces of one moving shot that interleave in time fold into one scene; two short clips one after another, and big scenes, do not', () => {
+  // Sky footage from a moving camera: three small groups whose frames alternate inside one stretch.
+  const skyA = (x, y) => (y < 3 ? [150, 180, 220] : [40, 90, 40]);
+  const skyB = (x, y) => (y < 3 ? [150, 180, 220] : [200, 120, 60]);
+  const skyC = (x, y) => (y < 3 ? [150, 180, 220] : [100, 40, 120]);
+  const frames = [];
+  const add = (colour, t) => frames.push({ t, colour });
+  [0, 3, 6, 9].forEach((t, k) => add(sig(skyA, null, 100 + k), 100 + t));
+  [1, 4, 7].forEach((t, k) => add(sig(skyB, null, 200 + k), 100 + t));
+  [2, 5, 8].forEach((t, k) => add(sig(skyC, null, 300 + k), 100 + t));
+  // Two different short clips back to back (no interleaving, 4 s apart): never folded.
+  [0, 1, 2].forEach((t, k) => add(sig(garden, null, 400 + k), 200 + t));
+  [6, 7, 8].forEach((t, k) => add(sig(page, null, 500 + k), 200 + t));
+  // A big scene interleaving with the sky: never folded (big scenes never fold).
+  for (let k = 0; k < 12; k++) add(sig(skyA, { x: 3, y: 2, colour: skin }, 600 + k), 100.5 + k * 0.7);
+  const groups = [[0, 1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15], Array.from({ length: 12 }, (_, k) => 16 + k)];
+  const d = (a, b) => { let s = 0; for (const i of groups[a]) for (const j of groups[b]) s += scenes.signatureDistance(frames[i].colour, frames[j].colour); return s / (groups[a].length * groups[b].length); };
+  assert.ok(d(0, 1) > scenes.SCENE_JOIN_FRACTION && d(0, 1) <= scenes.FRAGMENT_JOIN_FRACTION, `the sky pieces are apart at the scene cut, close at the fold bar (${d(0, 1).toFixed(2)})`);
+  const folded = scenes.foldFragments(groups, frames, 1);
+  assert.deepStrictEqual(folded.map((g) => g.length), [10, 3, 3, 12], `the three sky pieces are one scene (${JSON.stringify(folded)})`);
+  assert.deepStrictEqual(folded[0], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  // The same pieces far apart in time stay apart.
+  const apart = frames.map((f, i) => ({ ...f, t: i < 4 ? f.t : f.t + (i < 7 ? 500 : 900) }));
+  assert.strictEqual(scenes.foldFragments(groups.slice(0, 3), apart, 1).length, 3, 'pieces far apart in time are not folded');
 });
 
 check('ranking: an answer with a missing option letter is unreadable and names the question; a full one reads', () => {
@@ -483,11 +539,31 @@ check('layout: a short phrase is fitted large (up to the ceiling), and shrinks a
 
 check('layout: a phrase that cannot keep the letter floor is refused in plain words, never shrunk or cut', () => {
   const face = { x: 400, y: 100, w: 380, h: 420 };
-  const r = layout.planText(metricsFor('THE RAPTURE HAS FAILED EVERY SINGLE YEAR'), [face], STYLE, FW, FH);
+  const r = layout.planText(metricsFor('THE RAPTURE HAS FAILED EVERY SINGLE YEAR SINCE NINETEEN EIGHTY EIGHT AND IT WILL AGAIN'), [face], STYLE, FW, FH);
   assert.strictEqual(r.ok, false);
-  assert.ok(/too long for the space beside the faces/.test(r.reason) && /smallest allowed is 87 px \(12%/.test(r.reason) && /Pick a shorter option/.test(r.reason), r.reason);
+  assert.ok(/too long for the space beside the faces/.test(r.reason) && /smallest allowed is 51 px \(7%/.test(r.reason) && /Pick a shorter option/.test(r.reason), r.reason);
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, fill: 'orange' }), /letter colour.*#RRGGBB/);
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionSlot: { x: 0.8, y: 0.5, w: 0.4, h: 0.4 } }), /runs off the picture/);
+});
+
+check('layout: "TAKE YOUR CLOTHES OFF", refused at 12% on two lines, now fits on up to three lines at the 7% floor, clear of the faces', () => {
+  assert.strictEqual(layout.DEFAULT_STYLE.minCapFraction, 0.07);
+  assert.strictEqual(layout.MAX_LINES, 3);
+  assert.deepStrictEqual(layout.splits(['A', 'B', 'C', 'D']).map((l) => l.length).sort().join(''), '1222333', 'every split into one to three lines, in order');
+  // The shape of Owen's frame: two faces side by side, a narrow column beside them.
+  const faces = [{ x: 250, y: 200, w: 208, h: 560 }, { x: 510, y: 200, w: 208, h: 560 }];
+  const m = metricsFor('TAKE YOUR CLOTHES OFF');
+  const old = layout.planText(m, faces, { ...STYLE, minCapFraction: 0.12 }, FW, FH);
+  assert.strictEqual(old.ok, false, 'at the old 12% floor it is refused');
+  const now = layout.planText(m, faces, STYLE, FW, FH);
+  assert.ok(now.ok, now.reason);
+  assert.ok(now.plan.capPx >= 0.07 * FH - 1e-6 && now.plan.capPx < 0.12 * FH, `smaller letters, above the floor (${now.plan.capPx.toFixed(1)} px)`);
+  assert.ok(now.plan.lines.length <= 3);
+  assert.deepStrictEqual(now.plan.lines.map((l) => l.text).join(' '), 'TAKE YOUR CLOTHES OFF', 'every word, none cut');
+  for (const f of faces) assert.ok(!overlaps(now.plan.patch, layout.paddedFace(f, FW, FH)), 'clear of each face');
+  // With room, a short phrase reaches the ceiling without a needless third line (fewer lines win a tie).
+  const open = layout.planText(metricsFor('MAYBE TOMORROW'), [], STYLE, FW, FH);
+  assert.ok(open.plan.lines.length < 3 && Math.abs(open.plan.capPx - STYLE.maxCapFraction * FH) < 1e-6, JSON.stringify(open.plan.lines));
 });
 
 // ── reaction photos: trim and placement ─────────────────────────────────────
@@ -532,9 +608,9 @@ check('photos: fitted into the reaction space, right side anchored, running off 
   const narrow = layout.placeReaction(200, 1000, style, FW, FH);
   const face = { x: 515, y: 164, w: 236, h: 236 };
   const phrase = metricsFor('EVERY YEAR SINCE 1988 AGAIN');
-  const withSpace = layout.planText(phrase, [face], style, FW, FH, null);
-  const withPhoto = layout.planText(phrase, [face], style, FW, FH, narrow.avoid);
-  assert.strictEqual(withSpace.ok, false, 'with the whole space kept clear it is too long');
+  const withSpace = layout.planText(phrase, [face], { ...style, minCapFraction: 0.12 }, FW, FH, null);
+  const withPhoto = layout.planText(phrase, [face], { ...style, minCapFraction: 0.12 }, FW, FH, narrow.avoid);
+  assert.strictEqual(withSpace.ok, false, 'with the whole space kept clear it is too long (at a 12% floor)');
   assert.ok(withPhoto.ok, 'with only the narrow photo to avoid it fits');
   assert.ok(!overlaps(withPhoto.plan.patch, narrow.avoid), 'the text clears the photo');
   assert.ok(withPhoto.plan.space.x + withPhoto.plan.space.w > slot.x, 'by reaching into the space the photo leaves free');
@@ -1009,8 +1085,21 @@ check('story source, real fixture: "f1 - the rapture" of 2026-09-24 maps to 126 
 
 const { saveTranscript } = services('metadata/saved-transcript.service.js');
 
-/** The lab over the fake Crucible with a saved transcript, a photos folder of named PNG files, and one open run. */
-function photoLab(root, deps, { folder = true } = {}) {
+const library = services('thumbnails/photo-library.js');
+const draw = services('thumbnails/photo-draw.js');
+const { resolveUserDataPath } = require(path.join(DIST, 'user-data-path.js'));
+/** A PNG file's first bytes (the library checks the signature, not the pixels). */
+const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('a keeper photo')]);
+
+/** userData as a development run gets it: CONTENTSTUDIO_USER_DATA, never Owen's folder. */
+function scratchUserData(root) {
+  const choice = resolveUserDataPath({ env: { CONTENTSTUDIO_USER_DATA: path.join(root, 'userData') }, isPackaged: false, appData: '/nowhere' });
+  assert.strictEqual(choice.source, 'env');
+  return choice.path;
+}
+
+/** The lab over the fake Crucible with a saved transcript, the photos in the app's library, and one open run. */
+function photoLab(root, deps, { folder = true, seed = 7 } = {}) {
   const video = path.join(root, 'complete', 'f2 - the rapture.mov');
   fs.mkdirSync(path.dirname(video), { recursive: true });
   fs.writeFileSync(video, 'a video');
@@ -1020,12 +1109,15 @@ function photoLab(root, deps, { folder = true } = {}) {
   });
   const photosDir = path.join(root, 'selfies');
   fs.mkdirSync(photosDir);
-  for (const p of PHOTOS) fs.writeFileSync(path.join(photosDir, `selfie ${p.name}.png`), 'listed by name only');
-  const settings = { outputDirectory: root, ...(folder ? { 'thumbnailLab.reactionFolder': photosDir } : {}) };
+  for (const p of PHOTOS) fs.writeFileSync(path.join(photosDir, `selfie ${p.name}.png`), PNG_BYTES);
+  const userData = scratchUserData(root);
+  if (folder) library.addPhotos(userData, [photosDir], false);
+  const settings = { outputDirectory: root };
   const progress = [];
   const lab = new ThumbnailLab({
     store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } },
-    userDataPath: path.join(root, 'userData'),
+    userDataPath: userData,
+    newSeed: () => seed,
     ffmpeg: FFMPEG,
     ffprobe: FFPROBE,
     canvas: () => { throw new Error('no canvas here'); },
@@ -1039,8 +1131,8 @@ function photoLab(root, deps, { folder = true } = {}) {
     jobId: 'job-1', itemId: 'itm-1', title: 'f2 - the rapture', createdAt: '', sourcePath: video, titles: ['A title'], promptSet: 'youtube-fireside',
     hasTranscript: true, reportFolder: root, hook: 'She says the rapture is here.', description: 'A rapture claim.\n\nLinks', runStoryRef: null, problem: null,
   };
-  lab.runs.set('run-1', { runId: 'run-1', item, frames: [], suggestion: null });
-  return { lab, progress, photosDir, settings };
+  lab.runs.set('run-1', { runId: 'run-1', item, frames: [], suggestion: null, lines: [] });
+  return { lab, progress, photosDir, settings, userData };
 }
 
 const variant = (letter, phrase, photo) => ({ letter, frameId: 'f1', phrase, kind: phrase === null ? null : 'claim', photo });
@@ -1054,23 +1146,31 @@ check('making: no photo starred and no suggestion yet runs the suggestion first 
       variant('B', 'MAYBE TOMORROW', { pick: 'top', of: 'B' }),
       variant('C', 'THE RAPTURE IS HERE', { pick: 'none' }),
     ];
-    const first = await lab.resolvePhotos('run-1', set);
+    const first = await lab.resolvePhotos('run-1', set, 7);
     assert.strictEqual(first.ran, true);
-    assert.deepStrictEqual(first.names, { A: 'horrified', B: 'oh please', C: null }, 'the top-ranked photo per variant; an explicit "No photo" stays none');
+    assert.strictEqual(first.names.C, null, 'an explicit "No photo" stays none');
+    for (const of of ['A', 'B']) {
+      const top3 = first.suggestion.photos[of].slice(0, 3).map((r) => r.name);
+      assert.ok(top3.includes(first.names[of]), `${of}'s photo is drawn from its top 3 (${first.names[of]} of ${top3})`);
+      assert.strictEqual(first.draws[of].name, first.names[of]);
+      assert.ok(/drawn from the top 3/.test(first.draws[of].line), first.draws[of].line);
+    }
+    assert.notStrictEqual(first.names.A, first.names.B, 'A and B do not repeat a photo while another of the top 3 remains');
     assert.deepStrictEqual(first.suggestion.texts, { A: "DON'T STAND UNDER A ROOF", B: 'MAYBE TOMORROW', C: 'THE RAPTURE IS HERE' });
     assert.ok(progress.some((e) => e.stage === 'suggesting'), 'the progress line is told the suggestion is running');
     assert.strictEqual(server.decideBodies().length, 4, 'the tone and one ranking per variant');
 
-    const again = await lab.resolvePhotos('run-1', set);
+    const again = await lab.resolvePhotos('run-1', set, 7);
     assert.strictEqual(again.ran, false, 'a suggestion made for these exact words is reused');
+    assert.deepStrictEqual(again.names, first.names, 'the same seed draws the same photos');
     assert.strictEqual(server.decideBodies().length, 4);
 
-    const changed = await lab.resolvePhotos('run-1', [set[0], variant('B', 'SOMETHING ELSE', { pick: 'top', of: 'B' }), set[2]]);
+    const changed = await lab.resolvePhotos('run-1', [set[0], variant('B', 'SOMETHING ELSE', { pick: 'top', of: 'B' }), set[2]], 7);
     assert.strictEqual(changed.ran, true, 'words changed since the suggestion: it runs again');
-    assert.strictEqual(changed.names.B, 'laugh');
+    assert.deepStrictEqual(changed.suggestion.photos.B.slice(0, 1).map((r) => r.name), ['laugh'], 'ranked for the new words');
     assert.strictEqual(server.decideBodies().length, 8);
 
-    const chosen = await lab.resolvePhotos('run-1', [variant('A', 'X', { pick: 'photo', name: 'ooh' }), variant('B', 'Y', { pick: 'none' })]);
+    const chosen = await lab.resolvePhotos('run-1', [variant('A', 'X', { pick: 'photo', name: 'ooh' }), variant('B', 'Y', { pick: 'none' })], 7);
     assert.deepStrictEqual([chosen.ran, chosen.names], [false, { A: 'ooh', B: null }], 'chosen photos need no suggestion');
     assert.strictEqual(server.decideBodies().length, 8);
   } finally {
@@ -1082,10 +1182,10 @@ check('making: with no photos folder, a thumbnail waiting for its suggested phot
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-nofolder-'));
   try {
     const { lab } = photoLab(root, deps, { folder: false });
-    const err = await rejection(lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'top', of: 'A' })]));
-    assert.strictEqual(err.message, 'Choose your reaction photos folder, or set each thumbnail to “No photo”.');
+    const err = await rejection(lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'top', of: 'A' })], 7));
+    assert.strictEqual(err.message, 'Add your reaction photos, or set each thumbnail to “No photo”.');
     assert.strictEqual(server.decideBodies().length, 0);
-    const none = await lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'none' })]);
+    const none = await lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'none' })], 7);
     assert.deepStrictEqual(none.names, { A: null });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1124,7 +1224,192 @@ check('placeholders: the empty photo and logo spaces are off by default, and nev
   assert.strictEqual(boxes.length, 2);
   assert.ok(/@if \(showSlots\(\) && res\.photo === null\) \{ <span class="slot-box" \[ngStyle\]="slotBox\('reactionSlot'\)"/.test(html), 'the photo box only when no photo was drawn');
   assert.ok(/@if \(showSlots\(\) && !res\.logo\) \{ <span class="slot-box" \[ngStyle\]="slotBox\('logoSlot'\)"/.test(html), 'the logo box only when no logo was drawn');
-  assert.ok(/this\.logoOn\.set\(logo !== null\)/.test(ts), 'the logo switch is on whenever a logo is set');
+  assert.ok(/this\.logoOn\.set\(state\.logo !== null\)/.test(ts), 'the logo switch is on whenever a logo is set');
 });
+
+// ── the library, the draw, the held text model (2026-09-28) ─────────────────
+
+check('library: photos are copied into <userData>/thumbnail-lab/reaction-photos (CONTENTSTUDIO_USER_DATA); a name already there is refused, then replaced on request; remove; the originals untouched', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-library-'));
+  try {
+    const userData = scratchUserData(root);
+    const lab = new ThumbnailLab({ store: { get: () => undefined, set: () => {} }, userDataPath: userData });
+    const src = path.join(root, 'Downloads', 'selfies');
+    fs.mkdirSync(src, { recursive: true });
+    for (const n of ['selfie laugh.png', 'selfie oh please.png', 'notes.txt']) fs.writeFileSync(path.join(src, n), n.endsWith('.png') ? PNG_BYTES : 'x');
+    const before = fs.readdirSync(src).map((n) => [n, fs.statSync(path.join(src, n)).mtimeMs]);
+    assert.deepStrictEqual(lab.photos().photos, [], 'an empty library');
+    assert.strictEqual(lab.photos().folder, path.join(userData, 'thumbnail-lab', 'reaction-photos'));
+    // A folder adds its PNGs; a single file adds itself.
+    const one = lab.addPhotos([src], false);
+    assert.deepStrictEqual([one.added.sort(), one.already], [['laugh', 'oh please'], []]);
+    assert.deepStrictEqual(fs.readdirSync(library.photosDir(userData)).sort(), ['laugh.png', 'oh please.png'], 'stored by name');
+    const extra = path.join(root, 'eww.png');
+    fs.writeFileSync(extra, PNG_BYTES);
+    assert.deepStrictEqual(lab.addPhotos([extra], false).added, ['eww']);
+    // A duplicate name: nothing of the batch copied, the names returned for Owen to confirm.
+    const newer = path.join(root, 'newer');
+    fs.mkdirSync(newer);
+    fs.writeFileSync(path.join(newer, 'laugh.png'), Buffer.concat([PNG_BYTES, Buffer.from(' v2')]));
+    fs.writeFileSync(path.join(newer, 'ooh.png'), PNG_BYTES);
+    const dup = lab.addPhotos([newer], false);
+    assert.deepStrictEqual([dup.added, dup.already], [[], ['laugh']], 'refused plainly, naming it');
+    assert.ok(!fs.existsSync(path.join(library.photosDir(userData), 'ooh.png')), 'nothing of a refused batch is copied');
+    const replaced = lab.addPhotos([newer], true);
+    assert.deepStrictEqual([replaced.added, replaced.replaced], [['ooh'], ['laugh']]);
+    assert.ok(fs.readFileSync(path.join(library.photosDir(userData), 'laugh.png')).toString().endsWith(' v2'), 'replaced with the new file');
+    // Two files of one batch under one name, and a file that is not a PNG, are refused by name.
+    fs.writeFileSync(path.join(root, 'selfie ooh.png'), PNG_BYTES);
+    assert.throws(() => lab.addPhotos([path.join(newer, 'ooh.png'), path.join(root, 'selfie ooh.png')], true), /would both be the photo "ooh"/);
+    const fake = path.join(root, 'fake.png');
+    fs.writeFileSync(fake, 'not a picture');
+    assert.throws(() => lab.addPhotos([fake], false), /not a PNG picture/);
+    // Notes stay per name; remove takes only the app's copy.
+    lab.setPhotoNote('eww', 'disgust');
+    lab.removePhoto('eww');
+    assert.ok(!fs.existsSync(path.join(library.photosDir(userData), 'eww.png')) && fs.existsSync(extra), 'the app copy goes, the original stays');
+    assert.throws(() => lab.removePhoto('eww'), /no reaction photo "eww"/);
+    assert.throws(() => lab.setPhotoNote('eww', 'x'), /no reaction photo "eww"/);
+    assert.deepStrictEqual(fs.readdirSync(src).map((n) => [n, fs.statSync(path.join(src, n)).mtimeMs]), before, 'the originals are only read');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+check('library: an old folder or logo setting is OFFERED for copying (never copied on its own), one click copies it, originals untouched; the offer ends once the library holds them', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-migrate-'));
+  try {
+    const userData = scratchUserData(root);
+    const old = path.join(root, 'Downloads', 'selfies');
+    fs.mkdirSync(old, { recursive: true });
+    for (const n of ['selfie laugh.png', 'selfie are you kidding me.png']) fs.writeFileSync(path.join(old, n), PNG_BYTES);
+    const logoFile = path.join(root, 'final logos', 'logo-xl-blue-fixed-2mb.png');
+    fs.mkdirSync(path.dirname(logoFile), { recursive: true });
+    fs.writeFileSync(logoFile, PNG_BYTES);
+    const settings = { 'thumbnailLab.reactionFolder': old, 'thumbnailLab.logo': logoFile };
+    const lab = new ThumbnailLab({ store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } }, userDataPath: userData });
+    const offered = lab.photos();
+    assert.deepStrictEqual([offered.photos.length, offered.offer], [0, { from: old, count: 2 }], 'offered, not copied');
+    const photosOffer = () => library.photoCopyOffer(userData, old);
+    assert.ok(!fs.existsSync(library.photosDir(userData)), 'nothing copied by looking');
+    assert.deepStrictEqual(library.logoCopyOffer(userData, logoFile), { from: logoFile }, 'the old logo is offered');
+    assert.strictEqual(lab.logoFile(), null, 'and not copied by looking');
+    const copied = lab.copyOldPhotos();
+    assert.deepStrictEqual(copied.added.sort(), ['are you kidding me', 'laugh']);
+    assert.deepStrictEqual(fs.readdirSync(old).sort(), ['selfie are you kidding me.png', 'selfie laugh.png'], 'originals where they were');
+    assert.strictEqual(photosOffer(), null, 'the offer ends once the library holds photos');
+    assert.deepStrictEqual(library.libraryPhotos(userData).map((p) => p.name), ['are you kidding me', 'laugh']);
+    assert.throws(() => lab.copyOldPhotos(), /nothing to copy/);
+    assert.deepStrictEqual(settings['thumbnailLab.reactionFolder'], old, 'the old setting is left as it was');
+    // The logo copy (its picture check is logo.ts under Electron; here a stand-in check).
+    const kept = library.setLibraryLogo(userData, logoFile, () => {});
+    assert.strictEqual(kept, path.join(userData, 'thumbnail-lab', 'logo', 'logo-xl-blue-fixed-2mb.png'));
+    assert.ok(fs.existsSync(logoFile), 'the original logo stays');
+    assert.strictEqual(library.logoCopyOffer(userData, logoFile), null, 'no offer once the app holds a logo');
+    assert.throws(() => library.setLibraryLogo(userData, path.join(root, 'nope.png'), () => {}), /not there/);
+    assert.throws(() => library.setLibraryLogo(userData, logoFile, () => { throw new Error('could not be read as an image'); }), /could not be read/);
+    assert.strictEqual(library.libraryLogo(userData), kept, 'a refused logo leaves the kept one');
+    // A gone folder offers nothing.
+    assert.strictEqual(library.photoCopyOffer(path.join(root, 'fresh'), path.join(root, 'gone')), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+check('draw: a "top-ranked" photo is drawn from the top 3 by probability, reproducible from its seed, a repeat avoided while another remains; direct picks untouched', () => {
+  const rank = (...pairs) => pairs.map(([name, p]) => ({ name, p }));
+  // Owen's case: one photo tops every ranking.
+  const same = rank(['are you kidding me', 0.32], ['oh please', 0.21], ['horrified', 0.15], ['laugh', 0.1]);
+  const rankings = { A: same, B: same, C: same };
+  const one = draw.drawPhotos(rankings, ['A', 'B', 'C'], [], 12345);
+  assert.deepStrictEqual(draw.drawPhotos(rankings, ['A', 'B', 'C'], [], 12345), one, 'the same seed, the same draw');
+  assert.strictEqual(new Set(Object.values(one).map((d) => d.name)).size, 3, `A, B and C differ (${Object.values(one).map((d) => d.name)})`);
+  for (const d of Object.values(one)) {
+    assert.ok(['are you kidding me', 'oh please', 'horrified'].includes(d.name), 'only the top 3');
+    assert.deepStrictEqual(d.pool.map((r) => r.name), ['are you kidding me', 'oh please', 'horrified']);
+  }
+  // Over many seeds the first draw follows the renormalised probabilities.
+  const counts = {};
+  for (let s = 1; s <= 3000; s++) { const n = draw.drawPhotos({ A: same }, ['A'], [], s).A.name; counts[n] = (counts[n] ?? 0) + 1; }
+  assert.ok(Math.abs(counts['are you kidding me'] / 3000 - 0.32 / 0.68) < 0.04, JSON.stringify(counts));
+  assert.ok(Math.abs(counts['horrified'] / 3000 - 0.15 / 0.68) < 0.04, JSON.stringify(counts));
+  assert.strictEqual(counts['laugh'], undefined, 'the 4th never');
+  // A directly picked photo is avoided by the draw; with the whole top 3 taken, the repeat is said.
+  const avoid = draw.drawPhotos({ A: same }, ['A'], ['are you kidding me', 'oh please'], 9);
+  assert.deepStrictEqual([avoid.A.name, avoid.A.repeatForced, avoid.A.chance], ['horrified', false, 1]);
+  const forced = draw.drawPhotos({ A: same }, ['A'], ['are you kidding me', 'oh please', 'horrified'], 9);
+  assert.strictEqual(forced.A.repeatForced, true);
+  assert.ok(/already on another thumbnail/.test(draw.drawLine(forced.A)));
+  assert.ok(/^\S.* \(\d+%\), drawn from the top 3: are you kidding me 32%, oh please 21%, horrified 15%$/.test(draw.drawLine(one.A)), draw.drawLine(one.A));
+  assert.throws(() => draw.drawPhotos(rankings, ['A'], [], 0), /whole number from 1/);
+  assert.throws(() => draw.drawPhotos({ A: rank(['x', null], ['y', null]) }, ['A'], [], 3), /no probability/);
+});
+
+check('draw over the lab: the render\'s seed is stated in the run lines and a held photo is one draw for every thumbnail', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-draw-'));
+  try {
+    const { lab } = photoLab(root, deps);
+    const held = [variant('A', 'ONE', { pick: 'top', of: 'A' }), variant('B', 'ONE', { pick: 'top', of: 'A' }), variant('C', 'ONE', { pick: 'photo', name: 'ooh' })];
+    const out = await lab.resolvePhotos('run-1', held, 99);
+    assert.strictEqual(out.names.A, out.names.B, 'a photo held across "Test one thing" is one draw');
+    assert.deepStrictEqual(Object.keys(out.draws), ['A']);
+    assert.strictEqual(out.names.C, 'ooh', 'a direct pick unchanged');
+    assert.notStrictEqual(out.names.A, 'ooh', 'the draw avoids the directly picked photo');
+    const ts = fs.readFileSync(path.join(DIST, 'services', 'thumbnails', 'lab-service.js'), 'utf8');
+    assert.ok(/Photos drawn with seed \$\{seed\}/.test(ts), 'the render writes its seed into the run lines');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
+
+check('held text model: the words and the tone/photo on one model share ONE lease (no reload between them); the frame scorer\'s vision model releases it first', () => withFake({
+  decideProbs: judgeProbs,
+  chatReplies: { 'qwen3.8-27b-8bit': () => ({ content: 'CLAIM\nTHE RAPTURE IS HERE\nSTAKES\nMAYBE TOMORROW\nREACTION\nSHE MEANS IT', finishReason: 'stop' }) },
+}, async (server, deps) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-hold-'));
+  try {
+    const { lab, settings } = photoLab(root, deps);
+    // Both text rows on the 8-bit 27B (their defaults).
+    const routing = services('metadata/metadata-routing.js');
+    assert.strictEqual(routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words').defaultOptionId, 'qwen38-27b-8bit');
+    assert.strictEqual(routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_judge').defaultOptionId, 'qwen38-27b-8bit');
+    // The words door as AIManagerService.runPlainRequest calls the transport (queueAITask: a
+    // standalone GPU step), the held job passed through.
+    const jobsSeen = [];
+    lab.deps.aiManager = () => ({
+      runPlainRequest: async (prompt, model, what, shape) => {
+        jobsSeen.push(shape.job);
+        const answer = await deps.lanes.aiCall({ lane: 'gpu', model }, what, () =>
+          deps.transport.chat({ model, prompt, act: 'generate', thinking: false, maxTokens: shape.maxTokens, loadContext: shape.loadContext, job: shape.job, what, trace: null }));
+        return answer.text;
+      },
+    });
+    // Tone/photo first (it takes the hold), then the words, then tone/photo again: all on one lease.
+    await lab.suggest('run-1', [{ letter: 'A', text: 'THE RAPTURE IS HERE' }]);
+    assert.strictEqual(lab.heldTextModel(), 'qwen3.8-27b-8bit');
+    const words = await lab.words('run-1', 'A title');
+    assert.deepStrictEqual(words.claim, ['THE RAPTURE IS HERE']);
+    assert.ok(jobsSeen[0] !== undefined, 'the words ran under the tab\'s held job');
+    await lab.suggest('run-1', [{ letter: 'A', text: 'MAYBE TOMORROW' }]);
+    const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
+    assert.deepStrictEqual(loads.map((b) => b.model), ['qwen3.8-27b-8bit'], 'ONE load for the words and both tone/photo runs');
+    assert.strictEqual(server.leases.released.length, 0, 'nothing given back between the steps');
+    assert.strictEqual(server.decideBodies().length, 4);
+    // The frame scorer needs the vision model: the text model is released first.
+    lab.runs.get('run-1').toScore = new Set();
+    lab.runs.get('run-1').frames = [];
+    lab.runs.get('run-1').scenes = [];
+    lab.runs.get('run-1').sceneOf = new Map();
+    lab.runs.get('run-1').signatures = new Map();
+    settings.metadataRouting = { thumbnail_frames: 'qwen35-9b-vl' };
+    await lab.score('run-1').catch(() => undefined);
+    assert.strictEqual(lab.heldTextModel(), null, 'released before scoring');
+    assert.ok(server.leases.released.length >= 1, 'the lease went back to the server');
+    assert.strictEqual(await lab.releaseTextHold('again'), null, 'releasing twice is a no-op');
+  } finally {
+    await Promise.resolve();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}));
 
 run('thumbnails tab: frame filters, sampling, the story source and link, ranking, words, face-safe layout, scoring, tone and photos, combine, making (suggest first, logo, placeholders)');

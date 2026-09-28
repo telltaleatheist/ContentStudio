@@ -34,7 +34,7 @@ export const MAX_FRAME_WIDTH = 8;
 
 export interface ScorerDeps {
   lanes: Pick<CrucibleLanes, 'runJob' | 'stopJob' | 'aiCall'>;
-  transport: Pick<CrucibleTransport, 'withJobLease' | 'decide' | 'decideItems'>;
+  transport: Pick<CrucibleTransport, 'withJobLease' | 'decide' | 'decideItems' | 'job'>;
   clientFor(server: string): Promise<Pick<CrucibleClient, 'activity'>>;
 }
 

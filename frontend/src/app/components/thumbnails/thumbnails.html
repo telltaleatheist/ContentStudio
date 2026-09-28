@@ -103,18 +103,35 @@
       </div>
       <p class="hint">Click the frames you like to star them. Starred: {{ favFrames().length }}.</p>
       @if (view() === 'best' && r.bestScenes) {
+        <p class="hint">Each scene shows its best frame and the best one that looks clearly different from it.</p>
         @for (row of bestRows(); track row.scene) {
           <div class="scene-row">
-            <p class="scene-label">{{ row.label }}</p>
+            <p class="scene-label">{{ row.label }}
+              @if (row.more.length > 0) {
+                <button class="link" (click)="toggleScene(row.scene)">{{ isOpen(row.scene) ? 'Fewer' : 'More from this scene (' + row.more.length + ')' }}</button>
+              }
+            </p>
             <div class="grid">
               @for (f of row.frames; track f.id) { <ng-container *ngTemplateOutlet="tile; context: { $implicit: f }" /> }
+              @if (isOpen(row.scene)) {
+                @for (f of row.more; track f.id) { <ng-container *ngTemplateOutlet="tile; context: { $implicit: f }" /> }
+              }
             </div>
           </div>
         }
       } @else {
-        <div class="grid">
-          @for (f of r.frames; track f.id) { <ng-container *ngTemplateOutlet="tile; context: { $implicit: f }" /> }
-        </div>
+        @for (row of allRows(); track row.scene) {
+          <div class="scene-row">
+            <p class="scene-label">{{ row.label }}
+              @if (row.frames.length > row.shown.length || isOpen(row.scene)) {
+                <button class="link" (click)="toggleScene(row.scene)">{{ isOpen(row.scene) ? 'Show fewer' : 'Show all ' + row.frames.length }}</button>
+              }
+            </p>
+            <div class="grid">
+              @for (f of row.shown; track f.id) { <ng-container *ngTemplateOutlet="tile; context: { $implicit: f }" /> }
+            </div>
+          </div>
+        }
       }
       <ng-template #tile let-f>
         <button class="tile" [class.marked]="frameStar(f.id)" [class.dim]="f.flag === 'screen'" (click)="toggleFrame(f)" [matTooltip]="frameTip(f)">
@@ -185,22 +202,34 @@
     <section class="step">
       <h3><span class="num">4</span> Reaction photos</h3>
       <div class="row">
-        <span class="label">Folder:</span>
-        <span>{{ photos().folder ?? 'none chosen' }}</span>
-        <button mat-stroked-button (click)="choosePhotoFolder()" [disabled]="busy() !== null">Choose folder…</button>
+        <span [matTooltip]="photos().folder">{{ photos().photos.length }} photo{{ photos().photos.length === 1 ? '' : 's' }}, kept in the app</span>
+        <button mat-stroked-button (click)="addPhotos()" [disabled]="busy() !== null"
+                matTooltip="PNG cut-outs, or a folder of them: copied into the app, so they never need adding again">Add photos…</button>
         @if (photos().photos.length > 0) {
           <button mat-stroked-button (click)="notesOpen.set(!notesOpen())">{{ notesOpen() ? 'Hide notes' : 'Edit notes' }}</button>
         }
       </div>
+      @if (photos().offer; as offer) {
+        <div class="row">
+          <span class="line">The tab used to read {{ offer.count }} photos from {{ offer.from }}.</span>
+          <button mat-flat-button color="primary" (click)="copyOldPhotos()" [disabled]="busy() !== null">Copy these into the app</button>
+          <span class="hint">Your originals are only read, never moved or changed.</span>
+        </div>
+      }
+      @if (photoNote(); as note) { <p class="line">{{ note }}</p> }
       <div class="row">
         <span class="label">Logo:</span>
         @if (logo(); as lg) {
           <img class="logo-thumb" [src]="lg.preview" [alt]="lg.name" />
-          <span [matTooltip]="lg.file">{{ lg.name }} ({{ lg.width }}x{{ lg.height }})</span>
+          <span [matTooltip]="lg.file">{{ lg.name }} ({{ lg.width }}x{{ lg.height }}), kept in the app</span>
         } @else {
-          <span>none chosen</span>
+          <span>none</span>
         }
-        <button mat-stroked-button (click)="chooseLogo()" [disabled]="busy() !== null">Choose file…</button>
+        <button mat-stroked-button (click)="chooseLogo()" [disabled]="busy() !== null">{{ logo() ? 'Replace…' : 'Add logo…' }}</button>
+        @if (logoOffer(); as offer) {
+          <span class="line">The tab used to read {{ fileName(offer.from) }} in place.</span>
+          <button mat-flat-button color="primary" (click)="copyOldLogo()" [disabled]="busy() !== null" [matTooltip]="offer.from">Copy it into the app</button>
+        }
       </div>
       @if (photos().photos.length > 0) {
         <p class="hint">Click the photos you like to star them.</p>
@@ -209,6 +238,7 @@
             <button class="photo" [class.on]="favPhotos().includes(p.name)" (click)="togglePhoto(p.name)" [matTooltip]="p.note ?? p.name">
               <img [src]="p.preview" [alt]="p.name" />
               <span>{{ favPhotos().includes(p.name) ? '★ ' : '' }}{{ p.name }}</span>
+              <span class="remove" role="button" (click)="removePhoto(p.name, $event)" [attr.aria-label]="'Remove ' + p.name" matTooltip="Remove from the app">×</span>
             </button>
           }
         </div>
@@ -359,6 +389,11 @@
           <input type="checkbox" [checked]="logoOn()" [disabled]="logo() === null" (change)="logoOn.set(!logoOn())" /> Logo
         </label>
         <label class="check"><input type="checkbox" [checked]="showSlots()" (change)="showSlots.set(!showSlots())" /> Show the empty photo and logo spaces</label>
+        <label class="field inline-field" matTooltip="Photos set to 'drawn from the top 3' are drawn with this seed. Blank: a new draw each time; type a seed to repeat a draw.">
+          <span class="label">Draw seed</span>
+          <input type="text" class="seed" [ngModel]="seedText()" (ngModelChange)="seedText.set($event)" placeholder="new" />
+        </label>
+        @if (lastSeed() !== null) { <span class="hint">last draw: seed {{ lastSeed() }}</span> }
         @if (folder() && results()) { <button mat-stroked-button (click)="showFolder()">Open folder</button> }
       </div>
       @if (folder() && results()) { <p class="line">Saved in {{ folder() }}</p> }
@@ -378,7 +413,7 @@
                 }
               </div>
             </div>
-            <p class="line">{{ fileName(res.path) }} · {{ kb(res.bytes) }} {{ res.format.toUpperCase() }} · photo: {{ res.photo ?? 'none (your choice)' }} · logo: {{ res.logo ? 'on' : 'off' }}</p>
+            <p class="line">{{ fileName(res.path) }} · {{ kb(res.bytes) }} {{ res.format.toUpperCase() }} · photo: {{ res.draw ? res.draw.line : (res.photo ?? 'none (your choice)') }} · logo: {{ res.logo ? 'on' : 'off' }}</p>
             @for (n of res.notes; track n) { <p class="line warn">{{ n }}</p> }
           } @else {
             <p class="line warn">{{ res.reason }}</p>

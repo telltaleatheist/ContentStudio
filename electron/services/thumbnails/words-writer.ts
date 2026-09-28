@@ -7,6 +7,7 @@
  * prompts.ts `parseThumbnailWords`; nothing re-asks (Law 3).
  */
 import type { AIManagerService } from '../metadata/ai-manager.service';
+import type { JobLeases } from '../../crucible/lease';
 import { loadContextFor } from '../metadata/context-sizing';
 import { LOCAL_FIELD_TIMEOUT_MS } from '../metadata/metadata-tasks';
 import type { MetadataRoutingOption } from '../metadata/metadata-routing';
@@ -29,6 +30,8 @@ export async function writeThumbnailWords(input: {
   title: string;
   transcript: readonly string[];
   sourceLabel: string;
+  /** The tab's held job for this local model (kept loaded for the tone/photo step); absent for cloud. */
+  job?: JobLeases;
 }): Promise<WordsResult> {
   const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript });
   const what = `thumbnail words for ${input.sourceLabel} (Thumbnails tab)`;
@@ -37,7 +40,7 @@ export async function writeThumbnailWords(input: {
     input.option.model,
     what,
     input.option.kind === 'local'
-      ? { thinking: false, maxTokens: WORDS_MAX_TOKENS, loadContext: loadContextFor(prompt.length, WORDS_MAX_TOKENS), timeoutMs: LOCAL_FIELD_TIMEOUT_MS }
+      ? { thinking: false, maxTokens: WORDS_MAX_TOKENS, loadContext: loadContextFor(prompt.length, WORDS_MAX_TOKENS), timeoutMs: LOCAL_FIELD_TIMEOUT_MS, ...(input.job === undefined ? {} : { job: input.job }) }
       : { thinking: false },
   );
   if (!answer) throw new Error(`The request for ${what} on "${input.option.model}" came back empty.`);

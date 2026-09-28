@@ -9,15 +9,18 @@
  *
  * THE RULES (Owen, 2026-09-28):
  *   - the text never covers a face or a reserved slot;
- *   - left-aligned, at most two lines, fitted by shrinking from large;
- *   - the capital letters are never shorter than `minCapFraction` of the frame height (about 12%).
- *     A phrase that cannot fit at that size is TOO LONG: this says so and places nothing. It never
- *     shrinks below the floor and never truncates; the operator picks another option.
+ *   - left-aligned, at most MAX_LINES (3) lines, fitted by shrinking from large;
+ *   - the capital letters are never shorter than `minCapFraction` of the frame height (7% by
+ *     default since 2026-09-28; it was 12% and at most two lines until Owen hit "TAKE YOUR CLOTHES
+ *     OFF" refused at 68 px against an 87 px floor: "i think it would be fine to make the text
+ *     smaller to fit it all"). A phrase that cannot fit even at that size is TOO LONG: this says so
+ *     and places nothing. It never shrinks below the floor, never truncates and never covers a
+ *     face; the operator picks another option.
  *
  * HOW. The clear space is searched exhaustively: every rectangle whose edges lie on the frame's
  * margins or on an obstacle's edges, and which no obstacle cuts into, is a candidate (a handful of
  * obstacles gives a few thousand rectangles, all cheap). The phrase is fitted into each (every
- * one- and two-line split, largest size that fits both ways), and the candidate giving the
+ * split into one to MAX_LINES lines, largest size that fits both ways), and the candidate giving the
  * LARGEST letters wins; equal sizes prefer the lower, then the more left-hand, space — Owen's
  * usual bottom-left placement. The text sits against the frame edge its space touches.
  *
@@ -98,9 +101,13 @@ export const DEFAULT_STYLE: ThumbnailStyle = {
   // Owen's round badge on his hand-made thumbnail (f2 - the rapture.png, 1920x1080): x 1770-1870,
   // y 50-150, so about 100 px across (5.2% of the width) with 50 px to the top and right edges.
   logoSlot: { x: 0.922, y: 0.046, w: 0.052, h: 0.0925 },
-  minCapFraction: 0.12,
+  // 7% since 2026-09-28 (was 12%): text shrinks to fit rather than being refused (Owen).
+  minCapFraction: 0.07,
   maxCapFraction: 0.2,
 };
+
+/** The most lines a phrase is broken into (2 until 2026-09-28). */
+export const MAX_LINES = 3;
 
 /** The size the page measures the phrase at; everything else is scaled from it. */
 export const REFERENCE_SIZE = 100;
@@ -108,7 +115,7 @@ export const REFERENCE_SIZE = 100;
 /** The space kept between the picture's edge and anything placed on it, as a fraction of its height. */
 export const MARGIN_FRACTION = 0.035;
 
-/** The gap between the two lines, as a fraction of the capital height. */
+/** The gap between lines, as a fraction of the capital height. */
 export const LINE_GAP_OF_CAP = 0.18;
 
 /** The patch reaches this far beyond the letters, as a fraction of the capital height. */
@@ -312,10 +319,18 @@ interface Fit {
   lineWidths: number[];
 }
 
-/** Every way to lay the words on one or two lines. */
-function splits(words: readonly string[]): string[][][] {
-  const out: string[][][] = [[[...words]]];
-  for (let k = 1; k < words.length; k++) out.push([words.slice(0, k), words.slice(k)]);
+/** Every way to lay the words, in order, on one to MAX_LINES lines. */
+export function splits(words: readonly string[], maxLines: number = MAX_LINES): string[][][] {
+  const out: string[][][] = [];
+  const walk = (from: number, lines: string[][]): void => {
+    if (from === words.length) {
+      out.push(lines);
+      return;
+    }
+    if (lines.length === maxLines) return;
+    for (let end = from + 1; end <= words.length; end++) walk(end, [...lines, words.slice(from, end)]);
+  };
+  walk(0, []);
   return out;
 }
 
@@ -337,14 +352,18 @@ function fitPhrase(metrics: PhraseMetrics, style: ThumbnailStyle, innerW: number
     const size = Math.min(maxSize, innerW / wPer, innerH / hPer);
     if (!(size > 0)) continue;
     const candidate = { size, lines, lineWidths: lineRef.map((r) => (r * size) / REFERENCE_SIZE) };
-    // Larger wins; at an equal size the more even split reads better.
-    if (best === null || size > best.size + 1e-6 || (Math.abs(size - best.size) <= 1e-6 && evenness(candidate) < evenness(best))) best = candidate;
+    // Larger wins; at an equal size fewer lines, then the more even split, reads better.
+    const tie = best !== null && Math.abs(size - best.size) <= 1e-6;
+    if (
+      best === null || size > best.size + 1e-6 ||
+      (tie && (lines.length < best.lines.length || (lines.length === best.lines.length && evenness(candidate) < evenness(best))))
+    ) best = candidate;
   }
   return best;
 }
 
 function evenness(fit: Fit): number {
-  return fit.lineWidths.length === 1 ? 0 : Math.abs(fit.lineWidths[0] - fit.lineWidths[1]);
+  return Math.max(...fit.lineWidths) - Math.min(...fit.lineWidths);
 }
 
 /**
@@ -397,7 +416,7 @@ export function planText(
       reason:
         `"${phrase}" is too long for the space beside the faces: the letters would be ${biggest} px tall, and the ` +
         `smallest allowed is ${Math.ceil(minCap)} px (${Math.round(style.minCapFraction * 100)}% of the picture's height). ` +
-        `Pick a shorter option, or no text.`,
+        `Pick a shorter option, lower “Smallest letters” in Look, or no text.`,
     };
   }
   const { fit, space } = best;

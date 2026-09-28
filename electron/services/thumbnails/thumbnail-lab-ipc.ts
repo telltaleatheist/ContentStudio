@@ -6,6 +6,7 @@
  * Progress goes to the window that asked, on `thumbs:progress`.
  */
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { randomInt } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
@@ -49,8 +50,13 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
     progress: (event) => {
       if (progressTo !== null && !progressTo.isDestroyed()) progressTo.send('thumbs:progress', event);
     },
+    // A photo draw's seed when the tab gives none; shown with the render so it can be repeated.
+    newSeed: () => randomInt(1, 0x7fffffff),
   });
-  app.on('before-quit', () => canvas?.close());
+  app.on('before-quit', () => {
+    canvas?.close();
+    void lab.releaseTextHold('the app is quitting');
+  });
 
   ipcMain.handle('thumbs:list-items', () => answer('listing items', () => lab.listItems()));
   ipcMain.handle('thumbs:find-frames', (event, req) => {
@@ -70,15 +76,27 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
   ipcMain.handle('thumbs:set-photo-note', (_e, name: string, note: string) => answer('saving a photo note', () => lab.setPhotoNote(name, note)));
   ipcMain.handle('thumbs:suggest', (_e, runId: string, variants) => answer('suggesting photos', () => lab.suggest(runId, variants)));
   ipcMain.handle('thumbs:combine', (_e, fav, how, rank) => answer('combining', () => lab.combine(fav, how, rank)));
-  ipcMain.handle('thumbs:choose-photo-folder', (event) =>
-    answer('choosing the reaction photos folder', async () => {
+  // "Add photos…": PNG files and/or folders (a folder adds its PNGs), copied into the app's library.
+  // Returns the chosen paths with the outcome, so a refusal for names already there can be
+  // confirmed and sent again with replace (thumbs:add-photos).
+  ipcMain.handle('thumbs:choose-photos', (event) =>
+    answer('adding reaction photos', async () => {
       const win = BrowserWindow.fromWebContents(event.sender);
-      const options = { properties: ['openDirectory' as const] };
+      const options = {
+        properties: ['openFile' as const, 'openDirectory' as const, 'multiSelections' as const],
+        filters: [{ name: 'PNG cut-outs', extensions: ['png'] }],
+      };
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || picked.filePaths.length === 0) return null;
-      return lab.setPhotoFolder(picked.filePaths[0]);
+      return { chosen: picked.filePaths, ...lab.addPhotos(picked.filePaths, false) };
     }),
   );
+  ipcMain.handle('thumbs:add-photos', (_e, chosen: string[], replace: boolean) =>
+    answer('adding reaction photos', () => ({ chosen, ...lab.addPhotos(chosen, replace) })));
+  ipcMain.handle('thumbs:remove-photo', (_e, name: string) => answer('removing a reaction photo', () => lab.removePhoto(name)));
+  ipcMain.handle('thumbs:copy-old-photos', () => answer('copying the reaction photos into the app', () => lab.copyOldPhotos()));
+  ipcMain.handle('thumbs:copy-old-logo', () => answer('copying the logo into the app', () => lab.copyOldLogo()));
+  ipcMain.handle('thumbs:release-model', () => answer('releasing the text model', () => lab.releaseTextHold('the Thumbnails tab was left')));
   ipcMain.handle('thumbs:render', (event, runId: string, variants, options) => {
     progressTo = event.sender;
     return answer('rendering', () => lab.render(runId, variants, options));

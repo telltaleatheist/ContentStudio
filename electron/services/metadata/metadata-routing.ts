@@ -215,12 +215,18 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * the PC, plan 6.2). Its manifest states no thinking default, which is why every call on it
    * states `thinking` (plan 1); the note about Ollama's generate endpoint went with Ollama.
    */
-  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
+  'qwen38-27b': { kind: 'local', label: 'Qwen 27B (4-bit, PC)', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
   /**
    * THE 8-BIT 27B (2026-09-28, Owen: "isnt the 27b 8 bit available in crucible? we should use that
    * if its available"). Installed on the Mac only (qwen3.8-27b-8bit, mlx); the PC holds the 4-bit.
    * A separate option, not a quiet upgrade of `qwen38-27b`: a row routed to it on a server that
    * lacks it is marked unavailable by the dialog and refused by name at call time.
+   *
+   * THE DEFAULT OF EVERY 27B ROW since 2026-09-28 (Owen is removing the 4-bit 27B from the Mac):
+   * titles, description, chapters, thumbnail_text and pinned_comment default here and offer it
+   * first; `qwen38-27b` (the 4-bit) stays offered for runs on the PC, labelled "(4-bit, PC)". A
+   * STORED selection of `qwen38-27b` is left as stored (never rewritten); on a Mac without the
+   * 4-bit it is refused by name at call time and the dialog marks it unavailable.
    */
   'qwen38-27b-8bit': { kind: 'local', label: 'Qwen 27B (8-bit)', model: 'qwen3.8-27b-8bit', crucibleModel: 'qwen3.8-27b-8bit' },
   /**
@@ -279,7 +285,7 @@ export interface MetadataRoutingTask {
  * EVERY DEFAULT IS LOCAL AS OF THIS BUILD. Titles were the last cloud default and moved to
  * the 27B; pinned comments moved off the 9B onto it too. The shipped table is now:
  *
- *   titles, thumbnail_text, pinned_comment  ->  qwen3.8:27b
+ *   titles, thumbnail_text, pinned_comment  ->  qwen3.8:27b (the 8-bit build since 2026-09-28)
  *   description                             ->  qwen3.5:9b (DescriptionUnit)
  *   tags                                    ->  code-assembled where the item has chapters,
  *                                               else qwen3.5:9b
@@ -313,19 +319,19 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'titles',
     label: 'Titles',
-    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b',
+    options: ['qwen38-27b-8bit', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'metadata',
   },
   {
     id: 'description',
     label: 'Description',
-    options: ['qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     // 27B as of 2026-08-23, up from the 9B: the 9B default shipped a description that
     // misattributed the video's claims and invented facts (the f2-braeden-sorbo
     // comparison). 9b/4b remain offered for the A/B.
-    defaultOptionId: 'qwen38-27b',
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'metadata',
   },
@@ -347,8 +353,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'chapters',
     label: 'Chapters',
-    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b',
+    options: ['qwen38-27b-8bit', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'metadata',
   },
@@ -388,8 +394,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Thumbnail text',
     // 27B by default: the output is three words and the judgement behind them is the whole
     // video, so the cheaper model saves nothing worth having here.
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b',
+    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'metadata',
   },
@@ -404,8 +410,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b',
+    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b-8bit',
     modal: true,
     group: 'metadata',
   },
@@ -434,7 +440,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      * THE THUMBNAILS TAB'S WORDS (2026-09-28): 2-5 words in three kinds (claim, stakes,
      * reaction), written as a pair with the title the operator picks. Its own row, separate from
      * the metadata run's `thumbnail_text` field, which is untouched until Owen decides after
-     * testing. The same rungs as that field, plus the 8-bit 27B, the default since 2026-09-28 (Owen).
+     * testing. The same rungs as that field (the 8-bit 27B first, the default since 2026-09-28, Owen).
      */
     id: 'thumbnail_words',
     label: 'Thumbnail words',
