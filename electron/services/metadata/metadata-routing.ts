@@ -119,7 +119,7 @@ export interface MetadataRoutingOption {
  * NOT a fallback for an absent setting — there is no setting. Anyone who wants a different
  * summarizer changes this line, and the change is visible in the diff and in the run's log.
  */
-export const SUMMARIZATION_MODEL = 'qwen3.8-27b-4bit';
+export const SUMMARIZATION_MODEL = 'qwen3.8-27b-8bit';
 
 /**
  * The model the re-roll gate reads its decisions from (P9; LEDGER #201): the rule checks and the

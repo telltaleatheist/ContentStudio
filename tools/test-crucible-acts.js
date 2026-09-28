@@ -107,7 +107,7 @@ check('every routing option that runs through Crucible names a Crucible id; clau
     assert.strictEqual(option.crucibleModel, expected[id], id);
     if (option.crucibleModel !== null) assert.strictEqual(option.model, option.crucibleModel, `${id} routes on its Crucible id`);
   }
-  assert.strictEqual(routing.SUMMARIZATION_MODEL, 'qwen3.8-27b-4bit');
+  assert.strictEqual(routing.SUMMARIZATION_MODEL, 'qwen3.8-27b-8bit');
 });
 
 run('crucible: every act sent is one the pinned release knows');

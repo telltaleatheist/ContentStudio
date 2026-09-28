@@ -5,7 +5,7 @@
  *
  *   node tools/chaptering-run.js <transcript.json> --granularity <chapters|stories>
  *        [--fake | --live] [--server http://127.0.0.1:7100] [--token <t>]
- *        [--outline-model qwen3.5-9b] [--title-model qwen3.8-27b-4bit]
+ *        [--outline-model qwen3.5-9b] [--title-model qwen3.8-27b-8bit]
  *        [--channel youtube-unfiltered] [--video-title "..."] [--no-summarize] [--no-ads]
  *        [--title-thinking on|off] [--title-max-tokens N] [--switch-cost N] [--out result.json]
  *
@@ -60,7 +60,7 @@ const prompts = C('prompts');
 // ------------------------------------------------------------------------- arguments
 
 function parseArgs(argv) {
-  const a = { outlineModel: 'qwen3.5-9b', titleModel: 'qwen3.8-27b-4bit', server: 'http://127.0.0.1:7100', summarize: true, ads: true };
+  const a = { outlineModel: 'qwen3.5-9b', titleModel: 'qwen3.8-27b-8bit', server: 'http://127.0.0.1:7100', summarize: true, ads: true };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
