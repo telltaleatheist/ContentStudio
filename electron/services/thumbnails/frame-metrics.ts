@@ -195,20 +195,33 @@ export function filterFrames(frames: readonly FrameMeasure[]): FilterResult {
 }
 
 /**
- * At most `cap` frames, spread evenly over [start, end): the range is cut into `cap` equal
- * stretches and each stretch contributes its sharpest kept frame. A stretch with no kept frame
- * contributes none, so the result can be shorter than `cap`. Under the cap, everything is kept.
+ * At most `cap` frames, spread evenly over [start, end). The range is cut into `cap` equal
+ * stretches and taken in ROUNDS: each round, every stretch that still has kept frames gives its
+ * sharpest remaining one, until `cap` are taken. So the cap is filled even when some stretches have
+ * nothing kept (a desktop stretch, a held shot), and no stretch gives a second frame before every
+ * stretch has given its first. The last round, when it would overshoot, takes its sharpest offers.
+ * Under the cap, everything is kept. Returned in time order.
  */
 export function thinAcrossRange<T extends { t: number; sharpness: number }>(frames: readonly T[], start: number, end: number, cap: number): T[] {
   if (!(end > start)) throw new Error(`thinAcrossRange: the range ${start}-${end} s is empty.`);
   if (!Number.isInteger(cap) || cap < 1) throw new Error(`thinAcrossRange: a cap of ${cap} frames is not a count.`);
   if (frames.length <= cap) return [...frames];
   const width = (end - start) / cap;
-  const best = new Map<number, T>();
+  const buckets = new Map<number, T[]>();
   for (const frame of frames) {
     const bucket = Math.min(cap - 1, Math.max(0, Math.floor((frame.t - start) / width)));
-    const current = best.get(bucket);
-    if (current === undefined || frame.sharpness > current.sharpness) best.set(bucket, frame);
+    const list = buckets.get(bucket) ?? [];
+    list.push(frame);
+    buckets.set(bucket, list);
   }
-  return [...best.entries()].sort((a, b) => a[0] - b[0]).map(([, frame]) => frame);
+  for (const list of buckets.values()) list.sort((a, b) => b.sharpness - a.sharpness || a.t - b.t);
+  const order = [...buckets.keys()].sort((a, b) => a - b);
+  const taken: T[] = [];
+  while (taken.length < cap) {
+    const offers = order.map((k) => buckets.get(k)!.shift()).filter((f): f is T => f !== undefined);
+    if (offers.length === 0) break;
+    if (taken.length + offers.length > cap) offers.sort((a, b) => b.sharpness - a.sharpness || a.t - b.t);
+    taken.push(...offers.slice(0, cap - taken.length));
+  }
+  return taken.sort((a, b) => a.t - b.t);
 }

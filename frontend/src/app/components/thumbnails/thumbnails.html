@@ -1,0 +1,255 @@
+<div class="th-container">
+  <div class="header">
+    <div class="header-left">
+      <h2>Thumbnails</h2>
+      <span class="subtitle">Testing: find frames in a video, pick three, add words, and make three thumbnails for an A/B test.</span>
+    </div>
+  </div>
+
+  @if (error(); as message) {
+    <div class="error-line" role="alert">
+      <mat-icon>error_outline</mat-icon>
+      <span>{{ message }}</span>
+    </div>
+  }
+
+  <!-- 1. The video -->
+  <section class="step">
+    <h3><span class="num">1</span> Video</h3>
+    <div class="row">
+      <label class="field wide">
+        <span class="label">Report</span>
+        <select [ngModel]="itemKey()" (ngModelChange)="pickItem($event)" [disabled]="busy() !== null">
+          @for (i of items(); track i.jobId + '/' + i.itemId) {
+            <option [value]="i.jobId + '/' + i.itemId" [disabled]="i.problem !== null">
+              {{ i.title }}{{ i.problem ? ' — ' + i.problem : '' }}
+            </option>
+          }
+        </select>
+      </label>
+    </div>
+    @if (item(); as it) {
+      <div class="row">
+        <label class="radio">
+          <input type="radio" name="source" [checked]="!useOtherVideo()" (change)="useOtherVideo.set(false)" [disabled]="busy() !== null" />
+          <span>This report's video: <strong>{{ fileName(it.sourcePath) }}</strong>
+            @if (!it.videoOnDisk) { <span class="warn">(not on disk: is the drive plugged in?)</span> }
+          </span>
+        </label>
+      </div>
+      <div class="row">
+        <label class="radio">
+          <input type="radio" name="source" [checked]="useOtherVideo()" (change)="useOtherVideo.set(true)" [disabled]="busy() !== null" />
+          <span>Another video file (for example the stream master):
+            <strong>{{ otherVideo() ? fileName(otherVideo()) : 'none chosen' }}</strong></span>
+        </label>
+        <button mat-stroked-button (click)="chooseVideo()" [disabled]="busy() !== null">Choose…</button>
+      </div>
+      <div class="row">
+        <label class="field">
+          <span class="label">From</span>
+          <input type="text" [(ngModel)]="start" placeholder="start of video" [disabled]="busy() !== null" />
+        </label>
+        <label class="field">
+          <span class="label">To</span>
+          <input type="text" [(ngModel)]="end" placeholder="end of video" [disabled]="busy() !== null" />
+        </label>
+        <span class="hint">Times like 07:31 or 1:07:31. Leave empty for the whole video.</span>
+      </div>
+      <div class="row">
+        <button mat-flat-button color="primary" (click)="findFrames()" [disabled]="busy() !== null">
+          <mat-icon>search</mat-icon> Find frames
+        </button>
+        @if (busy() === 'finding' && progress()) { <span class="progress"><span class="spinner"></span>{{ progress() }}</span> }
+      </div>
+    }
+  </section>
+
+  <!-- 2. The frames -->
+  @if (run(); as r) {
+    <section class="step">
+      <h3><span class="num">2</span> Frames</h3>
+      @for (line of r.lines; track line) { <p class="line">{{ line }}</p> }
+      @if (r.scoring) { <p class="line">{{ r.scoring.line }}</p> }
+      <div class="row">
+        <button mat-flat-button color="primary" (click)="score()" [disabled]="busy() !== null"
+                matTooltip="Asks the model on the Routing dialog's 'Thumbnail frames' row about each frame, one frame at a time">
+          <mat-icon>auto_awesome</mat-icon> {{ r.best ? 'Score again' : 'Score ' + r.toScore.length + ' frames' }}
+        </button>
+        @if (busy() === 'scoring') {
+          <button mat-stroked-button (click)="stop()">Stop</button>
+          <span class="progress"><span class="spinner"></span>{{ progress() }}</span>
+        }
+        <span class="spacer"></span>
+        <div class="toggle" role="tablist">
+          <button role="tab" [class.on]="view() === 'best'" [disabled]="!r.best" (click)="view.set('best')">Best {{ r.best?.length ?? 20 }}</button>
+          <button role="tab" [class.on]="view() === 'all'" (click)="view.set('all')">All kept frames ({{ r.frames.length }})</button>
+        </div>
+      </div>
+      <p class="hint">Click a frame to mark it. The first three marked become thumbnails A, B and C. Marked: {{ marked().length }} of 3.</p>
+      <div class="grid">
+        @for (f of shownFrames(); track f.id) {
+          <button class="tile" [class.marked]="letterOf(f.id)" [class.dim]="f.flag === 'screen'" (click)="toggleMark(f)" [matTooltip]="frameTip(f)">
+            <img [src]="f.small" [alt]="'Frame at ' + f.clock" loading="lazy" />
+            <span class="tile-foot">
+              <span class="clock">{{ f.clock }}</span>
+              @if (f.score !== null) { <span class="score">{{ percent(f.score) }}</span> }
+              @if (f.flag === 'screen') { <span class="flag">screen</span> }
+              @if (f.flag === 'unreadable') { <span class="flag">unreadable</span> }
+            </span>
+            @if (letterOf(f.id); as letter) { <span class="letter">{{ letter }}</span> }
+            <span class="zoom" (click)="look(f, $event)" matTooltip="Look closer"><mat-icon>zoom_in</mat-icon></span>
+          </button>
+        }
+      </div>
+      @if (preview(); as p) {
+        <div class="preview">
+          <img [src]="p.picture" [alt]="'Frame at ' + p.clock" />
+          <div class="preview-side">
+            <span>{{ p.clock }}</span>
+            <button mat-stroked-button (click)="preview.set(null)">Close</button>
+          </div>
+        </div>
+      }
+    </section>
+
+    <!-- 3. The words -->
+    <section class="step">
+      <h3><span class="num">3</span> Words</h3>
+      <p class="hint">The words are written to go with one title, so pick the title this test pairs them with.</p>
+      <div class="titles">
+        @for (t of item()?.titles ?? []; track t) {
+          <label class="radio">
+            <input type="radio" name="title" [checked]="title() === t" (change)="title.set(t)" [disabled]="busy() !== null" />
+            <span>{{ t }}</span>
+          </label>
+        }
+      </div>
+      <div class="row">
+        <button mat-flat-button color="primary" (click)="writeWords()" [disabled]="busy() !== null || !title()"
+                matTooltip="Uses the model on the Routing dialog's 'Thumbnail words' row">
+          <mat-icon>edit_note</mat-icon> {{ words() ? 'Write new words' : 'Write words' }}
+        </button>
+        @if (busy() === 'words') { <span class="progress"><span class="spinner"></span>Writing…</span> }
+      </div>
+      @if (words(); as w) {
+        <p class="line">Written by {{ w.model }}.</p>
+        @for (warning of w.warnings; track warning) { <p class="line warn">{{ warning }}</p> }
+        <div class="kinds">
+          @for (k of kinds; track k) {
+            <div class="kind">
+              <span class="kind-name">{{ kindLabel[k] }}</span>
+              @for (o of w[k]; track o) { <span class="option">{{ o }}</span> }
+              @if (w[k].length === 0) { <span class="hint">none</span> }
+            </div>
+          }
+        </div>
+      }
+      @if (markedFrames().length > 0) {
+        <div class="variants">
+          @for (m of markedFrames(); track m.letter) {
+            <div class="variant">
+              <span class="letter-inline">{{ m.letter }}</span>
+              <img [src]="m.frame.small" [alt]="'Frame at ' + m.frame.clock" />
+              <span class="clock">{{ m.frame.clock }}</span>
+              <select [ngModel]="choiceKey(m.letter)" (ngModelChange)="setChoice(m.letter, $event)">
+                <option value="none">No text (picture only)</option>
+                @if (words(); as w) {
+                  @for (k of kinds; track k) {
+                    <optgroup [label]="kindLabel[k]">
+                      @for (o of w[k]; track o) { <option [value]="k + '|' + o">{{ o }}</option> }
+                    </optgroup>
+                  }
+                }
+              </select>
+            </div>
+          }
+        </div>
+      }
+    </section>
+
+    <!-- 4. The look -->
+    <section class="step">
+      <h3 class="clickable" (click)="styleOpen.set(!styleOpen())">
+        <span class="num">4</span> Look
+        <mat-icon>{{ styleOpen() ? 'expand_less' : 'expand_more' }}</mat-icon>
+        <span class="hint">{{ styleStored() ? 'your saved look' : 'the default look' }}</span>
+      </h3>
+      @if (styleOpen() && style(); as s) {
+        <div class="look">
+          <label class="field"><span class="label">Font</span>
+            <input type="text" [ngModel]="s.font" (ngModelChange)="setStyle('font', $event)" /></label>
+          <label class="field"><span class="label">Letters</span>
+            <input type="color" [ngModel]="s.fill" (ngModelChange)="setStyle('fill', $event)" /></label>
+          <label class="field"><span class="label">Outline</span>
+            <input type="color" [ngModel]="s.stroke" (ngModelChange)="setStyle('stroke', $event)" /></label>
+          <label class="field"><span class="label">Outline thickness (% of letter size)</span>
+            <input type="number" min="0" max="30" step="1" [ngModel]="pct(s.strokeRatio)" (ngModelChange)="setStyle('strokeRatio', $event / 100)" /></label>
+          <label class="check"><input type="checkbox" [ngModel]="s.patch" (ngModelChange)="setStyle('patch', $event)" /> Soft dark patch behind the words</label>
+          <label class="field"><span class="label">Patch darkness (%)</span>
+            <input type="number" min="0" max="100" step="5" [ngModel]="pct(s.patchDarken)" (ngModelChange)="setStyle('patchDarken', $event / 100)" /></label>
+          <label class="check"><input type="checkbox" [ngModel]="s.vignette" (ngModelChange)="setStyle('vignette', $event)" /> Dark edges</label>
+          <label class="field"><span class="label">Edge darkness (%)</span>
+            <input type="number" min="0" max="100" step="5" [ngModel]="pct(s.vignetteStrength)" (ngModelChange)="setStyle('vignetteStrength', $event / 100)" /></label>
+          <label class="field"><span class="label">Smallest letters (% of height)</span>
+            <input type="number" min="5" max="40" step="1" [ngModel]="pct(s.minCapFraction)" (ngModelChange)="setStyle('minCapFraction', $event / 100)" /></label>
+          <label class="field"><span class="label">Largest letters (% of height)</span>
+            <input type="number" min="5" max="50" step="1" [ngModel]="pct(s.maxCapFraction)" (ngModelChange)="setStyle('maxCapFraction', $event / 100)" /></label>
+          @for (slot of ['reactionSlot', 'logoSlot']; track slot) {
+            <div class="slot">
+              <span class="label">{{ slot === 'reactionSlot' ? 'Your reaction photo (kept empty for now)' : 'Logo (kept empty for now)' }}, % of the picture:</span>
+              @for (k of ['x', 'y', 'w', 'h']; track k) {
+                <label class="mini"><span>{{ k === 'x' ? 'left' : k === 'y' ? 'top' : k === 'w' ? 'width' : 'height' }}</span>
+                  <input type="number" min="0" max="100" step="0.5" [ngModel]="pct($any(s)[slot][k])" (ngModelChange)="setSlot($any(slot), $any(k), $event)" /></label>
+              }
+            </div>
+          }
+          <div class="row">
+            <button mat-flat-button color="primary" (click)="saveStyle()">Save look</button>
+            <button mat-stroked-button (click)="resetStyle()">Put back the saved look</button>
+            @if (styleNote()) { <span class="hint">{{ styleNote() }}</span> }
+          </div>
+        </div>
+      }
+    </section>
+
+    <!-- 5. The thumbnails -->
+    <section class="step">
+      <h3><span class="num">5</span> Thumbnails</h3>
+      <div class="row">
+        <button mat-flat-button color="primary" (click)="render()" [disabled]="busy() !== null || marked().length === 0">
+          <mat-icon>image</mat-icon> Make {{ marked().length === 1 ? 'the thumbnail' : 'the ' + marked().length + ' thumbnails' }}
+        </button>
+        @if (busy() === 'rendering') { <span class="progress"><span class="spinner"></span>Drawing…</span> }
+        <label class="check"><input type="checkbox" [checked]="showSlots()" (change)="showSlots.set(!showSlots())" /> Show the empty photo and logo spaces</label>
+        @if (folder() && results()) { <button mat-stroked-button (click)="showFolder()">Open folder</button> }
+      </div>
+      @if (folder() && results()) { <p class="line">Saved in {{ folder() }}</p> }
+      @for (res of results() ?? []; track res.letter) {
+        <div class="result">
+          <div class="result-head"><span class="letter-inline">{{ res.letter }}</span> frame at {{ res.at }}</div>
+          @if (res.ok) {
+            <div class="result-body">
+              <div class="big">
+                <img [src]="res.picture" [alt]="'Thumbnail ' + res.letter" />
+                @if (showSlots()) {
+                  <span class="slot-box" [ngStyle]="slotBox('reactionSlot')">your photo</span>
+                  <span class="slot-box" [ngStyle]="slotBox('logoSlot')">logo</span>
+                }
+              </div>
+              <div class="phones">
+                @for (wpx of phoneWidths; track wpx) {
+                  <figure><img [src]="res.picture" [style.width.px]="wpx" [alt]="'Thumbnail ' + res.letter + ' at phone size'" /><figcaption>{{ wpx }} px wide</figcaption></figure>
+                }
+              </div>
+            </div>
+            <p class="line">{{ fileName(res.path) }} · {{ kb(res.bytes) }} {{ res.format.toUpperCase() }}</p>
+            @for (n of res.notes; track n) { <p class="line warn">{{ n }}</p> }
+          } @else {
+            <p class="line warn">{{ res.reason }}</p>
+          }
+        </div>
+      }
+    </section>
+  }
+</div>

@@ -7,6 +7,7 @@ import { Instructions } from './components/instructions/instructions';
 import { History } from './components/history/history';
 import { Analytics } from './components/analytics/analytics';
 import { StreamMarks } from './components/stream-marks/stream-marks';
+import { Thumbnails } from './components/thumbnails/thumbnails';
 
 export const routes: Routes = [
   { path: '', redirectTo: '/inputs', pathMatch: 'full' },
@@ -20,6 +21,8 @@ export const routes: Routes = [
   // marks are made here while the stream runs, and the editor turns them into stories the
   // next day. The page itself is passive — the global hotkey is what writes to it.
   { path: 'stream-marks', component: StreamMarks },
+  // A testing tab (2026-09-28): frames, words and three A/B thumbnails for one report.
+  { path: 'thumbnails', component: Thumbnails },
   { path: 'analytics', component: Analytics },
   { path: 'instructions', component: Instructions },
   // The page was called Prompts until it started editing the instruction files themselves.

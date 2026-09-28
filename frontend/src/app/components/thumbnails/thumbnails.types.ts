@@ -1,0 +1,100 @@
+// The Thumbnails tab's shapes, as the main process sends them (electron/services/thumbnails/
+// lab-service.ts). Kept beside the tab, since nothing else in the app reads them.
+
+export type ThumbsAnswer<T> = { ok: true; value: T } | { ok: false; error: string };
+
+export interface ThumbsItem {
+  jobId: string;
+  itemId: string;
+  title: string;
+  createdAt: string;
+  sourcePath: string | null;
+  videoOnDisk: boolean;
+  titles: string[];
+  promptSet: string | null;
+  hasTranscript: boolean;
+  reportFolder: string | null;
+  problem: string | null;
+}
+
+export interface ThumbsReading {
+  pScreen: number;
+  pFace: number;
+  expression: number;
+  pEyesOpen: number;
+  pStrong: number;
+}
+
+export interface ThumbsFrame {
+  id: string;
+  t: number;
+  clock: string;
+  small: string;
+  score: number | null;
+  reading: ThumbsReading | null;
+  flag: 'screen' | 'unreadable' | null;
+  section: number | null;
+}
+
+export interface ThumbsRun {
+  runId: string;
+  itemId: string;
+  video: string;
+  start: number;
+  end: number;
+  lines: string[];
+  frames: ThumbsFrame[];
+  toScore: string[];
+  best: string[] | null;
+  scoring: { server: string; model: string; line: string } | null;
+}
+
+export type ThumbsWordKind = 'claim' | 'stakes' | 'reaction';
+
+export interface ThumbsWords {
+  claim: string[];
+  stakes: string[];
+  reaction: string[];
+  warnings: string[];
+  model: string;
+}
+
+export interface ThumbsSlot {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface ThumbsStyle {
+  font: string;
+  fill: string;
+  stroke: string;
+  strokeRatio: number;
+  patch: boolean;
+  patchDarken: number;
+  vignette: boolean;
+  vignetteStrength: number;
+  reactionSlot: ThumbsSlot;
+  logoSlot: ThumbsSlot;
+  minCapFraction: number;
+  maxCapFraction: number;
+}
+
+export interface ThumbsVariantRequest {
+  letter: string;
+  frameId: string;
+  phrase: string | null;
+  kind: ThumbsWordKind | null;
+}
+
+export type ThumbsRenderResult =
+  | { letter: string; ok: true; path: string; bytes: number; format: 'png' | 'jpeg'; picture: string; notes: string[]; at: string }
+  | { letter: string; ok: false; reason: string; at: string };
+
+export interface ThumbsProgress {
+  runId: string;
+  stage: 'sampling' | 'scoring';
+  done: number;
+  total: number;
+}

@@ -117,6 +117,12 @@ check('filtering: thinning keeps the cap and spreads it across the range, sharpe
     assert.strictEqual(thin[b].sharpness, Math.max(...stretch.map((f) => f.sharpness)));
   }
   assert.strictEqual(metrics.thinAcrossRange(frames.slice(0, 10), 100, 400, 30).length, 10, 'under the cap, nothing is thinned');
+  // Stretches with nothing kept (a desktop stretch, a held shot) do not leave the cap short: the
+  // stretches that have frames give a second round.
+  const gappy = frames.filter((f) => f.t < 160 || f.t >= 340);
+  const filled = metrics.thinAcrossRange(gappy, 100, 400, 30);
+  assert.strictEqual(filled.length, 30, `the cap is filled (${filled.length})`);
+  for (let i = 1; i < filled.length; i++) assert.ok(filled[i].t > filled[i - 1].t, 'time order');
 });
 
 // ── sampling (real ffmpeg, synthetic video) ─────────────────────────────────

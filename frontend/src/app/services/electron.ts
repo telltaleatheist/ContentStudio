@@ -30,6 +30,16 @@ import type {
   VideoSource,
 } from '../features/publish/publish.types';
 import type {
+  ThumbsAnswer,
+  ThumbsItem,
+  ThumbsProgress,
+  ThumbsRenderResult,
+  ThumbsRun,
+  ThumbsStyle,
+  ThumbsVariantRequest,
+  ThumbsWords,
+} from '../components/thumbnails/thumbnails.types';
+import type {
   MasterFileTimes,
   StreamMarkResult,
   StreamMarkSession,
@@ -1080,6 +1090,19 @@ declare global {
       // that fires while neither is focused — hence the push listener, which returns its own
       // unsubscribe rather than a removeAll: the main window's tab and the editor's import
       // dialog both listen, and one leaving must not deafen the other.
+      // The Thumbnails tab (testing, 2026-09-28): every call answers { ok, value } or { ok: false, error }.
+      thumbsListItems: () => Promise<ThumbsAnswer<ThumbsItem[]>>;
+      thumbsFindFrames: (req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }) => Promise<ThumbsAnswer<ThumbsRun>>;
+      thumbsFramePicture: (runId: string, id: string) => Promise<ThumbsAnswer<string>>;
+      thumbsScore: (runId: string) => Promise<ThumbsAnswer<ThumbsRun>>;
+      thumbsStop: (runId: string) => Promise<ThumbsAnswer<void>>;
+      thumbsWords: (runId: string, title: string) => Promise<ThumbsAnswer<ThumbsWords>>;
+      thumbsGetStyle: () => Promise<ThumbsAnswer<{ style: ThumbsStyle; stored: boolean }>>;
+      thumbsSetStyle: (style: ThumbsStyle) => Promise<ThumbsAnswer<ThumbsStyle>>;
+      thumbsRender: (runId: string, variants: ThumbsVariantRequest[]) => Promise<ThumbsAnswer<{ folder: string; results: ThumbsRenderResult[] }>>;
+      thumbsChooseVideo: () => Promise<ThumbsAnswer<string | null>>;
+      thumbsShowFolder: (folder: string) => Promise<ThumbsAnswer<void>>;
+      onThumbsProgress: (callback: (event: ThumbsProgress) => void) => () => void;
       streamMarksList: () => Promise<StreamMarkSessionSummary[]>;
       streamMarksGet: (id: string) => Promise<StreamMarkSession>;
       streamMarksLive: () => Promise<StreamMarkSession | null>;
@@ -2532,6 +2555,41 @@ export class ElectronService {
 
   removeArchiveListeners(): void {
     this.editorBridge.removeArchiveListeners();
+  }
+
+  // ── Thumbnails tab ──────────────────────────────────────────────────────────
+  //
+  // Throws outside Electron, like the stream-marks group, and unwraps the main process's
+  // { ok, error } answer into a thrown Error carrying its sentence unchanged.
+
+  private get thumbsBridge(): NonNullable<typeof window.launchpad> {
+    if (!this.ipcRenderer) throw noBridge('The Thumbnails tab');
+    return this.ipcRenderer;
+  }
+
+  private async thumbs<T>(call: Promise<ThumbsAnswer<T>>): Promise<T> {
+    const answer = await call;
+    if (answer.ok === true) return answer.value;
+    throw new Error((answer as { error: string }).error);
+  }
+
+  thumbsListItems(): Promise<ThumbsItem[]> { return this.thumbs(this.thumbsBridge.thumbsListItems()); }
+  thumbsFindFrames(req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }): Promise<ThumbsRun> {
+    return this.thumbs(this.thumbsBridge.thumbsFindFrames(req));
+  }
+  thumbsFramePicture(runId: string, id: string): Promise<string> { return this.thumbs(this.thumbsBridge.thumbsFramePicture(runId, id)); }
+  thumbsScore(runId: string): Promise<ThumbsRun> { return this.thumbs(this.thumbsBridge.thumbsScore(runId)); }
+  thumbsStop(runId: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsStop(runId)); }
+  thumbsWords(runId: string, title: string): Promise<ThumbsWords> { return this.thumbs(this.thumbsBridge.thumbsWords(runId, title)); }
+  thumbsGetStyle(): Promise<{ style: ThumbsStyle; stored: boolean }> { return this.thumbs(this.thumbsBridge.thumbsGetStyle()); }
+  thumbsSetStyle(style: ThumbsStyle): Promise<ThumbsStyle> { return this.thumbs(this.thumbsBridge.thumbsSetStyle(style)); }
+  thumbsRender(runId: string, variants: ThumbsVariantRequest[]): Promise<{ folder: string; results: ThumbsRenderResult[] }> {
+    return this.thumbs(this.thumbsBridge.thumbsRender(runId, variants));
+  }
+  thumbsChooseVideo(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChooseVideo()); }
+  thumbsShowFolder(folder: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsShowFolder(folder)); }
+  onThumbsProgress(callback: (event: ThumbsProgress) => void): () => void {
+    return this.thumbsBridge.onThumbsProgress((event) => this.ngZone.run(() => callback(event)));
   }
 
   // ── Stream marks ────────────────────────────────────────────────────────────
