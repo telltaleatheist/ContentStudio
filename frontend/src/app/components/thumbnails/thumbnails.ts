@@ -10,6 +10,8 @@ import type {
   ThumbsFrame,
   ThumbsItem,
   ThumbsLogo,
+  ThumbsLogoState,
+  ThumbsPhotoDraw,
   ThumbsPhotoPick,
   ThumbsPhotos,
   ThumbsPiece,
@@ -30,6 +32,8 @@ const KIND_LABEL: Record<ThumbsWordKind, string> = { claim: 'Claim', stakes: 'St
 /** The "glance test": the widths a thumbnail is seen at on a phone. */
 const PHONE_WIDTHS = [360, 246, 168];
 const NO_TEXT: ThumbsWordPick = { phrase: null, kind: null };
+/** How many frames a collapsed scene row of "All kept frames" shows (spread across the scene). */
+const COLLAPSED_ROW = 6;
 
 function pickKey(p: ThumbsWordPick): string {
   return p.phrase === null ? 'none' : `${p.kind}|${p.phrase}`;
@@ -83,7 +87,11 @@ export class Thumbnails implements OnInit, OnDestroy {
   readonly favTexts = signal<ThumbsWordPick[]>([]);
   readonly favPhotos = signal<string[]>([]);
 
-  readonly photos = signal<ThumbsPhotos>({ folder: null, photos: [] });
+  readonly photos = signal<ThumbsPhotos>({ folder: '', photos: [], offer: null });
+  /** What the last "Add photos…" did, in one line. */
+  readonly photoNote = signal<string | null>(null);
+  /** Scenes opened with "More from this scene" (best view) or "Show all" (all view). */
+  readonly openScenes = signal<ReadonlySet<number>>(new Set());
   readonly notesOpen = signal(false);
   readonly suggestion = signal<ThumbsSuggestion | null>(null);
 
@@ -102,8 +110,15 @@ export class Thumbnails implements OnInit, OnDestroy {
   /** Outline the photo and logo spaces that were left empty on a render. Off unless Owen ticks it. */
   readonly showSlots = signal(false);
 
-  /** Owen's logo file (saved in settings), or null when none is chosen. */
+  /** Owen's logo (kept in the app), or null when none is. */
   readonly logo = signal<ThumbsLogo | null>(null);
+  /** While the app holds no logo: the old setting's file, offered for copying. */
+  readonly logoOffer = signal<{ from: string } | null>(null);
+  /** The photo draw's seed Owen typed (blank: a new one each time), and the last one used. */
+  readonly seedText = signal('');
+  readonly lastSeed = signal<number | null>(null);
+  /** The last render's draws, with the words each was drawn for (a draw for other words is not shown). */
+  readonly draws = signal<Record<string, { draw: ThumbsPhotoDraw; text: string | null }>>({});
   /** The per-render logo switch: on whenever a logo is set, until Owen switches it off. */
   readonly logoOn = signal(false);
 
@@ -120,17 +135,32 @@ export class Thumbnails implements OnInit, OnDestroy {
   readonly sessionStories = computed<ThumbsStoryChoice[]>(() => this.allChoices().filter((c) => c.projectFolder === this.pickSession()));
   readonly pickedStory = computed<ThumbsStoryChoice | null>(() => this.sessionStories().find((c) => this.storyKey(c) === this.pickStory()) ?? null);
   readonly framesById = computed(() => new Map((this.run()?.frames ?? []).map((f) => [f.id, f])));
-  /** The best view: one row per scene (its top frames), scenes ordered by their best frame. */
-  readonly bestRows = computed<Array<{ scene: number; label: string; frames: ThumbsFrame[] }>>(() => {
+  /** The best view: one row per scene (the best and the best clearly different frame; more on request), scenes ordered by their best frame. */
+  readonly bestRows = computed<Array<{ scene: number; label: string; frames: ThumbsFrame[]; more: ThumbsFrame[] }>>(() => {
     const run = this.run();
     if (run === null || run.bestScenes === null) return [];
     const byId = this.framesById();
     const labels = new Map(run.scenes.map((s) => [s.number, s.label]));
+    const pick = (ids: string[]) => ids.map((id) => byId.get(id)).filter((f): f is ThumbsFrame => f !== undefined);
     return run.bestScenes.map((row) => ({
       scene: row.scene,
       label: labels.get(row.scene) ?? `Scene ${row.scene}`,
-      frames: row.ids.map((id) => byId.get(id)).filter((f): f is ThumbsFrame => f !== undefined),
+      frames: pick(row.ids),
+      more: pick(row.more),
     }));
+  });
+  /** "All kept frames", one row per scene: every frame, or COLLAPSED_ROW spread across it until opened. */
+  readonly allRows = computed<Array<{ scene: number; label: string; frames: ThumbsFrame[]; shown: ThumbsFrame[] }>>(() => {
+    const run = this.run();
+    if (run === null) return [];
+    const open = this.openScenes();
+    return run.scenes.map((s) => {
+      const frames = run.frames.filter((f) => f.scene === s.number);
+      const shown = open.has(s.number) || frames.length <= COLLAPSED_ROW
+        ? frames
+        : Array.from({ length: COLLAPSED_ROW }, (_, k) => frames[Math.round((k * (frames.length - 1)) / (COLLAPSED_ROW - 1))]);
+      return { scene: s.number, label: `${s.label} · ${frames.length} kept`, frames, shown };
+    });
   });
   /** Every word line the model wrote, plus "no text", for a variant's text menu. */
   readonly allTexts = computed<ThumbsWordPick[]>(() => {
@@ -173,7 +203,7 @@ export class Thumbnails implements OnInit, OnDestroy {
       this.items.set(await this.electron.thumbsListItems());
       const first = this.items().find((i) => i.problem === null);
       if (first) this.pickItem(`${first.jobId}/${first.itemId}`);
-      this.photos.set(await this.electron.thumbsPhotos());
+      await this.refreshPhotos();
       const { style, stored } = await this.electron.thumbsGetStyle();
       this.style.set(style);
       this.styleStored.set(stored);
@@ -182,11 +212,13 @@ export class Thumbnails implements OnInit, OnDestroy {
     await this.attempt(async () => this.setLogo(await this.electron.thumbsLogo()));
   }
 
-  private setLogo(logo: ThumbsLogo | null): void {
-    this.logo.set(logo);
-    this.logoOn.set(logo !== null);
+  private setLogo(state: ThumbsLogoState): void {
+    this.logo.set(state.logo);
+    this.logoOffer.set(state.offer);
+    this.logoOn.set(state.logo !== null);
   }
 
+  /** Copy a logo file into the app (it replaces the one kept there). */
   async chooseLogo(): Promise<void> {
     await this.attempt(async () => {
       const picked = await this.electron.thumbsChooseLogo();
@@ -194,9 +226,27 @@ export class Thumbnails implements OnInit, OnDestroy {
     });
   }
 
+  /** The one click on "Copy it into the app" for the logo the tab used to read in place. */
+  async copyOldLogo(): Promise<void> {
+    await this.attempt(async () => this.setLogo(await this.electron.thumbsCopyOldLogo()));
+  }
+
   ngOnDestroy(): void {
     this.unsubscribe?.();
     if (this.elapsedTimer !== null) clearInterval(this.elapsedTimer);
+    // Leaving the tab gives back the text model it kept loaded between the words and the photos.
+    void this.electron.thumbsReleaseModel().catch((err) => console.error('[Thumbnails] releasing the text model:', err));
+  }
+
+  isOpen(scene: number): boolean {
+    return this.openScenes().has(scene);
+  }
+
+  toggleScene(scene: number): void {
+    const next = new Set(this.openScenes());
+    if (next.has(scene)) next.delete(scene);
+    else next.add(scene);
+    this.openScenes.set(next);
   }
 
   private async attempt(fn: () => Promise<void>): Promise<void> {
@@ -273,6 +323,8 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.combineReason.set(null);
     this.results.set(null);
     this.preview.set(null);
+    this.openScenes.set(new Set());
+    this.draws.set({});
   }
 
   fileName(p: string | null): string {
@@ -378,15 +430,55 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   // ── photos ────────────────────────────────────────────────────────────────
 
-  async choosePhotoFolder(): Promise<void> {
+  private async refreshPhotos(): Promise<void> {
+    this.photos.set(await this.electron.thumbsPhotos());
+    const names = new Set(this.photos().photos.map((p) => p.name));
+    this.favPhotos.set(this.favPhotos().filter((n) => names.has(n)));
+  }
+
+  /** After the photo list changed: a ranking made for the old list is not used again. */
+  private async photosChanged(): Promise<void> {
+    this.suggestion.set(null);
+    this.draws.set({});
+    await this.refreshPhotos();
+    await this.recombine();
+  }
+
+  /** "Add photos…": PNG files or folders, copied into the app. Names already there: ask, then replace. */
+  async addPhotos(): Promise<void> {
+    this.photoNote.set(null);
     await this.attempt(async () => {
-      const picked = await this.electron.thumbsChoosePhotoFolder();
-      if (picked !== null) {
-        this.favPhotos.set([]);
-        this.suggestion.set(null);
-        this.photos.set(await this.electron.thumbsPhotos());
-        await this.recombine();
+      let out = await this.electron.thumbsChoosePhotos();
+      if (out === null) return;
+      if (out.already.length > 0) {
+        const names = out.already.map((n) => `"${n}"`).join(', ');
+        if (!window.confirm(`Already in your reaction photos: ${names}. Replace ${out.already.length === 1 ? 'it' : 'them'} with the chosen file${out.already.length === 1 ? '' : 's'}? (Nothing was added yet.)`)) {
+          this.photoNote.set(`Nothing added: ${names} ${out.already.length === 1 ? 'is' : 'are'} already there.`);
+          return;
+        }
+        out = await this.electron.thumbsAddPhotos(out.chosen, true);
       }
+      this.photoNote.set(`Added ${out.added.length}${out.replaced.length ? `, replaced ${out.replaced.length}` : ''}. They are kept in the app from now on.`);
+      await this.photosChanged();
+    });
+  }
+
+  async removePhoto(name: string, event: Event): Promise<void> {
+    event.stopPropagation();
+    if (!window.confirm(`Remove "${name}" from your reaction photos? (Only the app's copy; your note for it stays.)`)) return;
+    await this.attempt(async () => {
+      await this.electron.thumbsRemovePhoto(name);
+      this.photoNote.set(`Removed "${name}".`);
+      await this.photosChanged();
+    });
+  }
+
+  /** The one click on "Copy these into the app" for the folder the tab used to read in place. */
+  async copyOldPhotos(): Promise<void> {
+    await this.attempt(async () => {
+      const out = await this.electron.thumbsCopyOldPhotos();
+      this.photoNote.set(`Copied ${out.added.length} photos into the app. Your originals were not touched.`);
+      await this.photosChanged();
     });
   }
 
@@ -434,16 +526,34 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.swap(letter, { photo: pick });
   }
 
-  /** The "top suggested" entry's label: the photo itself once ranked for these words. */
+  /** The last draw for thumbnail `of`'s words, only when it was drawn for its current words. */
+  private freshDraw(of: string): ThumbsPhotoDraw | null {
+    const d = this.draws()[of];
+    const v = this.variants().find((x) => x.letter === of);
+    return d !== undefined && v !== undefined && d.text === v.text.phrase ? d.draw : null;
+  }
+
+  /** The "drawn from the top 3" entry's label: the draw once made, else the pool once ranked. */
   topLabel(of: string): string {
-    const top = this.freshRanking(of)?.[0];
-    const whose = `${of}'s words`;
-    return top ? `Top suggested for ${whose}:${top.name}${top.p !== null ? ' — ' + this.percent(top.p) + '%' : ''}` : `Top suggested for ${whose} (ranked when you make the thumbnails)`;
+    const whose = `Drawn from the top 3 for ${of}'s words`;
+    const drawn = this.freshDraw(of);
+    if (drawn !== null) return `${whose}: ${drawn.name} — ${this.percent(drawn.p)}%`;
+    const pool = this.freshRanking(of)?.slice(0, 3);
+    if (pool && pool.length > 0) return `${whose} (${pool.map((r) => `${r.name} ${this.percent(r.p)}%`).join(', ')})`;
+    return `${whose} (ranked and drawn when you make the thumbnails)`;
   }
 
   photoPreview(p: ThumbsPhotoPick): string | null {
-    const name = p.pick === 'photo' ? p.name : p.pick === 'top' ? this.freshRanking(p.of)?.[0]?.name ?? null : null;
+    const name = p.pick === 'photo' ? p.name : p.pick === 'top' ? this.freshDraw(p.of)?.name ?? null : null;
     return name === null ? null : this.photos().photos.find((x) => x.name === name)?.preview ?? null;
+  }
+
+  /** The seed box: blank for a new draw, or a whole number to repeat one. */
+  private seedOrNull(): number | null {
+    const t = this.seedText().trim();
+    if (t === '') return null;
+    if (!/^\d+$/.test(t)) throw new Error(`The draw seed must be a whole number (or blank for a new draw), not "${t}".`);
+    return Number(t);
   }
 
   // ── combine ───────────────────────────────────────────────────────────────
@@ -512,10 +622,15 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.busy.set('rendering');
     this.progress.set('Drawing…');
     await this.attempt(async () => {
-      const out = await this.electron.thumbsRender(run.runId, this.variants().map((v) => ({
+      const variants = this.variants();
+      const out = await this.electron.thumbsRender(run.runId, variants.map((v) => ({
         letter: v.letter, frameId: v.frameId, phrase: v.text.phrase, kind: v.text.kind, photo: v.photo,
-      })), { logo: this.logoOn() });
+      })), { logo: this.logoOn(), seed: this.seedOrNull() });
       if (out.suggestion !== null) this.suggestion.set(out.suggestion);
+      const textOf = (letter: string) => variants.find((v) => v.letter === letter)?.text.phrase ?? null;
+      this.draws.set(Object.fromEntries(Object.entries(out.draws).map(([of, draw]) => [of, { draw, text: textOf(of) }])));
+      this.lastSeed.set(out.seed);
+      this.run.set({ ...run, lines: out.lines });
       this.results.set(out.results);
       this.folder.set(out.folder);
     });

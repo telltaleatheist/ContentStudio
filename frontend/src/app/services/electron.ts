@@ -33,6 +33,8 @@ import type {
   ThumbsAnswer,
   ThumbsItem,
   ThumbsLogo,
+  ThumbsLogoState,
+  ThumbsAddPhotos,
   ThumbsRankings,
   ThumbsRenderOutcome,
   ThumbsWrittenWords,
@@ -1115,14 +1117,19 @@ declare global {
       thumbsWords: (runId: string, title: string) => Promise<ThumbsAnswer<ThumbsWords>>;
       thumbsGetStyle: () => Promise<ThumbsAnswer<{ style: ThumbsStyle; stored: boolean }>>;
       thumbsSetStyle: (style: ThumbsStyle) => Promise<ThumbsAnswer<ThumbsStyle>>;
-      thumbsRender: (runId: string, variants: ThumbsVariantRequest[], options: { logo: boolean }) => Promise<ThumbsAnswer<ThumbsRenderOutcome>>;
-      thumbsLogo: () => Promise<ThumbsAnswer<ThumbsLogo | null>>;
-      thumbsChooseLogo: () => Promise<ThumbsAnswer<ThumbsLogo | null>>;
+      thumbsRender: (runId: string, variants: ThumbsVariantRequest[], options: { logo: boolean; seed: number | null }) => Promise<ThumbsAnswer<ThumbsRenderOutcome>>;
+      thumbsLogo: () => Promise<ThumbsAnswer<ThumbsLogoState>>;
+      thumbsChooseLogo: () => Promise<ThumbsAnswer<ThumbsLogoState | null>>;
       thumbsPhotos: () => Promise<ThumbsAnswer<ThumbsPhotos>>;
       thumbsSetPhotoNote: (name: string, note: string) => Promise<ThumbsAnswer<void>>;
       thumbsSuggest: (runId: string, variants: Array<{ letter: string; text: string | null }>) => Promise<ThumbsAnswer<ThumbsSuggestion>>;
       thumbsCombine: (fav: { frames: string[]; texts: ThumbsWordPick[]; photos: string[]; written: ThumbsWrittenWords | null }, how: ThumbsCombineMode, rank: ThumbsRankings | null) => Promise<ThumbsAnswer<ThumbsCombineResult>>;
-      thumbsChoosePhotoFolder: () => Promise<ThumbsAnswer<string | null>>;
+      thumbsChoosePhotos: () => Promise<ThumbsAnswer<ThumbsAddPhotos | null>>;
+      thumbsAddPhotos: (chosen: string[], replace: boolean) => Promise<ThumbsAnswer<ThumbsAddPhotos>>;
+      thumbsRemovePhoto: (name: string) => Promise<ThumbsAnswer<void>>;
+      thumbsCopyOldPhotos: () => Promise<ThumbsAnswer<{ added: string[]; replaced: string[]; already: string[] }>>;
+      thumbsCopyOldLogo: () => Promise<ThumbsAnswer<ThumbsLogoState>>;
+      thumbsReleaseModel: () => Promise<ThumbsAnswer<string | null>>;
       thumbsShowFolder: (folder: string) => Promise<ThumbsAnswer<void>>;
       onThumbsProgress: (callback: (event: ThumbsProgress) => void) => () => void;
       streamMarksList: () => Promise<StreamMarkSessionSummary[]>;
@@ -2614,11 +2621,11 @@ export class ElectronService {
   thumbsWords(runId: string, title: string): Promise<ThumbsWords> { return this.thumbs(this.thumbsBridge.thumbsWords(runId, title)); }
   thumbsGetStyle(): Promise<{ style: ThumbsStyle; stored: boolean }> { return this.thumbs(this.thumbsBridge.thumbsGetStyle()); }
   thumbsSetStyle(style: ThumbsStyle): Promise<ThumbsStyle> { return this.thumbs(this.thumbsBridge.thumbsSetStyle(style)); }
-  thumbsRender(runId: string, variants: ThumbsVariantRequest[], options: { logo: boolean }): Promise<ThumbsRenderOutcome> {
+  thumbsRender(runId: string, variants: ThumbsVariantRequest[], options: { logo: boolean; seed: number | null }): Promise<ThumbsRenderOutcome> {
     return this.thumbs(this.thumbsBridge.thumbsRender(runId, variants, options));
   }
-  thumbsLogo(): Promise<ThumbsLogo | null> { return this.thumbs(this.thumbsBridge.thumbsLogo()); }
-  thumbsChooseLogo(): Promise<ThumbsLogo | null> { return this.thumbs(this.thumbsBridge.thumbsChooseLogo()); }
+  thumbsLogo(): Promise<ThumbsLogoState> { return this.thumbs(this.thumbsBridge.thumbsLogo()); }
+  thumbsChooseLogo(): Promise<ThumbsLogoState | null> { return this.thumbs(this.thumbsBridge.thumbsChooseLogo()); }
   thumbsPhotos(): Promise<ThumbsPhotos> { return this.thumbs(this.thumbsBridge.thumbsPhotos()); }
   thumbsSetPhotoNote(name: string, note: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsSetPhotoNote(name, note)); }
   thumbsSuggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<ThumbsSuggestion> {
@@ -2627,7 +2634,12 @@ export class ElectronService {
   thumbsCombine(fav: { frames: string[]; texts: ThumbsWordPick[]; photos: string[]; written: ThumbsWrittenWords | null }, how: ThumbsCombineMode, rank: ThumbsRankings | null): Promise<ThumbsCombineResult> {
     return this.thumbs(this.thumbsBridge.thumbsCombine(fav, how, rank));
   }
-  thumbsChoosePhotoFolder(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChoosePhotoFolder()); }
+  thumbsChoosePhotos(): Promise<ThumbsAddPhotos | null> { return this.thumbs(this.thumbsBridge.thumbsChoosePhotos()); }
+  thumbsAddPhotos(chosen: string[], replace: boolean): Promise<ThumbsAddPhotos> { return this.thumbs(this.thumbsBridge.thumbsAddPhotos(chosen, replace)); }
+  thumbsRemovePhoto(name: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsRemovePhoto(name)); }
+  thumbsCopyOldPhotos(): Promise<{ added: string[]; replaced: string[]; already: string[] }> { return this.thumbs(this.thumbsBridge.thumbsCopyOldPhotos()); }
+  thumbsCopyOldLogo(): Promise<ThumbsLogoState> { return this.thumbs(this.thumbsBridge.thumbsCopyOldLogo()); }
+  thumbsReleaseModel(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsReleaseModel()); }
   thumbsShowFolder(folder: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsShowFolder(folder)); }
   onThumbsProgress(callback: (event: ThumbsProgress) => void): () => void {
     return this.thumbsBridge.onThumbsProgress((event) => this.ngZone.run(() => callback(event)));

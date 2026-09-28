@@ -653,3 +653,37 @@
   width: auto;
   object-fit: contain;
 }
+
+// 2026-09-28: per-scene rows' expand link, the photo remove (×), the draw seed box.
+.scene-label .link {
+  margin-left: 10px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-color, #ff8000);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+
+.photo {
+  position: relative;
+
+  .remove {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    font-size: 16px;
+    line-height: 1;
+    opacity: 0.55;
+    cursor: pointer;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+}
+
+input.seed {
+  width: 110px;
+}

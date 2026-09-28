@@ -12,6 +12,11 @@
  * pixels, fitted in its space with its aspect kept, drawn exactly there (and nowhere else in the
  * space), and a missing or unreadable logo file is refused naming it.
  *
+ * The library (2026-09-28): a real PNG cut-out and logo are copied into a scratch userData's
+ * `thumbnail-lab/` (never Owen's), read back from there by the tab's own lab, and an unreadable
+ * logo is refused before anything is copied. "TAKE YOUR CLOTHES OFF" is rendered on the reference
+ * frame at the new 7% floor, up to three lines (evidence render).
+ *
  * Its inputs are synthetic (a drawn "face" is not a face Vision will find, so the face path is
  * checked on the reference frame when it is on this Mac, and skipped by name when it is not).
  * With `outDir`, the reference frame's evidence renders are kept there; without it everything
@@ -31,6 +36,15 @@ const tv = require(path.join(ROOT, 'services/publish/thumbnail-validate.js'));
 const photos = require(path.join(ROOT, 'services/thumbnails/reaction-photos.js'));
 const logos = require(path.join(ROOT, 'services/thumbnails/logo.js'));
 const combine = require(path.join(ROOT, 'services/thumbnails/combine.js'));
+const library = require(path.join(ROOT, 'services/thumbnails/photo-library.js'));
+const { photoName } = require(path.join(ROOT, 'services/thumbnails/photo-trim.js'));
+const { ThumbnailLab } = require(path.join(ROOT, 'services/thumbnails/lab-service.js'));
+require(path.join(ROOT, 'services/metadata/prompt-assets.js')).initPromptAssets(path.join(REPO, 'electron', 'assets', 'prompts'));
+
+/** The PNG photos of a folder by name, read in place (Owen's own folder is only ever read here). */
+function listIn(folder) {
+  return fs.readdirSync(folder).filter((f) => /\.png$/i.test(f) && !f.startsWith('.')).map((f) => ({ name: photoName(f), file: path.join(folder, f) }));
+}
 
 /** Owen's logo (a 2000x2000 round badge with alpha), when this Mac has it (read in place). */
 const LOGO = '/Volumes/Callisto/youtube data/Misc/final logos/deprecated/logo-xl-blue-fixed-2mb.png';
@@ -115,7 +129,7 @@ app.whenReady().then(async () => {
 
   await check('a phrase too long for the space is refused in plain words and nothing is written', async () => {
     const stem = path.join(scratch, 'too-long');
-    const r = await renderThumbnail({ canvas, frame: synthetic, phrase: 'the rapture keeps failing every single year since nineteen eighty eight', style, photo: null, logo: null, outStem: stem });
+    const r = await renderThumbnail({ canvas, frame: synthetic, phrase: 'the rapture keeps failing every single year since nineteen eighty eight', style: { ...style, reactionSlot: { x: 0.3, y: 0.2, w: 0.68, h: 0.78 } }, photo: null, logo: null, outStem: stem });
     assert(!r.ok && /too long/.test(r.reason) && /Pick a shorter option/.test(r.reason), JSON.stringify(r));
     assert(!fs.existsSync(`${stem}.png`) && !fs.existsSync(`${stem}.jpg`), 'a file was written');
   });
@@ -132,7 +146,7 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(cutDir, 'selfie keeper.png'), nativeImage.createFromBitmap(cut, { width: cw, height: ch }).toPNG());
 
   await check('a cut-out is trimmed to the person (the speck dropped), outlined in white, right side and bottom anchored', async () => {
-    const list = photos.listReactionPhotos(cutDir);
+    const list = listIn(cutDir);
     assert(list.length === 1 && list[0].name === 'keeper', JSON.stringify(list));
     const t = photos.trimmedPhoto(list[0]);
     // The person grown by EDGE_GROW (3 px) on the sides that are not the canvas's bottom edge.
@@ -193,26 +207,35 @@ app.whenReady().then(async () => {
     assert(err && /could not be read as an image .*bad-logo\.png/.test(err.message), err && err.message);
   });
 
-  await check('a missing photo folder, an empty one, and an unreadable photo are refused naming them', async () => {
-    let err = null;
-    try { photos.listReactionPhotos(path.join(scratch, 'nope')); } catch (e) { err = e; }
-    assert(err && /folder is not there: .*nope/.test(err.message), err && err.message);
-    const empty = path.join(scratch, 'empty');
-    fs.mkdirSync(empty);
-    err = null;
-    try { photos.listReactionPhotos(empty); } catch (e) { err = e; }
-    assert(err && /has no PNG photos in it/.test(err.message), err && err.message);
+  await check('an unreadable photo is refused naming it', async () => {
     const bad = path.join(scratch, 'bad');
     fs.mkdirSync(bad);
     fs.writeFileSync(path.join(bad, 'selfie broken.png'), 'not a png');
-    err = null;
-    try { photos.trimmedPhoto(photos.listReactionPhotos(bad)[0]); } catch (e) { err = e; }
+    let err = null;
+    try { photos.trimmedPhoto(listIn(bad)[0]); } catch (e) { err = e; }
     assert(err && /"broken" could not be read as an image: .*selfie broken\.png/.test(err.message), err && err.message);
+  });
+
+  await check('the library: a cut-out and a logo are copied into <userData>/thumbnail-lab (a scratch userData) and read from there; an unreadable logo is refused before anything is copied', async () => {
+    const userData = path.join(scratch, 'userData');
+    const lab = new ThumbnailLab({ store: { get: () => undefined, set: () => {} }, userDataPath: userData });
+    const added = lab.addPhotos([cutDir], false);
+    assert(added.added.join() === 'keeper', JSON.stringify(added));
+    const shown = lab.photos();
+    assert(shown.photos.length === 1 && shown.photos[0].name === 'keeper' && shown.photos[0].preview.startsWith('data:image/png'), JSON.stringify(shown).slice(0, 200));
+    assert(shown.folder === path.join(userData, 'thumbnail-lab', 'reaction-photos'), shown.folder);
+    let err = null;
+    fs.writeFileSync(path.join(scratch, 'bad-logo.png'), 'not a png');
+    try { lab.setLogo(path.join(scratch, 'bad-logo.png')); } catch (e) { err = e; }
+    assert(err && /not a PNG or JPEG|must be a PNG or JPEG/.test(err.message), err && err.message);
+    const set = lab.setLogo(logoFile);
+    assert(set.logo && set.logo.width === 600 && set.logo.file === path.join(userData, 'thumbnail-lab', 'logo', 'logo.png'), JSON.stringify(set));
+    assert(fs.existsSync(logoFile), 'the chosen logo stays where it was');
   });
 
   if (fs.existsSync(REFERENCE_FRAME) && fs.existsSync(SELFIES)) {
     await check('the reference frame with Owen\'s cut-outs: A claim + "oh please", B stakes + "horrified", C no text + "laugh" (evidence renders)', async () => {
-      const list = photos.listReactionPhotos(SELFIES);
+      const list = listIn(SELFIES);
       const named = (n) => { const f = list.find((p) => p.name === n); assert(f, `no "${n}" photo`); return photos.trimmedPhoto(f); };
       // The dark bars seen along the bottom of selfie horrified.png (x 505-640, 1570-1690) are fully
       // transparent in its alpha plane (checked with ffmpeg too), so they never draw: the trim
@@ -241,7 +264,7 @@ app.whenReady().then(async () => {
       assert(out.ok, out.reason);
       // The judge's ranking, stubbed locally (no Crucible): what the suggestion would hand back per variant.
       const stub = { A: ['horrified', 'oh please'], B: ['oh please', 'laugh'], C: ['laugh', 'oh wow'] };
-      const list = photos.listReactionPhotos(SELFIES);
+      const list = listIn(SELFIES);
       const logo = logos.readLogo(LOGO);
       for (const v of out.variants) {
         assert(v.text.phrase !== null && v.photo.pick === 'top', `${v.letter}: ${JSON.stringify(v)}`);
@@ -263,6 +286,25 @@ app.whenReady().then(async () => {
   }
 
   if (fs.existsSync(REFERENCE_FRAME)) {
+    await check('"TAKE YOUR CLOTHES OFF" on the reference frame fits at the 7% floor on up to three lines, clear of the face (evidence render)', async () => {
+      assert(style.minCapFraction === 0.07, `floor ${style.minCapFraction}`);
+      const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - 7% floor') });
+      assert(r.ok, JSON.stringify(r));
+      assert(r.plan.lines.length <= 3 && r.plan.capPx >= 0.07 * OUTPUT_HEIGHT - 0.01, JSON.stringify(r.plan.lines));
+      for (const f of r.faces) {
+        const face = layout.paddedFace(f, OUTPUT_WIDTH, OUTPUT_HEIGHT), b = r.plan.patch, e = 0.01;
+        assert(!(b.x < face.x + face.w - e && face.x < b.x + b.w - e && b.y < face.y + face.h - e && face.y < b.y + b.h - e), 'the words overlap a face');
+      }
+      tv.validateThumbnailFile(r.path);
+      console.log(`       wrote ${r.path} (letters ${r.plan.capPx.toFixed(0)} px on ${r.plan.lines.length} line(s): ${r.plan.lines.map((l) => l.text).join(' / ')})`);
+      // Squeezed by a reaction space as wide as Owen's frame left: the 12% floor refuses, 7% fits.
+      const tight = { ...style, reactionSlot: { x: 0.36, y: 0.3, w: 0.62, h: 0.68 } };
+      const old = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: { ...tight, minCapFraction: 0.12 }, photo: null, logo: null, outStem: path.join(scratch, 'tight-12') });
+      const now = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: tight, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - tight space, 7% floor') });
+      console.log(`       tight space: at 12% ${old.ok ? 'fits at ' + old.plan.capPx.toFixed(0) + ' px' : 'refused: ' + old.reason}; at 7% ${now.ok ? 'fits at ' + now.plan.capPx.toFixed(0) + ' px on ' + now.plan.lines.length + ' line(s)' : 'refused: ' + now.reason}`);
+      assert(now.ok, JSON.stringify(now));
+    });
+
     await check('the reference frame: Apple Vision finds her face, the text avoids it, and the render passes the door (evidence render)', async () => {
       const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'DON\'T STAND UNDER A ROOF', style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-a') });
       assert(r.ok, JSON.stringify(r));

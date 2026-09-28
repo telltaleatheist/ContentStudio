@@ -11,9 +11,15 @@
  *      ranking: the tab pre-selects the top one and lists the rest in order. No photo is ever
  *      hidden or blocked; Owen picks.
  *
- * Both run as ONE lane job holding ONE lease, like the frame scorer (frame-scorer.ts).
+ * Both run as ONE lane job holding ONE lease, like the frame scorer (frame-scorer.ts). When the
+ * tab holds the model for its text steps (lab-service.ts `textJob`: the words and the tone/photo
+ * both on the 8-bit 27B by default), that held job is passed in and the questions run as one
+ * standalone GPU step under it, like the words call: the model stays loaded between the words and
+ * the photos, and the tab releases it, not this call (a lane job's end would give back what was
+ * held inside it).
  */
 import type { DecideResponse } from '@crucible/client';
+import type { JobLeases } from '../../crucible/lease';
 import { promptAssets } from '../metadata/prompt-assets';
 import { plainScoringError, ThumbnailJobWaiting, type ScorerDeps } from './frame-scorer';
 import { THUMBNAILS_PROMPT_FILE } from './prompts';
@@ -133,6 +139,8 @@ export async function judgeThumbnails(input: {
   photos: ReadonlyArray<{ name: string; note: string | null }>;
   variants: ReadonlyArray<{ letter: string; text: string | null }>;
   signal?: AbortSignal;
+  /** The tab's held job for this model (kept loaded across its text steps); absent, this call takes and releases its own lease. */
+  job?: JobLeases;
 }): Promise<JudgeOutcome> {
   const { deps, model } = input;
   const tones = toneOptions();
@@ -145,28 +153,46 @@ export async function judgeThumbnails(input: {
   const controller = new AbortController();
   input.signal?.addEventListener('abort', () => controller.abort(input.signal?.reason), { once: true });
 
+  const questions = async (job: JobLeases, signal: AbortSignal, beat: () => void): Promise<Omit<JudgeOutcome, 'server'>> => {
+    const ask = async (state: string, question: string, options: Record<string, string>, what: string): Promise<DecideResponse> => {
+      const answer = await deps.transport.decide({
+        model, state, questions: { pick: { type: 'choice', instructions: question, options } }, missing: 'report',
+        loadContext: JUDGE_LOAD_CONTEXT, job, signal, what, trace: null,
+      });
+      beat();
+      return answer;
+    };
+    const toneAnswer = await ask(toneStateText, asset('tone.question'), Object.fromEntries(tones.map((t) => [t, t])), 'thumbnail tone');
+    const tone = rankingOf(toneAnswer.answers['pick'], tones, 'The tone answer');
+    const photos: Record<string, Ranked[]> = {};
+    for (const v of input.variants) {
+      const state = photoState({ channel: input.tone.channel, creator: input.tone.creator, summary, tone: tone[0].name, text: v.text, photos: input.photos });
+      const options = Object.fromEntries(input.photos.map((p) => [p.name, p.note && p.note.trim() !== '' ? p.note.trim() : p.name]));
+      const answer = await ask(state, asset('photo.question'), options, `reaction photo for thumbnail ${v.letter}`);
+      photos[v.letter] = rankingOf(answer.answers['pick'], names, `The photo answer for ${v.letter}`);
+    }
+    return { tone, photos, model };
+  };
+
+  if (input.job !== undefined) {
+    // The tab's held job: a standalone GPU step, as the words call is (queueAITask), so the hold
+    // is not tied to a lane job whose end would give it back. The tab releases it.
+    const job = input.job;
+    const value = await deps.lanes.aiCall({ lane: 'gpu', model }, `Thumbnail tone and photos (${input.jobId})`, () =>
+      questions(job, controller.signal, () => undefined),
+    ).catch((err) => {
+      throw plainScoringError(err, model);
+    });
+    if (job.server === null) throw new Error('The tone and photo calls ran, and the held job names no server.');
+    return { ...value, server: job.server };
+  }
+
   const outcome = await deps.lanes.runJob({ jobId: input.jobId, fast: false, stage: 'fields', controller }, (run) =>
     deps.lanes.aiCall({ lane: 'gpu', model }, `Thumbnail tone and photos (${input.jobId})`, () =>
-      deps.transport.withJobLease(run.server, model, async (job) => {
-        const ask = async (state: string, question: string, options: Record<string, string>, what: string): Promise<DecideResponse> => {
-          const answer = await deps.transport.decide({
-            model, state, questions: { pick: { type: 'choice', instructions: question, options } }, missing: 'report',
-            loadContext: JUDGE_LOAD_CONTEXT, job, signal: run.controller.signal, what, trace: null,
-          });
-          run.beat();
-          return answer;
-        };
-        const toneAnswer = await ask(toneStateText, asset('tone.question'), Object.fromEntries(tones.map((t) => [t, t])), 'thumbnail tone');
-        const tone = rankingOf(toneAnswer.answers['pick'], tones, 'The tone answer');
-        const photos: Record<string, Ranked[]> = {};
-        for (const v of input.variants) {
-          const state = photoState({ channel: input.tone.channel, creator: input.tone.creator, summary, tone: tone[0].name, text: v.text, photos: input.photos });
-          const options = Object.fromEntries(input.photos.map((p) => [p.name, p.note && p.note.trim() !== '' ? p.note.trim() : p.name]));
-          const answer = await ask(state, asset('photo.question'), options, `reaction photo for thumbnail ${v.letter}`);
-          photos[v.letter] = rankingOf(answer.answers['pick'], names, `The photo answer for ${v.letter}`);
-        }
-        return { tone, photos, server: run.server, model };
-      }, { what: 'thumbnail tone and photos', act: 'decide', loadContext: JUDGE_LOAD_CONTEXT, signal: run.controller.signal }),
+      deps.transport.withJobLease(run.server, model, async (job) => ({
+        ...(await questions(job, run.controller.signal, () => run.beat())),
+        server: run.server,
+      }), { what: 'thumbnail tone and photos', act: 'decide', loadContext: JUDGE_LOAD_CONTEXT, signal: run.controller.signal }),
     ),
   ).catch((err) => {
     throw plainScoringError(err, model);

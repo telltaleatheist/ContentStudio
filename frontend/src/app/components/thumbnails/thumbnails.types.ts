@@ -70,10 +70,11 @@ export interface ThumbsScene {
   scoring: number;
 }
 
-/** One row of the best view: a scene's best frames, best first. */
+/** One row of the best view: the best frame and the best clearly different one; `more` behind "More from this scene". */
 export interface ThumbsSceneRow {
   scene: number;
   ids: string[];
+  more: string[];
   best: number;
 }
 
@@ -148,6 +149,20 @@ export interface ThumbsLogo {
   preview: string;
 }
 
+/** The app's logo, or none with the old setting's file offered for copying. */
+export interface ThumbsLogoState {
+  logo: ThumbsLogo | null;
+  offer: { from: string } | null;
+}
+
+/** "Add photos…": what was chosen and what happened; `already` names photos not added (ask, then replace). */
+export interface ThumbsAddPhotos {
+  chosen: string[];
+  added: string[];
+  replaced: string[];
+  already: string[];
+}
+
 export interface ThumbsPhoto {
   name: string;
   preview: string;
@@ -159,8 +174,22 @@ export interface ThumbsPhoto {
 }
 
 export interface ThumbsPhotos {
-  folder: string | null;
+  /** The app's library folder. */
+  folder: string;
   photos: ThumbsPhoto[];
+  /** While the library is empty: the old folder setting's photos, offered for copying. */
+  offer: { from: string; count: number } | null;
+}
+
+/** A photo drawn from a ranking's top 3 (photo-draw.ts). */
+export interface ThumbsPhotoDraw {
+  of: string;
+  name: string;
+  p: number;
+  chance: number;
+  pool: ThumbsRanked[];
+  repeatForced: boolean;
+  line: string;
 }
 
 export interface ThumbsRanked {
@@ -209,6 +238,8 @@ export type ThumbsRenderResult =
       /** The photo drawn (null: none), and whether the logo was drawn. */
       photo: string | null;
       logo: boolean;
+      /** Set when the photo was drawn from the top 3 for its words. */
+      draw: ThumbsPhotoDraw | null;
     }
   | { letter: string; ok: false; reason: string; at: string };
 
@@ -218,6 +249,11 @@ export interface ThumbsRenderOutcome {
   /** The suggestion the photos came from (run first when it had not run for these words), or null. */
   suggestion: ThumbsSuggestion | null;
   suggested: boolean;
+  /** The seed the photo draw used (enter it again to repeat the draw). */
+  seed: number;
+  draws: Record<string, ThumbsPhotoDraw>;
+  /** The run's lines, with the draw's line. */
+  lines: string[];
 }
 
 export interface ThumbsProgress {

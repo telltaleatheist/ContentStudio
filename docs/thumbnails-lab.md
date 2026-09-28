@@ -75,6 +75,13 @@ disabled, with the reason.
     transition frame from chaining two clips together. No shot-boundary pass: appearance alone.
   - *Screen time*: every SAMPLED frame (the repeats and blurry ones too) counts toward the scene it
     looks most like, so "Scene 3 · 2:41 on screen" is the story's real time on that scene.
+  - *Fragments folded* (2026-09-28, second pass; Owen: "there are really only like 10 unique
+    frames"): a moving camera (the rapture story's trees and sky) split into seven small scenes, and
+    colour alone cannot tell those pieces from two different short clips (the sky pieces sit
+    0.68-0.78 apart; the pink-hair two-shot and the woman against the sky, 0.79). Time can: the
+    pieces interleave inside one stretch. Two scenes fold when each is small (at most 10 kept
+    frames), their stretches overlap or touch (within 2 sampling intervals) and their frames differ
+    on average in at most 0.8 of the cells; closest pair first. Big scenes never fold.
   - Scenes are numbered by first appearance.
 - **Scoring** (frame-scorer.ts): at most 120 kept frames, shared across the scenes
   (`allocateScoring`): every scene first gets 3 (all it has when fewer, so a one-frame scene still
@@ -97,12 +104,16 @@ disabled, with the reason.
 - **Ranking** (frame-ranking.ts): the screen answer is the one filter (P(screen) > 0.5 is
   rejected); everything else ranks: `score = P(face) × (0.45 × expression + 0.20 × eyes + 0.35 ×
   strong)`. **Best by scene** (since 2026-09-28, replacing the Best 20 picked across eight time
-  sections) shows one row per scene, labelled "Scene 3 · 2:41 on screen", with its top 4 frames
-  (never two within 4 s), the scenes ordered by their best frame's score. Computer-screen frames
-  stay out; a scene whose every scored frame was a screen (Owen's desktop, a document) has no row
-  and the scoring line names it. **All kept frames** shows every survivor (scored or not, screens
-  dimmed) so Owen can mark from anywhere; the tooltip names each frame's scene; the tab works for
-  browsing and marking even before (or without) scoring.
+  sections) shows one row per scene, labelled "Scene 3 · 2:41 on screen", the scenes ordered by
+  their best frame's score. Since the second pass the same day (Owen: "we dont need 25 of the same
+  pictures") a row shows TWO frames: the best, and the best-ranked one that looks clearly different
+  from it (16x9 signature distance ≥ 0.15, the upper quarter of a talking-head scene's own spread,
+  or an expression reading a level or more apart); a scene with no clearly different frame shows its
+  best alone. "More from this scene (N)" opens the rest of its ranked frames (never two within 4 s).
+  Computer-screen frames stay out; a scene whose every scored frame was a screen has no row and the
+  scoring line names it. **All kept frames** shows every survivor (scored or not, screens dimmed),
+  grouped by scene, one row each collapsed to 6 frames spread across the scene, "Show all N" to
+  open it; the tab works for browsing and marking even before (or without) scoring.
 
 Click a frame to mark it: the first three marked become A, B and C. The zoom icon shows it at 640 px.
 
@@ -119,17 +130,21 @@ only ever picture-only when Owen chose "No text" (see Auto-combine).
 Font (default Impact; a font that is not installed is refused by name), letter and outline colour
 (default #FF8000 on black), outline thickness, the soft blurred and darkened patch behind the words
 (on/off, darkness), the dark edges (on/off, strength), the smallest and largest letter height
-(default 12% and 20% of the picture's height), the reaction photo's white outline (px at 1080p,
+(default 7% and 20% of the picture's height; the smallest was 12% until 2026-09-28), the reaction photo's white outline (px at 1080p,
 default 10, 0 for none) and how much of it may run off the bottom (default 10% of its height), and
 the two spaces as percentages: Owen's reaction photo (default bottom right, 69/55/29/43%) and the
 logo (default top right, 92.2/4.6/5.2/9.25%: the badge on his hand-made "f2 - the rapture.png",
 1920x1080 x 1770-1870, y 50-150, so 66x66 px at 1280; a saved look keeps its own values).
 
 ### The logo (added 2026-09-28, same day)
-- **File.** "Logo: Choose file…" beside the Reaction photos folder saves the file's path under the
-  store key `thumbnailLab.logo` (settings, never the repo; read in place). The tab shows its name,
-  size and a small picture, or "none chosen". A missing or unreadable file is refused naming it, on
-  choosing and on every render. Owen's: `/Volumes/Callisto/youtube data/Misc/final logos/deprecated/
+- **File, kept in the app** (since 2026-09-28, second pass; Owen: "they should be stored in app data
+  or something so i never have to upload them again"). "Add logo…" / "Replace…" reads the chosen
+  PNG or JPEG (an unreadable one is refused naming it and nothing changes), then COPIES it into
+  `<userData>/thumbnail-lab/logo/` (one file; a replace removes the old copy) and the tab reads it
+  from there from then on. The old setting `thumbnailLab.logo` (a path read in place) is read only
+  for an offer: while the app holds no logo and that file is there, the row says "The tab used to
+  read <name> in place" with a one-click "Copy it into the app"; nothing is copied on its own and the
+  original is only read. Owen's: `/Volumes/Callisto/youtube data/Misc/final logos/deprecated/
   logo-xl-blue-fixed-2mb.png` (2000x2000 PNG with alpha, a round badge).
 - **Drawing** (logo.ts, layout.ts `placeLogo`). The picture is cut to its visible pixels (any alpha),
   fitted inside the logo space with its aspect kept, against the space's top and right edges, on
@@ -140,11 +155,18 @@ logo (default top right, 92.2/4.6/5.2/9.25%: the badge on his hand-made "f2 - th
   No logo set: nothing is drawn and no placeholder.
 
 ### Reaction photos (added 2026-09-28, same day)
-- **Folder.** "Reaction photos: Choose folder…" under Words saves the folder under the store key
-  `thumbnailLab.reactionFolder` (no default; the photos are read in place, never copied into the app
-  or the repo). A folder that is missing or holds no PNG is refused naming it, and is not saved.
-  Photos are listed by file name without `selfie ` and `.png` ("oh please"); two files that would list
-  under one name are refused.
+- **Kept in the app** (since 2026-09-28, second pass, photo-library.ts). "Add photos…" takes PNG
+  files and/or folders (a folder adds its PNGs) and COPIES them into
+  `<userData>/thumbnail-lab/reaction-photos/<name>.png`; the tab reads them from there from then on.
+  A photo's name is its file name without `selfie ` and `.png` ("oh please"). A name already in the
+  app is not copied: the tab asks "Replace it?" and copies it over only on yes (nothing of that
+  batch is copied before). Two chosen files under one name, or a `.png` that is not a PNG, are refused
+  naming them. The × on a photo removes the app's copy only; its note stays saved under its name.
+- **Moving over.** The old setting `thumbnailLab.reactionFolder` (Owen's: /Users/telltale/Downloads/
+  selfies) is read only for an offer: while the app holds no photos and that folder has PNGs, the
+  tab says "The tab used to read N photos from <folder>" with a one-click "Copy these into the app".
+  Nothing is copied on its own, and his originals are only read (copied from, never moved or
+  written).
 - **Per variant.** Each marked frame (A/B/C) gets a row of small pictures of the trimmed photos, plus
   "No photo".
 - **Trim** (photo-trim.ts, reaction-photos.ts). A pixel with alpha ≥ 128 is solid; solid pixels are
@@ -175,10 +197,13 @@ Deterministic, no model:
   model shipped: Electron already carries it. The boxes are grown (forehead, ears, chin) before the
   text must avoid them.
 - **The text box** is the placement giving the largest letters among every clear rectangle that
-  avoids all faces and both reserved spaces, bottom-left preferred on a tie. At most two lines,
-  left-aligned, fitted by shrinking from the largest size. If the letters would fall under the
-  smallest height, the phrase is **too long**: the tab says so for that variant and draws nothing.
-  It never shrinks further and never truncates.
+  avoids all faces and both reserved spaces, bottom-left preferred on a tie. At most THREE lines
+  (two until 2026-09-28), left-aligned, fitted by shrinking from the largest size; at an equal size
+  fewer lines win. If the letters would fall under the smallest height (7% by default since
+  2026-09-28, after Owen hit "TAKE YOUR CLOTHES OFF" refused at 68 px against an 87 px floor: "i
+  think it would be fine to make the text smaller to fit it all"), the phrase is **too long**: the
+  tab says so for that variant and draws nothing. It never shrinks further, never truncates and
+  never covers a face.
 - Saved in `<report folder>/thumbnail tests/` as `<title> - A (claim - DON'T STAND UNDER A
   ROOF).png` and so on; shown large and at 360, 246 and 168 px wide for the phone glance test.
   "Show the empty photo and logo spaces" starts OFF; ticked, it outlines only a space that was left
@@ -205,8 +230,19 @@ Deterministic, no model:
   that variant's words (or "none, the thumbnail is a picture only") and a legend of every photo with
   its note; "Which reaction photo fits this thumbnail?" with the photo names as the answers. The
   probabilities ARE the ranking: the variant's photo menu lists every photo in that order with its
-  percentage, and the top one (the top starred one, when any are starred) is pre-selected. No photo is
-  hidden or blocked. Tone and the three photo questions run as one lane job holding one lease.
+  percentage. No photo is hidden or blocked. Tone and the photo questions run under one lease.
+- **Drawn from the top 3** (since 2026-09-28, second pass, photo-draw.ts; Owen got "are you kidding
+  me" (32%) on A, B and C: "i think it would be safe to have temperature, where it picks randomly from
+  the top 3 or 4 … having the ability to pick directly is valuable"). A variant whose photo is not
+  picked directly gets one DRAWN from its ranking's top 3 by the model's probabilities, renormalised
+  over those three; a photo already on another thumbnail of the same render (picked directly or
+  drawn before it) is left out while another of the three remains (when all three are taken the
+  result says the repeat was forced). A photo held across "Test one thing" is one draw. Direct picks
+  are untouched. The draw is seeded (mulberry32) and REPRODUCIBLE: the seed is shown in the run's
+  lines ("Photos drawn with seed N …") and under Thumbnails ("last draw: seed N"); typing a seed in
+  "Draw seed" repeats a draw, blank makes a new one (crypto.randomInt in the main process). The result
+  line and the photo menu say what was drawn and its %: "oh please (21%), drawn from the top 3: are
+  you kidding me 32%, oh please 21%, horrified 15%".
 - **Auto-combine** (combine.ts): the favourites become A, B and C, each piece swappable in its row
   before saving; "Combine again" resets the swaps. NOTHING IS LEFT OFF WITHOUT A CHOICE (2026-09-28,
   after a render came out with no words and no photo because none were starred):
@@ -214,13 +250,13 @@ Deterministic, no model:
     stakes and reaction the model wrote (a held line in "Test one thing" is the top claim). With none
     starred and none written, combine refuses: "Write words first, or star “No text”." A kind with no
     line written is refused naming it. "No text" only when starred or picked in the row.
-  - *Photos*: a variant with no photo starred shows "Top suggested for A's words" (its photo, with
-    the percentage, once the suggestion has run for those words). "Make the thumbnails" resolves it:
+  - *Photos*: a variant with no photo starred shows "Drawn from the top 3 for A's words" (the three
+    with their %, once ranked; the drawn photo and its % after a render). "Make the thumbnails" resolves it:
     when the suggestion has not run for the variants' exact words (or the words, folder or photo list
     changed since), it runs first, shown in the progress line with the clock ("No photo is starred,
-    so first reading the tone and ranking the photos for these words"), then each variant takes its
-    top-ranked photo. A held photo in "Test one thing" is A's top one on every variant. No photos
-    folder: "Choose your reaction photos folder, or set each thumbnail to “No photo”." "No photo" is
+    so first reading the tone and ranking the photos for these words"), then each variant's photo is
+    drawn from its top 3 (above). A held photo in "Test one thing" is one draw on every variant. No
+    photos in the app: "Add your reaction photos, or set each thumbnail to “No photo”." "No photo" is
     only Owen's pick in the row. A ranking made for other words is never used, by combine or render.
   - *Best package*: each thumbnail takes a different favourite frame, words and photo (a short list
     repeats from its start).
@@ -234,10 +270,20 @@ run never reads them, its log line leaves them out, and the change-all menu does
 - **Thumbnail frames (vision)**: local vision models only (decide needs a distribution; no upstream
   gives one). Default **Qwen3.5 9B with vision** (`qwen3.5-9b-vl`); also 4B, 2B, 0.8B and the 27B
   with vision. A server that lists a model as text-only shows it as not here.
-- **Thumbnail words**: the thumbnail_text rungs (27B default, 9B, Sonnet, Opus, Haiku, claude -p).
+- **Thumbnail words**: the thumbnail_text rungs (the 8-bit 27B default, the 4-bit 27B for the PC,
+  9B, Sonnet, Opus, Haiku, claude -p).
 - **Thumbnail tone and photo**: the tone and photo decides. Its own row rather than the words row,
   because the words row offers cloud and claude -p, and a decide needs logprobs, which only a local
-  Crucible model gives. Default Qwen3.5 9B; also 4B and 27B.
+  Crucible model gives. Default the 8-bit 27B (Owen, 2026-09-28: "if we're using the 27b anyway we
+  might as well keep it loaded to do the other stuff"); also the 9B, 4B and the 4-bit 27B.
+- **One load for both** (lab-service.ts `textJob`, the editor's story-titling pattern): the words and
+  the tone/photo steps run under ONE held job on their model, so the model is not unloaded and
+  reloaded between them (each step used to take and give back its own lease, and a model nothing
+  holds is unloaded). The hold is given back when a step needs a different model (the frame scorer's
+  vision 9B releases it before it loads; a text row changed), when the tab is left, on quit, after a
+  failed step, or after 5 minutes with no text step (declared, logged). Both steps run as standalone
+  GPU steps (the words as queueAITask always did), because a lane job's end gives back what was held
+  inside it.
 
 ## Where it stands (2026-09-28)
 - **No live run yet.** No Crucible call has been made; the scorer and the words were checked on the
@@ -271,6 +317,13 @@ run never reads them, its log line leaves them out, and the change-all menu does
   documents into the player-window scene without joining the sky pieces, so 0.6 stays.
 - The frame weights, the repeat threshold (8 of 256 bits), the blur rule (35% of median) and the
   scene cut (40 per cell, 0.6 of the cells) are declared starting points, tuned on one story.
+- Second pass (2026-09-28, CPU only, the same headless findFrames on a scratch userData, read only):
+  fragment folding takes the rapture story from **18 scenes to 12**: six of the seven sky/tree/porch
+  pieces fold into one scene (21 kept, 0:48 on screen), the two document scenes fold into one; one
+  3-frame sky piece (20:56-20:59) stays its own, and every main shot stays apart (the pink-hair
+  two-shot and the woman against the sky included). With 2 per scene the best view shows 20 frames by
+  default instead of up to 72 (sheet: sharpness as a CPU stand-in for the score). A stray sky frame
+  (21:04) and a desktop frame sit inside the player-window scene; that is the 0.6 grouping, unchanged.
 
 ## Checks
 `npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (47 checks: filters, scenes
@@ -283,11 +336,18 @@ and the too-long refusal, scoring over the real transport and lanes against the 
 including each image refusal; combine never picture-only or photo-less without a choice, its
 refusals; the photo suggestion run first, reused and re-run on changed words over the fake
 Crucible, and the no-folder refusal; the logo placement and the words avoiding it; the empty-space
-outlines off by default) and `tools/thumbnail-lab-render-smoke.js` under the electron binary (12:
-Impact measured, a missing font refused, renders inside YouTube's bounds, the logo cut to its
-visible pixels and drawn only in its place with its aspect kept, a missing or unreadable logo
-refused, the reference frame's face found and avoided, and the evidence renders with text, photo
-and logo).
+outlines off by default; since the second pass, 54 in all: "TAKE YOUR CLOTHES OFF" refused at 12%
+and fitted on three lines at 7% clear of both faces; the library's add / duplicate refused then
+replaced / remove / one-click copy offer from the old folder and logo settings, originals untouched,
+on a CONTENTSTUDIO_USER_DATA scratch folder; the seeded top-3 draw (reproducible, the probabilities
+followed over 3,000 seeds, repeats avoided, direct picks untouched, a held photo one draw); 2 per
+scene with the rest behind "More"; fragment folding; the words and the tone/photo on ONE lease
+with no reload, released before the frame scorer) and `tools/thumbnail-lab-render-smoke.js` under
+the electron binary (14: Impact measured, a missing font refused, renders inside YouTube's bounds,
+the logo cut to its visible pixels and drawn only in its place with its aspect kept, a missing or
+unreadable logo refused, the library copy and read-back of a cut-out and a logo, the reference
+frame's face found and avoided, "TAKE YOUR CLOTHES OFF" on the reference frame, and the evidence
+renders with text, photo and logo).
 
 ## Retiring the old THUMBNAIL TEXT OPTIONS field (Owen decides after testing)
 If this tab's words win: drop `thumbnail_text` from each channel's `fields:` list (the field stops
