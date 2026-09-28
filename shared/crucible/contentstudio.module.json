@@ -1,6 +1,6 @@
 {
   "name": "contentstudio",
-  "version": "1.0.34+7de7dfd8ce35",
+  "version": "1.0.55+7de7dfd8ce35",
   "job_types": [
     {
       "type": "llm",
