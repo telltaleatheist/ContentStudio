@@ -58,8 +58,16 @@ export interface ThumbnailStyle {
   vignette: boolean;
   /** How dark the vignette's edge gets, 0-1. */
   vignetteStrength: number;
-  /** Owen's reaction cut-out: reserved and left empty until his photos exist. */
+  /**
+   * Owen's reaction cut-out's space. With a photo chosen, the trimmed photo is fitted into it,
+   * right side and bottom anchored, and the text avoids the photo's real drawn bounds; with none,
+   * the whole space is kept clear.
+   */
   reactionSlot: SlotFractions;
+  /** The white outline around the cut-out, in pixels at 1080p (scaled to the output); 0 is none. */
+  reactionOutlinePx: number;
+  /** How much of the photo's height may run off the bottom of the picture (0 = none). */
+  reactionBleed: number;
   /** The logo: reserved and left empty. */
   logoSlot: SlotFractions;
   /** The smallest capital-letter height allowed, as a fraction of the frame height. */
@@ -79,6 +87,10 @@ export const DEFAULT_STYLE: ThumbnailStyle = {
   vignetteStrength: 0.6,
   // Measured off Owen's layout mock (roof.png, 1920x1080): the box at 1330-1880 x 600-1060.
   reactionSlot: { x: 0.69, y: 0.55, w: 0.29, h: 0.43 },
+  // Owen's hand-made thumbnails: a white outline about 10 px at 1080p (f2 - the rapture.png), and
+  // the cut-out running off the bottom edge.
+  reactionOutlinePx: 10,
+  reactionBleed: 0.1,
   // Where Owen's channel mark sits on his hand-made thumbnail (f2 - the rapture.png).
   logoSlot: { x: 0.9, y: 0.03, w: 0.075, h: 0.13 },
   minCapFraction: 0.12,
@@ -131,8 +143,10 @@ export interface TextPlan {
   lines: PlacedLine[];
   /** The letters' extent, outline included. */
   block: Rect;
-  /** The patch behind the letters (block plus its pad). */
+  /** The patch's outer bounds (block plus its pad): what must stay clear of faces and slots. */
   patch: Rect;
+  /** The patch as drawn: one padded box per line, so a short line leaves the picture beside it clear. */
+  linePatches: Rect[];
   /** The clear space the text was placed in. */
   space: Rect;
 }
@@ -180,6 +194,8 @@ export function validateStyle(value: unknown): ThumbnailStyle {
     vignette: v.vignette,
     vignetteStrength: num(v.vignetteStrength, 'vignette strength', 0, 1),
     reactionSlot: slot(v.reactionSlot, 'reaction slot'),
+    reactionOutlinePx: num(v.reactionOutlinePx, 'photo outline (px at 1080p)', 0, 40),
+    reactionBleed: num(v.reactionBleed, 'photo bleed off the bottom', 0, 0.5),
     logoSlot: slot(v.logoSlot, 'logo slot'),
     minCapFraction: num(v.minCapFraction, 'smallest letter height', 0.05, 0.4),
     maxCapFraction: num(v.maxCapFraction, 'largest letter height', 0.05, 0.5),
@@ -192,6 +208,39 @@ export function validateStyle(value: unknown): ThumbnailStyle {
 
 export function slotRect(fractions: SlotFractions, width: number, height: number): Rect {
   return { x: fractions.x * width, y: fractions.y * height, w: fractions.w * width, h: fractions.h * height };
+}
+
+/** Where a trimmed reaction photo is drawn, and the outline width, in output pixels. */
+export interface ReactionPlacement {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  outlinePx: number;
+  /** What the text must avoid: the part of the photo inside the picture, outline included. */
+  avoid: Rect;
+}
+
+/**
+ * Fit a trimmed photo (photoW x photoH) into the reaction space: as large as fits the space's width
+ * and the height from the space's top to the picture's bottom, with `reactionBleed` of the photo
+ * allowed below the bottom edge; right side on the space's right edge, bottom running off the
+ * picture's bottom edge.
+ */
+export function placeReaction(photoW: number, photoH: number, style: ThumbnailStyle, width: number, height: number): ReactionPlacement {
+  if (!(photoW > 0 && photoH > 0)) throw new Error(`placeReaction: a ${photoW}x${photoH} photo has nothing to place.`);
+  const slot = slotRect(style.reactionSlot, width, height);
+  const visible = 1 - style.reactionBleed;
+  const scale = Math.min(slot.w / photoW, (height - slot.y) / (photoH * visible));
+  const w = photoW * scale;
+  const h = photoH * scale;
+  const x = slot.x + slot.w - w;
+  const y = height - h * visible;
+  const outlinePx = (style.reactionOutlinePx * height) / 1080;
+  const ax = Math.max(0, x - outlinePx);
+  const ay = Math.max(0, y - outlinePx);
+  const avoid = { x: ax, y: ay, w: Math.min(width, x + w + outlinePx) - ax, h: height - ay };
+  return { x, y, w, h, outlinePx, avoid };
 }
 
 /** A detected face box grown by FACE_PAD, clipped to the frame. */
@@ -286,6 +335,8 @@ export function planText(
   style: ThumbnailStyle,
   width: number,
   height: number,
+  /** The chosen photo's drawn bounds (placeReaction `avoid`); null keeps the whole reaction space clear. */
+  reactionAvoid: Rect | null = null,
 ): PlanResult {
   if (metrics.words.length === 0) throw new Error('planText: the phrase has no words.');
   if (metrics.wordWidths.length !== metrics.words.length) throw new Error('planText: the page measured a different number of words than the phrase has.');
@@ -295,7 +346,7 @@ export function planText(
   const maxSize = (style.maxCapFraction * height) / capPerSize;
   const obstacles = [
     ...faces.map((f) => paddedFace(f, width, height)),
-    slotRect(style.reactionSlot, width, height),
+    reactionAvoid ?? slotRect(style.reactionSlot, width, height),
     slotRect(style.logoSlot, width, height),
   ];
   const spaces = clearSpaces(width, height, obstacles);
@@ -347,6 +398,12 @@ export function planText(
     y: top + strokePx / 2 + capPx * (i + 1) + capPx * LINE_GAP_OF_CAP * i,
   }));
   const block = { x: left, y: top, w: blockW, h: blockH };
+  const linePatches = lines.map((line, i) => ({
+    x: left - pad,
+    y: line.y - capPx - strokePx / 2 - pad,
+    w: fit.lineWidths[i] + strokePx + 2 * pad,
+    h: capPx + strokePx + 2 * pad,
+  }));
   return {
     ok: true,
     plan: {
@@ -356,6 +413,7 @@ export function planText(
       lines,
       block,
       patch: { x: block.x - pad, y: block.y - pad, w: block.w + 2 * pad, h: block.h + 2 * pad },
+      linePatches,
       space,
     },
   };

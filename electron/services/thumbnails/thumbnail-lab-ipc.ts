@@ -60,6 +60,16 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
   ipcMain.handle('thumbs:words', (_e, runId: string, title: string) => answer('writing words', () => lab.words(runId, title)));
   ipcMain.handle('thumbs:get-style', () => answer('reading the look', () => lab.getStyle()));
   ipcMain.handle('thumbs:set-style', (_e, style: unknown) => answer('saving the look', () => lab.setStyle(style)));
+  ipcMain.handle('thumbs:photos', () => answer('reading the reaction photos', () => lab.photos()));
+  ipcMain.handle('thumbs:choose-photo-folder', (event) =>
+    answer('choosing the reaction photos folder', async () => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = { properties: ['openDirectory' as const] };
+      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || picked.filePaths.length === 0) return null;
+      return lab.setPhotoFolder(picked.filePaths[0]);
+    }),
+  );
   ipcMain.handle('thumbs:render', (_e, runId: string, variants) => answer('rendering', () => lab.render(runId, variants)));
   ipcMain.handle('thumbs:choose-video', (event) =>
     answer('choosing a video', async () => {

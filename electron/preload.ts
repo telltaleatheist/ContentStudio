@@ -707,6 +707,8 @@ const api = {
   thumbsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbs:set-style', style),
   thumbsRender: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:render', runId, variants),
   thumbsChooseVideo: () => ipcRenderer.invoke('thumbs:choose-video'),
+  thumbsPhotos: () => ipcRenderer.invoke('thumbs:photos'),
+  thumbsChoosePhotoFolder: () => ipcRenderer.invoke('thumbs:choose-photo-folder'),
   thumbsShowFolder: (folder: string) => ipcRenderer.invoke('thumbs:show-folder', folder),
   onThumbsProgress: (callback: (event: { runId: string; stage: string; done: number; total: number }) => void) => {
     const listener = (_e: unknown, event: { runId: string; stage: string; done: number; total: number }) => callback(event);

@@ -297,6 +297,57 @@ check('layout: a phrase that cannot keep the letter floor is refused in plain wo
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionSlot: { x: 0.8, y: 0.5, w: 0.4, h: 0.4 } }), /runs off the picture/);
 });
 
+// ── reaction photos: trim and placement ─────────────────────────────────────
+
+const trim = services('thumbnails/photo-trim.js');
+
+check('photos: the trim keeps the person (and what touches it) and drops stray specks along the edge', () => {
+  const w = 200, h = 120;
+  const alpha = new Uint8Array(w * h);
+  const fill = (x0, y0, x1, y1, a) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) alpha[y * w + x] = a; };
+  fill(60, 20, 140, 120, 255); // the person, down to the bottom edge
+  fill(140, 60, 180, 70, 255); // a microphone arm touching the person
+  fill(20, 114, 40, 120, 255); // a speck along the bottom edge (selfie horrified.png's bars)
+  fill(185, 116, 195, 120, 255); // another
+  fill(57, 20, 60, 120, 60); // a soft, partly transparent edge beside the person
+  const r = trim.trimToPerson(alpha, w, h, 'a keeper photo');
+  assert.strictEqual(r.droppedGroups, 2);
+  assert.strictEqual(r.droppedPixels, 20 * 6 + 10 * 4);
+  assert.deepStrictEqual(r.box, { x: 57, y: 17, w: 183 - 57, h: 120 - 17 }, JSON.stringify(r.box));
+  assert.strictEqual(r.keep[118 * w + 30], 0, 'the speck is cleared');
+  assert.strictEqual(r.keep[65 * w + 170], 1, 'the attached arm is kept');
+  assert.strictEqual(r.keep[50 * w + 58], 1, 'the soft edge is kept');
+  assert.throws(() => trim.trimToPerson(new Uint8Array(w * h), w, h, 'an empty photo'), /an empty photo has no opaque content/);
+  assert.strictEqual(trim.photoName('selfie oh please.png'), 'oh please');
+  assert.strictEqual(trim.photoName('laugh.PNG'), 'laugh');
+});
+
+check('photos: fitted into the reaction space, right side anchored, running off the bottom; the text avoids the photo, not the whole space', () => {
+  const style = { ...STYLE, reactionBleed: 0.1, reactionOutlinePx: 10 };
+  const slot = layout.slotRect(style.reactionSlot, FW, FH);
+  // A tall photo: height limits it.
+  const tall = layout.placeReaction(600, 1000, style, FW, FH);
+  assert.ok(Math.abs(tall.x + tall.w - (slot.x + slot.w)) < 1e-6, 'right side on the space\'s right edge');
+  assert.ok(Math.abs(tall.y + tall.h * 0.9 - FH) < 1e-6, 'a tenth of it below the bottom edge');
+  assert.ok(Math.abs(tall.y - slot.y) < 1e-6 && tall.w < slot.w, 'as tall as the space allows');
+  assert.ok(Math.abs(tall.outlinePx - 10 * FH / 1080) < 1e-9, 'the outline scales from 1080p');
+  assert.ok(tall.avoid.x <= tall.x - tall.outlinePx + 1e-9 && tall.avoid.y + tall.avoid.h === FH, 'the avoided box holds the outline and reaches the bottom');
+  // A wide photo: width limits it; its top sits lower than the space's top.
+  const wide = layout.placeReaction(1600, 600, style, FW, FH);
+  assert.ok(Math.abs(wide.w - slot.w) < 1e-6 && wide.y > slot.y);
+  // With a narrow photo the text may use the space the photo does not cover.
+  const narrow = layout.placeReaction(200, 1000, style, FW, FH);
+  const face = { x: 515, y: 164, w: 236, h: 236 };
+  const phrase = metricsFor('EVERY YEAR SINCE 1988 AGAIN');
+  const withSpace = layout.planText(phrase, [face], style, FW, FH, null);
+  const withPhoto = layout.planText(phrase, [face], style, FW, FH, narrow.avoid);
+  assert.strictEqual(withSpace.ok, false, 'with the whole space kept clear it is too long');
+  assert.ok(withPhoto.ok, 'with only the narrow photo to avoid it fits');
+  assert.ok(!overlaps(withPhoto.plan.patch, narrow.avoid), 'the text clears the photo');
+  assert.ok(withPhoto.plan.space.x + withPhoto.plan.space.w > slot.x, 'by reaching into the space the photo leaves free');
+  assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionOutlinePx: 99 }), /photo outline/);
+});
+
 // ── scoring over the door ───────────────────────────────────────────────────
 
 const VISION = [

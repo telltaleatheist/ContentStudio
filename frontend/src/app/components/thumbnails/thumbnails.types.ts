@@ -76,6 +76,8 @@ export interface ThumbsStyle {
   vignette: boolean;
   vignetteStrength: number;
   reactionSlot: ThumbsSlot;
+  reactionOutlinePx: number;
+  reactionBleed: number;
   logoSlot: ThumbsSlot;
   minCapFraction: number;
   maxCapFraction: number;
@@ -86,6 +88,13 @@ export interface ThumbsVariantRequest {
   frameId: string;
   phrase: string | null;
   kind: ThumbsWordKind | null;
+  /** A reaction photo's name ("oh please"), or null for none. */
+  photo: string | null;
+}
+
+export interface ThumbsPhotos {
+  folder: string | null;
+  photos: Array<{ name: string; preview: string; note: string | null }>;
 }
 
 export type ThumbsRenderResult =

@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MAX_THUMBNAIL_BYTES, measureThumbnailFile, validateThumbnailFile } from '../publish/thumbnail-validate';
 import { bytesOfDataUrl, dataUrlOf, type ThumbnailCanvas } from './canvas-page';
-import { REFERENCE_SIZE, phraseWords, planText, type Rect, type TextPlan, type ThumbnailStyle } from './layout';
+import { REFERENCE_SIZE, phraseWords, placeReaction, planText, type ReactionPlacement, type Rect, type TextPlan, type ThumbnailStyle } from './layout';
 
 export const OUTPUT_WIDTH = 1280;
 export const OUTPUT_HEIGHT = 720;
@@ -32,6 +32,8 @@ export type RenderResult =
       /** Face boxes in output pixels, as the detector found them (unpadded). */
       faces: Rect[];
       plan: TextPlan | null;
+      /** Where the reaction photo was drawn, or null for none. */
+      reaction: ReactionPlacement | null;
       /** Plain sentences worth showing: a JPEG fallback-by-rule, no faces found. */
       notes: string[];
     }
@@ -44,6 +46,8 @@ export async function renderThumbnail(input: {
   /** The words, or null for an image-only variant. */
   phrase: string | null;
   style: ThumbnailStyle;
+  /** The trimmed reaction photo (PNG bytes and size), or null for none. */
+  photo: { png: Buffer; width: number; height: number; note: string | null } | null;
   /** Where to write, WITHOUT extension: `.png` or `.jpg` is added. */
   outStem: string;
 }): Promise<RenderResult> {
@@ -57,22 +61,29 @@ export async function renderThumbnail(input: {
   const notes: string[] = [];
   if (faces.length === 0) notes.push('The face detector found no face in this frame, so the text was placed with only the reserved slots to avoid.');
 
+  const reaction = input.photo === null ? null : placeReaction(input.photo.width, input.photo.height, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  if (input.photo?.note) notes.push(input.photo.note);
+  const reactionDraw = reaction === null ? null : {
+    image: `data:image/png;base64,${input.photo!.png.toString('base64')}`,
+    x: reaction.x, y: reaction.y, w: reaction.w, h: reaction.h, outlinePx: reaction.outlinePx,
+  };
+
   let plan: TextPlan | null = null;
   if (input.phrase !== null) {
     const words = phraseWords(input.phrase);
     const measured = await input.canvas.measure(input.style.font, words, REFERENCE_SIZE);
-    const placed = planText({ words, ...measured }, faces, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    const placed = planText({ words, ...measured }, faces, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT, reaction?.avoid ?? null);
     if (!placed.ok) return { ok: false, reason: placed.reason };
     plan = placed.plan;
   }
 
   fs.mkdirSync(path.dirname(input.outStem), { recursive: true });
   let format: 'png' | 'jpeg' = 'png';
-  let bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, plan, jpegQuality: null }));
+  let bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, plan, reaction: reactionDraw, jpegQuality: null }));
   if (bytes.length > MAX_THUMBNAIL_BYTES) {
     const pngBytes = bytes.length;
     for (const quality of JPEG_QUALITIES) {
-      bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, plan, jpegQuality: quality }));
+      bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, plan, reaction: reactionDraw, jpegQuality: quality }));
       format = 'jpeg';
       if (bytes.length <= MAX_THUMBNAIL_BYTES) {
         notes.push(`Saved as JPEG (quality ${Math.round(quality * 100)}): as PNG it was ${(pngBytes / 1048576).toFixed(1)} MB, over YouTube's 2 MB limit.`);
@@ -89,5 +100,5 @@ export async function renderThumbnail(input: {
   if (fs.existsSync(other)) fs.unlinkSync(other);
   fs.writeFileSync(out, bytes);
   validateThumbnailFile(out);
-  return { ok: true, path: out, bytes: bytes.length, format, faces, plan, notes };
+  return { ok: true, path: out, bytes: bytes.length, format, faces, plan, reaction, notes };
 }

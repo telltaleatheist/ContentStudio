@@ -163,8 +163,27 @@
                 }
               </select>
             </div>
+            @if (photos().photos.length > 0) {
+              <div class="photo-pick" role="radiogroup" [attr.aria-label]="'Reaction photo for ' + m.letter">
+                <button class="photo none" [class.on]="!photoChoice()[m.letter]" (click)="setPhoto(m.letter, null)">No photo</button>
+                @for (p of photos().photos; track p.name) {
+                  <button class="photo" [class.on]="photoChoice()[m.letter] === p.name" (click)="setPhoto(m.letter, p.name)" [matTooltip]="p.name">
+                    <img [src]="p.preview" [alt]="p.name" />
+                    <span>{{ p.name }}</span>
+                  </button>
+                }
+              </div>
+            }
           }
         </div>
+      }
+      <div class="row">
+        <span class="label">Reaction photos:</span>
+        <span>{{ photos().folder ?? 'no folder chosen' }}</span>
+        <button mat-stroked-button (click)="choosePhotoFolder()" [disabled]="busy() !== null">Choose folder…</button>
+      </div>
+      @for (p of photos().photos; track p.name) {
+        @if (p.note) { <p class="line hint">{{ p.note }}</p> }
       }
     </section>
 
@@ -191,13 +210,17 @@
           <label class="check"><input type="checkbox" [ngModel]="s.vignette" (ngModelChange)="setStyle('vignette', $event)" /> Dark edges</label>
           <label class="field"><span class="label">Edge darkness (%)</span>
             <input type="number" min="0" max="100" step="5" [ngModel]="pct(s.vignetteStrength)" (ngModelChange)="setStyle('vignetteStrength', $event / 100)" /></label>
+          <label class="field"><span class="label">Photo outline (px at 1080p, 0 for none)</span>
+            <input type="number" min="0" max="40" step="1" [ngModel]="s.reactionOutlinePx" (ngModelChange)="setStyle('reactionOutlinePx', $event)" /></label>
+          <label class="field"><span class="label">Photo below the bottom edge (% of its height)</span>
+            <input type="number" min="0" max="50" step="5" [ngModel]="pct(s.reactionBleed)" (ngModelChange)="setStyle('reactionBleed', $event / 100)" /></label>
           <label class="field"><span class="label">Smallest letters (% of height)</span>
             <input type="number" min="5" max="40" step="1" [ngModel]="pct(s.minCapFraction)" (ngModelChange)="setStyle('minCapFraction', $event / 100)" /></label>
           <label class="field"><span class="label">Largest letters (% of height)</span>
             <input type="number" min="5" max="50" step="1" [ngModel]="pct(s.maxCapFraction)" (ngModelChange)="setStyle('maxCapFraction', $event / 100)" /></label>
           @for (slot of ['reactionSlot', 'logoSlot']; track slot) {
             <div class="slot">
-              <span class="label">{{ slot === 'reactionSlot' ? 'Your reaction photo (kept empty for now)' : 'Logo (kept empty for now)' }}, % of the picture:</span>
+              <span class="label">{{ slot === 'reactionSlot' ? 'Your reaction photo' : 'Logo (kept empty for now)' }}, % of the picture:</span>
               @for (k of ['x', 'y', 'w', 'h']; track k) {
                 <label class="mini"><span>{{ k === 'x' ? 'left' : k === 'y' ? 'top' : k === 'w' ? 'width' : 'height' }}</span>
                   <input type="number" min="0" max="100" step="0.5" [ngModel]="pct($any(s)[slot][k])" (ngModelChange)="setSlot($any(slot), $any(k), $event)" /></label>

@@ -34,9 +34,13 @@ import { renderThumbnail } from './renderer';
 import { DEFAULT_STYLE, validateStyle, type ThumbnailStyle } from './layout';
 import { dataUrlOf, type ThumbnailCanvas } from './canvas-page';
 import type { AIManagerService } from '../metadata/ai-manager.service';
+import { listReactionPhotos, photoPreview, trimmedPhoto } from './reaction-photos';
 
 /** The store key holding the tab's look (font, colours, slots). Absent: DEFAULT_STYLE, said in the view. */
 export const STYLE_STORE_KEY = 'thumbnailLab.style';
+
+/** The store key holding the folder of Owen's reaction photos. Absent: none chosen yet (not a default). */
+export const PHOTO_FOLDER_STORE_KEY = 'thumbnailLab.reactionFolder';
 
 /** The folder beside an item's report the renders go into. */
 export const OUTPUT_FOLDER = 'thumbnail tests';
@@ -345,6 +349,42 @@ export class ThumbnailLab {
     }
   }
 
+  /** The reaction photos folder, or null when none has been chosen. */
+  photoFolder(): string | null {
+    const folder = this.deps.store.get(PHOTO_FOLDER_STORE_KEY);
+    if (folder === undefined || folder === null || folder === '') return null;
+    if (typeof folder !== 'string') throw new Error(`The saved reaction photos folder is not a path: ${JSON.stringify(folder)}`);
+    return folder;
+  }
+
+  /** Save the folder, after checking it holds photos (a bad folder is refused, not saved). */
+  setPhotoFolder(folder: string): string {
+    listReactionPhotos(folder);
+    this.deps.store.set(PHOTO_FOLDER_STORE_KEY, folder);
+    return folder;
+  }
+
+  /** The folder's photos, trimmed, each with a small picture for the picker. */
+  photos(): { folder: string | null; photos: Array<{ name: string; preview: string; note: string | null }> } {
+    const folder = this.photoFolder();
+    if (folder === null) return { folder: null, photos: [] };
+    return {
+      folder,
+      photos: listReactionPhotos(folder).map((p) => {
+        const trimmed = trimmedPhoto(p);
+        return { name: p.name, preview: photoPreview(trimmed), note: trimmed.note };
+      }),
+    };
+  }
+
+  private photoNamed(name: string) {
+    const folder = this.photoFolder();
+    if (folder === null) throw new Error(`Variant asks for the reaction photo "${name}", and no reaction photos folder is set.`);
+    const photo = listReactionPhotos(folder).find((p) => p.name === name);
+    if (photo === undefined) throw new Error(`There is no reaction photo "${name}" in ${folder}.`);
+    return trimmedPhoto(photo);
+  }
+
   getStyle(): { style: ThumbnailStyle; stored: boolean } {
     const stored = this.deps.store.get(STYLE_STORE_KEY);
     if (stored === undefined || stored === null) return { style: DEFAULT_STYLE, stored: false };
@@ -358,7 +398,7 @@ export class ThumbnailLab {
   }
 
   /** Step 4: three variants. Each is rendered or refused on its own; one refusal does not stop the others. */
-  async render(runId: string, variants: Array<{ letter: string; frameId: string; phrase: string | null; kind: WordKind | null }>) {
+  async render(runId: string, variants: Array<{ letter: string; frameId: string; phrase: string | null; kind: WordKind | null; photo: string | null }>) {
     const run = this.run(runId);
     if (variants.length === 0) throw new Error('Mark at least one frame to render.');
     if (run.item.reportFolder === null) throw new Error(`${run.item.title} has no report folder recorded, so there is nowhere beside it to save the thumbnails.`);
@@ -375,9 +415,11 @@ export class ThumbnailLab {
       if (frame === undefined) throw new Error(`Frame ${v.frameId} is not in this run.`);
       const full = path.join(run.dir, 'full', `${v.frameId}.png`);
       if (!fs.existsSync(full)) await extractFullFrame(this.deps.ffmpeg, run.video, frame.t, full);
-      const label = v.phrase === null ? 'no text' : `${v.kind ?? 'words'} - ${safeFileName(v.phrase)}`;
+      const photo = v.photo === null ? null : this.photoNamed(v.photo);
+      const words = v.phrase === null ? 'no text' : `${v.kind ?? 'words'} - ${safeFileName(v.phrase)}`;
+      const label = photo === null ? words : `${words}, ${safeFileName(photo.name)}`;
       const outStem = path.join(outDir, `${safeFileName(run.item.title)} - ${v.letter} (${label})`);
-      const r = await renderThumbnail({ canvas, frame: full, phrase: v.phrase, style, outStem });
+      const r = await renderThumbnail({ canvas, frame: full, phrase: v.phrase, style, photo, outStem });
       results.push(
         r.ok
           ? { letter: v.letter, ok: true as const, path: r.path, bytes: r.bytes, format: r.format, picture: dataUrlOf(r.path), notes: r.notes, at: clock(frame.t) }

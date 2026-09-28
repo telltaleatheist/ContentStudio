@@ -58,9 +58,36 @@ recommended A/B arm. Off-brief options (outside 2-5 words) are kept and warned a
 Font (default Impact; a font that is not installed is refused by name), letter and outline colour
 (default #FF8000 on black), outline thickness, the soft blurred and darkened patch behind the words
 (on/off, darkness), the dark edges (on/off, strength), the smallest and largest letter height
-(default 12% and 20% of the picture's height), and the two reserved spaces as percentages: Owen's
-reaction photo (default bottom right, 69/55/29/43%) and the logo (top right). Both spaces are kept
-EMPTY: nothing is drawn in them until Owen's photos exist.
+(default 12% and 20% of the picture's height), the reaction photo's white outline (px at 1080p,
+default 10, 0 for none) and how much of it may run off the bottom (default 10% of its height), and
+the two reserved spaces as percentages: Owen's reaction photo (default bottom right, 69/55/29/43%)
+and the logo (top right, always drawn empty).
+
+### Reaction photos (added 2026-09-28, same day)
+- **Folder.** "Reaction photos: Choose folder…" under Words saves the folder under the store key
+  `thumbnailLab.reactionFolder` (no default; the photos are read in place, never copied into the app
+  or the repo). A folder that is missing or holds no PNG is refused naming it, and is not saved.
+  Photos are listed by file name without `selfie ` and `.png` ("oh please"); two files that would list
+  under one name are refused.
+- **Per variant.** Each marked frame (A/B/C) gets a row of small pictures of the trimmed photos, plus
+  "No photo".
+- **Trim** (photo-trim.ts, reaction-photos.ts). A pixel with alpha ≥ 128 is solid; solid pixels are
+  grouped by 8-neighbour connection and the largest group is the person (anything touching it, a
+  mic arm or a hand, is part of it). The kept area is that group grown by 3 px so the soft
+  partly-transparent edge survives; every other pixel is cleared and the photo is cut to the kept
+  area. Separate groups are specks and are dropped; the render notes how many. Read and written with
+  Electron's nativeImage. An unreadable photo is refused naming the file.
+  On Owen's set: the dark bars seen along the bottom of `selfie horrified.png` (x 505-640, 1570-1690)
+  are fully transparent in its alpha plane (confirmed with ffmpeg), so they never draw and there is
+  nothing separate to drop; the rule is still pinned on synthetic specks by the checks.
+- **Placement** (layout.ts `placeReaction`): as large as fits the reaction space's width and the
+  height from the space's top to the picture's bottom, right side on the space's right edge, bottom
+  running `reactionBleed` of its height off the picture's bottom edge, like Owen's hand-made
+  thumbnails. The white outline is the silhouette stamped around a circle of the outline's radius,
+  under the photo. With a photo chosen, the text avoids the photo's real drawn bounds (outline
+  included) instead of the whole space; with none, the whole space stays clear.
+- The soft patch behind the words follows each line, so a short line leaves the picture beside it
+  clear.
 
 ### 5. Thumbnails (renderer.ts, layout.ts, canvas-page.ts)
 Deterministic, no model:

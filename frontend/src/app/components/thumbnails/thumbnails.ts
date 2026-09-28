@@ -9,6 +9,7 @@ import { ElectronService } from '../../services/electron';
 import type {
   ThumbsFrame,
   ThumbsItem,
+  ThumbsPhotos,
   ThumbsRenderResult,
   ThumbsRun,
   ThumbsStyle,
@@ -73,6 +74,10 @@ export class Thumbnails implements OnInit, OnDestroy {
   readonly styleOpen = signal(false);
   readonly styleNote = signal<string | null>(null);
 
+  readonly photos = signal<ThumbsPhotos>({ folder: null, photos: [] });
+  /** Each variant's reaction photo by name, or absent for none. */
+  readonly photoChoice = signal<Record<string, string | null>>({});
+
   readonly results = signal<ThumbsRenderResult[] | null>(null);
   readonly folder = signal<string | null>(null);
   readonly showSlots = signal(true);
@@ -107,6 +112,7 @@ export class Thumbnails implements OnInit, OnDestroy {
       this.items.set(await this.electron.thumbsListItems());
       const first = this.items().find((i) => i.problem === null);
       if (first) this.itemKey.set(`${first.jobId}/${first.itemId}`);
+      this.photos.set(await this.electron.thumbsPhotos());
       const { style, stored } = await this.electron.thumbsGetStyle();
       this.style.set(style);
       this.styleStored.set(stored);
@@ -287,13 +293,28 @@ export class Thumbnails implements OnInit, OnDestroy {
       const variants = this.marked().map((frameId, i) => {
         const letter = LETTERS[i];
         const c = this.choices()[letter] ?? { phrase: null, kind: null };
-        return { letter, frameId, phrase: c.phrase, kind: c.kind };
+        return { letter, frameId, phrase: c.phrase, kind: c.kind, photo: this.photoChoice()[letter] ?? null };
       });
       const out = await this.electron.thumbsRender(run.runId, variants);
       this.results.set(out.results);
       this.folder.set(out.folder);
     });
     this.busy.set(null);
+  }
+
+  async choosePhotoFolder(): Promise<void> {
+    await this.attempt(async () => {
+      const picked = await this.electron.thumbsChoosePhotoFolder();
+      if (picked !== null) {
+        this.photoChoice.set({});
+        this.photos.set(await this.electron.thumbsPhotos());
+      }
+    });
+  }
+
+  setPhoto(letter: string, name: string | null): void {
+    this.photoChoice.set({ ...this.photoChoice(), [letter]: name });
+    this.results.set(null);
   }
 
   async showFolder(): Promise<void> {

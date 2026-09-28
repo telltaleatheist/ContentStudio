@@ -60,7 +60,8 @@ async function pageDraw(arg: {
   width: number;
   height: number;
   style: { font: string; fill: string; stroke: string; patch: boolean; patchDarken: number; vignette: boolean; vignetteStrength: number };
-  plan: { size: number; capPx: number; strokePx: number; lines: Array<{ text: string; x: number; y: number }>; patch: { x: number; y: number; w: number; h: number } } | null;
+  plan: { size: number; capPx: number; strokePx: number; lines: Array<{ text: string; x: number; y: number }>; patches: Array<{ x: number; y: number; w: number; h: number }> } | null;
+  reaction: { image: string; x: number; y: number; w: number; h: number; outlinePx: number } | null;
   jpegQuality: number | null;
 }): Promise<string> {
   const g = globalThis as any;
@@ -87,7 +88,6 @@ async function pageDraw(arg: {
 
   const plan = arg.plan;
   if (plan !== null && arg.style.patch) {
-    const p = plan.patch;
     const feather = Math.max(2, plan.capPx * 0.3);
     const soft = g.document.createElement('canvas');
     soft.width = W;
@@ -102,19 +102,21 @@ async function pageDraw(arg: {
     const mctx = mask.getContext('2d');
     mctx.filter = `blur(${feather / 2}px)`;
     mctx.fillStyle = '#000';
-    const inset = feather;
-    const rx = p.x + inset;
-    const ry = p.y + inset;
-    const rw = Math.max(1, p.w - 2 * inset);
-    const rh = Math.max(1, p.h - 2 * inset);
-    const radius = Math.min(rw, rh) * 0.2;
+    const inset = feather / 2;
     mctx.beginPath();
-    mctx.moveTo(rx + radius, ry);
-    mctx.arcTo(rx + rw, ry, rx + rw, ry + rh, radius);
-    mctx.arcTo(rx + rw, ry + rh, rx, ry + rh, radius);
-    mctx.arcTo(rx, ry + rh, rx, ry, radius);
-    mctx.arcTo(rx, ry, rx + rw, ry, radius);
-    mctx.closePath();
+    for (const p of plan.patches) {
+      const rx = p.x + inset;
+      const ry = p.y + inset;
+      const rw = Math.max(1, p.w - 2 * inset);
+      const rh = Math.max(1, p.h - 2 * inset);
+      const radius = Math.min(rw, rh) * 0.2;
+      mctx.moveTo(rx + radius, ry);
+      mctx.arcTo(rx + rw, ry, rx + rw, ry + rh, radius);
+      mctx.arcTo(rx + rw, ry + rh, rx, ry + rh, radius);
+      mctx.arcTo(rx, ry + rh, rx, ry, radius);
+      mctx.arcTo(rx, ry, rx + rw, ry, radius);
+      mctx.closePath();
+    }
     mctx.fill();
     sctx.globalCompositeOperation = 'destination-in';
     sctx.drawImage(mask, 0, 0);
@@ -136,6 +138,31 @@ async function pageDraw(arg: {
       ctx.fillStyle = arg.style.fill;
       ctx.fillText(line.text, line.x, line.y);
     }
+  }
+  const r = arg.reaction;
+  if (r !== null) {
+    const photo = new g.Image();
+    photo.src = r.image;
+    await photo.decode();
+    if (r.outlinePx > 0) {
+      // The outline: the silhouette stamped around a circle of the outline's radius (two rings,
+      // so no gap opens at the diagonals), filled white, under the photo itself.
+      const ring = g.document.createElement('canvas');
+      ring.width = W;
+      ring.height = H;
+      const rctx = ring.getContext('2d');
+      for (const radius of [r.outlinePx, r.outlinePx / 2]) {
+        for (let k = 0; k < 36; k++) {
+          const a = (k / 36) * Math.PI * 2;
+          rctx.drawImage(photo, r.x + Math.cos(a) * radius, r.y + Math.sin(a) * radius, r.w, r.h);
+        }
+      }
+      rctx.globalCompositeOperation = 'source-in';
+      rctx.fillStyle = '#ffffff';
+      rctx.fillRect(0, 0, W, H);
+      ctx.drawImage(ring, 0, 0);
+    }
+    ctx.drawImage(photo, r.x, r.y, r.w, r.h);
   }
   return arg.jpegQuality === null ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', arg.jpegQuality);
 }
@@ -211,7 +238,15 @@ export class ThumbnailCanvas {
   }
 
   /** Draw one thumbnail; PNG when `jpegQuality` is null. Returns a data URL. */
-  async draw(input: { image: string; width: number; height: number; style: ThumbnailStyle; plan: TextPlan | null; jpegQuality: number | null }): Promise<string> {
+  async draw(input: {
+    image: string;
+    width: number;
+    height: number;
+    style: ThumbnailStyle;
+    plan: TextPlan | null;
+    reaction: { image: string; x: number; y: number; w: number; h: number; outlinePx: number } | null;
+    jpegQuality: number | null;
+  }): Promise<string> {
     return this.call(pageDraw, {
       image: input.image,
       width: input.width,
@@ -225,7 +260,8 @@ export class ThumbnailCanvas {
         vignette: input.style.vignette,
         vignetteStrength: input.style.vignetteStrength,
       },
-      plan: input.plan === null ? null : { size: input.plan.size, capPx: input.plan.capPx, strokePx: input.plan.strokePx, lines: input.plan.lines, patch: input.plan.patch },
+      plan: input.plan === null ? null : { size: input.plan.size, capPx: input.plan.capPx, strokePx: input.plan.strokePx, lines: input.plan.lines, patches: input.plan.linePatches },
+      reaction: input.reaction,
       jpegQuality: input.jpegQuality,
     });
   }

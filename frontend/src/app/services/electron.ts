@@ -32,6 +32,7 @@ import type {
 import type {
   ThumbsAnswer,
   ThumbsItem,
+  ThumbsPhotos,
   ThumbsProgress,
   ThumbsRenderResult,
   ThumbsRun,
@@ -1103,6 +1104,8 @@ declare global {
       thumbsSetStyle: (style: ThumbsStyle) => Promise<ThumbsAnswer<ThumbsStyle>>;
       thumbsRender: (runId: string, variants: ThumbsVariantRequest[]) => Promise<ThumbsAnswer<{ folder: string; results: ThumbsRenderResult[] }>>;
       thumbsChooseVideo: () => Promise<ThumbsAnswer<string | null>>;
+      thumbsPhotos: () => Promise<ThumbsAnswer<ThumbsPhotos>>;
+      thumbsChoosePhotoFolder: () => Promise<ThumbsAnswer<string | null>>;
       thumbsShowFolder: (folder: string) => Promise<ThumbsAnswer<void>>;
       onThumbsProgress: (callback: (event: ThumbsProgress) => void) => () => void;
       streamMarksList: () => Promise<StreamMarkSessionSummary[]>;
@@ -2589,6 +2592,8 @@ export class ElectronService {
     return this.thumbs(this.thumbsBridge.thumbsRender(runId, variants));
   }
   thumbsChooseVideo(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChooseVideo()); }
+  thumbsPhotos(): Promise<ThumbsPhotos> { return this.thumbs(this.thumbsBridge.thumbsPhotos()); }
+  thumbsChoosePhotoFolder(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChoosePhotoFolder()); }
   thumbsShowFolder(folder: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsShowFolder(folder)); }
   onThumbsProgress(callback: (event: ThumbsProgress) => void): () => void {
     return this.thumbsBridge.onThumbsProgress((event) => this.ngZone.run(() => callback(event)));
