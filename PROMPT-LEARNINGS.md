@@ -902,6 +902,15 @@ row (a vision model): `screen` (choice video / screen, the one hard filter), `fa
 which one it means (Owen). The ranking weights live in code (frame-ranking.ts `RANK_WEIGHTS`), not
 here: they are arithmetic over the answers, not words a model reads. Unmeasured: no frame has been
 scored for real yet.
+*2026-09-28, later (Crucible 1.0.55 items form):* the five now go as ITEMS of ONE `decideItems` call
+per frame (the frame is read once, each item answered as if asked alone; 1.9 s against 4.3 s on the
+Mac for one 640x360 frame). Items are choice questions only, so `frames.statement` turns each yes/no
+line into the words the server's own yesno puts ("Statement: … Is this statement true of the
+image?", crucible decide.py `question_block`), with `frames.yes` / `frames.no` as the two options;
+the expression item offers the five `levels` keyed 1-5. Before: `face`/`eyes`/`strong` as yesno
+questions, `expression` as a score. After: the same words, as choices; P(yes) and the 1-5 expected
+level are read back in code. Never one prompt with numbered slots (measured by the Crucible side and
+rejected: the model copies earlier answers).
 
 **`tone.*`** and **`photo.*`** (added the same day): two text-only decide questions on the
 `thumbnail_judge` row. `tone.options` is the tone list, one per line (it is also the answer set, so

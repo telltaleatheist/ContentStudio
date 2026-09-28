@@ -5,8 +5,15 @@
  *
  *   - FRAME FILTERING: the difference hash finds a held frame and keeps the sharper copy; a
  *     motion-blurred frame falls under the run's median rule; thinning spreads across the range.
- *   - SAMPLING: a real ffmpeg pass over a synthetic 16:9 test video gives one frame a second, both
- *     JPEG sizes on disk, and a non-16:9 video is refused naming its size.
+ *   - SAMPLING: real ffmpeg passes over a synthetic 16:9 test video give one frame a second INSIDE
+ *     the stretches asked for (never between them), both JPEG sizes on disk, and a non-16:9 video
+ *     is refused naming its size.
+ *   - THE STORY SOURCE (2026-09-28): regions minus cuts, the timeline mapped piece by piece through
+ *     the segment table, master to screen recording by the alignment's offset and drift, cut to the
+ *     recording's length; an unlinked report gets the picker and never a name match, the pick is
+ *     saved as the selection record's transcriptRef, frames come only from the story's stretches,
+ *     and an untrusted alignment, a missing or split screen recording and a renamed story are
+ *     refused by name. The real 2026-09-24 session is read (never written) as a fixture reference.
  *   - RANKING: the desktop answer is the one filter, everything else ranks; the ~20 best come from
  *     every section of the range; a frame with a missing option letter is unreadable, not guessed.
  *   - TEXT: the words prompt fills every slot from thumbnails.yml; the plain-text answer parses into
@@ -14,7 +21,8 @@
  *   - FACE-SAFE BOX: the text never touches a padded face or a reserved slot, sits bottom-left
  *     when it can, fits by shrinking, and a phrase that cannot keep the letter floor is REFUSED
  *     (never shrunk below it, never truncated).
- *   - SCORING over the real transport and lanes: one image per decide call, the five questions,
+ *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
+ *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
  *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
  *     and a model that is not installed each surface with the model and the server named.
  *
@@ -127,35 +135,45 @@ check('filtering: thinning keeps the cap and spreads it across the range, sharpe
 
 // ── sampling (real ffmpeg, synthetic video) ─────────────────────────────────
 
-check('sampling: one frame a second across the range, both JPEG sizes written, times in the source video', async () => {
+check('sampling: one frame a second inside the stretches only, both JPEG sizes written, times in the source video', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-sample-'));
   try {
     const video = path.join(dir, 'test.mp4');
-    execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=1280x720:rate=25:duration=20', '-pix_fmt', 'yuv420p', video]);
-    const out = await sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video, start: 5, end: 15, outDir: path.join(dir, 'frames') });
+    execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=10:duration=70', '-pix_fmt', 'yuv420p', video]);
+    // Two stretches 5 s apart share one pass; the third, 40 s on, gets its own.
+    const spans = [{ start: 5, end: 10 }, { start: 15, end: 20 }, { start: 60, end: 64 }];
+    assert.deepStrictEqual(sampler.passesFor(spans).map((p) => [p.start, p.end, p.spans.length]), [[5, 20, 2], [60, 64, 1]]);
+    const outDir = path.join(dir, 'frames');
+    const out = await sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video, spans, outDir });
     assert.strictEqual(out.every, 1);
-    assert.ok(out.frames.length >= 9 && out.frames.length <= 11, `${out.frames.length} frames for 10 s`);
+    assert.strictEqual(out.seconds, 14);
+    assert.ok(out.frames.length >= 13 && out.frames.length <= 15, `${out.frames.length} frames for 14 s`);
     assert.strictEqual(out.frames[0].t, 5);
+    assert.ok(out.frames.every((f) => spans.some((s) => f.t >= s.start && f.t < s.end)), `a frame outside the stretches: ${out.frames.map((f) => f.t).join(', ')}`);
+    assert.ok(out.frames.some((f) => f.t >= 60), 'the far stretch was sampled');
+    assert.strictEqual(new Set(out.frames.map((f) => f.index)).size, out.frames.length, 'every frame has its own number');
     assert.ok(out.frames.every((f) => fs.existsSync(f.large) && fs.existsSync(f.small) && f.sharpness > 0));
+    assert.strictEqual(fs.readdirSync(outDir).length, out.frames.length * 2, 'the frames decoded between two stretches are not left on disk');
     const odd = path.join(dir, 'square.mp4');
     execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=640x640:rate=25:duration=3', '-pix_fmt', 'yuv420p', odd]);
-    const err = await rejection(sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video: odd, start: null, end: null, outDir: path.join(dir, 'odd') }));
+    const err = await rejection(sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video: odd, spans: null, outDir: path.join(dir, 'odd') }));
     assert.ok(/640x640, not 16:9/.test(err.message), err.message);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-check('sampling: times read as 07:31 / 1:07:31, a long range is thinned to the cap, a bad range is refused', () => {
-  assert.strictEqual(sampler.parseClock('07:31', 'start'), 451);
-  assert.strictEqual(sampler.parseClock('1:07:31', 'end'), 4051);
-  assert.strictEqual(sampler.parseClock('', 'start'), null);
-  assert.throws(() => sampler.parseClock('7m31', 'start'), /not a time/);
-  assert.deepStrictEqual(sampler.samplingFor(451, 1800), { count: 1349, every: 1 });
-  const long = sampler.samplingFor(0, 7200);
+check('sampling: the rate is one a second up to the cap, and bad stretches are refused by name', () => {
+  assert.deepStrictEqual(sampler.samplingFor(1349), { count: 1349, every: 1 });
+  const long = sampler.samplingFor(7200);
   assert.strictEqual(long.count, sampler.MAX_SAMPLES);
   assert.strictEqual(long.every, 4);
-  assert.throws(() => sampler.resolveRange(0, 4000, 1800), /after the video ends/);
+  assert.deepStrictEqual(sampler.resolveSpans(null, 100), [{ start: 0, end: 100 }]);
+  assert.deepStrictEqual(sampler.resolveSpans([{ start: 10, end: 100.3 }], 100), [{ start: 10, end: 100 }], 'a container\'s rounding at the end is cut to the video');
+  assert.throws(() => sampler.resolveSpans([{ start: 0, end: 4000 }], 1800), /after the video ends/);
+  assert.throws(() => sampler.resolveSpans([{ start: -1, end: 5 }], 1800), /before the video begins/);
+  assert.throws(() => sampler.resolveSpans([{ start: 10, end: 20 }, { start: 15, end: 30 }], 1800), /overlap or are out of order/);
+  assert.throws(() => sampler.resolveSpans([{ start: 10, end: 11 }], 1800), /too little to sample/);
 });
 
 // ── ranking ─────────────────────────────────────────────────────────────────
@@ -241,14 +259,33 @@ check('words: the plain answer parses into three kinds; decoration stripped, off
   assert.throws(() => prompts.parseThumbnailWords('I cannot help with that.', 'x'), /no options under CLAIM, STAKES or REACTION/);
 });
 
-check('frames: the five questions come from thumbnails.yml; one frame per request body, missing: report', () => {
+check('frames: the five questions come from thumbnails.yml, packed as five ITEMS of one call with one frame, missing: report', () => {
   const q = prompts.frameQuestions();
   assert.deepStrictEqual(Object.keys(q), [...ranking.FRAME_QUESTIONS]);
   assert.deepStrictEqual(Object.keys(q.screen.options), ['video', 'screen']);
   assert.strictEqual(q.expression.levels.length, 5);
-  const body = prompts.frameDecideBody('QUJD');
+  const body = prompts.frameDecideItems('QUJD');
   assert.deepStrictEqual(body.images, ['QUJD']);
   assert.strictEqual(body.missing, 'report');
+  assert.strictEqual(body.items.length, 5, 'one item per question, in FRAME_QUESTIONS order');
+  assert.deepStrictEqual(body.items[0], { text: q.screen.instructions, options: q.screen.options });
+  assert.strictEqual(body.items[1].text, `Statement: ${q.face.instructions}\nIs this statement true of the image?`, 'a yes/no question is the statement the server\'s own yesno puts');
+  assert.deepStrictEqual(body.items[1].options, { yes: 'Yes', no: 'No' });
+  assert.deepStrictEqual(Object.entries(body.items[2].options), q.expression.levels.map((l, i) => [String(i + 1), l]), 'the expression scale as its five levels, keyed 1-5 in order');
+  assert.ok(body.items.every((item) => !/\b1\.|\bQ\d/.test(item.text)), 'no numbered slots in one prompt');
+});
+
+check('frames: the items\' answers read back as the five readings (P(yes), the expression as the sum of level x p)', () => {
+  const choice = (probabilities, missingLabels = []) => ({ type: 'choice', choice: '', probabilities, logprobs: {}, confidence: 0, labelMass: 1, missingLabels });
+  const answers = [
+    choice({ video: 0.8, screen: 0.2 }), choice({ yes: 0.9, no: 0.1 }), choice({ 1: 0, 2: 0, 3: 0.5, 4: 0.5, 5: 0 }),
+    choice({ yes: 0.6, no: 0.4 }), choice({ yes: 0.3, no: 0.7 }),
+  ];
+  assert.deepStrictEqual(ranking.readFrameAnswers(prompts.frameAnswersOfItems(answers)), { pScreen: 0.2, pFace: 0.9, expression: 3.5, pEyesOpen: 0.6, pStrong: 0.3 });
+  const noYes = [...answers];
+  noYes[1] = choice({ yes: null, no: 1 }, ['yes']);
+  assert.throws(() => ranking.readFrameAnswers(prompts.frameAnswersOfItems(noYes)), /"face" answer did not include yes/);
+  assert.throws(() => prompts.frameAnswersOfItems(answers.slice(0, 4)), /answered 4 items; 5 were asked/);
 });
 
 // ── face-safe box and fitting ───────────────────────────────────────────────
@@ -357,6 +394,10 @@ const VISION = [
 ];
 
 function decideProbs(q) {
+  // The frame items (all choices since 1.0.55): the screen pair, a yes/no statement, the 1-5 scale.
+  if (q.labels.includes('video')) return { video: 0.9, screen: 0.1 };
+  if (q.labels[0] === 'yes') return { yes: 0.8, no: 0.2 };
+  if (q.labels[0] === '1') return Object.fromEntries(q.labels.map((l, i) => [l, i === 3 ? 0.7 : 0.075]));
   if (q.type === 'choice') return { video: 0.9, screen: 0.1 };
   if (q.type === 'score') return Object.fromEntries(q.labels.map((l, i) => [l, i === 3 ? 0.7 : 0.075]));
   return { Yes: 0.8, No: 0.2 };
@@ -385,7 +426,7 @@ async function withFake(options, fn) {
   }
 }
 
-check('scoring: one image per decide call, the five questions, missing: report, at the engine\'s stated width', () => withFake({ chatMaxInFlight: 3 }, async (server, deps, frames) => {
+check('scoring: one image per decide call, the five questions as its items, missing: report, at the engine\'s stated width', () => withFake({ chatMaxInFlight: 3 }, async (server, deps, frames) => {
   const out = await scorer.scoreFrames({ deps, jobId: 'keeper-score', model: 'qwen3.5-9b-vl', frames });
   assert.strictEqual(out.scored.length, 5);
   assert.strictEqual(out.width, 3);
@@ -393,12 +434,22 @@ check('scoring: one image per decide call, the five questions, missing: report, 
   const bodies = server.decideBodies();
   assert.strictEqual(bodies.length, 5);
   assert.ok(bodies.every((b) => b.model === 'qwen3.5-9b-vl' && b.images.length === 1 && b.missing === 'report'));
-  assert.deepStrictEqual(Object.keys(bodies[0].questions), [...ranking.FRAME_QUESTIONS]);
+  assert.ok(bodies.every((b) => b.questions === undefined && Array.isArray(b.items) && b.items.length === 5), 'the items form: one call per frame, five items');
+  assert.deepStrictEqual(bodies[0].items.map((i) => Object.keys(i.options)), [['video', 'screen'], ['yes', 'no'], ['1', '2', '3', '4', '5'], ['yes', 'no'], ['yes', 'no']]);
   assert.deepStrictEqual(bodies.map((b) => Buffer.from(b.images[0], 'base64').toString()).sort(), frames.map((_, i) => `fake jpeg ${i}`));
   const r = out.scored[0].reading;
   assert.ok(r.pScreen < 0.2 && r.pFace > 0.7 && r.expression > 3 && r.expression < 5, JSON.stringify(r));
   const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
   assert.deepStrictEqual(loads.map((b) => [b.model, b.params.context]), [['qwen3.5-9b-vl', scorer.FRAME_LOAD_CONTEXT]]);
+}));
+
+check('scoring: an item whose answer lacks its yes label sets that frame aside, naming the question; the rest still score', () => withFake({
+  decideProbs: (q) => (q.labels[0] === 'yes' && /eyes open/.test(q.instructions) ? { no: 1 } : decideProbs(q)),
+}, async (server, deps, frames) => {
+  const out = await scorer.scoreFrames({ deps, jobId: 'keeper-missing', model: 'qwen3.5-9b-vl', frames: frames.slice(0, 2) });
+  assert.strictEqual(out.scored.length, 0);
+  assert.strictEqual(out.unreadable.length, 2);
+  assert.ok(out.unreadable.every((u) => /"eyes" answer did not include yes/.test(u.reason)), out.unreadable.map((u) => u.reason).join(' | '));
 }));
 
 check('scoring: an engine that states no admission limit gets one call at a time', () => withFake({}, async (server, deps, frames) => {
@@ -522,4 +573,236 @@ check('combine, test one thing: two pieces held, the chosen one varies; fewer th
   assert.deepStrictEqual(combine.combine({ ...FAV, photos: ['laugh'] }, { mode: 'test', vary: 'photo' }), { ok: false, reason: 'To test photos, star at least two photos.' });
 });
 
-run('thumbnails tab: frame filters, sampling, ranking, words, face-safe layout, scoring, tone and photos, combine');
+// ── the story source: regions minus cuts, the segment table, the alignment (2026-09-28) ──────────
+
+const timelineMap = require(path.join(DIST, 'shared', 'master-timeline-map.js'));
+const storySource = services('thumbnails/story-source.js');
+const { ThumbnailLab } = services('thumbnails/lab-service.js');
+
+const MASTER = '/sessions/2026-01-05/2026-01-05 master.mp4';
+/** A timeline with removed air: 0-10 plays master 0-10, 10-30 plays 15-35, 30-60 plays 40-70, 60-100 plays 80-120. */
+function syntheticManifest(masterFile = MASTER) {
+  const video = [[0, 0, 10], [10, 15, 20], [30, 40, 30], [60, 80, 40]].map(([timelineStart, sourceStart, duration]) => ({ trackId: 'video', timelineStart, sourceStart, duration, file: masterFile }));
+  return {
+    frameSeconds: 0.1,
+    timelineDuration: 100,
+    segments: [...video, { trackId: 'audio-0', timelineStart: 0, sourceStart: 3, duration: 100, file: '/sessions/mic audio_processed.wav' }],
+  };
+}
+const REGIONS = [{ start: 5, end: 45 }, { start: 70, end: 80 }];
+const CUTS = [{ startFrame: 200, endFrame: 250 }];
+const round = (spans) => spans.map((s) => [Number(s.start.toFixed(6)), Number(s.end.toFixed(6))]);
+
+check('story source: regions minus cuts (half-open frames x the frame length), on the timeline', () => {
+  assert.deepStrictEqual(round(storySource.keptTimeline(REGIONS, CUTS, 0.1)), [[5, 20], [25, 45], [70, 80]]);
+  assert.deepStrictEqual(round(storySource.keptTimeline([{ start: 0, end: 10 }], [{ startFrame: 0, endFrame: 100 }], 0.1)), [], 'a story wholly cut keeps nothing');
+  assert.deepStrictEqual(round(storySource.keptTimeline([{ start: 0, end: 4 }, { start: 3, end: 6 }], [], 0.1)), [[0, 6]], 'overlapping regions merge');
+});
+
+check('story source: a timeline range maps through the segment table piece by piece, the removed air left out', () => {
+  const facts = storySource.manifestFacts(syntheticManifest(), 'x_compounds.zip');
+  assert.strictEqual(facts.segments.length, 4, 'the picture segments only');
+  const pieces = timelineMap.timelineRangeToMaster(facts.segments, 8, 32);
+  assert.deepStrictEqual(pieces.map((p) => [p.timelineStart, p.masterStart, p.duration]), [[8, 8, 2], [10, 15, 20], [30, 40, 2]]);
+  assert.strictEqual(timelineMap.masterToSource({ offsetSeconds: 2, rate: 0.5 }, 12), 5, 'master 12 s is the source\'s 5 s: (12 - 2) x 0.5');
+  assert.throws(() => storySource.manifestFacts({ ...syntheticManifest(), segments: [...syntheticManifest().segments, { trackId: 'video', timelineStart: 100, sourceStart: 0, duration: 5, file: '/other.mp4' }] }, 'x_compounds.zip'), /from 2 files/);
+});
+
+check('story source: the plan, with drift, cut to the screen recording\'s length, the seconds outside it said', () => {
+  const plan = storySource.planStory({
+    regions: REGIONS, cuts: CUTS, manifest: storySource.manifestFacts(syntheticManifest(), 'x'),
+    placement: { offsetSeconds: 2, rate: 0.5 }, screenDuration: 45,
+  });
+  assert.deepStrictEqual(round(plan.master), [[5, 10], [15, 25], [30, 35], [40, 55], [90, 100]]);
+  assert.deepStrictEqual(round(plan.screen), [[1.5, 4], [6.5, 11.5], [14, 16.5], [19, 26.5], [44, 45]]);
+  assert.strictEqual(Number(plan.outsideSeconds.toFixed(6)), 4, 'master 92-100 maps past the recording\'s 45 s');
+  assert.strictEqual(plan.unmappedSeconds, 0);
+  const past = storySource.planStory({
+    regions: [{ start: 90, end: 110 }], cuts: [], manifest: storySource.manifestFacts(syntheticManifest(), 'x'),
+    placement: { offsetSeconds: 0, rate: 1 }, screenDuration: 500,
+  });
+  assert.strictEqual(Number(past.unmappedSeconds.toFixed(6)), 10, 'a story running past the timeline\'s end says so');
+});
+
+check('story source: the screen alignment is read, and an untrusted, missing or doubled one is refused by name', () => {
+  const entry = { kind: 'video', type: 'screen', offsetSeconds: 0.0907, driftFactor: null, method: 'picture-scene-change', confidence: 1, trusted: true };
+  const record = (sources) => ({ schemaVersion: 1, masterVideo: MASTER, sources });
+  const a = storySource.screenAlignment(record([{ kind: 'audio', type: 'screen', offsetSeconds: 0.18, trusted: true }, entry]), 'a.json');
+  assert.deepStrictEqual(storySource.placementOf(a), { offsetSeconds: 0.0907, rate: 1 }, 'no drift factor recorded: the master\'s rate, declared in the run\'s lines');
+  assert.deepStrictEqual(storySource.placementOf(storySource.screenAlignment(record([{ ...entry, driftFactor: 0.99997 }]), 'a.json')), { offsetSeconds: 0.0907, rate: 0.99997 });
+  assert.throws(() => storySource.screenAlignment(record([{ ...entry, trusted: false }]), 'a.json'), /marked untrusted/);
+  assert.throws(() => storySource.screenAlignment(record([{ ...entry, trusted: undefined }]), 'a.json'), /not marked trusted/);
+  assert.throws(() => storySource.screenAlignment(record([entry, entry]), 'a.json'), /2 screen recording alignments/);
+  assert.throws(() => storySource.screenAlignment(record([{ kind: 'video', type: 'cam1', offsetSeconds: 0.08, trusted: true }]), 'a.json'), /no alignment for a screen recording/);
+});
+
+/** A synthetic week: one editor session with three stories, a screen recording, an alignment. */
+function syntheticWeek(root, { screenSeconds = 60 } = {}) {
+  const week = path.join(root, '2026-01-04');
+  const project = path.join(week, 'files', '2026-01-05');
+  fs.mkdirSync(path.join(project, '2026-01-05_stories_transcripts'), { recursive: true });
+  fs.mkdirSync(path.join(week, 'complete'), { recursive: true });
+  const stories = [
+    { id: 'story-1', number: 1, title: 'u1 - prophecy', regions: [{ start: 0, end: 5 }] },
+    { id: 'story-7', number: 2, title: 'f1 - the rapture', regions: REGIONS },
+    { id: 'story-8', number: 3, title: 'f3 - never exported', regions: [{ start: 45, end: 70 }] },
+  ];
+  fs.writeFileSync(path.join(project, '2026-01-05_edits.json'), JSON.stringify({ schemaVersion: 1, session: '2026-01-05', cuts: CUTS, stories }));
+  for (const [n, slug] of [[1, 'u1-prophecy'], [2, 'f1-the-rapture']]) {
+    fs.writeFileSync(path.join(project, '2026-01-05_stories_transcripts', `0${n}-${slug}.json`), JSON.stringify({
+      formatVersion: 1, sourceSession: '2026-01-05', story: { number: n, slug }, durationSeconds: 40, words: [{ text: 'a', start: 0, end: 1 }],
+    }));
+  }
+  fs.writeFileSync(path.join(project, '2026-01-05_compounds.zip'), '');
+  const master = path.join(project, '2026-01-05 master.mp4');
+  const alignment = { schemaVersion: 1, masterVideo: master, sources: [{ kind: 'video', type: 'screen', offsetSeconds: 2, driftFactor: null, method: 'picture-scene-change', confidence: 1, trusted: true }] };
+  fs.writeFileSync(path.join(project, '2026-01-05_alignment.json'), JSON.stringify(alignment));
+  execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=5:duration=${screenSeconds}`, '-pix_fmt', 'yuv420p', path.join(project, '2026-01-05 screen capture.mp4')]);
+  return { week, project, master, alignment, source: path.join(week, 'complete', 'f2 - the rapture.mov') };
+}
+
+/** The lab over fakes: a stand-in item list, an in-memory selection store, the synthetic manifest. */
+function labOver(root, w, { runStoryRef = undefined } = {}) {
+  const records = new Map();
+  const updates = [];
+  const publishStore = {
+    get: (itemId) => records.get(itemId) ?? null,
+    update: async (itemId, seed, patch) => {
+      updates.push({ itemId, seed, patch });
+      const next = { itemId, jobId: seed.jobId, transcriptRef: seed.transcriptRef ?? null, ...(records.get(itemId) ?? {}), ...patch };
+      records.set(itemId, next);
+      return next;
+    },
+  };
+  const manifests = [];
+  const lab = new ThumbnailLab({
+    store: { get: () => undefined, set: () => { throw new Error('the story path writes no settings'); } },
+    userDataPath: path.join(root, 'userData'),
+    ffmpeg: FFMPEG,
+    ffprobe: FFPROBE,
+    canvas: () => { throw new Error('no canvas here'); },
+    scorer: () => { throw new Error('no scorer here'); },
+    aiManager: () => { throw new Error('no model here'); },
+    publishStore,
+    manifest: async (zipPath) => { manifests.push(zipPath); return syntheticManifest(w.master); },
+    progress: () => {},
+  });
+  const item = {
+    jobId: 'job-1', itemId: 'itm-1', title: 'f2 - the rapture', createdAt: '', sourcePath: w.source, titles: ['A title'], promptSet: null,
+    hasTranscript: true, reportFolder: null, hook: '', description: '', runStoryRef, problem: null,
+  };
+  lab.listItems = () => [item];
+  return { lab, records, updates, manifests };
+}
+
+check('story link: an unlinked report gets the picker (never a name match); the pick is saved as its link; frames come only from the story\'s stretches of the screen recording', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-story-'));
+  try {
+    const w = syntheticWeek(root);
+    const { lab, records, updates, manifests } = labOver(root, w);
+    const state = lab.storyState('job-1', 'itm-1');
+    assert.strictEqual(state.link, null, 'the report "f2 - the rapture" is NOT linked to the story "f1 - the rapture" by its name');
+    assert.deepStrictEqual(state.choices.map((c) => [c.session, c.number, c.title, c.why === null]), [
+      ['2026-01-05', 1, 'u1 - prophecy', true], ['2026-01-05', 2, 'f1 - the rapture', true], ['2026-01-05', 3, 'f3 - never exported', false],
+    ]);
+    assert.ok(/never been exported/.test(state.choices[2].why), state.choices[2].why);
+    assert.ok(state.searched.includes(path.join(w.week, 'files')), state.searched);
+    assert.ok(/not linked to an editor story yet/.test((await rejection(lab.findFrames({ jobId: 'job-1', itemId: 'itm-1' }))).message));
+    assert.ok(/cannot link "f3 - never exported"/.test((await rejection(lab.linkStory('job-1', 'itm-1', w.project, 3, 'f3-never-exported'))).message));
+    assert.strictEqual(updates.length, 0, 'a refused link writes nothing');
+
+    const linked = await lab.linkStory('job-1', 'itm-1', w.project, 2, 'f1-the-rapture');
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(updates[0].seed.jobId, 'job-1');
+    assert.deepStrictEqual([updates[0].patch.transcriptRef.kind, updates[0].patch.transcriptRef.via, updates[0].patch.transcriptRef.storyNumber, updates[0].patch.transcriptRef.projectFolder],
+      ['acs-story', 'manual', 2, w.project], 'the link is the transcript-link module\'s own ref, on the selection record');
+    assert.deepStrictEqual([linked.link.storyTitle, linked.link.from], ['f1 - the rapture', 'saved']);
+
+    const run = await lab.findFrames({ jobId: 'job-1', itemId: 'itm-1' });
+    assert.deepStrictEqual(manifests, [path.join(w.project, '2026-01-05_compounds.zip')], 'the manifest is the session zip\'s');
+    assert.ok(run.video.endsWith('2026-01-05 screen capture.mp4'), run.video);
+    // Master stretches 5-10, 15-25, 30-35, 40-55, 90-100 at offset +2 s: 3-8, 13-23, 28-33, 38-53, and 88-98 lies past the 60 s recording.
+    const spans = [[3, 8], [13, 23], [28, 33], [38, 53]];
+    const sampledLine = run.lines.find((l) => l.startsWith('Sampled '));
+    assert.ok(/^Sampled (3[3-7]) frames across those stretches \(00:35 of the screen recording/.test(sampledLine), sampledLine);
+    assert.ok(run.frames.length >= 3, `${run.frames.length} frames kept after the repeat filter`);
+    assert.ok(run.frames.every((f) => spans.some(([a, b]) => f.t >= a - 1e-6 && f.t < b)), `frames outside the story: ${run.frames.map((f) => f.t).join(', ')}`);
+    assert.ok(run.lines[0].startsWith('Story "f1 - the rapture" (story 2 of session 2026-01-05)') && run.lines[0].includes('5 stretches'), run.lines[0]);
+    assert.ok(run.lines.some((l) => /records no drift factor/.test(l)), 'the rate with no drift factor is declared');
+    assert.ok(run.lines.some((l) => /^10\.0 s of the story fall outside the screen recording/.test(l)), run.lines.join(' | '));
+    assert.ok(records.get('itm-1').transcriptRef.storySlug === 'f1-the-rapture');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+check('story link: the run\'s story seeds the link until a record exists; a record\'s cleared link stays cleared', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-seed-'));
+  try {
+    const w = syntheticWeek(root, { screenSeconds: 3 });
+    const ref = { kind: 'acs-story', path: path.join(w.project, '2026-01-05_stories_transcripts', '02-f1-the-rapture.json'), sourceSession: '2026-01-05', projectFolder: w.project, storyNumber: 2, storySlug: 'f1-the-rapture', storyTitle: 'f1 - the rapture', durationSeconds: 40, wordCount: 1, linkedAt: '', via: 'exact-title' };
+    const { lab, records } = labOver(root, w, { runStoryRef: ref });
+    assert.deepStrictEqual([lab.storyState('job-1', 'itm-1').link.storyTitle, lab.storyState('job-1', 'itm-1').link.from], ['f1 - the rapture', 'run']);
+    records.set('itm-1', { itemId: 'itm-1', jobId: 'job-1', transcriptRef: null });
+    assert.strictEqual(lab.storyState('job-1', 'itm-1').link, null, 'the operator\'s record wins over the run\'s seed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+check('story link: an untrusted alignment, a missing or split screen recording, and a renamed story are each refused by name', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-refuse-'));
+  try {
+    const w = syntheticWeek(root, { screenSeconds: 3 });
+    const { lab } = labOver(root, w);
+    await lab.linkStory('job-1', 'itm-1', w.project, 2, 'f1-the-rapture');
+    const find = async () => (await rejection(lab.findFrames({ jobId: 'job-1', itemId: 'itm-1' }))).message;
+    const alignmentFile = path.join(w.project, '2026-01-05_alignment.json');
+
+    fs.writeFileSync(alignmentFile, JSON.stringify({ ...w.alignment, sources: [{ ...w.alignment.sources[0], trusted: false, confidence: 0.4 }] }));
+    assert.ok(/marked untrusted \(picture-scene-change, confidence 0\.40\)/.test(await find()));
+    fs.rmSync(alignmentFile);
+    assert.ok(/alignment record \(2026-01-05_alignment\.json\) is not on disk/.test(await find()));
+    fs.writeFileSync(alignmentFile, JSON.stringify(w.alignment));
+
+    const screen = path.join(w.project, '2026-01-05 screen capture.mp4');
+    fs.copyFileSync(screen, path.join(w.project, '2026-01-05 screen capture 2.mp4'));
+    assert.ok(/is in parts \(2026-01-05 screen capture\.mp4, 2026-01-05 screen capture 2\.mp4\)/.test(await find()));
+    fs.rmSync(path.join(w.project, '2026-01-05 screen capture 2.mp4'));
+    fs.renameSync(screen, path.join(w.project, 'elsewhere.mp4'));
+    assert.ok(/There is no screen recording \("2026-01-05 screen capture\.mp4"\)/.test(await find()));
+    fs.renameSync(path.join(w.project, 'elsewhere.mp4'), screen);
+
+    const editsFile = path.join(w.project, '2026-01-05_edits.json');
+    const edits = JSON.parse(fs.readFileSync(editsFile, 'utf8'));
+    edits.stories[1].title = 'f1 - rapture, recut';
+    fs.writeFileSync(editsFile, JSON.stringify(edits));
+    assert.ok(/no story #2 "f1-the-rapture" any more \(story #2 is now "f1 - rapture, recut"\)/.test(await find()));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The real 2026-09-24 session, READ ONLY, as a fixture reference: "f1 - the rapture" through the
+// editor's own manifest builder, the edits and the alignment exactly as they are on Callisto.
+const REAL_PROJECT = '/Volumes/Callisto/Movies/FCPX/2026-09-20/files/2026-09-24';
+check('story source, real fixture: "f1 - the rapture" of 2026-09-24 maps to 126 stretches of the screen recording (read only)', async () => {
+  if (!fs.existsSync(path.join(REAL_PROJECT, '2026-09-24_edits.json'))) {
+    console.log(`      (not run: ${REAL_PROJECT} is not on disk)`);
+    return;
+  }
+  const out = execFileSync('python3', [path.join(REPO, 'editor-backend', 'cli', 'editor_manifest.py'), '--zip', path.join(REAL_PROJECT, '2026-09-24_compounds.zip')], { cwd: path.join(REPO, 'editor-backend'), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 }).toString();
+  const manifest = JSON.parse(out.trim().split('\n').pop()).manifest;
+  const src = await storySource.resolveStorySource(
+    { projectFolder: REAL_PROJECT, storyNumber: 6, storySlug: 'f1-the-rapture' },
+    { manifest: async () => manifest, duration: async (video) => (await sampler.probeVideo(FFPROBE, video)).duration },
+  );
+  assert.deepStrictEqual(round(src.plan.timeline).map((s) => s.map((v) => Number(v.toFixed(4)))), [[546.3458, 1295.9965]], 'region 546.3458-1295.9965, no cut inside it');
+  assert.strictEqual(src.plan.master.length, 126);
+  assert.strictEqual(Number(storySource.totalSeconds(src.plan.master).toFixed(3)), 749.651, 'every kept timeline second, and no removed air');
+  assert.deepStrictEqual([src.plan.master[0].start, src.plan.master[125].end].map((v) => Number(v.toFixed(4))), [614.7475, 1488.4221]);
+  assert.ok(src.plan.screen.every((s, i) => Math.abs(s.start - (src.plan.master[i].start - 0.0906985)) < 1e-6), 'screen time = master time - the screen offset (0.0907 s)');
+  assert.ok(src.screenFile.endsWith('2026-09-24 screen capture.mp4'));
+});
+
+run('thumbnails tab: frame filters, sampling, the story source and link, ranking, words, face-safe layout, scoring, tone and photos, combine');

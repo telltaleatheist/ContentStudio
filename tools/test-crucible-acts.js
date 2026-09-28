@@ -12,8 +12,10 @@
  * Where the tag is read from, in order:
  *   1. CRUCIBLE_CAPABILITY_PY, a path to that file extracted from the release
  *      (`git archive v<pin> | tar -x`, or the GitHub tarball of the tag);
- *   2. `git show v<pin>:crucible/capability.py` in the sibling crucible checkout
+ *   2. `git show v<pin>:crucible/capabilityclasses.py` in the sibling crucible checkout
  *      (../crucible, where every app on this machine keeps it).
+ * The class table moved from crucible/capability.py to crucible/capabilityclasses.py by 1.0.55
+ * (the SDK repin of 2026-09-28); this reads the file at the pinned release, which is the new one.
  * With neither, the check FAILS naming both: an act list that was never checked
  * is not a pass.
  */
@@ -28,6 +30,9 @@ async function pinnedVersion() {
   return adopt.pinnedVersion(JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')));
 }
 
+/** Where the pinned release declares its capability classes (moved from crucible/capability.py by 1.0.55). */
+const CLASS_TABLE = 'crucible/capabilityclasses.py';
+
 function capabilityAtTag(version) {
   const extracted = process.env.CRUCIBLE_CAPABILITY_PY;
   if (extracted) return { source: extracted, text: fs.readFileSync(extracted, 'utf8') };
@@ -36,12 +41,12 @@ function capabilityAtTag(version) {
   const root = REPO.split(`${path.sep}.claude${path.sep}worktrees${path.sep}`)[0];
   const checkout = path.join(path.dirname(root), 'crucible');
   try {
-    const text = execFileSync('git', ['-C', checkout, 'show', `v${version}:crucible/capability.py`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const text = execFileSync('git', ['-C', checkout, 'show', `v${version}:${CLASS_TABLE}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return { source: `${checkout} at v${version}`, text };
   } catch (err) {
     throw new Error(
-      `crucible/capability.py at v${version} could not be read: no CRUCIBLE_CAPABILITY_PY, and ` +
-        `\`git -C ${checkout} show v${version}:crucible/capability.py\` failed (${err.message.split('\n')[0]}). ` +
+      `${CLASS_TABLE} at v${version} could not be read: no CRUCIBLE_CAPABILITY_PY, and ` +
+        `\`git -C ${checkout} show v${version}:${CLASS_TABLE}\` failed (${err.message.split('\n')[0]}). ` +
         'Point CRUCIBLE_CAPABILITY_PY at the file extracted from that release.',
     );
   }

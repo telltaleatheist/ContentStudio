@@ -27,7 +27,7 @@ check('ok: a Crucible that accepts the token answers with its version, backend a
     ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
     const answer = await ctx.probes.test('mac');
     assert.strictEqual(answer.reach, 'ready');
-    assert.strictEqual(answer.probe.outcome, 'ok');
+    assert.strictEqual(answer.probe.outcome, 'ok', JSON.stringify(answer.probe));
     const facts = answer.probe.facts;
     assert.deepStrictEqual(
       [facts.serverName, facts.version, facts.apiVersion, facts.backend, facts.busyLine, facts.needsUpdate, facts.engineUrl, facts.activityUnread, facts.capabilitiesUnread],
@@ -158,16 +158,28 @@ check('marks a server older than MIN_CRUCIBLE as needing an update; an unstated 
   assert.ok(compareVersions('0.9.99', '1.0.0') < 0);
 }));
 
-check('a leaner server (1.0.25\'s nullable fields left out) still probes ok, with the gaps as nulls', () => withFake(
+// SDK 1.0.55 (repinned 2026-09-28) reads info's server.version and host.* as REQUIRED, so the
+// leaner server now leaves out only what that client still reads as informational, and one that
+// leaves out a required field is a named protocol refusal, not an ok with nulls.
+check('a leaner server (the informational fields left out) still probes ok', () => withFake(
   { omit: fake.INFORMATIONAL_FIELDS },
   async (server) => {
     const { ctx } = context();
     ctx.servers.add({ name: 'lean', url: server.url, token: server.token });
     const answer = await ctx.probes.test('lean');
-    assert.strictEqual(answer.probe.outcome, 'ok');
-    assert.strictEqual(answer.probe.facts.version, null);
-    assert.strictEqual(answer.probe.facts.backend, null);
-    assert.strictEqual(answer.probe.facts.needsUpdate, false);
+    assert.strictEqual(answer.probe.outcome, 'ok', JSON.stringify(answer.probe));
+    assert.strictEqual(answer.probe.facts.version, '1.0.24', 'the version is always stated now');
+  },
+));
+
+check('a server that leaves out a field the 1.0.55 client requires (info host.gpu) is refused naming it', () => withFake(
+  { omit: { 'GET /v1/info': ['host.gpu'] } },
+  async (server) => {
+    const { ctx } = context();
+    ctx.servers.add({ name: 'lean', url: server.url, token: server.token });
+    const answer = await ctx.probes.test('lean');
+    assert.strictEqual(answer.probe.outcome, 'refused');
+    assert.ok(/info\.host has no field "gpu"/.test(answer.probe.message), answer.probe.message);
   },
 ));
 

@@ -184,20 +184,21 @@ const QWEN_LANGUAGES = new Set(['en', 'de', 'fr', 'es', 'it', 'pt', 'ru', 'ja', 
  * are refused by name there; decide `logprobs` is read from `probabilities`.
  * Keep any back with {@link informationalExcept}.
  */
+// ContentStudio, 2026-09-28 (SDK repin 1.0.34 -> 1.0.55): the 1.0.55 client reads info's
+// server.version and host.{platform,arch,backend,gpu}, every /v1/activity field listed here
+// before, and a job's progress/created as REQUIRED (str/num/objectField in its client.js), so a
+// server leaving them out is refused as a protocol error. They are dropped from the lists below;
+// the other routes' lists were not re-audited (no keeper sends them lean).
 exports.INFORMATIONAL_FIELDS = {
-    'GET /v1/info': ['server.version', 'host.platform', 'host.arch', 'host.backend', 'host.gpu',
-        'capabilities[].models[].revision', 'capabilities[].models[].source', 'capabilities[].models[].vram_bytes'],
-    'GET /v1/activity': ['server.version', 'server.api_version', 'server.backend', 'server.uptime_s',
-        'resident.since', 'resident.memory_bytes_estimate', 'chat', 'slots.accelerated.busy', 'slots.accelerated.of',
-        'slots.accelerated.queue_depth', 'running[].progress', 'running[].created', 'queued[].progress', 'queued[].created',
-        'lease.since', 'lease.expires_at'],
+    'GET /v1/info': ['capabilities[].models[].revision', 'capabilities[].models[].source', 'capabilities[].models[].vram_bytes'],
+    'GET /v1/activity': [],
     'GET /v1/models': ['[].family', '[].params_b', '[].revision', '[].fingerprint', '[].backend_supported', '[].installed',
         '[].reason', '[].memory_bytes_estimate', '[].context_default', '[].max_model_len'],
     'GET /v1/capability': ['backend_kind', 'total_bytes', 'desktop_allowance_bytes', 'classes[].reason',
         'classes[].shortfall_bytes', 'classes[].work', 'classes[].context_ceilings'],
     'GET /v1/settings': ['local_models', 'local_model_choices', 'desktop_allowance_bytes', 'backend_kind'],
     'POST /v1/uploads': ['bytes', 'sha256'],
-    'GET /v1/jobs/:id': ['progress', 'created'],
+    'GET /v1/jobs/:id': [],
     'GET /v1/tasks/:id': ['request', 'created', 'started', 'finished'],
     'POST /v1/decide': ['model', 'engine', 'timing_ms', 'tokens', 'answers.*.confidence', 'answers.*.logprobs'],
     'POST /v1/openai/chat/completions': ['id', 'model', 'usage'],
@@ -476,6 +477,14 @@ async function startFakeCrucible(options = {}) {
             backend: role === 'orchestrator' ? 'orchestrator' : backend,
             gpu: { vendor: 'apple', name: 'Fake M1 Ultra', vram_bytes: 68719476736 },
         },
+        // 1.0.55's SDK reads `pages_engine` on an engine (which engine reads a page here, and the
+        // page request anywhere). ContentStudio sends no page work; this host serves none.
+        ...(role === 'orchestrator' ? {} : {
+            pages_engine: {
+                engine: null, installed: false, detail: 'the fake serves no page engine',
+                request: { model: 'fake-pages', dpi: 150, max_pixels: 1048576, max_tokens: 4096, temperature: 0, prompt: '', dialect: 'fake', concurrency: 1, truncated_finish_reason: 'length' },
+            },
+        }),
         job_types: role === 'orchestrator' ? [] : [...installedJobTypes, 'load-model', 'unload-model'],
         capabilities: role === 'orchestrator' ? [] : installedJobTypes.map((jobType) => ({ job_type: jobType, models: jobType === 'asr' ? asrRows() : jobType === 'align' ? alignRows() : jobType === 'denoise' ? denoiseRows() : [] })),
     });
@@ -506,7 +515,7 @@ async function startFakeCrucible(options = {}) {
         return {
             server: { name, version: options.version ?? '1.0.24', api_version: apiVersion(), backend, uptime_s: Math.round((Date.now() - startedAt) / 1000) },
             resident: resident === null ? null : {
-                kind: 'llm', id: resident, since: '2026-09-23T01:00:00Z', memory_bytes_estimate: null,
+                kind: 'llm', id: resident, since: '2026-09-23T01:00:00Z', memory_bytes_estimate: 2_523_719_636, engine_exit_code: null,
                 held_by: openLease === null ? null : {
                     fact: 'a lease', who: openLease.client ?? 'unknown',
                     details: { lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act, since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00' },
@@ -835,6 +844,11 @@ async function startFakeCrucible(options = {}) {
         chunks_done: [],
         chunks_total: null,
         chunk_at: null,
+        // 1.0.55's SDK reads these on every job: who holds a job's slot, and its resume journal.
+        held_by: null,
+        held_since: null,
+        resume_id: null,
+        resumed: false,
     });
     const pushJobEvent = (job, event, data) => {
         job.events.push({ id: job.events.length + 1, event, data });
@@ -1423,14 +1437,19 @@ async function startFakeCrucible(options = {}) {
     }
     /** Crucible's own act vocabulary, as the server derives it from its classes. */
     const ACTS = new Set([...LLM_CLASSES, 'generate', 'decide', 'pages', 'asr', 'tts', 'align', 'rvc', 'denoise', 'echo']);
-    /** `POST /v1/decide` (PHASE22 §2.2/§2.4): the door's refusals, then one reading per question. */
+    /**
+     * `POST /v1/decide` (PHASE22 §2.2/§2.4): the door's refusals, then one reading per question.
+     * Since 1.0.55 it also takes the ITEMS form (`items: [{text, options?}]`, shared `options`,
+     * optional `instructions`): choice questions answered as a list in item order, each read as the
+     * lone choice question `text` would be (`decideProbs` sees `{name: 'item<i>', item: i, ...}`).
+     */
     async function decide(req, res, body) {
         const act = req.headers['x-crucible-act'];
         if (typeof act === 'string' && !ACTS.has(act)) {
             refusal(res, 400, 'unknown_act', `'${act}' is not a capability class`, { known: [...ACTS] });
             return;
         }
-        const known = new Set(['model', 'state', 'images', 'questions', 'missing']);
+        const known = new Set(['model', 'state', 'images', 'questions', 'items', 'options', 'instructions', 'missing']);
         const extra = Object.keys(body).filter((k) => !known.has(k));
         if (extra.length) {
             refusal(res, 400, 'invalid_request', `unknown field(s): ${extra.join(', ')}`, { fields: extra });
@@ -1450,7 +1469,23 @@ async function startFakeCrucible(options = {}) {
             refusal(res, 400, 'invalid_request', `missing must be 'refuse' or 'report', got ${JSON.stringify(missing)}`, { field: 'missing' });
             return;
         }
-        const questionsBody = body['questions'];
+        const itemsBody = body['items'];
+        const itemsForm = itemsBody !== undefined;
+        if (itemsForm === (body['questions'] !== undefined)) {
+            refusal(res, 400, 'invalid_request', 'give exactly one of questions and items', { field: 'items' });
+            return;
+        }
+        if (itemsForm && (!Array.isArray(itemsBody) || itemsBody.length === 0)) {
+            refusal(res, 400, 'invalid_request', 'items must be a non-empty list', { field: 'items' });
+            return;
+        }
+        if (itemsForm && itemsBody.length > 512) {
+            refusal(res, 400, 'too_many_items', `at most 512 items per decision; got ${itemsBody.length}`, { max: 512, got: itemsBody.length });
+            return;
+        }
+        const questionsBody = itemsForm
+            ? Object.fromEntries(itemsBody.map((item, i) => [`item${i}`, { type: 'choice', instructions: item['text'], options: item['options'] ?? body['options'], item: i }]))
+            : body['questions'];
         if (questionsBody === null || typeof questionsBody !== 'object' || Array.isArray(questionsBody) || Object.keys(questionsBody).length === 0) {
             refusal(res, 400, 'invalid_request', 'questions must be a non-empty object', { field: 'questions' });
             return;
@@ -1470,7 +1505,7 @@ async function startFakeCrucible(options = {}) {
                     refusal(res, 400, 'invalid_request', `question '${name}' needs 2-26 options`, { field: `questions.${name}.options` });
                     return;
                 }
-                questions.push({ name, type, instructions, labels, descriptions: Object.values(opts) });
+                questions.push({ name, type, instructions, labels, descriptions: Object.values(opts), ...(raw['item'] === undefined ? {} : { item: raw['item'] }) });
             }
             else if (type === 'score') {
                 questions.push({ name, type, instructions, labels: [...raw['levels']] });
@@ -1565,6 +1600,16 @@ async function startFakeCrucible(options = {}) {
             }
             perQuestion[q.name] = { wall_ms: 12.5, prompt_tokens: 140, cached_tokens: null };
             tokensPer[q.name] = 140;
+        }
+        if (itemsForm) {
+            send(res, 200, {
+                model: { id: model, revision: 'abc1234', fingerprint: `${model}@abc1234` },
+                engine: backend === 'cuda-linux' ? 'vllm' : 'mlx-lm',
+                answers: questions.map((q) => answers[q.name]),
+                timing_ms: { total: 12.5 * questions.length, engine_requests: 1 },
+                tokens: { shared: 100, per_item: questions.map(() => 40), images: Array.isArray(body['images']) ? body['images'].length : 0 },
+            });
+            return;
         }
         send(res, 200, {
             model: { id: model, revision: 'abc1234', fingerprint: `${model}@abc1234` },

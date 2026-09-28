@@ -1,7 +1,11 @@
 /**
  * THE THUMBNAILS TAB'S MAIN-PROCESS SIDE: one testing workflow for Owen (2026-09-28).
  *
- *   1. Pick a processed item: its video (or another 16:9 file, e.g. the master), an optional range.
+ *   1. Pick a processed item. Its frames come from the editor story it is linked to: the pieces of
+ *      the session's clean SCREEN RECORDING that story is made of (story-source.ts), never the
+ *      finished export (camera and screen together). An item with no link gets a picker (editor
+ *      session, then story), and the choice is saved as the item's link: the publish selection
+ *      record's `transcriptRef`, the same field the Inputs page and regeneration use.
  *   2. Find frames: ffmpeg samples ~1/s, the cheap filters drop repeats and blurry frames, the
  *      routed vision model scores what is left (at most MAX_FRAMES_TO_SCORE, spread evenly), the
  *      desktop answer rejects screens, the rest is ranked and ~20 are picked across the sections.
@@ -26,7 +30,19 @@ import { promptAssets } from '../metadata/prompt-assets';
 import { resolveMetadataRouting, routingOption, type MetadataRoutingOption } from '../metadata/metadata-routing';
 import { MAX_FRAMES_TO_SCORE, filterFrames, thinAcrossRange } from './frame-metrics';
 import { BEST_COUNT, pickDiverse, rankFrames, type FrameReading, type RankedFrame } from './frame-ranking';
-import { clock, extractFullFrame, parseClock, sampleFrames, type SampledFrame } from './frame-sampler';
+import { clock, extractFullFrame, probeVideo, sampleFrames, type SampledFrame } from './frame-sampler';
+import { resolveStorySource, type StorySource } from './story-source';
+import {
+  isLinkable,
+  listProjectStories,
+  listWeekStories,
+  refFromCandidate,
+  weekFolderOfExport,
+  whyNotLinkable,
+  type TranscriptCandidate,
+} from '../metadata/editor-transcript-link';
+import type { ChosenMetadata, TranscriptRef } from '../publish/publish-types';
+import type { SelectionSeed } from '../publish/publish-store.service';
 import { scoreFrames, type ScorerDeps } from './frame-scorer';
 import { transcriptLine, type WordKind, type WordOptions } from './prompts';
 import { writeThumbnailWords } from './words-writer';
@@ -60,7 +76,6 @@ export interface LabItem {
   title: string;
   createdAt: string;
   sourcePath: string | null;
-  videoOnDisk: boolean;
   titles: string[];
   promptSet: string | null;
   hasTranscript: boolean;
@@ -68,8 +83,44 @@ export interface LabItem {
   /** The report's description hook and description (for the tone and the photo suggestion). */
   hook: string;
   description: string;
+  /**
+   * The editor story the RUN generated from (`content_provenance.transcript_ref`): the seed of the
+   * item's durable link, used only while the item has no publish selection record. Undefined for
+   * an item written before provenance existed.
+   */
+  runStoryRef: TranscriptRef | null | undefined;
   /** Why the item cannot be used, in plain words; null when it can. */
   problem: string | null;
+}
+
+/** The item's story link as the tab shows it. */
+export interface LabStoryLink {
+  storyTitle: string;
+  storyNumber: number;
+  session: string;
+  projectFolder: string;
+  /** 'saved': the item's selection record holds it. 'run': the run generated from it and no record exists yet. */
+  from: 'saved' | 'run';
+}
+
+/** One story the picker offers, and whether it can be linked. */
+export interface LabStoryChoice {
+  projectFolder: string;
+  session: string;
+  number: number;
+  title: string;
+  slug: string;
+  /** Why it cannot be linked (its transcript was never exported, ...), or null. */
+  why: string | null;
+}
+
+export interface LabStoryState {
+  link: LabStoryLink | null;
+  /** The stories of the item's week, for the picker (every session under `<week>/files`). */
+  choices: LabStoryChoice[];
+  /** Where the picker looked, or why it could not. */
+  searched: string;
+  problems: string[];
 }
 
 export interface LabFrameView {
@@ -89,6 +140,7 @@ export interface LabFrameView {
 export interface LabRunView {
   runId: string;
   itemId: string;
+  /** The screen recording the frames come from. */
   video: string;
   start: number;
   end: number;
@@ -104,6 +156,7 @@ export interface LabRunView {
 interface Run {
   runId: string;
   item: LabItem;
+  source: StorySource;
   video: string;
   dir: string;
   start: number;
@@ -127,6 +180,13 @@ export interface LabDeps {
   canvas: () => ThumbnailCanvas;
   scorer: () => ScorerDeps;
   aiManager: () => Pick<AIManagerService, 'runPlainRequest'> & { cleanup?(): void };
+  /** The publish selection records: where an item's story link is kept (`transcriptRef`). */
+  publishStore: {
+    get(itemId: string): ChosenMetadata | null;
+    update(itemId: string, seed: SelectionSeed, patch: Partial<Omit<ChosenMetadata, 'itemId' | 'jobId'>>): Promise<ChosenMetadata>;
+  };
+  /** The editor's timeline manifest for a compounds zip (PythonService.editorManifest). */
+  manifest: (zipPath: string) => Promise<unknown>;
   progress: (event: { runId: string; stage: 'sampling' | 'scoring'; done: number; total: number }) => void;
 }
 
@@ -176,7 +236,6 @@ export class ThumbnailLab {
         if (!raw || typeof raw.item_id !== 'string') continue;
         const sourcePath = typeof raw.source_path === 'string' ? raw.source_path : null;
         const titles = Array.isArray(raw.titles) ? [...new Set((raw.titles as unknown[]).filter((t): t is string => typeof t === 'string' && t.trim() !== ''))] : [];
-        const videoOnDisk = sourcePath !== null && fs.existsSync(sourcePath);
         const hasTranscript = sourcePath !== null && inspectSavedTranscript(outputDir, sourcePath).exists;
         const problem =
           sourcePath === null ? 'This report has lost track of the video it was made from.'
@@ -189,13 +248,15 @@ export class ThumbnailLab {
           title: typeof raw._title === 'string' ? raw._title : path.basename(sourcePath ?? raw.item_id),
           createdAt: job.created_at,
           sourcePath,
-          videoOnDisk,
           titles,
           promptSet: typeof raw._prompt_set === 'string' ? raw._prompt_set : (typeof job.prompt_set === 'string' ? job.prompt_set : null),
           hasTranscript,
           reportFolder: typeof raw.txt_path === 'string' ? path.dirname(raw.txt_path) : null,
           hook: typeof raw.description_hook === 'string' ? raw.description_hook : '',
           description: typeof raw.description === 'string' ? raw.description : '',
+          runStoryRef: raw.content_provenance && typeof raw.content_provenance === 'object'
+            ? (raw.content_provenance.transcript_ref ?? null)
+            : undefined,
           problem,
         });
       }
@@ -210,13 +271,93 @@ export class ThumbnailLab {
     return item;
   }
 
-  /** Step 2a: sample, filter, thin. The frames' grid pictures come back with the run. */
-  async findFrames(req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }): Promise<LabRunView> {
+  /**
+   * The item's story link: the selection record's `transcriptRef` when the item has a record (the
+   * operator's durable choice; null there means he linked nothing or cleared it), otherwise the
+   * story its run generated from, which is what the record is seeded with when it is created
+   * (publish-store.service.ts createRecord). Never a match by name.
+   */
+  private linkOf(item: LabItem): { ref: TranscriptRef; from: 'saved' | 'run' } | null {
+    const record = this.deps.publishStore.get(item.itemId);
+    if (record !== null) return record.transcriptRef === null ? null : { ref: record.transcriptRef, from: 'saved' };
+    return item.runStoryRef ? { ref: item.runStoryRef, from: 'run' } : null;
+  }
+
+  private choiceOf(c: TranscriptCandidate): LabStoryChoice {
+    return {
+      projectFolder: c.projectFolder,
+      session: path.basename(c.projectFolder),
+      number: c.storyNumber,
+      title: c.storyTitle,
+      slug: c.storySlug,
+      why: isLinkable(c) ? null : whyNotLinkable(c),
+    };
+  }
+
+  /** Step 1: the item's link, and the stories of its week for the picker. */
+  storyState(jobId: string, itemId: string): LabStoryState {
+    const item = this.item(jobId, itemId);
+    const found = this.linkOf(item);
+    const link: LabStoryLink | null = found === null ? null : {
+      storyTitle: found.ref.storyTitle,
+      storyNumber: found.ref.storyNumber,
+      session: found.ref.sourceSession,
+      projectFolder: found.ref.projectFolder,
+      from: found.from,
+    };
+    const week = weekFolderOfExport(item.sourcePath!);
+    if (week === null) {
+      return {
+        link,
+        choices: [],
+        searched: `${item.sourcePath} is not in a <week>/complete folder, so there is no week of editor sessions to list. Choose an editor project folder instead.`,
+        problems: [],
+      };
+    }
+    const { candidates, problems } = listWeekStories(week);
+    return { link, choices: candidates.map((c) => this.choiceOf(c)), searched: `Editor sessions in ${path.join(week, 'files')}`, problems };
+  }
+
+  /** The stories of one editor project folder the operator chose (a session outside the item's week). */
+  storiesIn(projectFolder: string): { choices: LabStoryChoice[]; problems: string[] } {
+    const { candidates, problems } = listProjectStories(projectFolder);
+    if (candidates.length === 0 && problems.length > 0) throw new Error(problems.join(' '));
+    return { choices: candidates.map((c) => this.choiceOf(c)), problems };
+  }
+
+  /**
+   * Save a story as the item's link, through the selection record (the one door every writer of
+   * that record uses; it also runs the record's automatic channel and thumbnail pass). The story is
+   * found again in its project by number AND slug, and the link is built by the transcript-link
+   * module's own refFromCandidate, recorded as 'manual'.
+   */
+  async linkStory(jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string): Promise<LabStoryState> {
+    const item = this.item(jobId, itemId);
+    const { candidates, problems } = listProjectStories(projectFolder);
+    const candidate = candidates.find((c) => c.storyNumber === storyNumber && c.storySlug === storySlug);
+    if (candidate === undefined) {
+      throw new Error(`Story ${storyNumber} ("${storySlug}") is not in ${projectFolder} any more.${problems.length ? ` ${problems.join(' ')}` : ''}`);
+    }
+    const ref = refFromCandidate(candidate, 'manual');
+    await this.deps.publishStore.update(
+      item.itemId,
+      { jobId: item.jobId, transcriptRef: item.runStoryRef, promptSet: item.promptSet, sourcePath: item.sourcePath },
+      { transcriptRef: ref },
+    );
+    log.info(`[ThumbnailLab] ${item.itemId} linked to story ${ref.storyNumber} "${ref.storyTitle}" of session ${ref.sourceSession} (${ref.projectFolder})`);
+    return this.storyState(jobId, itemId);
+  }
+
+  /** Step 2a: sample the story's stretches of the screen recording, filter, thin. The grid pictures come back with the run. */
+  async findFrames(req: { jobId: string; itemId: string }): Promise<LabRunView> {
     const item = this.item(req.jobId, req.itemId);
-    const video = req.video ?? item.sourcePath!;
-    if (!fs.existsSync(video)) throw new Error(`The video is not on disk (is the drive plugged in?): ${video}`);
-    const start = parseClock(req.start, 'start');
-    const end = parseClock(req.end, 'end');
+    const link = this.linkOf(item);
+    if (link === null) throw new Error(`${item.title} is not linked to an editor story yet. Pick its story first.`);
+    const source = await resolveStorySource(link.ref, {
+      manifest: (zipPath) => this.deps.manifest(zipPath),
+      duration: async (video) => (await probeVideo(this.deps.ffprobe, video)).duration,
+    });
+    const video = source.screenFile;
     const itemDir = path.join(this.deps.userDataPath, 'thumbnail-lab', item.itemId);
     const runId = `thumbs-${Date.now()}`;
     // One run per item on disk: the older runs of this item are this tab's own cache.
@@ -230,8 +371,7 @@ export class ThumbnailLab {
       ffmpeg: this.deps.ffmpeg,
       ffprobe: this.deps.ffprobe,
       video,
-      start,
-      end,
+      spans: source.plan.screen,
       outDir: path.join(dir, 'frames'),
       signal: controller.signal,
       onProgress: (done, total) => this.deps.progress({ runId, stage: 'sampling', done, total }),
@@ -243,15 +383,16 @@ export class ThumbnailLab {
     const blurry = filtered.dropped.filter((d) => d.reason === 'blurry').length;
     const repeats = filtered.dropped.filter((d) => d.reason === 'repeat').length;
     const lines = [
-      `Sampled ${sampled.frames.length} frames from ${clock(sampled.start)} to ${clock(sampled.end)} (one every ${sampled.every.toFixed(sampled.every === 1 ? 0 : 1)} s).`,
+      ...source.lines,
+      `Sampled ${sampled.frames.length} frames across those stretches (${clock(sampled.seconds)} of the screen recording, between ${clock(sampled.start)} and ${clock(sampled.end)} of it; one every ${sampled.every.toFixed(sampled.every === 1 ? 0 : 1)} s).`,
       `Removed ${repeats} repeated and ${blurry} blurry frames; ${kept.length} kept.`,
       toScore.length < kept.length
-        ? `${toScore.length} of them, spread evenly across the range, will be scored (the most one run scores is ${MAX_FRAMES_TO_SCORE}).`
+        ? `${toScore.length} of them, spread evenly across the story, will be scored (the most one run scores is ${MAX_FRAMES_TO_SCORE}).`
         : `All ${kept.length} will be scored.`,
     ];
     log.info(`[ThumbnailLab] ${runId} for ${item.title}: ${lines.join(' ')}`);
     const run: Run = {
-      runId, item, video, dir, start: sampled.start, end: sampled.end, frames: kept, toScore: new Set(toScore.map(frameId)),
+      runId, item, source, video, dir, start: sampled.start, end: sampled.end, frames: kept, toScore: new Set(toScore.map(frameId)),
       lines, ranked: null, readings: new Map(), flags: new Map(), best: null, scoring: null, controller: null,
     };
     this.runs.set(runId, run);

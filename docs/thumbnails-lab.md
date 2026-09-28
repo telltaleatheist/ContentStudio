@@ -9,20 +9,50 @@ Open it from the sidebar: **Thumbnails** (between Stream marks and Analytics).
 
 ## How it works
 
-### 1. Video
-Pick a report. Its video is the report's recorded `source_path` (the final export). "Another
-video file" takes any 16:9 file instead, for example the stream master, with an optional
-**From/To** range (`07:31`, `1:07:31`). The words are always written from the report's own saved
-transcript, which covers the whole video; frames and words are not tied to each other by time, so
-no time mapping between the master and the export is ever done (the segment-table trap does not
-arise).
+### 1. Report and story (changed 2026-09-28, same day)
+Pick a report. Its frames come from the clean **screen recording** of the editor session, and only
+over the stretches the report's **editor story** is made of. The report's own video (the finished
+export, Owen's camera and the screen together) is never sampled; the old "Another video file" and
+From/To inputs are gone, because the story now defines the range. The words are still written from
+the report's own saved transcript; frames and words are not tied to each other by time.
+
+- **The link.** The report's story link is the existing one: the publish selection record's
+  `transcriptRef` (userData `publish/`), or, while the report has no record yet, the story its
+  metadata was generated from (`content_provenance.transcript_ref`, which seeds that record).
+  A record whose link is null (final export only, or cleared) counts as unlinked.
+- **Unlinked: the picker.** The tab lists every story of every editor session in the report's week
+  (`<week>/files/<session>/<session>_edits.json`), or of a project folder chosen with "Other project
+  folder…". A story whose transcript was never exported cannot be linked (a link is identified by
+  that file), and says why. "Link this story" saves it through the selection record, exactly as the
+  Inputs page's link is saved (recorded as `manual`). A report is NEVER linked by name: "f2 - the
+  rapture" is made from the story "f1 - the rapture".
+- **The mapping** (story-source.ts), each step the editor's own rule:
+  1. the story's regions (as drawn, not the export's 30 s padded shoulders) minus the session's cuts
+     (half-open frame ranges × the manifest's frame length);
+  2. timeline → master file through the editor manifest's segment table, piece by piece
+     (`timelineRangeToMaster` in `electron/shared/master-timeline-map.ts`, the map the editor and the
+     stream-marks import use): the processing step removed the dead air, so one story is dozens of
+     pieces and the air between them is left out;
+  3. master → screen recording by `<session>_alignment.json`'s video/screen entry:
+     screen = (master − offset) × rate (`masterToSource`);
+  4. cut to the recording's length; seconds outside it are said.
+  The screen recording is found beside the master by the editor's own naming rule
+  (`editor/session-sources.ts`). Refused by name: no alignment record, an untrusted or absent screen
+  alignment, no screen recording, a recording in parts, a manifest playing a different master, a
+  story renumbered or renamed since it was linked (link it again).
+- **Drift (declared).** When the alignment records no drift factor (`driftFactor: null`, the usual
+  case), the recording is read at the master's rate and the run says so. The processing step does
+  retime the screen by its device factor (the 2026-09-24 compound: r = 0.99997639), so late in a long
+  night the frames can be up to about a third of a second off; over the rapture story, under 0.03 s.
+- **Sampling** takes the stretches: stretches within 30 s share one ffmpeg pass, and a frame that
+  lands between two stretches is decoded and dropped, never kept.
 
 A report without a recorded video, without titles, or without a saved transcript is listed but
 disabled, with the reason.
 
 ### 2. Frames
-- **Sampling** (frame-sampler.ts): one ffmpeg pass, about one frame a second (at most 1,800 per
-  run, evenly spaced when the range is longer). Each frame is written as a 640x360 JPEG (for the
+- **Sampling** (frame-sampler.ts): about one frame a second across the story's stretches of the
+  screen recording (at most 1,800 per run, evenly spaced when they hold more). Each frame is written as a 640x360 JPEG (for the
   model and the close-up) and a 320x180 JPEG (for the grid), and measured as a small grey frame
   on the fly. Only 16:9 video is taken; anything else is refused naming its size (fitting another
   shape would be a crop, which is Owen's choice).
@@ -33,8 +63,14 @@ disabled, with the reason.
 - **Scoring** (frame-scorer.ts): at most 120 kept frames, spread across the range in rounds so
   empty stretches do not leave the cap short. One frame per Crucible `POST /v1/decide` call,
   five fixed-answer questions (thumbnails.yml `frames.*`): computer screen or video, a clear face,
-  expression 1-5, eyes open, strong thumbnail. `missing: 'report'`; a frame whose answer lacks an
-  option letter is set aside and named. It runs as ONE lane job (like a metadata run: one job per
+  expression 1-5, eyes open, strong thumbnail. Since the SDK repin to Crucible 1.0.55 (2026-09-28)
+  the five go as ITEMS of that one call (`transport.decideItems`, SDK `decideItems`): the frame is
+  read once and each item answered as if asked alone (the maintainer's figure on the Mac: 1.9 s a
+  frame against 4.3 s). Items are choices, so the yes/no questions go as the server's own yesno
+  wording (`frames.statement`, Yes/No) and the expression as a choice over its five levels;
+  prompts.ts `frameAnswersOfItems` reads back P(yes) and the expected level. Never one prompt with
+  numbered slots. `missing: 'report'`; a frame whose answer lacks an option letter is set aside and
+  named. It runs as ONE lane job (like a metadata run: one job per
   card, waiting behind a running job), with one lease on the model, and as many calls at once as
   the engine states it admits (`activity().chat.maxInFlight`, capped at 8; none stated = one at a
   time). If the server is busy the tab says who holds it and does not queue.
@@ -165,12 +201,18 @@ run never reads them, its log line leaves them out, and the change-all menu does
   takes a lease (which loads it at 8,192) and holds it across every frame, releasing it at the end.
 - Measured on the rapture master (07:31-30:00, CPU only): 1,349 sampled, 738 repeats and 45 blurry
   removed, 566 kept, in 115 s.
+- Measured on "f1 - the rapture" from the screen recording (2026-09-28, CPU only, read only): 126
+  stretches, 749.7 s (screen capture 614.66-1488.33 s); 757 sampled, 420 repeats and 37 blurry
+  removed, 300 kept, in 74 s. Every frame is a clean screen picture; some show Owen's desktop (a
+  document, the player's frame), which the scorer's desktop question removes.
 - The frame weights, the repeat threshold (8 of 256 bits) and the blur rule (35% of median) are
   declared starting points, not measurements.
 
 ## Checks
-`npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (19 checks: filters, real ffmpeg
-sampling of a synthetic video, ranking and diversity, the words prompt and parser, face-safe layout
+`npm run check:thumbnail-lab` = `tools/thumbnail-lab-checks.js` (35 checks: filters, real ffmpeg
+sampling of a synthetic video inside given stretches only, the story source (regions minus cuts, the
+segment table, offset and drift, clipping, refusals), the unlinked report's picker and saved link on a
+synthetic session, the real 2026-09-24 rapture story as a read-only fixture when Callisto is mounted, ranking and diversity, the words prompt and parser, face-safe layout
 and the too-long refusal, scoring over the real transport and lanes against the fake Crucible
 including each image refusal) and `tools/thumbnail-lab-render-smoke.js` under the electron binary
 (Impact measured, a missing font refused, renders inside YouTube's bounds, the reference frame's
@@ -183,6 +225,10 @@ the tab's words step onto the reports page as the thumbnail field. Its re-roll g
 self-check lines about thumbnails go with it. Until then both exist and do not touch each other.
 
 ## Open
+- When the alignment records no drift factor, read the screen's real retime from the session's
+  compound (its timeMap) instead of the master's rate. Coordinator's rule (2026-09-28): only by
+  reusing an editor reader. None exists today (the generators write timeMaps and editor_export.py
+  passes them through; nothing reads one back), so rate 1 stays, declared in the run's lines.
 - Owen's reaction photos: the slot is reserved; drawing a cut-out there is the next step.
 - A live run (below) to measure the scorer's usefulness and tune the weights.
 - Whether image-only (no text) should be the default for one arm.

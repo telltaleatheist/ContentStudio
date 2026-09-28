@@ -9,12 +9,36 @@ export interface ThumbsItem {
   title: string;
   createdAt: string;
   sourcePath: string | null;
-  videoOnDisk: boolean;
   titles: string[];
   promptSet: string | null;
   hasTranscript: boolean;
   reportFolder: string | null;
   problem: string | null;
+}
+
+/** The item's editor-story link (lab-service.ts LabStoryLink). */
+export interface ThumbsStoryLink {
+  storyTitle: string;
+  storyNumber: number;
+  session: string;
+  projectFolder: string;
+  from: 'saved' | 'run';
+}
+
+export interface ThumbsStoryChoice {
+  projectFolder: string;
+  session: string;
+  number: number;
+  title: string;
+  slug: string;
+  why: string | null;
+}
+
+export interface ThumbsStoryState {
+  link: ThumbsStoryLink | null;
+  choices: ThumbsStoryChoice[];
+  searched: string;
+  problems: string[];
 }
 
 export interface ThumbsReading {

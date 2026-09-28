@@ -3,7 +3,9 @@
  *
  * Owen's shape (2026-09-28): ONE image per decide call (a question about several images is
  * ambiguous about which one it means), each frame downscaled first (the 640x360 sample, so image
- * tokens stay low), five fixed-answer questions per call sharing the primed state. ONE job on the
+ * tokens stay low), the five fixed-answer questions as ITEMS of that one call (Crucible 1.0.55
+ * `decideItems`: the frame is read once, each item answered as if asked alone; measured on the Mac,
+ * one 640x360 frame and five questions: 1.9 s against 4.3 s asked one by one). ONE job on the
  * card at a time: this is a lane job like a metadata run (lanes.ts `runJob`), so it waits behind a
  * running metadata job on the same server and a metadata job waits behind it. Inside the job the
  * calls may use the engine's width: as many in flight as the engine STATES it admits
@@ -17,11 +19,11 @@
  * counted and named (Law 8), and the rest are ranked.
  */
 import * as fs from 'fs';
-import type { CrucibleClient, DecideResponse } from '@crucible/client';
+import type { CrucibleClient, DecideItemsResponse } from '@crucible/client';
 import type { CrucibleLanes } from '../../crucible/lanes';
 import type { CrucibleTransport } from '../../crucible/transport';
 import { FrameAnswerUnreadable, readFrameAnswers, type ScoredFrame } from './frame-ranking';
-import { frameDecideBody } from './prompts';
+import { frameAnswersOfItems, frameDecideItems } from './prompts';
 import { clock } from './frame-sampler';
 
 /** The context the vision model is loaded at: one small state, one 640x360 frame, five questions. */
@@ -32,7 +34,7 @@ export const MAX_FRAME_WIDTH = 8;
 
 export interface ScorerDeps {
   lanes: Pick<CrucibleLanes, 'runJob' | 'stopJob' | 'aiCall'>;
-  transport: Pick<CrucibleTransport, 'withJobLease' | 'decide'>;
+  transport: Pick<CrucibleTransport, 'withJobLease' | 'decide' | 'decideItems'>;
   clientFor(server: string): Promise<Pick<CrucibleClient, 'activity'>>;
 }
 
@@ -151,8 +153,8 @@ function runScoringJob(deps: ScorerDeps, input: { jobId: string; model: string; 
             const i = next++;
             if (i >= input.frames.length) return;
             const frame = input.frames[i];
-            const body = frameDecideBody(fs.readFileSync(frame.image).toString('base64'));
-            const answer: DecideResponse = await deps.transport.decide({
+            const body = frameDecideItems(fs.readFileSync(frame.image).toString('base64'));
+            const answer: DecideItemsResponse = await deps.transport.decideItems({
               model,
               ...body,
               loadContext: FRAME_LOAD_CONTEXT,
@@ -162,7 +164,7 @@ function runScoringJob(deps: ScorerDeps, input: { jobId: string; model: string; 
               trace: null,
             });
             try {
-              scored.push({ id: frame.id, t: frame.t, reading: readFrameAnswers(answer.answers as Record<string, unknown>) });
+              scored.push({ id: frame.id, t: frame.t, reading: readFrameAnswers(frameAnswersOfItems(answer.answers)) });
             } catch (err) {
               if (!(err instanceof FrameAnswerUnreadable)) throw err;
               unreadable.push({ id: frame.id, t: frame.t, reason: err.message });
