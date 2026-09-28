@@ -13,6 +13,8 @@ import type Store from 'electron-store';
 import type { CrucibleContext } from '../../crucible/context';
 import { getRuntimePaths } from '../../lib/bridges/runtime-paths';
 import { AIManagerService } from '../metadata/ai-manager.service';
+import { PythonService } from '../editor/python-service';
+import type { PublishStoreService } from '../publish/publish-store.service';
 import { ThumbnailCanvas, canvasPagePath } from './canvas-page';
 import { ThumbnailLab } from './lab-service';
 
@@ -28,8 +30,9 @@ async function answer<T>(what: string, fn: () => Promise<T> | T): Promise<Answer
   }
 }
 
-export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContext, userDataPath: string): void {
+export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContext, userDataPath: string, publishStore: PublishStoreService): void {
   let canvas: ThumbnailCanvas | null = null;
+  let python: PythonService | null = null;
   let progressTo: Electron.WebContents | null = null;
   const paths = getRuntimePaths();
   const lab = new ThumbnailLab({
@@ -40,6 +43,9 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
     canvas: () => (canvas ??= new ThumbnailCanvas(canvasPagePath(app.getAppPath()))),
     scorer: () => ({ lanes: crucible.lanes, transport: crucible.transport, clientFor: (server) => crucible.factory.clientFor(server) }),
     aiManager: () => new AIManagerService({ promptSetsDir: path.join(app.getPath('userData'), 'prompt_sets') }),
+    publishStore,
+    // The editor's own manifest builder (the same call the editor window makes), CPU only.
+    manifest: (zipPath) => (python ??= new PythonService()).editorManifest(zipPath),
     progress: (event) => {
       if (progressTo !== null && !progressTo.isDestroyed()) progressTo.send('thumbs:progress', event);
     },
@@ -74,12 +80,15 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
     }),
   );
   ipcMain.handle('thumbs:render', (_e, runId: string, variants) => answer('rendering', () => lab.render(runId, variants)));
-  ipcMain.handle('thumbs:choose-video', (event) =>
-    answer('choosing a video', async () => {
+  ipcMain.handle('thumbs:story-state', (_e, jobId: string, itemId: string) => answer('reading the story link', () => lab.storyState(jobId, itemId)));
+  ipcMain.handle('thumbs:link-story', (_e, jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string) =>
+    answer('linking the story', () => lab.linkStory(jobId, itemId, projectFolder, storyNumber, storySlug)));
+  ipcMain.handle('thumbs:choose-project', (event) =>
+    answer('choosing an editor project folder', async () => {
       const win = BrowserWindow.fromWebContents(event.sender);
-      const options = { properties: ['openFile' as const], filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'm4v', 'mkv'] }] };
+      const options = { properties: ['openDirectory' as const] };
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-      return picked.canceled || picked.filePaths.length === 0 ? null : picked.filePaths[0];
+      return picked.canceled || picked.filePaths.length === 0 ? null : lab.storiesIn(picked.filePaths[0]);
     }),
   );
   ipcMain.handle('thumbs:show-folder', (_e, folder: string) =>

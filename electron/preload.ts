@@ -697,8 +697,11 @@ const api = {
   // sentence naming the file, and the UI prints it.
   // The Thumbnails tab (testing, 2026-09-28). Each answers { ok, value } or { ok: false, error }.
   thumbsListItems: () => ipcRenderer.invoke('thumbs:list-items'),
-  thumbsFindFrames: (req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }) =>
-    ipcRenderer.invoke('thumbs:find-frames', req),
+  thumbsStoryState: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbs:story-state', jobId, itemId),
+  thumbsLinkStory: (jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string) =>
+    ipcRenderer.invoke('thumbs:link-story', jobId, itemId, projectFolder, storyNumber, storySlug),
+  thumbsChooseProject: () => ipcRenderer.invoke('thumbs:choose-project'),
+  thumbsFindFrames: (req: { jobId: string; itemId: string }) => ipcRenderer.invoke('thumbs:find-frames', req),
   thumbsFramePicture: (runId: string, id: string) => ipcRenderer.invoke('thumbs:frame-picture', runId, id),
   thumbsScore: (runId: string) => ipcRenderer.invoke('thumbs:score', runId),
   thumbsStop: (runId: string) => ipcRenderer.invoke('thumbs:stop', runId),
@@ -706,7 +709,6 @@ const api = {
   thumbsGetStyle: () => ipcRenderer.invoke('thumbs:get-style'),
   thumbsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbs:set-style', style),
   thumbsRender: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:render', runId, variants),
-  thumbsChooseVideo: () => ipcRenderer.invoke('thumbs:choose-video'),
   thumbsPhotos: () => ipcRenderer.invoke('thumbs:photos'),
   thumbsSetPhotoNote: (name: string, note: string) => ipcRenderer.invoke('thumbs:set-photo-note', name, note),
   thumbsSuggest: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:suggest', runId, variants),

@@ -1,13 +1,16 @@
 /**
- * SAMPLING A VIDEO FOR THUMBNAIL FRAMES: one ffmpeg pass, CPU only, no model.
+ * SAMPLING A VIDEO FOR THUMBNAIL FRAMES: ffmpeg only, CPU only, no model.
  *
- * About one frame a second across the chosen range (the whole video when no range is given),
+ * About one frame a second across the chosen STRETCHES of the video (the whole video when none
+ * are given; for a story, the pieces of the screen recording it is made of, story-source.ts),
  * written twice as JPEG (640x360 for the vision model and the large view, 320x180 for the grid)
  * and streamed once more as small grey frames straight into frame-metrics.ts, so the sharpness and
  * the repeat hash are measured without writing a third copy to disk.
  *
- * The rate is capped: a range longer than MAX_SAMPLES seconds is sampled MAX_SAMPLES times, evenly,
- * and the result says the rate it used (Law 8), so a two-hour master is not 7,200 frames.
+ * The rate is capped: stretches holding more than MAX_SAMPLES seconds are sampled MAX_SAMPLES
+ * times, evenly, and the result says the rate it used (Law 8), so a two-hour master is not 7,200
+ * frames. Stretches close together share one ffmpeg pass (passesFor); a frame that lands between
+ * them is decoded and dropped, never kept, so every kept frame is inside a stretch.
  *
  * Only 16:9 videos are taken: the thumbnail is 16:9, and fitting any other shape would be a crop,
  * which is the operator's choice, never this code's. Anything else is refused naming its size.
@@ -43,8 +46,12 @@ export interface SampledFrame extends FrameMeasure {
 
 export interface SampleResult {
   frames: SampledFrame[];
+  /** The first stretch's start and the last one's end. */
   start: number;
   end: number;
+  /** The stretches sampled, as checked (resolveSpans), and the seconds they hold. */
+  spans: SampleSpan[];
+  seconds: number;
   /** Seconds between samples actually used (1, or more when the cap thinned them). */
   every: number;
   video: VideoFacts;
@@ -81,24 +88,39 @@ export async function probeVideo(ffprobe: string, video: string): Promise<VideoF
   return { duration, width: stream.width, height: stream.height };
 }
 
-/** The range to sample, checked against the video. `null` ends mean the video's own ends. */
-export function resolveRange(start: number | null, end: number | null, duration: number): { start: number; end: number } {
-  const s = start ?? 0;
-  const e = end ?? duration;
-  if (!(s >= 0)) throw new Error(`The start (${s} s) is before the video begins.`);
-  if (e > duration + 0.5) throw new Error(`The end (${clock(e)}) is after the video ends (${clock(duration)}).`);
-  if (!(Math.min(e, duration) - s >= 2)) throw new Error(`The range ${clock(s)}-${clock(e)} is too short to sample.`);
-  return { start: s, end: Math.min(e, duration) };
+/** A stretch of the video, in its own seconds. */
+export interface SampleSpan {
+  start: number;
+  end: number;
 }
 
-/** "07:31" or "1:07:31" (or plain seconds) as seconds; empty means not given. Anything else throws. */
-export function parseClock(text: string | null | undefined, what: string): number | null {
-  if (text === null || text === undefined || text.trim() === '') return null;
-  const parts = text.trim().split(':');
-  if (parts.length > 3 || parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) {
-    throw new Error(`The ${what} "${text}" is not a time. Write it like 07:31 or 1:07:31.`);
+/**
+ * Two stretches closer than this are sampled in one ffmpeg pass (the frames between them are
+ * decoded and thrown away); farther apart, each gets its own pass and seek. A story is dozens of
+ * pieces with a few seconds of removed dead air between them, and one seek per piece would cost
+ * more than decoding the air.
+ */
+export const JOIN_GAP_SECONDS = 30;
+
+/**
+ * The stretches to sample, checked against the video: `null` means the whole video. They must be
+ * in order and apart, start at or after 0 and end by the video's end (half a second of slack for
+ * a container's rounding); together they must hold at least two seconds.
+ */
+export function resolveSpans(spans: readonly SampleSpan[] | null, duration: number): SampleSpan[] {
+  const list = spans === null ? [{ start: 0, end: duration }] : spans.map((s) => ({ ...s }));
+  if (list.length === 0) throw new Error('No stretch of the video was given to sample.');
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    if (!Number.isFinite(s.start) || !Number.isFinite(s.end) || !(s.end > s.start)) throw new Error(`Stretch ${i + 1} (${s.start}-${s.end} s) is not a stretch of time.`);
+    if (s.start < 0) throw new Error(`Stretch ${i + 1} starts at ${s.start} s, before the video begins.`);
+    if (s.end > duration + 0.5) throw new Error(`Stretch ${i + 1} ends at ${clock(s.end)}, after the video ends (${clock(duration)}).`);
+    if (i > 0 && s.start < list[i - 1].end) throw new Error(`Stretches ${i} and ${i + 1} overlap or are out of order.`);
+    s.end = Math.min(s.end, duration);
   }
-  return parts.reduce((sum, p) => sum * 60 + Number(p), 0);
+  const total = list.reduce((sum, s) => sum + (s.end - s.start), 0);
+  if (!(total >= 2)) throw new Error(`The stretches hold ${total.toFixed(1)} s, too little to sample.`);
+  return list;
 }
 
 export function clock(seconds: number): string {
@@ -109,11 +131,25 @@ export function clock(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
-/** The sampling rate for a range: one a second, or MAX_SAMPLES evenly when that would be more. */
-export function samplingFor(start: number, end: number): { count: number; every: number } {
-  const span = end - start;
-  const count = Math.min(MAX_SAMPLES, Math.max(1, Math.floor(span / SAMPLE_EVERY_SECONDS)));
-  return { count, every: span / count };
+/** The sampling rate for this many seconds: one a second, or MAX_SAMPLES evenly when that would be more. */
+export function samplingFor(seconds: number): { count: number; every: number } {
+  const count = Math.min(MAX_SAMPLES, Math.max(1, Math.floor(seconds / SAMPLE_EVERY_SECONDS)));
+  return { count, every: seconds / count };
+}
+
+/** Consecutive stretches within JOIN_GAP_SECONDS of each other, as one pass each. */
+export function passesFor(spans: readonly SampleSpan[]): Array<{ start: number; end: number; spans: SampleSpan[] }> {
+  const passes: Array<{ start: number; end: number; spans: SampleSpan[] }> = [];
+  for (const s of spans) {
+    const last = passes[passes.length - 1];
+    if (last && s.start - last.end <= JOIN_GAP_SECONDS) {
+      last.end = s.end;
+      last.spans.push(s);
+    } else {
+      passes.push({ start: s.start, end: s.end, spans: [s] });
+    }
+  }
+  return passes;
 }
 
 export function assertSixteenNine(facts: VideoFacts, video: string): void {
@@ -127,70 +163,48 @@ export function assertSixteenNine(facts: VideoFacts, video: string): void {
 }
 
 /**
- * Sample the range into `outDir` (created; it must be empty or absent). Progress is reported per
- * grey frame measured.
+ * Sample the stretches into `outDir` (created; it must be empty or absent). Progress is reported per
+ * kept frame measured.
  */
 export async function sampleFrames(req: {
   ffmpeg: string;
   ffprobe: string;
   video: string;
-  start: number | null;
-  end: number | null;
+  /** The stretches to sample in the video's own seconds, in order; null for the whole video. */
+  spans: readonly SampleSpan[] | null;
   outDir: string;
   signal?: AbortSignal;
   onProgress?: (done: number, total: number) => void;
 }): Promise<SampleResult> {
   const facts = await probeVideo(req.ffprobe, req.video);
   assertSixteenNine(facts, req.video);
-  const range = resolveRange(req.start, req.end, facts.duration);
-  const { count, every } = samplingFor(range.start, range.end);
+  const spans = resolveSpans(req.spans, facts.duration);
+  const seconds = spans.reduce((sum, s) => sum + (s.end - s.start), 0);
+  const { count, every } = samplingFor(seconds);
   fs.mkdirSync(req.outDir, { recursive: true });
   if (fs.readdirSync(req.outDir).length > 0) throw new Error(`The frame folder is not empty: ${req.outDir}`);
 
-  const fps = 1 / every;
-  const args = [
-    '-hide_banner', '-nostdin', '-v', 'error',
-    '-ss', range.start.toFixed(3), '-t', (range.end - range.start).toFixed(3), '-i', req.video,
-    '-filter_complex',
-    `[0:v]fps=${fps.toFixed(6)},split=3[a][b][c];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h}[small];[c]scale=${GREY_WIDTH}:${GREY_HEIGHT},format=gray[g]`,
-    '-map', '[big]', '-q:v', '3', path.join(req.outDir, 'f%05d.jpg'),
-    '-map', '[small]', '-q:v', '5', path.join(req.outDir, 's%05d.jpg'),
-    '-map', '[g]', '-f', 'rawvideo', 'pipe:1',
-  ];
-
   const measures: FrameMeasure[] = [];
-  const frameBytes = GREY_WIDTH * GREY_HEIGHT;
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(req.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const abort = () => child.kill('SIGKILL');
-    req.signal?.addEventListener('abort', abort, { once: true });
-    let pending: Buffer = Buffer.alloc(0);
-    let err = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
-      while (pending.length >= frameBytes) {
-        const gray = new Uint8Array(pending.subarray(0, frameBytes));
-        pending = pending.subarray(frameBytes);
-        const index = measures.length;
-        measures.push({
-          index,
-          t: range.start + index * every,
-          hash: differenceHash(gray, GREY_WIDTH, GREY_HEIGHT),
-          sharpness: laplacianVariance(gray, GREY_WIDTH, GREY_HEIGHT),
-        });
+  // Every frame ffmpeg writes gets the next file number across all passes, so ids stay unique.
+  let written = 0;
+  for (const pass of passesFor(spans)) {
+    const first = written;
+    const decoded = await samplePass(req, pass, every, first);
+    for (let k = 0; k < decoded.length; k++) {
+      const t = pass.start + k * every;
+      const n = String(first + k + 1).padStart(5, '0');
+      if (pass.spans.some((s) => t >= s.start - 1e-6 && t < s.end)) {
+        measures.push({ index: first + k, t, hash: decoded[k].hash, sharpness: decoded[k].sharpness });
         req.onProgress?.(measures.length, count);
+      } else {
+        // Between two stretches of the pass: decoded, never kept.
+        fs.rmSync(path.join(req.outDir, `f${n}.jpg`), { force: true });
+        fs.rmSync(path.join(req.outDir, `s${n}.jpg`), { force: true });
       }
-    });
-    child.stderr.on('data', (d) => { err += d.toString(); });
-    child.on('error', (e) => reject(new Error(`ffmpeg could not be started (${req.ffmpeg}): ${e.message}`)));
-    child.on('close', (code) => {
-      req.signal?.removeEventListener('abort', abort);
-      if (req.signal?.aborted) reject(new Error('Stopped.'));
-      else if (code !== 0) reject(new Error(`ffmpeg failed while sampling ${path.basename(req.video)} (exit ${code}): ${err.trim().slice(-400)}`));
-      else resolve();
-    });
-  });
-  if (measures.length === 0) throw new Error(`ffmpeg wrote no frames for ${path.basename(req.video)} between ${clock(range.start)} and ${clock(range.end)}.`);
+    }
+    written += decoded.length;
+  }
+  if (measures.length === 0) throw new Error(`ffmpeg wrote no frames for ${path.basename(req.video)} inside the ${spans.length} stretch(es) asked for.`);
 
   const frames: SampledFrame[] = measures.map((m) => {
     const n = String(m.index + 1).padStart(5, '0');
@@ -201,7 +215,51 @@ export async function sampleFrames(req: {
     }
     return { ...m, large, small };
   });
-  return { frames, start: range.start, end: range.end, every, video: facts };
+  return { frames, start: spans[0].start, end: spans[spans.length - 1].end, spans, seconds, every, video: facts };
+}
+
+/** One ffmpeg pass over [pass.start, pass.end]: the pictures on disk from file number first+1, the grey measures back. */
+function samplePass(
+  req: { ffmpeg: string; video: string; outDir: string; signal?: AbortSignal },
+  pass: { start: number; end: number },
+  every: number,
+  first: number,
+): Promise<Array<{ hash: FrameMeasure['hash']; sharpness: number }>> {
+  const fps = 1 / every;
+  const args = [
+    '-hide_banner', '-nostdin', '-v', 'error',
+    '-ss', pass.start.toFixed(3), '-t', (pass.end - pass.start).toFixed(3), '-i', req.video,
+    '-filter_complex',
+    `[0:v]fps=${fps.toFixed(6)},split=3[a][b][c];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h}[small];[c]scale=${GREY_WIDTH}:${GREY_HEIGHT},format=gray[g]`,
+    '-map', '[big]', '-q:v', '3', '-start_number', String(first + 1), path.join(req.outDir, 'f%05d.jpg'),
+    '-map', '[small]', '-q:v', '5', '-start_number', String(first + 1), path.join(req.outDir, 's%05d.jpg'),
+    '-map', '[g]', '-f', 'rawvideo', 'pipe:1',
+  ];
+  const out: Array<{ hash: FrameMeasure['hash']; sharpness: number }> = [];
+  const frameBytes = GREY_WIDTH * GREY_HEIGHT;
+  return new Promise((resolve, reject) => {
+    const child = spawn(req.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const abort = () => child.kill('SIGKILL');
+    req.signal?.addEventListener('abort', abort, { once: true });
+    let pending: Buffer = Buffer.alloc(0);
+    let err = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+      while (pending.length >= frameBytes) {
+        const gray = new Uint8Array(pending.subarray(0, frameBytes));
+        pending = pending.subarray(frameBytes);
+        out.push({ hash: differenceHash(gray, GREY_WIDTH, GREY_HEIGHT), sharpness: laplacianVariance(gray, GREY_WIDTH, GREY_HEIGHT) });
+      }
+    });
+    child.stderr.on('data', (d) => { err += d.toString(); });
+    child.on('error', (e) => reject(new Error(`ffmpeg could not be started (${req.ffmpeg}): ${e.message}`)));
+    child.on('close', (code) => {
+      req.signal?.removeEventListener('abort', abort);
+      if (req.signal?.aborted) reject(new Error('Stopped.'));
+      else if (code !== 0) reject(new Error(`ffmpeg failed while sampling ${path.basename(req.video)} from ${clock(pass.start)} to ${clock(pass.end)} (exit ${code}): ${err.trim().slice(-400)}`));
+      else resolve(out);
+    });
+  });
 }
 
 /** One full-size frame at `t` seconds, as PNG, for the render. */

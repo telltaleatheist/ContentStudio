@@ -14,6 +14,8 @@ import type {
   ThumbsRanked,
   ThumbsRenderResult,
   ThumbsRun,
+  ThumbsStoryChoice,
+  ThumbsStoryState,
   ThumbsStyle,
   ThumbsSuggestion,
   ThumbsVariant,
@@ -32,7 +34,9 @@ function pickKey(p: ThumbsWordPick): string {
 }
 
 /**
- * THE THUMBNAILS TAB (testing, 2026-09-28). One page, top to bottom: pick a video, find frames,
+ * THE THUMBNAILS TAB (testing, 2026-09-28). One page, top to bottom: pick a report (its frames come
+ * from the screen recording of the editor story it is linked to; an unlinked report picks its story
+ * here, and the choice is saved as its link), find frames,
  * star favourite frames, words and photos, let the tab combine them into A, B and C (every piece
  * swappable), and make the thumbnails. Every model call and every file is the main process's
  * (lab-service.ts); this page only shows and asks.
@@ -54,10 +58,13 @@ export class Thumbnails implements OnInit, OnDestroy {
 
   readonly items = signal<ThumbsItem[]>([]);
   readonly itemKey = signal<string>('');
-  readonly useOtherVideo = signal(false);
-  readonly otherVideo = signal<string | null>(null);
-  start = '';
-  end = '';
+  /** The report's story link and the picker's stories (never matched by name: Owen picks). */
+  readonly story = signal<ThumbsStoryState | null>(null);
+  /** Stories of project folders chosen with "Other project folder…", added to the picker. */
+  readonly extraChoices = signal<ThumbsStoryChoice[]>([]);
+  readonly pickSession = signal<string>('');
+  readonly pickStory = signal<string>('');
+  readonly changingLink = signal(false);
 
   readonly run = signal<ThumbsRun | null>(null);
   readonly busy = signal<null | 'finding' | 'scoring' | 'words' | 'suggesting' | 'rendering'>(null);
@@ -95,6 +102,15 @@ export class Thumbnails implements OnInit, OnDestroy {
   private unsubscribe: (() => void) | null = null;
 
   readonly item = computed(() => this.items().find((i) => `${i.jobId}/${i.itemId}` === this.itemKey()) ?? null);
+  /** Every story the picker can offer: the report's week, plus any project folder chosen. */
+  readonly allChoices = computed<ThumbsStoryChoice[]>(() => [...(this.story()?.choices ?? []), ...this.extraChoices()]);
+  readonly sessions = computed<Array<{ projectFolder: string; session: string }>>(() => {
+    const seen = new Map<string, string>();
+    for (const c of this.allChoices()) if (!seen.has(c.projectFolder)) seen.set(c.projectFolder, c.session);
+    return [...seen].map(([projectFolder, session]) => ({ projectFolder, session }));
+  });
+  readonly sessionStories = computed<ThumbsStoryChoice[]>(() => this.allChoices().filter((c) => c.projectFolder === this.pickSession()));
+  readonly pickedStory = computed<ThumbsStoryChoice | null>(() => this.sessionStories().find((c) => this.storyKey(c) === this.pickStory()) ?? null);
   readonly framesById = computed(() => new Map((this.run()?.frames ?? []).map((f) => [f.id, f])));
   readonly shownFrames = computed<ThumbsFrame[]>(() => {
     const run = this.run();
@@ -150,6 +166,55 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.itemKey.set(key);
     this.resetRun();
     this.title.set(this.item()?.titles[0] ?? '');
+    void this.loadStory();
+  }
+
+  storyKey(c: ThumbsStoryChoice): string {
+    return `${c.number}|${c.slug}`;
+  }
+
+  private async loadStory(): Promise<void> {
+    const item = this.item();
+    this.story.set(null);
+    this.extraChoices.set([]);
+    this.changingLink.set(false);
+    this.pickSession.set('');
+    this.pickStory.set('');
+    if (item === null || item.problem !== null) return;
+    await this.attempt(async () => {
+      const state = await this.electron.thumbsStoryState(item.jobId, item.itemId);
+      if (this.item() !== item) return;
+      this.story.set(state);
+      this.pickSession.set(this.sessions()[0]?.projectFolder ?? '');
+    });
+  }
+
+  pickSessionFolder(folder: string): void {
+    this.pickSession.set(folder);
+    this.pickStory.set('');
+  }
+
+  async chooseProject(): Promise<void> {
+    await this.attempt(async () => {
+      const picked = await this.electron.thumbsChooseProject();
+      if (picked === null) return;
+      const known = new Set(this.allChoices().map((c) => `${c.projectFolder}|${this.storyKey(c)}`));
+      this.extraChoices.set([...this.extraChoices(), ...picked.choices.filter((c) => !known.has(`${c.projectFolder}|${this.storyKey(c)}`))]);
+      if (picked.choices.length > 0) this.pickSessionFolder(picked.choices[0].projectFolder);
+      if (picked.problems.length > 0) this.error.set(picked.problems.join(' '));
+    });
+  }
+
+  /** Save the picked story as the report's link (the report's publish record, like the Inputs page). */
+  async linkPicked(): Promise<void> {
+    const item = this.item();
+    const choice = this.pickedStory();
+    if (item === null || choice === null) return;
+    await this.attempt(async () => {
+      this.story.set(await this.electron.thumbsLinkStory(item.jobId, item.itemId, choice.projectFolder, choice.number, choice.slug));
+      this.changingLink.set(false);
+      this.resetRun();
+    });
   }
 
   private resetRun(): void {
@@ -164,16 +229,6 @@ export class Thumbnails implements OnInit, OnDestroy {
     this.preview.set(null);
   }
 
-  async chooseVideo(): Promise<void> {
-    await this.attempt(async () => {
-      const picked = await this.electron.thumbsChooseVideo();
-      if (picked !== null) {
-        this.otherVideo.set(picked);
-        this.useOtherVideo.set(true);
-      }
-    });
-  }
-
   fileName(p: string | null): string {
     return p === null ? '' : p.split('/').pop() ?? p;
   }
@@ -181,20 +236,13 @@ export class Thumbnails implements OnInit, OnDestroy {
   async findFrames(): Promise<void> {
     const item = this.item();
     if (item === null) return;
-    if (this.useOtherVideo() && this.otherVideo() === null) {
-      this.error.set('Choose the other video file first.');
-      return;
-    }
     this.busy.set('finding');
-    this.progress.set('Starting ffmpeg');
+    this.progress.set('Reading the story and its screen recording');
     this.resetRun();
     await this.attempt(async () => {
       this.run.set(await this.electron.thumbsFindFrames({
         jobId: item.jobId,
         itemId: item.itemId,
-        video: this.useOtherVideo() ? this.otherVideo() : null,
-        start: this.start.trim() || null,
-        end: this.end.trim() || null,
       }));
       this.view.set('all');
     });

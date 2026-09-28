@@ -32,6 +32,8 @@ import type {
 import type {
   ThumbsAnswer,
   ThumbsItem,
+  ThumbsStoryChoice,
+  ThumbsStoryState,
   ThumbsCombineMode,
   ThumbsCombineResult,
   ThumbsPhotos,
@@ -1099,7 +1101,10 @@ declare global {
       // dialog both listen, and one leaving must not deafen the other.
       // The Thumbnails tab (testing, 2026-09-28): every call answers { ok, value } or { ok: false, error }.
       thumbsListItems: () => Promise<ThumbsAnswer<ThumbsItem[]>>;
-      thumbsFindFrames: (req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }) => Promise<ThumbsAnswer<ThumbsRun>>;
+      thumbsStoryState: (jobId: string, itemId: string) => Promise<ThumbsAnswer<ThumbsStoryState>>;
+      thumbsLinkStory: (jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string) => Promise<ThumbsAnswer<ThumbsStoryState>>;
+      thumbsChooseProject: () => Promise<ThumbsAnswer<{ choices: ThumbsStoryChoice[]; problems: string[] } | null>>;
+      thumbsFindFrames: (req: { jobId: string; itemId: string }) => Promise<ThumbsAnswer<ThumbsRun>>;
       thumbsFramePicture: (runId: string, id: string) => Promise<ThumbsAnswer<string>>;
       thumbsScore: (runId: string) => Promise<ThumbsAnswer<ThumbsRun>>;
       thumbsStop: (runId: string) => Promise<ThumbsAnswer<void>>;
@@ -1107,7 +1112,6 @@ declare global {
       thumbsGetStyle: () => Promise<ThumbsAnswer<{ style: ThumbsStyle; stored: boolean }>>;
       thumbsSetStyle: (style: ThumbsStyle) => Promise<ThumbsAnswer<ThumbsStyle>>;
       thumbsRender: (runId: string, variants: ThumbsVariantRequest[]) => Promise<ThumbsAnswer<{ folder: string; results: ThumbsRenderResult[] }>>;
-      thumbsChooseVideo: () => Promise<ThumbsAnswer<string | null>>;
       thumbsPhotos: () => Promise<ThumbsAnswer<ThumbsPhotos>>;
       thumbsSetPhotoNote: (name: string, note: string) => Promise<ThumbsAnswer<void>>;
       thumbsSuggest: (runId: string, variants: Array<{ letter: string; text: string | null }>) => Promise<ThumbsAnswer<ThumbsSuggestion>>;
@@ -2586,7 +2590,16 @@ export class ElectronService {
   }
 
   thumbsListItems(): Promise<ThumbsItem[]> { return this.thumbs(this.thumbsBridge.thumbsListItems()); }
-  thumbsFindFrames(req: { jobId: string; itemId: string; video: string | null; start: string | null; end: string | null }): Promise<ThumbsRun> {
+  thumbsStoryState(jobId: string, itemId: string): Promise<ThumbsStoryState> {
+    return this.thumbs(this.thumbsBridge.thumbsStoryState(jobId, itemId));
+  }
+  thumbsLinkStory(jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string): Promise<ThumbsStoryState> {
+    return this.thumbs(this.thumbsBridge.thumbsLinkStory(jobId, itemId, projectFolder, storyNumber, storySlug));
+  }
+  thumbsChooseProject(): Promise<{ choices: ThumbsStoryChoice[]; problems: string[] } | null> {
+    return this.thumbs(this.thumbsBridge.thumbsChooseProject());
+  }
+  thumbsFindFrames(req: { jobId: string; itemId: string }): Promise<ThumbsRun> {
     return this.thumbs(this.thumbsBridge.thumbsFindFrames(req));
   }
   thumbsFramePicture(runId: string, id: string): Promise<string> { return this.thumbs(this.thumbsBridge.thumbsFramePicture(runId, id)); }
@@ -2598,7 +2611,6 @@ export class ElectronService {
   thumbsRender(runId: string, variants: ThumbsVariantRequest[]): Promise<{ folder: string; results: ThumbsRenderResult[] }> {
     return this.thumbs(this.thumbsBridge.thumbsRender(runId, variants));
   }
-  thumbsChooseVideo(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsChooseVideo()); }
   thumbsPhotos(): Promise<ThumbsPhotos> { return this.thumbs(this.thumbsBridge.thumbsPhotos()); }
   thumbsSetPhotoNote(name: string, note: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsSetPhotoNote(name, note)); }
   thumbsSuggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<ThumbsSuggestion> {

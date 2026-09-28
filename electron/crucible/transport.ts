@@ -59,6 +59,8 @@ import {
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
+  type DecideItem,
+  type DecideItemsResponse,
   type DecideQuestion,
   type DecideResponse,
 } from '@crucible/client';
@@ -210,6 +212,17 @@ export interface DecideRequest {
   signal?: AbortSignal;
   what: string;
   trace: PromptTraceRecord[] | null;
+}
+
+/**
+ * The ITEMS form of decide (Crucible 1.0.55, `decideItems`): several CHOICE questions about one
+ * state (and its images), answered as a list in item order, each exactly as if asked alone, with the
+ * state (and the frame) processed once. Everything but the questions is as DecideRequest.
+ */
+export interface DecideItemsRequest extends Omit<DecideRequest, 'questions'> {
+  items: readonly DecideItem[];
+  /** The options of every item that gives none of its own. */
+  options?: Readonly<Record<string, string>>;
 }
 
 export interface TransportHost {
@@ -480,6 +493,42 @@ export class CrucibleTransport {
    * on its lane's server.
    */
   async decide(request: DecideRequest): Promise<DecideResponse> {
+    return this.decideDoor(request, Object.keys(request.questions), (client, signal) =>
+      client.decide(
+        {
+          model: request.model, state: request.state, questions: request.questions,
+          ...(request.missing === undefined ? {} : { missing: request.missing }),
+          ...(request.images === undefined || request.images.length === 0 ? {} : { images: request.images }),
+        },
+        { act: 'decide', ...(signal === undefined ? {} : { signal }) },
+      ));
+  }
+
+  /**
+   * The items form (Crucible 1.0.55 `decideItems`): one request, many choice questions about one
+   * state, answers in item order. The same door as decide: the same model rules, lane, lease,
+   * context check, re-ensure and refusals; only the body and the reply differ.
+   */
+  async decideItems(request: DecideItemsRequest): Promise<DecideItemsResponse> {
+    if (request.items.length === 0) throw new CrucibleCallError('refused', `${request.what} asked no items.`);
+    return this.decideDoor(request, request.items.map((_, i) => `item ${i + 1}`), (client, signal) =>
+      client.decideItems(
+        {
+          model: request.model, state: request.state, items: request.items,
+          ...(request.options === undefined ? {} : { options: request.options }),
+          ...(request.missing === undefined ? {} : { missing: request.missing }),
+          ...(request.images === undefined || request.images.length === 0 ? {} : { images: request.images }),
+        },
+        { act: 'decide', ...(signal === undefined ? {} : { signal }) },
+      ));
+  }
+
+  /** decide's door, shared by both forms: the caller supplies only the call itself. */
+  private async decideDoor<T>(
+    request: Omit<DecideRequest, 'questions'>,
+    asked: readonly string[],
+    send: (client: Awaited<ReturnType<TransportHost['factory']['clientFor']>>, signal: AbortSignal | undefined) => Promise<T>,
+  ): Promise<T> {
     const model = this.requireCrucibleModel(request.model, request.what);
     if (isUpstreamModelId(model)) {
       throw new CrucibleCallError(
@@ -504,7 +553,7 @@ export class CrucibleTransport {
         model,
         chars: state.length,
         at: new Date().toISOString(),
-        prompt: `${state}${images.length > 0 ? `\n\n[${images.length} image(s)]` : ''}\n\n[decide: ${Object.keys(request.questions).join(', ')}]`,
+        prompt: `${state}${images.length > 0 ? `\n\n[${images.length} image(s)]` : ''}\n\n[decide: ${asked.join(', ')}]`,
         server,
         maxTokens: 0,
         loadContext: request.loadContext ?? null,
@@ -522,14 +571,7 @@ export class CrucibleTransport {
         });
         try {
           const client = await this.host.factory.clientFor(server);
-          const answer = await client.decide(
-            {
-              model, state: request.state, questions: request.questions,
-              ...(request.missing === undefined ? {} : { missing: request.missing }),
-              ...(images.length === 0 ? {} : { images }),
-            },
-            { act: 'decide', ...(signal === undefined ? {} : { signal }) },
-          );
+          const answer = await send(client, signal);
           hooks.beat();
           return answer;
         } catch (err) {

@@ -15,7 +15,7 @@
 
   <!-- 1. The video -->
   <section class="step">
-    <h3><span class="num">1</span> Video</h3>
+    <h3><span class="num">1</span> Report and story</h3>
     <div class="row">
       <label class="field wide">
         <span class="label">Report</span>
@@ -29,35 +29,50 @@
       </label>
     </div>
     @if (item(); as it) {
+      @if (story(); as st) {
+        @if (st.link && !changingLink()) {
+          <div class="row">
+            <span>Story: <strong>{{ st.link.storyTitle }}</strong> (story {{ st.link.storyNumber }} of session {{ st.link.session }})</span>
+            <button mat-stroked-button (click)="changingLink.set(true)" [disabled]="busy() !== null">Link a different story</button>
+          </div>
+          <p class="hint">Frames come from the session's screen recording, only over the parts this story is made of.
+            @if (st.link.from === 'run') { This is the story the report's text was written from. }</p>
+        } @else {
+          <p class="line">
+            @if (st.link) { Pick the story this report was made from. }
+            @else { This report is not linked to an editor story yet. Pick the story it was made from; the choice is saved as the report's story link. }
+          </p>
+          <div class="row">
+            <label class="field">
+              <span class="label">Session</span>
+              <select [ngModel]="pickSession()" (ngModelChange)="pickSessionFolder($event)" [disabled]="busy() !== null">
+                @for (s of sessions(); track s.projectFolder) { <option [value]="s.projectFolder">{{ s.session }}</option> }
+              </select>
+            </label>
+            <label class="field wide">
+              <span class="label">Story</span>
+              <select [ngModel]="pickStory()" (ngModelChange)="pickStory.set($event)" [disabled]="busy() !== null || sessionStories().length === 0">
+                <option value="">Choose a story</option>
+                @for (c of sessionStories(); track storyKey(c)) {
+                  <option [value]="storyKey(c)" [disabled]="c.why !== null">{{ c.number }}. {{ c.title }}{{ c.why ? ' (cannot be linked)' : '' }}</option>
+                }
+              </select>
+            </label>
+            <button mat-flat-button color="primary" (click)="linkPicked()" [disabled]="busy() !== null || pickedStory() === null">Link this story</button>
+            <button mat-stroked-button (click)="chooseProject()" [disabled]="busy() !== null">Other project folder…</button>
+            @if (st.link) { <button mat-stroked-button (click)="changingLink.set(false)">Cancel</button> }
+          </div>
+          <p class="hint">{{ st.searched }}</p>
+          @for (p of st.problems; track p) { <p class="hint warn">{{ p }}</p> }
+          @if (sessionStories().length > 0) {
+            @for (c of sessionStories(); track storyKey(c)) {
+              @if (c.why) { <p class="hint">{{ c.number }}. {{ c.title }}: {{ c.why }}</p> }
+            }
+          }
+        }
+      }
       <div class="row">
-        <label class="radio">
-          <input type="radio" name="source" [checked]="!useOtherVideo()" (change)="useOtherVideo.set(false)" [disabled]="busy() !== null" />
-          <span>This report's video: <strong>{{ fileName(it.sourcePath) }}</strong>
-            @if (!it.videoOnDisk) { <span class="warn">(not on disk: is the drive plugged in?)</span> }
-          </span>
-        </label>
-      </div>
-      <div class="row">
-        <label class="radio">
-          <input type="radio" name="source" [checked]="useOtherVideo()" (change)="useOtherVideo.set(true)" [disabled]="busy() !== null" />
-          <span>Another video file (for example the stream master):
-            <strong>{{ otherVideo() ? fileName(otherVideo()) : 'none chosen' }}</strong></span>
-        </label>
-        <button mat-stroked-button (click)="chooseVideo()" [disabled]="busy() !== null">Choose…</button>
-      </div>
-      <div class="row">
-        <label class="field">
-          <span class="label">From</span>
-          <input type="text" [(ngModel)]="start" placeholder="start of video" [disabled]="busy() !== null" />
-        </label>
-        <label class="field">
-          <span class="label">To</span>
-          <input type="text" [(ngModel)]="end" placeholder="end of video" [disabled]="busy() !== null" />
-        </label>
-        <span class="hint">Times like 07:31 or 1:07:31. Leave empty for the whole video.</span>
-      </div>
-      <div class="row">
-        <button mat-flat-button color="primary" (click)="findFrames()" [disabled]="busy() !== null">
+        <button mat-flat-button color="primary" (click)="findFrames()" [disabled]="busy() !== null || !story()?.link || changingLink()">
           <mat-icon>search</mat-icon> Find frames
         </button>
         @if (busy() === 'finding' && progress()) { <span class="progress"><span class="spinner"></span>{{ progress() }}</span> }

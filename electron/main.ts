@@ -335,7 +335,7 @@ app.whenReady().then(async () => {
 
     // The Thumbnails tab (testing, 2026-09-28): frames, words and renders for one item. Its model
     // calls go through the same Crucible context as everything else (lanes, transport, routing).
-    setupThumbnailLabIpc(store, crucible, userDataPath);
+    setupThumbnailLabIpc(store, crucible, userDataPath, publishStore);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

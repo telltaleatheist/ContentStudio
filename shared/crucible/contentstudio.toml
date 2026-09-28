@@ -16,8 +16,8 @@
 #      a hash of its own content, and tools/test-crucible-module-file.js checks it.
 #
 # Until then, the copy here is produced by the crucible repo's OWN generator at the
-# tag the SDK is pinned to (v1.0.34), run from an extract of that tag (the GitHub
-# source archive of refs/tags/v1.0.34, which is `git archive v1.0.34`) against this
+# tag the SDK is pinned to (v1.0.55), run from an extract of that tag (the GitHub
+# source archive of refs/tags/v1.0.55, which is `git archive v1.0.55`) against this
 # file in a scratch directory: `python scripts/gen-modules.py --directory <scratch>`,
 # then `--check` (plan section 0a, "Mechanics"). A module naming a retired id is
 # refused `unknown_subject`, which is why it is never generated from a working

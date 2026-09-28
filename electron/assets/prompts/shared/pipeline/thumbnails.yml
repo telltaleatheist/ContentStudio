@@ -58,6 +58,13 @@ frames:
     The largest face in this frame has its eyes open.
   strong: |-
     This frame would make a strong YouTube thumbnail.
+  statement: |-
+    Statement: {statement}
+    Is this statement true of the image?
+  yes: |-
+    Yes
+  no: |-
+    No
 
 tone:
   state: |-

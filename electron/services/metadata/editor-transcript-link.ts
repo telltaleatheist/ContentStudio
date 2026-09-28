@@ -268,7 +268,7 @@ export function isDriftWarning(driftPct: number): boolean {
  * `weekFolderOfProject`, which keys on the literal `files` parent. A date-shaped-name rule
  * would claim weeks the archive never created.
  */
-function weekFolderOfExport(videoPath: string): string | null {
+export function weekFolderOfExport(videoPath: string): string | null {
   const clean = videoPath.replace(/[\\/]+$/, '');
   const completeDir = path.dirname(clean);
   if (path.basename(completeDir) !== 'complete') return null;
@@ -308,6 +308,8 @@ interface WeekStory {
   storyNumber: number;
   storyTitle: string;
   storySlug: string;
+  /** The story's `regions` exactly as the edits file holds them; read by storyEditsOf only. */
+  regions: unknown;
 }
 
 /**
@@ -386,6 +388,7 @@ function storiesOfEdits(
       storyNumber,
       storyTitle,
       storySlug: dedupSlug(slugifyStoryTitle(storyTitle, storyNumber), seenSlugs),
+      regions: s?.regions,
     });
   }
   return out;
@@ -735,4 +738,71 @@ export function listProjectStories(projectFolder: string): { candidates: Transcr
 
   const stories = storiesOfEdits(edits, clean, sessionDir, editsPath, problems);
   return { candidates: stories.map(s => toCandidate(s, 'label-match', problems)), problems };
+}
+
+/** One linked story as its editor project holds it NOW: its spans, and the session's cuts. */
+export interface ProjectStoryEdits {
+  editsPath: string;
+  /** The session as a filename component (`<session>` in `<session>_compounds.zip`). */
+  sessionStem: string;
+  story: { number: number; title: string; slug: string; regions: Array<{ start: number; end: number }> };
+  /** Removed material: half-open FRAME ranges on the original timeline (editor-types.ts `Cut`). */
+  cuts: Array<{ startFrame: number; endFrame: number }>;
+}
+
+/**
+ * The story a TranscriptRef names, read from its project's edits file as it stands now
+ * (the Thumbnails tab, 2026-09-28: its frames come from the stretches the story is made of).
+ *
+ * Found by the ref's IDENTITY — story number AND the slug the exporter derived for it, computed
+ * by the same `storiesOfEdits` pass the finder uses — never by a title match. A story renumbered
+ * or renamed since it was linked no longer answers to the ref, and that is said, naming both, so
+ * the operator links again instead of the tab guessing which story he meant.
+ */
+export function storyEditsOf(projectFolder: string, storyNumber: number, storySlug: string): ProjectStoryEdits {
+  const clean = projectFolder.replace(/[\\/]+$/, '');
+  const sessionStem = path.basename(clean);
+  const editsPath = path.join(clean, `${sessionStem}_edits.json`);
+  if (!fs.existsSync(editsPath)) {
+    throw new Error(`${editsPath} is not on disk, so the linked story's spans cannot be read (is the drive plugged in?).`);
+  }
+  const edits = readJson(editsPath);
+  const problems: string[] = [];
+  const stories = storiesOfEdits(edits, clean, sessionStem, editsPath, problems);
+  const found = stories.find(s => s.storyNumber === storyNumber && s.storySlug === storySlug);
+  if (!found) {
+    const same = stories.find(s => s.storyNumber === storyNumber);
+    throw new Error(
+      `${editsPath} has no story #${storyNumber} "${storySlug}" any more` +
+      (same ? ` (story #${storyNumber} is now "${same.storyTitle}")` : '') +
+      '. It was renumbered or renamed after it was linked; link it again.' +
+      (problems.length ? ` Also: ${problems.join('; ')}` : ''));
+  }
+  if (!Array.isArray(found.regions) || found.regions.length === 0) {
+    throw new Error(`${editsPath}: story #${storyNumber} "${found.storyTitle}" has no regions, so it covers nothing.`);
+  }
+  const regions = (found.regions as any[]).map((r, i) => {
+    if (!r || !Number.isFinite(r.start) || !Number.isFinite(r.end) || !(r.end > r.start)) {
+      throw new Error(`${editsPath}: story "${found.storyTitle}" region ${i + 1} is not a span (${JSON.stringify(r)}).`);
+    }
+    return { start: Number(r.start), end: Number(r.end) };
+  });
+  if (!Array.isArray(edits?.cuts)) {
+    throw new Error(`${editsPath} has no cuts array (cuts is ${typeof edits?.cuts}).`);
+  }
+  const cuts = (edits.cuts as any[]).map((c, i) => {
+    if (!c || !Number.isInteger(c.startFrame) || !Number.isInteger(c.endFrame) || c.startFrame < 0 || !(c.endFrame > c.startFrame)) {
+      throw new Error(`${editsPath}: cut ${i + 1} is not a frame range (${JSON.stringify(c)}).`);
+    }
+    return { startFrame: c.startFrame as number, endFrame: c.endFrame as number };
+  });
+  return {
+    editsPath,
+    sessionStem,
+    story: { number: found.storyNumber, title: found.storyTitle, slug: found.storySlug, regions },
+    // A playback reorder (`sequence`) changes the order the story plays in, not which seconds of
+    // the original timeline it is made of: regions and cuts are both in ORIGINAL timeline
+    // coordinates (editor-types.ts), which is all a caller mapping them to the recordings needs.
+    cuts,
+  };
 }
