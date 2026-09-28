@@ -357,8 +357,10 @@ def check_xml():
     cam = [c for c in final.getroot().iter('ref-clip') if c.get('lane') == '-1'][0]
     tags = [c.tag for c in cam]
     ars = cam.find('audio-role-source')
-    check('xml: on a ref-clip the mute goes in <audio-role-source role=...>, placed before filter-audio (DTD order)',
-          tags == ['audio-role-source', 'filter-audio'] and ars.get('role') == 'dialogue.dialogue-1'
+    # The MAIN role, not the subrole: Final Cut ignored role="dialogue.dialogue-1" on a ref-clip
+    # and applied role="dialogue" (Owen's test on the 2026-09-27 export, 2026-09-28).
+    check('xml: on a ref-clip the mute goes in <audio-role-source role="dialogue"> (the MAIN role), placed before filter-audio (DTD order)',
+          tags == ['audio-role-source', 'filter-audio'] and ars.get('role') == 'dialogue'
           and [c.tag for c in ars] == ['mute'] and set(ars[0].attrib) == {'start', 'duration'}, tags)
     check('xml: nothing is written inside a compound <media> (the mutes are on the master timeline only)',
           not any(e.tag == 'mute' for m in final.getroot().iter('media') for e in m.iter()))
