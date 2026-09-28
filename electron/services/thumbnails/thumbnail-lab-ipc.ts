@@ -79,7 +79,20 @@ export function setupThumbnailLabIpc(store: Store<any>, crucible: CrucibleContex
       return lab.setPhotoFolder(picked.filePaths[0]);
     }),
   );
-  ipcMain.handle('thumbs:render', (_e, runId: string, variants) => answer('rendering', () => lab.render(runId, variants)));
+  ipcMain.handle('thumbs:render', (event, runId: string, variants, options) => {
+    progressTo = event.sender;
+    return answer('rendering', () => lab.render(runId, variants, options));
+  });
+  ipcMain.handle('thumbs:logo', () => answer('reading the logo', () => lab.logo()));
+  ipcMain.handle('thumbs:choose-logo', (event) =>
+    answer('choosing the logo file', async () => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = { properties: ['openFile' as const], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }] };
+      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || picked.filePaths.length === 0) return null;
+      return lab.setLogo(picked.filePaths[0]);
+    }),
+  );
   ipcMain.handle('thumbs:story-state', (_e, jobId: string, itemId: string) => answer('reading the story link', () => lab.storyState(jobId, itemId)));
   ipcMain.handle('thumbs:link-story', (_e, jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string) =>
     answer('linking the story', () => lab.linkStory(jobId, itemId, projectFolder, storyNumber, storySlug)));
