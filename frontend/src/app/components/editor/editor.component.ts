@@ -373,6 +373,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   exportMuteSummary: string | null = null;
   // The project whose right-click "Mute words…" modal is open (LEDGER #226).
   muteWordsEntry: ProjectEntry | null = null;
+  /**
+   * The top bar's Mute words button for the OPEN session (Owen, 2026-09-28: "i need to be able
+   * to do it from the main editor page"). `label` is the project's saved choice in the same words
+   * the processing screen uses; null while there is no session. `on` lights it like Mic mute.
+   */
+  muteWordsPill: { label: string; title: string; on: boolean; enabled: boolean } | null = null;
+  /** The Mute words modal opened from the top bar, on the open session's project. */
+  muteWordsSessionOpen = false;
   // File ▸ Export… chooser modal (pick Master FCPXML vs Stories).
   exportChooserOpen = false;
   // Mute the mic wherever the SCREEN track is speaking and the mic is not. ON by default:
@@ -720,6 +728,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Same stamp against the projects registry, so the pane re-sorts the row to the top. A zip
     // that belongs to no registered project matches nothing and is simply not recorded there.
     void this.projectsService.markOpened(zipPath);
+    void this.refreshMuteWordsPill();
     this.cdr.detectChanges();
     // Fit the whole timeline into the visible width on first render.
     this.initialZoomToFit();
@@ -790,6 +799,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportTranscriptsDir = null;
     this.exportWordMutes = null;
     this.exportMuteSummary = null;
+    this.muteWordsPill = null;
+    this.muteWordsSessionOpen = false;
     // Back to the default (mute armed) — an "off" choice is per-session state and is
     // restored from the new session's sidecar, never carried over from the previous one.
     this.muteMicDuringScreen = true;
@@ -2806,6 +2817,58 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const base = zip.slice(cut + 1);
     if (!base.endsWith('_compounds.zip')) return null;
     return { folder: zip.slice(0, cut), cleanName: base.slice(0, -'_compounds.zip'.length) };
+  }
+
+  /** The top bar's Mute words button: this session's project and its saved choice. */
+  private async refreshMuteWordsPill(): Promise<void> {
+    const zip = this.currentZipPath;
+    const proj = this.sessionProject();
+    if (!zip) { this.muteWordsPill = null; this.cdr.detectChanges(); return; }
+    if (!proj) {
+      this.muteWordsPill = {
+        label: 'Mute words: n/a', on: false, enabled: false,
+        title: 'This session is not in a project folder, so there is nowhere to save a Mute words choice',
+      };
+      this.cdr.detectChanges();
+      return;
+    }
+    try {
+      const [catalog, loaded] = await Promise.all([this.host.muteWordsCatalog(), this.host.loadMuteWords(proj)]);
+      if (zip !== this.currentZipPath) return;   // a newer session was opened meanwhile
+      const summary = loaded.saved ? muteSummary(loaded.settings, catalog) : null;
+      const on = summary !== null && summary !== 'Nothing muted';
+      this.muteWordsPill = {
+        label: `Mute words: ${on ? summary : 'Off'}`,
+        on,
+        enabled: true,
+        title: on
+          ? `Every FCPXML export mutes: ${summary}. Click to change it; "Save and apply" also re-mutes the export already on disk.`
+          : 'Nothing is muted on export. Click to pick the words to mute for this project.',
+      };
+    } catch (err: any) {
+      if (zip !== this.currentZipPath) return;
+      this.muteWordsPill = {
+        label: 'Mute words: error', on: false, enabled: true,
+        title: `The Mute words choice could not be read: ${err?.message || String(err)}`,
+      };
+    }
+    this.cdr.detectChanges();
+  }
+
+  /** Top bar ▸ Mute words: open the modal on the open session's project. */
+  openSessionMuteWords(): void {
+    if (!this.sessionProject()) return;
+    this.muteWordsSessionOpen = true;
+  }
+
+  /** The session's project, in the shape the Mute words modal takes. */
+  get sessionMuteProject(): { folder: string; cleanName: string } | null {
+    return this.sessionProject();
+  }
+
+  onSessionMuteWordsClosed(): void {
+    this.muteWordsSessionOpen = false;
+    void this.refreshMuteWordsPill();
   }
 
   /** Read this project's Mute words choice for the chooser's line. A failure is shown, not hidden. */
@@ -5411,6 +5474,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   onMuteWordsClosed(): void {
     this.muteWordsEntry = null;
+    // The right-click one may have been on the open project: keep the top bar honest.
+    void this.refreshMuteWordsPill();
   }
 
   onProjectProcess(entry: ProjectEntry): void {

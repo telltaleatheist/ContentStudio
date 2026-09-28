@@ -32,6 +32,15 @@
       {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
     </span>
     <span class="topbar-spacer"></span>
+    <!-- Mute words for the open project (LEDGER #237): its saved choice at a glance, and the
+         modal one click away. Beside Mic mute because both decide what an export silences. -->
+    <button class="mic-mute-toggle mute-words-pill" *ngIf="muteWordsPill"
+            [class.off]="!muteWordsPill.on"
+            [disabled]="!muteWordsPill.enabled"
+            (click)="openSessionMuteWords()"
+            [title]="muteWordsPill.title">
+      {{ muteWordsPill.label }}
+    </button>
     <!-- Mic-mute-under-screen-audio master switch. ON by default; turning it off makes the
          next export leave every mic clip enabled (nothing is muted). Same state as the
          checkbox in the export chooser — this is just the always-visible handle on it. -->
@@ -131,6 +140,16 @@
     [zipPath]="muteWordsEntry.scan?.zipPath || null"
     [hasTranscript]="!!muteWordsEntry.scan?.hasTranscript"
     (closed)="onMuteWordsClosed()"></app-mute-words-modal>
+
+  <!-- Top bar ▸ Mute words on the OPEN session's project. -->
+  <app-mute-words-modal *ngIf="muteWordsSessionOpen && sessionMuteProject"
+    mode="project"
+    [folder]="sessionMuteProject!.folder"
+    [cleanName]="sessionMuteProject!.cleanName"
+    [projectName]="sessionName"
+    [zipPath]="currentZipPath"
+    [hasTranscript]="transcriptState === 'ready'"
+    (closed)="onSessionMuteWordsClosed()"></app-mute-words-modal>
 
   <!-- Process a raw project without leaving the editor. Closing it does not stop the run —
        the pane keeps showing the progress, and clicking that project reopens onto it. -->
