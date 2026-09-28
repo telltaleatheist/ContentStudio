@@ -186,6 +186,14 @@
     &:disabled { opacity: 0.45; cursor: default; }
   }
 
+  // Same pill as Mic mute; a long choice is cut short here and read in full on hover.
+  .mute-words-pill {
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: 6px;
+  }
+
   /* File menu button — reused (same class) for "Mark Story" and the "Stories (N)" toggle. */
   .menu-wrap {
     flex: 0 0 auto;
