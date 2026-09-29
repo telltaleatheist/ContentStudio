@@ -9,11 +9,13 @@ export type ThumbnailsAnswer<T> = { ok: true; value: T } | { ok: false; error: s
 export type WordKind = 'claim' | 'stakes' | 'reaction';
 export const WORD_KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
 
+/** A ranked photo, in records made before 2026-09-29 (the model's ranking; Owen picks photos now). */
 export interface Ranked {
   name: string;
   p: number | null;
 }
 
+/** Records before 2026-09-29: how a photo was drawn from the ranking's top 3. */
 export interface PhotoDraw {
   name: string;
   p: number;
@@ -33,6 +35,7 @@ export interface StoredDefault {
   phrase: string | null;
   /** The title the words were written for; null for typed words or no text; absent in older records. */
   wordsFor?: string | null;
+  /** The reaction photo Owen picked, or null for none. */
   photo: string | null;
   draw: PhotoDraw | null;
   logo: boolean;
@@ -43,6 +46,7 @@ export interface StoredPair {
   pair: number;
   title: string;
   words: { claim: string[]; stakes: string[]; reaction: string[]; warnings: string[]; model: string };
+  /** Records before 2026-09-29 only (the model's ranking); empty now. */
   photos: Ranked[];
   rankedFor?: string | null;
   default: StoredDefault;
@@ -77,7 +81,7 @@ export interface ItemThumbnails {
   version: 1;
   state: ThumbnailsState;
   line: string;
-  failure: { stage: ThumbnailStage; reason: string } | null;
+  failure: { stage: RecordedStage; reason: string } | null;
   story:
     | { state: 'linked'; method: string; line: string }
     | { state: 'none'; reason: string }
@@ -113,10 +117,12 @@ export interface ThumbnailsSummary {
   publishFile: string | null;
 }
 
-export type ThumbnailStage = 'story' | 'frames' | 'scoring' | 'words' | 'tone-photos' | 'render';
+export type ThumbnailStage = 'story' | 'frames' | 'scoring' | 'words' | 'render';
+/** A stage an older record can name: `tone-photos` (the model's photo ranking) was removed 2026-09-29. */
+export type RecordedStage = ThumbnailStage | 'tone-photos';
 
 export interface FinishView {
-  stage: ThumbnailStage;
+  stage: RecordedStage;
   reason: string;
   keep: ThumbnailStage[];
   run: ThumbnailStage[];
@@ -131,7 +137,7 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   titles: string[];
   renders: Record<string, string>;
   frames: Record<string, string>;
-  photos: Array<{ name: string; preview: string; note: string | null }>;
+  photos: Array<{ name: string; preview: string }>;
   hasLogo: boolean;
   heldModel: string | null;
   finish: FinishView | null;
@@ -144,8 +150,8 @@ export interface PairChange {
   phrase?: string | null;
   kind?: WordKind | null;
   wordsFor?: string | null;
-  photo?: string | null | 'draw';
-  rankingOf?: number;
+  /** A photo name from the library, or null for none. */
+  photo?: string | null;
   logo?: boolean;
 }
 
@@ -173,25 +179,31 @@ export interface LookStyle {
   strokeRatio: number;
   patch: boolean;
   patchDarken: number;
-  vignette: boolean;
-  vignetteStrength: number;
+  /** Owen's border overlay over the picture (when a border file is kept); replaced the vignette 2026-09-29. */
+  border: boolean;
   reactionSlot: LookSlot;
   reactionOutlinePx: number;
   reactionBleed: number;
   logoSlot: LookSlot;
   minCapFraction: number;
   maxCapFraction: number;
+  /** The words drawn at this fraction of the largest size that fits (0.85 by default since 2026-09-29). */
+  textScale: number;
 }
 
 export interface LookPhotos {
   folder: string;
-  photos: Array<{ name: string; preview: string; trim: string | null; note: string | null; draft: boolean }>;
+  photos: Array<{ name: string; preview: string; trim: string | null }>;
   offer: { from: string; count: number } | null;
 }
 
 export interface LookLogo {
   logo: { file: string; name: string; width: number; height: number; preview: string } | null;
   offer: { from: string } | null;
+}
+
+export interface LookBorder {
+  border: { file: string; name: string; width: number; height: number; preview: string } | null;
 }
 
 export interface LookAddPhotos {

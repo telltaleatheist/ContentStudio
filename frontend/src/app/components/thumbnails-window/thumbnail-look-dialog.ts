@@ -3,16 +3,18 @@ import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialogModule } from '@angular/material/dialog';
 import { ElectronService } from '../../services/electron';
-import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.types';
+import type { LookBorder, LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.types';
 
 /**
  * THUMBNAIL LOOK: the one look for all three channels (Owen, 2026-09-28): the reaction photos (add,
- * remove, notes), the logo, and the font, colours and spaces. Moved here from the retired Thumbnails
- * test tab. Opened from the reports page's Thumbnails window and from Settings; the metadata run
+ * remove), the logo, the border overlay (2026-09-29), and the font, colours, text size and spaces.
+ * Moved here from the retired Thumbnails test tab. (The photo notes went 2026-09-29 with the model's
+ * photo ranking that read them: Owen picks the photos himself.) Opened from the reports page's Thumbnails window and from Settings; the metadata run
  * reads the same saved settings at job time, and the window's redraws use them at once.
  *
- * Every change to the photos and the logo is saved when it is made (they are files copied into the
- * app); the look is saved with "Save look", because a half-typed number should not redraw anything.
+ * Every change to the photos, the logo and the border file is saved when it is made (they are files
+ * copied into the app); the look (including whether the border is drawn) is saved with "Save look",
+ * because a half-typed number should not redraw anything.
  */
 @Component({
   selector: 'app-thumbnail-look-dialog',
@@ -30,9 +32,6 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
           <span [title]="photos().folder">{{ photos().photos.length }} photo{{ photos().photos.length === 1 ? '' : 's' }}, kept in the app</span>
           <button mat-stroked-button (click)="addPhotos()" [disabled]="busy()"
                   title="PNG cut-outs, or a folder of them: copied into the app, so they never need adding again">Add photos…</button>
-          @if (photos().photos.length > 0) {
-            <button mat-stroked-button (click)="notesOpen.set(!notesOpen())">{{ notesOpen() ? 'Hide notes' : 'Edit notes' }}</button>
-          }
         </div>
         @if (photos().offer; as offer) {
           <div class="row">
@@ -44,7 +43,7 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
         @if (photoLine(); as line) { <p class="line">{{ line }}</p> }
         <div class="photos">
           @for (p of photos().photos; track p.name) {
-            <div class="photo" [title]="p.note ?? p.name">
+            <div class="photo" [title]="p.name">
               <img [src]="p.preview" [alt]="p.name" />
               <span class="name">{{ p.name }}</span>
               <button class="remove" (click)="removePhoto(p.name)" [disabled]="busy()" [attr.aria-label]="'Remove ' + p.name" title="Remove from the app">Remove</button>
@@ -53,18 +52,6 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
         </div>
         @for (p of photos().photos; track p.name) {
           @if (p.trim) { <p class="line hint">{{ p.trim }}</p> }
-        }
-        @if (notesOpen()) {
-          <p class="hint">A note says what the photo shows and when it fits. The photo ranking reads these notes. Drafts are marked until you save your own.</p>
-          <div class="notes">
-            @for (p of photos().photos; track p.name) {
-              <label class="note">
-                <span class="note-name">{{ p.name }}{{ p.draft ? ' (draft)' : '' }}</span>
-                <input type="text" #noteBox [value]="p.note ?? ''" (keydown.enter)="saveNote(p.name, noteBox.value)" />
-                <button mat-stroked-button (click)="saveNote(p.name, noteBox.value)" [disabled]="busy()">Save</button>
-              </label>
-            }
-          </div>
         }
       </section>
 
@@ -85,9 +72,28 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
         </div>
       </section>
 
+      <section>
+        <h3>Border</h3>
+        <div class="row">
+          @if (border().border; as b) {
+            <img class="border-thumb" [src]="b.preview" [alt]="b.name" />
+            <span [title]="b.file">{{ b.name }} ({{ b.width }}x{{ b.height }}), kept in the app</span>
+          } @else {
+            <span>No border. Thumbnails are drawn without one.</span>
+          }
+          <button mat-stroked-button (click)="chooseBorder()" [disabled]="busy()"
+                  title="A PNG the size of a thumbnail with a transparent middle: drawn over the whole picture, under the words, photo and logo">{{ border().border ? 'Replace…' : 'Choose file…' }}</button>
+          @if (style(); as s) {
+            <label class="check" [title]="border().border ? 'Draw the border on every thumbnail (saved with Save look)' : 'No border file is kept'">
+              <input type="checkbox" [ngModel]="s.border" (ngModelChange)="set('border', $event)" /> Draw the border</label>
+          }
+        </div>
+      </section>
+
       @if (style(); as s) {
         <section>
           <h3>Look <span class="hint">{{ stored() ? 'your saved look' : 'the default look (nothing saved yet)' }}</span></h3>
+          @if (storedLine(); as l) { <p class="hint">{{ l }}</p> }
           <div class="look">
             <label class="field"><span class="label">Font</span>
               <input type="text" [ngModel]="s.font" (ngModelChange)="set('font', $event)" /></label>
@@ -100,9 +106,6 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
             <label class="check"><input type="checkbox" [ngModel]="s.patch" (ngModelChange)="set('patch', $event)" /> Soft dark patch behind the words</label>
             <label class="field"><span class="label">Patch darkness (%)</span>
               <input type="number" min="0" max="100" step="5" [ngModel]="pct(s.patchDarken)" (ngModelChange)="set('patchDarken', $event / 100)" /></label>
-            <label class="check"><input type="checkbox" [ngModel]="s.vignette" (ngModelChange)="set('vignette', $event)" /> Dark edges</label>
-            <label class="field"><span class="label">Edge darkness (%)</span>
-              <input type="number" min="0" max="100" step="5" [ngModel]="pct(s.vignetteStrength)" (ngModelChange)="set('vignetteStrength', $event / 100)" /></label>
             <label class="field"><span class="label">Photo outline (px at 1080p, 0 for none)</span>
               <input type="number" min="0" max="40" step="1" [ngModel]="s.reactionOutlinePx" (ngModelChange)="set('reactionOutlinePx', $event)" /></label>
             <label class="field"><span class="label">Photo below the bottom edge (% of its height)</span>
@@ -111,6 +114,8 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
               <input type="number" min="5" max="40" step="1" [ngModel]="pct(s.minCapFraction)" (ngModelChange)="set('minCapFraction', $event / 100)" /></label>
             <label class="field"><span class="label">Largest letters (% of height)</span>
               <input type="number" min="5" max="50" step="1" [ngModel]="pct(s.maxCapFraction)" (ngModelChange)="set('maxCapFraction', $event / 100)" /></label>
+            <label class="field" title="100% fills the space the words fit; 85% (the default) draws them 15% smaller"><span class="label">Text size (% of the largest that fits)</span>
+              <input type="number" min="50" max="100" step="5" [ngModel]="pct(s.textScale)" (ngModelChange)="set('textScale', $event / 100)" /></label>
             @for (slot of slots; track slot.key) {
               <div class="slot">
                 <span class="label">{{ slot.label }}, % of the picture:</span>
@@ -149,11 +154,7 @@ import type { LookLogo, LookPhotos, LookSlot, LookStyle } from './thumbnails.typ
       .remove { font-size: 12px; background: none; border: none; color: var(--text-secondary); cursor: pointer; text-decoration: underline; }
     }
     .logo-thumb { height: 40px; }
-    .notes { display: flex; flex-direction: column; gap: 4px; }
-    .note { display: flex; align-items: center; gap: 8px;
-      .note-name { width: 160px; flex: 0 0 auto; }
-      input { flex: 1; font: inherit; padding: 4px 6px; }
-    }
+    .border-thumb { width: 160px; aspect-ratio: 16 / 9; background: #7a7a7a; border-radius: 3px; }
     .look { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
     .field { display: flex; flex-direction: column; gap: 2px;
       input { font: inherit; padding: 3px 6px; max-width: 200px; }
@@ -170,8 +171,10 @@ export class ThumbnailLookDialog implements OnInit {
   readonly photos = signal<LookPhotos>({ folder: '', photos: [], offer: null });
   readonly logo = signal<LookLogo>({ logo: null, offer: null });
   readonly style = signal<LookStyle | null>(null);
+  readonly border = signal<LookBorder>({ border: null });
   readonly stored = signal(false);
-  readonly notesOpen = signal(false);
+  /** Said when the saved look was read with newer defaults (text size, border). */
+  readonly storedLine = signal<string | null>(null);
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
   readonly photoLine = signal<string | null>(null);
@@ -190,8 +193,9 @@ export class ThumbnailLookDialog implements OnInit {
       this.photos.set(await this.electron.thumbnailsPhotos());
       await this.loadStyle(null);
     });
-    // Its own attempt: a kept logo that cannot be read is said by name without hiding the rest.
+    // Their own attempts: a kept logo or border that cannot be read is said by name without hiding the rest.
     await this.attempt(async () => this.logo.set(await this.electron.thumbnailsLogo()));
+    await this.attempt(async () => this.border.set(await this.electron.thumbnailsBorder()));
   }
 
   private async attempt(fn: () => Promise<void>): Promise<void> {
@@ -227,7 +231,7 @@ export class ThumbnailLookDialog implements OnInit {
   }
 
   async removePhoto(name: string): Promise<void> {
-    if (!window.confirm(`Remove "${name}" from your reaction photos? Only the app's copy goes; your note for it stays.`)) return;
+    if (!window.confirm(`Remove "${name}" from your reaction photos? Only the app's copy goes.`)) return;
     await this.attempt(async () => {
       await this.electron.thumbnailsRemovePhoto(name);
       this.photoLine.set(`Removed "${name}".`);
@@ -240,14 +244,6 @@ export class ThumbnailLookDialog implements OnInit {
       const out = await this.electron.thumbnailsCopyOldPhotos();
       this.photoLine.set(`Copied ${out.added.length} photos into the app. Your originals were not touched.`);
       this.photos.set(await this.electron.thumbnailsPhotos());
-    });
-  }
-
-  async saveNote(name: string, note: string): Promise<void> {
-    await this.attempt(async () => {
-      await this.electron.thumbnailsSetPhotoNote(name, note);
-      this.photos.set(await this.electron.thumbnailsPhotos());
-      this.photoLine.set(`Saved the note for "${name}".`);
     });
   }
 
@@ -264,12 +260,22 @@ export class ThumbnailLookDialog implements OnInit {
     await this.attempt(async () => this.logo.set(await this.electron.thumbnailsCopyOldLogo()));
   }
 
+  // ── border ─────────────────────────────────────────────────────────────────
+
+  async chooseBorder(): Promise<void> {
+    await this.attempt(async () => {
+      const picked = await this.electron.thumbnailsChooseBorder();
+      if (picked !== null) this.border.set(picked);
+    });
+  }
+
   // ── the look ───────────────────────────────────────────────────────────────
 
   async loadStyle(line: string | null): Promise<void> {
-    const { style, stored } = await this.electron.thumbnailsGetStyle();
+    const { style, stored, line: storedLine } = await this.electron.thumbnailsGetStyle();
     this.style.set(style);
     this.stored.set(stored);
+    this.storedLine.set(storedLine);
     this.styleLine.set(line);
   }
 
@@ -293,6 +299,7 @@ export class ThumbnailLookDialog implements OnInit {
     await this.attempt(async () => {
       this.style.set(await this.electron.thumbnailsSetStyle(style));
       this.stored.set(true);
+      this.storedLine.set(null);
       this.styleLine.set('Saved. Thumbnails drawn from now on use this look.');
     });
   }

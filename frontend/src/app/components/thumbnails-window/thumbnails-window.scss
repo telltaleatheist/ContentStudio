@@ -1,6 +1,6 @@
 /* Theme tokens only, so the window follows the app's light and dark themes. The smallest text is
-   12px, above the app's 11.5px legibility floor. One top-to-bottom flow (2026-09-29): frames, text,
-   photos, the thumbnails. */
+   12px, above the app's 11.5px legibility floor. One top-to-bottom flow (2026-09-29): frames (one
+   flat list), text (a list), photos (one row), Generate thumbnails, the thumbnails. */
 .tw {
   font-family: var(--font-family);
   font-size: 13px;
@@ -59,10 +59,9 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   background: var(--primary-orange); color: #1a1a1a; font-weight: 700; font-size: 13px; display: grid; place-items: center;
 }
 
-/* ── 1. frames ── */
-.scene { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; }
-.scene-label { width: 150px; flex: 0 0 auto; font-size: 12px; color: var(--text-secondary); padding-top: 4px; }
+/* ── 1. frames: one flat grid ── */
 .frames { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.more { margin-top: 8px; }
 .frame {
   position: relative; padding: 0; border: 3px solid transparent; border-radius: 5px; cursor: pointer; background: none;
   img { width: 176px; height: 99px; object-fit: cover; display: block; border-radius: 2px; }
@@ -70,35 +69,42 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   &.on { border-color: var(--primary-orange); }
 }
 
-/* ── 2. text ── */
-.texts { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
+/* ── 2. text: a vertical list, one line each ── */
+.texts { display: flex; flex-direction: column; gap: 2px; max-width: 900px; }
 .text {
-  position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  text-align: left; font: inherit; padding: 6px 8px 6px 36px; border-radius: 5px; cursor: pointer; min-height: 44px;
-  border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);
+  display: flex; align-items: baseline; gap: 10px;
+  text-align: left; font: inherit; padding: 4px 8px; border-radius: 4px; cursor: pointer;
+  border: 1px solid transparent; background: none; color: var(--text-primary);
+  .badge-slot { position: relative; width: 22px; height: 22px; flex: 0 0 auto; align-self: center; }
+  .badge-slot .badge { top: 0; left: 0; width: 22px; height: 22px; font-size: 12px; }
   .phrase { font-weight: 600; }
   .label { font-size: 12px; color: var(--text-secondary); }
-  .badge { top: 50%; transform: translateY(-50%); left: 6px; }
-  &:hover { border-color: var(--text-secondary); }
-  &.on { border-color: var(--primary-orange); box-shadow: inset 0 0 0 1px var(--primary-orange); }
+  &:hover { background: var(--bg-secondary); }
+  &.on { border-color: var(--primary-orange); }
 }
 .own { flex: 1; min-width: 240px; max-width: 480px; font: inherit; padding: 5px 8px; }
 
-/* ── 3. photos ── */
-.photo-row { margin: 8px 0 12px; }
-.photo-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+/* ── 3. photos: one row, picked 1, 2, 3 ── */
 .photos { display: flex; flex-wrap: wrap; gap: 6px; }
 .photo {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 92px; min-height: 96px; padding: 4px;
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 92px; min-height: 96px; padding: 4px;
   font: inherit; font-size: 12px; cursor: pointer; border-radius: 4px;
   border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);
   img { height: 56px; max-width: 84px; object-fit: contain; }
-  .pct { color: var(--text-secondary); }
-  &.choice { background: var(--bg-secondary); }
+  .name { text-align: center; }
   &.on { border-color: var(--primary-orange); box-shadow: inset 0 0 0 1px var(--primary-orange); }
+  &.none { cursor: default; background: var(--bg-secondary); }
+  .none-add { font: inherit; background: none; border: none; color: var(--text-primary); cursor: pointer; padding: 8px 4px; }
+  .none-badges { display: flex; gap: 4px; }
+  .none-badges .badge { position: static; border: none; cursor: pointer; }
 }
 
-/* ── 4. your thumbnails ── */
+/* ── 4. generate: at the bottom of the picks ── */
+.generate { border-top-width: 2px; }
+.gen-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.gen { font-size: 15px; padding: 0 22px; height: 42px; }
+
+/* ── 5. your thumbnails ── */
 .results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .result {
   display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 6px;

@@ -1,26 +1,61 @@
 /**
- * THE THUMBNAILS WINDOW'S PICKING RULES, pure (2026-09-29). Owen, after the phase-2 window failed
- * him: "the images it gathered from the original section should be at the top. i pick three. the
- * text it generated. i pick three. it overlays them."
+ * THE THUMBNAILS WINDOW'S PICKING RULES, pure. Two rounds with Owen on 2026-09-29:
  *
- *   - FRAMES and TEXTS are picked in click order, up to three each; clicking a picked one takes it
- *     out and the rest close up (the titles' rule, publish-state.ts toggleTitle).
- *   - THUMBNAIL n is frame n + text n + photo n + the logo, drawn into pair n of the record (the
- *     main process draws; `wantedChange` says what pair n must change to show slot n, or null when
- *     it already does). Owen's own image can take any of the three places instead; the frames and
- *     texts then fill the other places in order.
- *   - The picks saved (pick 1 is the video's thumbnail; with an A/B test pick n goes with title n)
- *     are the places in order, once each is drawn (`pickRequests`). Saved as he goes.
+ *   First: "the images it gathered from the original section should be at the top. i pick three. the
+ *   text it generated. i pick three. it overlays them."
+ *   Then: "just let me pick the image of myself that goes in the corner ... for my images, let me click
+ *   1->2->3, same as everything else ... the thumbnail text should be a list i pick. 1, 2, 3 ... we dont
+ *   need to separate by scene. just show a list of possible images to use ... the 'generate
+ *   thumbnails' button should be at the bottom".
+ *
+ *   - FRAMES, TEXTS and PHOTOS are each picked in click order, up to three; clicking a picked one
+ *     takes it out and the rest close up (the titles' rule, publish-state.ts toggleTitle). The
+ *     frames are ONE flat list, best score first (`frameList`), the rest behind "Show more".
+ *   - "No photo" can be picked more than once (thumbnail 1 and 3 without a photo, 2 with one); a
+ *     thumbnail beyond the photos picked has none. There is no ranking and no percentage any more.
+ *   - THUMBNAIL n is frame n + text n + photo n + the logo, drawn into pair n of the record. Nothing
+ *     is drawn until Owen presses Generate thumbnails (at the bottom): then every place that has a
+ *     frame and a text is drawn (`drawChange`) and the places are saved as the ordered picks
+ *     (`pickRequests`; pick 1 is the video's thumbnail, pick n goes with title n in an A/B test).
+ *     A card whose picks changed after it was drawn says so (`wantedChange` is not null).
+ *   - Owen's own image can take any of the three places instead; the frames, texts and photos then
+ *     fill the other places in order.
  *   - Every action goes through ONE runner that shows what is running and turns any failure into a
  *     line on screen (`ActionRunner`): nothing reaches only the log.
  *
  * No Angular and only type imports, so tools/thumbnail-pipeline-checks.js runs it under plain Node.
  */
-import type { PairChange, PickRequest, PickView, Ranked, StoredPair, WordKind } from './thumbnails.types';
+import type { ItemThumbnails, PairChange, PickRequest, PickView, StoredPair, WordKind } from './thumbnails.types';
 
 export const MAX_PICKS = 3;
 
 const KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
+
+// ── frames ────────────────────────────────────────────────────────────────────
+
+/**
+ * The frames as ONE list (no scenes): the frames the run chose to show, two per scene (the best and
+ * the best clearly different one, frame-scenes.ts sceneRows, so the list is still deduplicated),
+ * ordered best score first; `more` is the rest of the candidates, in the same order, for "Show
+ * more". Screenshots keep their own order (screenshot 1, 2, 3).
+ */
+export function frameList(record: Pick<ItemThumbnails, 'bestScenes' | 'frames' | 'source'> | null): { shown: string[]; more: string[] } {
+  if (record === null) return { shown: [], more: [] };
+  const shown = record.bestScenes.flatMap((r) => r.ids);
+  const more = record.bestScenes.flatMap((r) => r.more);
+  if (record.source !== null && record.source.video === null) return { shown, more };
+  const score = new Map(record.frames.map((f) => [f.id, f.score]));
+  const time = new Map(record.frames.map((f) => [f.id, f.t]));
+  const best = (a: string, b: string) => {
+    const sa = score.get(a) ?? null;
+    const sb = score.get(b) ?? null;
+    if (sa === null || sb === null) return sa === sb ? (time.get(a) ?? 0) - (time.get(b) ?? 0) : sa === null ? 1 : -1;
+    return sb - sa || (time.get(a) ?? 0) - (time.get(b) ?? 0);
+  };
+  return { shown: [...shown].sort(best), more: [...more].sort(best) };
+}
+
+// ── text ──────────────────────────────────────────────────────────────────────
 
 /** One line of text Owen can pick: generated words (labelled with their title and kind), typed words, or no text. */
 export interface TextOption {
@@ -30,7 +65,7 @@ export interface TextOption {
   kind: WordKind | null;
   /** The title the words were written for; null for typed words or no text. */
   wordsFor: string | null;
-  /** The pair whose words list it came from (its photo ranking is the one shown for it), or null. */
+  /** The pair whose words list it came from, or null. */
   pair: number | null;
 }
 
@@ -76,26 +111,59 @@ export function togglePick<T>(list: readonly T[], item: T, key: (t: T) => string
   return { list: [...list, item], refused: null };
 }
 
-/** 'auto': drawn from the top 3 of the ranking; null: no photo; a name: that photo. */
-export type PhotoChoice = 'auto' | null | string;
+// ── photos ────────────────────────────────────────────────────────────────────
 
-/** Thumbnail n's photo choice: null ("No photo") is a choice, so only an absent entry means the draw. */
-export function photoOf(photos: Readonly<Record<number, PhotoChoice>>, n: number): PhotoChoice {
-  return Object.prototype.hasOwnProperty.call(photos, n) ? photos[n] : 'auto';
+/** One of Owen's photo picks: a reaction photo by name, or "No photo" (name null). */
+export interface PhotoOption {
+  key: string;
+  name: string | null;
 }
+
+export function photoOption(name: string): PhotoOption {
+  return { key: `photo|${name}`, name };
+}
+
+/** A photo clicked: picked last, or taken out (the rest close up), a fourth refused. */
+export function togglePhoto(list: readonly PhotoOption[], name: string): { list: PhotoOption[]; refused: string | null } {
+  return togglePick(list, photoOption(name), (p) => p.key, 'photos');
+}
+
+/**
+ * "No photo" clicked: one more place without a photo, last in the order (it can be picked more than
+ * once, so thumbnails 1 and 3 can go without while 2 has one). Each is taken out on its own badge
+ * (`removePhotoAt`).
+ */
+export function addNoPhoto(list: readonly PhotoOption[]): { list: PhotoOption[]; refused: string | null } {
+  if (list.length >= MAX_PICKS) return { list: [...list], refused: `Up to ${MAX_PICKS} photos can be picked. Click a picked one to take it out first.` };
+  let k = 1;
+  while (list.some((p) => p.key === `none|${k}`)) k++;
+  return { list: [...list, { key: `none|${k}`, name: null }], refused: null };
+}
+
+export function removePhotoAt(list: readonly PhotoOption[], index: number): PhotoOption[] {
+  return list.filter((_, i) => i !== index);
+}
+
+/** The pick numbers (1-based) a photo holds; for "No photo" (null) every place it holds. */
+export function photoNumbers(list: readonly PhotoOption[], name: string | null): number[] {
+  return list.flatMap((p, i) => (p.name === name ? [i + 1] : []));
+}
+
+// ── the places ────────────────────────────────────────────────────────────────
 
 export interface Slot {
   /** The thumbnail's place, 1 to 3 (pair n is drawn for it). */
   n: number;
   /** Owen's own image in this place, or null. */
   own: string | null;
-  /** Which frame and text pick this place takes (0-based), or null for his own image. */
+  /** Which frame, text and photo pick this place takes (0-based), or null for his own image. */
   pickIndex: number | null;
   frameId: string | null;
   text: TextOption | null;
-  photo: PhotoChoice;
-  /** The pair whose photo ranking is shown and drawn from: the pair the words came from, else pair n. */
-  rankingPair: number | null;
+  /** The photo drawn on it: photo pick `pickIndex`, or null (No photo, or none picked for it). */
+  photo: string | null;
+  /** True when a photo pick (a photo or "No photo") stands for this place; false: none picked for it. */
+  photoPicked: boolean;
   /** What is missing before it can be drawn; null when it can be (or it is his own image). */
   missing: string | null;
 }
@@ -104,23 +172,23 @@ export function planSlots(input: {
   pairs: readonly StoredPair[];
   frames: readonly string[];
   texts: readonly TextOption[];
-  photos: Readonly<Record<number, PhotoChoice>>;
+  photos: readonly PhotoOption[];
   own: Readonly<Record<number, string>>;
 }): Slot[] {
   const { pairs } = input;
   const has = (n: number) => pairs.some((p) => p.pair === n);
-  const ranked = (n: number | null) => n !== null && pairs.some((p) => p.pair === n && p.photos.length > 0);
   const slots: Slot[] = [];
   let k = 0;
   for (let n = 1; n <= MAX_PICKS; n++) {
     const own = input.own[n] ?? null;
     if (own !== null) {
-      slots.push({ n, own, pickIndex: null, frameId: null, text: null, photo: null, rankingPair: null, missing: null });
+      slots.push({ n, own, pickIndex: null, frameId: null, text: null, photo: null, photoPicked: false, missing: null });
       continue;
     }
     const i = k++;
     const frameId = input.frames[i] ?? null;
     const text = input.texts[i] ?? null;
+    const photoPick = input.photos[i];
     let missing: string | null = null;
     if (!has(n)) {
       missing = pairs.length === 0
@@ -129,15 +197,27 @@ export function planSlots(input: {
     } else if (frameId === null && text === null) missing = `Pick frame ${i + 1} and text ${i + 1} above.`;
     else if (frameId === null) missing = `Pick frame ${i + 1} above.`;
     else if (text === null) missing = `Pick text ${i + 1} above.`;
-    const rankingPair = ranked(text?.pair ?? null) ? text!.pair : has(n) ? n : null;
-    slots.push({ n, own: null, pickIndex: i, frameId, text, photo: photoOf(input.photos, n), rankingPair, missing });
+    slots.push({ n, own: null, pickIndex: i, frameId, text, photo: photoPick?.name ?? null, photoPicked: photoPick !== undefined, missing });
   }
   return slots;
 }
 
-/** The ranking a slot's photos are shown and drawn from ([] when the photos were never ranked). */
-export function rankingFor(slot: Slot, pairs: readonly StoredPair[]): Ranked[] {
-  return pairs.find((p) => p.pair === slot.rankingPair)?.photos ?? [];
+/** A place that Generate thumbnails will draw: a frame and a text (or No text) picked, and a pair to draw into. */
+export function ready(slot: Slot): boolean {
+  return slot.own === null && slot.missing === null && slot.frameId !== null && slot.text !== null;
+}
+
+/**
+ * Why Generate thumbnails cannot run, or null when it can: it needs at least one place with a frame
+ * and a text (or "No text"), or one of Owen's own images. `blocked` is the record's own reason
+ * (stopped, no story, off), which only his own images get past.
+ */
+export function generateBlocked(slots: readonly Slot[], blocked: string | null): string | null {
+  const own = slots.some((s) => s.own !== null);
+  if (blocked !== null && !own) return blocked;
+  if (blocked === null && slots.some(ready)) return null;
+  if (own) return null;
+  return 'Pick at least one frame and one line of text (or “No text”) above.';
 }
 
 /** The title pair n's current words were written for (older records: its own title when the words are generated). */
@@ -147,64 +227,46 @@ export function currentWordsFor(pair: StoredPair): string | null {
   return d.kind !== null ? pair.title : null;
 }
 
-function sameNames(a: readonly Ranked[], b: readonly Ranked[]): boolean {
-  return a.length === b.length && a.every((r, i) => r.name === b[i].name);
+/** The whole change that draws place n as picked: what Generate thumbnails sends for every ready place. */
+export function drawChange(slot: Slot, logo: boolean): PairChange {
+  if (!ready(slot)) throw new Error(`Thumbnail ${slot.n} cannot be drawn: ${slot.missing ?? 'it is your own image'}.`);
+  const t = slot.text!;
+  return { pair: slot.n, frameId: slot.frameId!, phrase: t.phrase, kind: t.kind, wordsFor: t.wordsFor, photo: slot.photo, logo };
 }
 
 /**
- * The change that makes pair n show slot n, or null when it already does (or the slot cannot be
- * drawn: his own image, or something missing). An 'auto' photo is kept while it was drawn from the
- * top 3 of the slot's ranking, and drawn again when the ranking changed; with no ranking at all the
- * thumbnail has no photo (the Photos section says why).
+ * What pair n's current drawing differs in from place n as picked, or null when it already shows
+ * it (or the place cannot be drawn: his own image, or something missing). The window uses it to say
+ * a card changed since it was generated, and Generate checks it after drawing.
  */
 export function wantedChange(slot: Slot, pairs: readonly StoredPair[], logo: boolean): PairChange | null {
-  if (slot.own !== null || slot.missing !== null || slot.frameId === null || slot.text === null) return null;
+  if (!ready(slot)) return null;
   const pair = pairs.find((p) => p.pair === slot.n);
   if (pair === undefined) return null;
   const d = pair.default;
   const change: PairChange = { pair: slot.n };
   let changed = false;
   if (d.frameId !== slot.frameId) {
-    change.frameId = slot.frameId;
+    change.frameId = slot.frameId!;
     changed = true;
   }
-  const t = slot.text;
+  const t = slot.text!;
   if (d.phrase !== t.phrase || d.kind !== t.kind || currentWordsFor(pair) !== t.wordsFor) {
     change.phrase = t.phrase;
     change.kind = t.kind;
     change.wordsFor = t.wordsFor;
     changed = true;
   }
-  if (slot.photo === null) {
-    if (d.photo !== null) {
-      change.photo = null;
-      changed = true;
-    }
-  } else if (slot.photo !== 'auto') {
-    if (d.photo !== slot.photo) {
-      change.photo = slot.photo;
-      changed = true;
-    }
-  } else {
-    const ranking = rankingFor(slot, pairs);
-    if (ranking.length === 0) {
-      if (d.photo !== null) {
-        change.photo = null;
-        changed = true;
-      }
-    } else if (d.draw === null || d.photo === null || !sameNames(d.draw.pool, ranking.slice(0, 3))) {
-      change.photo = 'draw';
-      change.rankingOf = slot.rankingPair!;
-      changed = true;
-    }
+  if (d.photo !== slot.photo) {
+    change.photo = slot.photo;
+    changed = true;
   }
   if (d.logo !== logo) {
     change.logo = logo;
     changed = true;
   }
   if (!changed && !d.render.ok) {
-    // Never drawn (a record from before phase 2 refused its words): draw it as it stands.
-    change.frameId = slot.frameId;
+    change.frameId = slot.frameId!;
     changed = true;
   }
   return changed ? change : null;
@@ -212,7 +274,7 @@ export function wantedChange(slot: Slot, pairs: readonly StoredPair[], logo: boo
 
 /**
  * The picks to save: the places in order, each his own image or a drawn pair; a place with
- * something missing is left out (the rest close up). Null while a place is still to be drawn.
+ * something missing is left out (the rest close up). Null while a place does not show its picks yet.
  */
 export function pickRequests(slots: readonly Slot[], pairs: readonly StoredPair[], logo: boolean): PickRequest[] | null {
   const out: PickRequest[] = [];
@@ -221,7 +283,7 @@ export function pickRequests(slots: readonly Slot[], pairs: readonly StoredPair[
       out.push({ kind: 'own', file: s.own });
       continue;
     }
-    if (s.missing !== null) continue;
+    if (!ready(s)) continue;
     if (wantedChange(s, pairs, logo) !== null) return null;
     out.push({ kind: 'made', pair: s.n });
   }
@@ -235,14 +297,18 @@ export function samePicks(requests: readonly PickRequest[], saved: readonly Pick
   });
 }
 
-/** The frames, texts, photos and own images the saved picks stand for (the window reopened). */
+/**
+ * The frames, texts, photos and own images the saved picks stand for (the window reopened, or
+ * "Start from the suggested three"). A trailing run of "No photo" is left out: a place beyond the
+ * photos picked has none anyway.
+ */
 export function selectionFromPicks(picks: readonly PickView[], pairs: readonly StoredPair[]): {
-  frames: string[]; texts: TextOption[]; photos: Record<number, PhotoChoice>; own: Record<number, string>;
+  frames: string[]; texts: TextOption[]; photos: PhotoOption[]; own: Record<number, string>;
 } {
   const options = textOptions(pairs);
   const frames: string[] = [];
   const texts: TextOption[] = [];
-  const photos: Record<number, PhotoChoice> = {};
+  let photos: PhotoOption[] = [];
   const own: Record<number, string> = {};
   picks.forEach((view, i) => {
     const n = i + 1;
@@ -262,10 +328,13 @@ export function selectionFromPicks(picks: readonly PickView[], pairs: readonly S
       texts.push(options.find((o) => o.key === generatedKey(wordsFor, d.phrase!))
         ?? { key: generatedKey(wordsFor, d.phrase), phrase: d.phrase, kind: d.kind, wordsFor, pair: pairs.find((p) => p.title === wordsFor)?.pair ?? pair.pair });
     }
-    photos[n] = d.draw !== null ? 'auto' : d.photo;
+    photos = d.photo === null ? addNoPhoto(photos).list : [...photos, photoOption(d.photo)];
   });
+  while (photos.length > 0 && photos[photos.length - 1].name === null) photos = photos.slice(0, -1);
   return { frames, texts, photos, own };
 }
+
+// ── the runner ────────────────────────────────────────────────────────────────
 
 /** "0:07", "1:23", "12:04". */
 export function clockOf(ms: number): string {

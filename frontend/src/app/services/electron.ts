@@ -32,6 +32,7 @@ import type {
 import type {
   LookAddPhotos,
   LookLogo,
+  LookBorder,
   LookPhotos,
   LookStyle,
   PairChange,
@@ -1113,10 +1114,9 @@ declare global {
       thumbnailsChooseScreenshots: () => Promise<ThumbnailsAnswer<string[] | null>>;
       thumbnailsReleaseModel: () => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsShowFolder: (folder: string) => Promise<ThumbnailsAnswer<void>>;
-      thumbnailsGetStyle: () => Promise<ThumbnailsAnswer<{ style: LookStyle; stored: boolean }>>;
+      thumbnailsGetStyle: () => Promise<ThumbnailsAnswer<{ style: LookStyle; stored: boolean; line: string | null }>>;
       thumbnailsSetStyle: (style: LookStyle) => Promise<ThumbnailsAnswer<LookStyle>>;
       thumbnailsPhotos: () => Promise<ThumbnailsAnswer<LookPhotos>>;
-      thumbnailsSetPhotoNote: (name: string, note: string) => Promise<ThumbnailsAnswer<void>>;
       thumbnailsChoosePhotos: () => Promise<ThumbnailsAnswer<LookAddPhotos | null>>;
       thumbnailsAddPhotos: (chosen: string[], replace: boolean) => Promise<ThumbnailsAnswer<LookAddPhotos>>;
       thumbnailsRemovePhoto: (name: string) => Promise<ThumbnailsAnswer<void>>;
@@ -1124,6 +1124,8 @@ declare global {
       thumbnailsLogo: () => Promise<ThumbnailsAnswer<LookLogo>>;
       thumbnailsChooseLogo: () => Promise<ThumbnailsAnswer<LookLogo | null>>;
       thumbnailsCopyOldLogo: () => Promise<ThumbnailsAnswer<LookLogo>>;
+      thumbnailsBorder: () => Promise<ThumbnailsAnswer<LookBorder>>;
+      thumbnailsChooseBorder: () => Promise<ThumbnailsAnswer<LookBorder | null>>;
       onThumbnailsProgress: (callback: (event: ThumbnailsProgress) => void) => () => void;
       streamMarksList: () => Promise<StreamMarkSessionSummary[]>;
       streamMarksGet: (id: string) => Promise<StreamMarkSession>;
@@ -2626,10 +2628,9 @@ export class ElectronService {
   thumbnailsChooseScreenshots(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseScreenshots()); }
   thumbnailsReleaseModel(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsReleaseModel()); }
   thumbnailsShowFolder(folder: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsShowFolder(folder)); }
-  thumbnailsGetStyle(): Promise<{ style: LookStyle; stored: boolean }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsGetStyle()); }
+  thumbnailsGetStyle(): Promise<{ style: LookStyle; stored: boolean; line: string | null }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsGetStyle()); }
   thumbnailsSetStyle(style: LookStyle): Promise<LookStyle> { return this.thumbnails(this.thumbnailsBridge.thumbnailsSetStyle(style)); }
   thumbnailsPhotos(): Promise<LookPhotos> { return this.thumbnails(this.thumbnailsBridge.thumbnailsPhotos()); }
-  thumbnailsSetPhotoNote(name: string, note: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsSetPhotoNote(name, note)); }
   thumbnailsChoosePhotos(): Promise<LookAddPhotos | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChoosePhotos()); }
   thumbnailsAddPhotos(chosen: string[], replace: boolean): Promise<LookAddPhotos> { return this.thumbnails(this.thumbnailsBridge.thumbnailsAddPhotos(chosen, replace)); }
   thumbnailsRemovePhoto(name: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsRemovePhoto(name)); }
@@ -2637,6 +2638,8 @@ export class ElectronService {
   thumbnailsLogo(): Promise<LookLogo> { return this.thumbnails(this.thumbnailsBridge.thumbnailsLogo()); }
   thumbnailsChooseLogo(): Promise<LookLogo | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseLogo()); }
   thumbnailsCopyOldLogo(): Promise<LookLogo> { return this.thumbnails(this.thumbnailsBridge.thumbnailsCopyOldLogo()); }
+  thumbnailsBorder(): Promise<LookBorder> { return this.thumbnails(this.thumbnailsBridge.thumbnailsBorder()); }
+  thumbnailsChooseBorder(): Promise<LookBorder | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseBorder()); }
   onThumbnailsProgress(callback: (event: ThumbnailsProgress) => void): () => void {
     return this.thumbnailsBridge.onThumbnailsProgress((event) => this.ngZone.run(() => callback(event)));
   }

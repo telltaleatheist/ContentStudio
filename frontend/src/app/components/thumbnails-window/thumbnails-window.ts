@@ -9,58 +9,59 @@ import {
   ActionRunner,
   MAX_PICKS,
   NO_TEXT,
+  addNoPhoto,
   clockOf,
-  photoOf,
+  drawChange,
+  frameList,
+  generateBlocked,
+  photoNumbers,
   pickRequests,
   planSlots,
-  rankingFor,
+  ready,
+  removePhotoAt,
   samePicks,
   selectionFromPicks,
   textOptions,
+  togglePhoto,
   togglePick,
   typedText,
   wantedChange,
-  type PhotoChoice,
+  type PhotoOption,
   type Slot,
   type TextOption,
 } from './thumbnails-compose';
-import type { PickRequest, PickView, Ranked, StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
+import type { PickRequest, PickView, StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
 
 export interface ThumbnailsWindowData {
   jobId: string;
   itemId: string;
 }
 
-/** One photo button of a thumbnail's row: the ranking's order, then the library's unranked photos. */
-interface PhotoRow {
-  name: string;
-  p: number | null;
-  preview: string | null;
-  ranked: boolean;
-}
-
 /**
- * THE THUMBNAILS WINDOW, rebuilt as one top-to-bottom flow (2026-09-29). Owen tried the phase-2
- * window and "nothing is doing anything at all ... the images it gathered from the original section
- * should be at the top. i pick three. the text it generated. i pick three. it overlays them."
+ * THE THUMBNAILS WINDOW (2026-09-29, rebuilt twice that day with Owen). Top to bottom:
  *
- *   1. FRAMES from the story's section (two per scene, More per scene): up to three, in click order.
- *   2. TEXT the model wrote, every option in one list labelled with its title and kind, plus typed
- *      words and No text: up to three, in click order.
- *   3. PHOTOS (optional): per thumbnail, ranked with their percentages; left alone, drawn from the
- *      top 3 of the ranking made for those words.
- *   4. RESULT: thumbnail n = frame n + text n + photo n + logo, drawn on the CPU as soon as both are
- *      picked, large and phone-size. SAVED AS HE GOES: the drawn thumbnails are the ordered picks
- *      (pick 1 is the video's thumbnail through the publish record's one door; with an A/B test pick
- *      n goes with title n). His own image can take any place; "Rewrite words for this title" when a
- *      thumbnail's words were written for another title than the one it goes with.
+ *   1. FRAMES: one flat list of the story's frames (two per scene, so no repeats), best first, the
+ *      rest behind "Show more". Up to three, in click order (badges 1, 2, 3).
+ *   2. TEXT: every line the model wrote, one per row, with its kind and the title it was written
+ *      for in small text; typed words; "No text". Up to three, in click order.
+ *   3. PHOTOS: one row of Owen's reaction photos and "No photo". Up to three, in click order: photo n
+ *      goes on thumbnail n (Owen: "just let me pick the image of myself that goes in the corner
+ *      instead of letting the model pick it"). The logo switch.
+ *   4. GENERATE THUMBNAILS, at the bottom (Owen: "the 'generate thumbnails' button should be at the
+ *      bottom"): draws thumbnail n = frame n + text n + photo n + logo, then saves them as the
+ *      ordered picks (pick 1 the video's thumbnail through the publish record's one door; pick n goes
+ *      with title n in an A/B test). Disabled, with the reason written beside it, until at least one
+ *      frame and text are picked. Nothing is drawn before it is pressed.
+ *   5. YOUR THUMBNAILS: what was generated, large and phone-size; a card whose picks changed since
+ *      says so. His own image can take any place; "Rewrite words for this title" when a thumbnail's
+ *      words were written for another title than the one it goes with.
  *
- * A report whose thumbnail stages stopped says where and why, with "Finish making thumbnails"
- * (only the missing stages) and "Make thumbnails again from scratch". Every action runs through ONE
- * runner (thumbnails-compose.ts ActionRunner): a spinner and a running clock while it runs, and any
- * failure as a banner naming what failed. Picking rules: thumbnails-compose.ts.
+ * A report whose thumbnail stages stopped says where and why, with "Finish making thumbnails" (only
+ * the missing stages) and "Make thumbnails again from scratch". Every action runs through ONE runner
+ * (thumbnails-compose.ts ActionRunner): a spinner and a running clock while it runs, and any failure
+ * as a banner naming what failed. Picking rules: thumbnails-compose.ts.
  *
- * Closing the window gives back the text model it kept loaded between the words and the photos.
+ * Closing the window gives back the text model it kept loaded for the words.
  */
 @Component({
   selector: 'app-thumbnails-window',
@@ -89,7 +90,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   // ── Owen's picks (in click order) ─────────────────────────────────────────
   readonly frames = signal<string[]>([]);
   readonly texts = signal<TextOption[]>([]);
-  readonly photos = signal<Record<number, PhotoChoice>>({});
+  readonly photos = signal<PhotoOption[]>([]);
   readonly own = signal<Record<number, string>>({});
   readonly logo = signal(true);
   readonly typed = signal('');
@@ -97,7 +98,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   readonly drawing = signal<number | null>(null);
 
   readonly more = signal<Record<string, string>>({});
-  readonly moreOpen = signal<ReadonlySet<number>>(new Set());
+  readonly showMore = signal(false);
   readonly shots = signal<string[]>([]);
 
   private readonly runner = new ActionRunner({
@@ -109,16 +110,13 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   });
   private unsubscribe: (() => void) | null = null;
   private clock: ReturnType<typeof setInterval> | null = null;
-  private syncing = false;
-  private again = false;
-  /** Bumped on every change Owen makes to his picks: a draw that raced a click is not called wrong. */
-  private version = 0;
   /** Pick 1's source file when the publish record was last set from it. */
   private publishedFrom: string | null = null;
 
   readonly record = computed(() => this.view()?.record ?? null);
   readonly pairs = computed<StoredPair[]>(() => this.record()?.pairs ?? []);
   readonly options = computed(() => textOptions(this.pairs()));
+  readonly frameIds = computed(() => frameList(this.record()));
   readonly slots = computed<Slot[]>(() => planSlots({ pairs: this.pairs(), frames: this.frames(), texts: this.texts(), photos: this.photos(), own: this.own() }));
   readonly elapsed = computed(() => {
     const b = this.busy();
@@ -127,7 +125,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** The report's chosen titles (pick n goes with title n), when the publish record open is this item's. */
   readonly chosenTitles = computed(() => (this.publish.itemId() === this.data.itemId ? this.publish.chosenTitles() : []));
 
-  /** Why the thumbnails cannot be drawn now, or null when they can. */
+  /** Why the record's thumbnails cannot be drawn now, or null when they can. */
   readonly drawBlocked = computed<string | null>(() => {
     const v = this.view();
     if (v === null) return 'The thumbnails are not read yet.';
@@ -139,16 +137,14 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return null;
   });
 
-  /** Too few reaction photos to rank: said at the top whenever the report can use photos. */
-  readonly libraryShort = computed<string | null>(() => {
-    const v = this.view();
-    if (v === null || v.record === null || v.record.state === 'off') return null;
-    const n = v.photos.length;
-    if (n >= 2) return null;
-    return `${n === 0 ? 'No reaction photos are' : 'Only one reaction photo is'} in the library, and ranking photos needs at least two. Add them in Thumbnail look.`;
+  /** Why Generate thumbnails cannot run now, or null. */
+  readonly generateWhy = computed<string | null>(() => {
+    const b = this.busy();
+    if (b !== null) return `Wait: ${b.what.toLowerCase()} is running.`;
+    return generateBlocked(this.slots(), this.drawBlocked());
   });
 
-  readonly canPickFrames = computed(() => (this.record()?.bestScenes.length ?? 0) > 0);
+  readonly canPickFrames = computed(() => this.frameIds().shown.length > 0);
 
   async ngOnInit(): Promise<void> {
     this.unsubscribe = this.electron.onThumbnailsProgress((event) => {
@@ -160,7 +156,6 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.view.set(view);
     this.publishedFrom = view.picks[0]?.pick.file ?? null;
     this.readSelection(view);
-    void this.sync();
   }
 
   ngOnDestroy(): void {
@@ -206,62 +201,43 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return done !== null;
   }
 
-  /** A change Owen made to his picks: count it, clear old lines, draw and save. */
+  /** A change Owen made to his picks: nothing is drawn until Generate thumbnails; old lines go. */
   private changed(): void {
-    this.version++;
     this.notice.set(null);
-    void this.sync();
   }
 
   /**
-   * DRAW, THEN SAVE, one at a time: every thumbnail whose picks changed is drawn (pair n takes frame
-   * n, text n, photo n, the logo), then the picks are saved when they differ from the saved ones. A
-   * click while this runs makes it go round again. A failure stops it with its banner.
+   * GENERATE THUMBNAILS: every place with a frame and a text is drawn (pair n takes frame n, text n,
+   * photo n, the logo; always drawn fresh, so a look changed since is used), then the places are
+   * saved as the ordered picks. One at a time through the runner; a failure stops it with its banner.
    */
-  private async sync(): Promise<void> {
-    if (this.syncing) {
-      this.again = true;
+  async generate(): Promise<void> {
+    if (this.generateWhy() !== null) return;
+    this.failure.set(null);
+    this.notice.set(null);
+    // A stopped or story-less record draws nothing; only Owen's own images are saved then.
+    const slots = this.drawBlocked() === null ? this.slots().filter(ready) : [];
+    for (const slot of slots) {
+      const change = drawChange(slot, this.logo());
+      this.drawing.set(slot.n);
+      const ok = await this.act(`Drawing thumbnail ${slot.n}`, () => this.electron.thumbnailsRenderPair(this.data.jobId, this.data.itemId, change));
+      this.drawing.set(null);
+      if (!ok) return;
+      const now = this.slots().find((s) => s.n === slot.n)!;
+      if (wantedChange(now, this.pairs(), this.logo()) !== null) {
+        this.failure.set(`Thumbnail ${slot.n} was drawn, and it still does not show what was picked. Close the window and open it again; if it happens again, the record and the picks disagree.`);
+        return;
+      }
+    }
+    const requests: PickRequest[] | null = this.drawBlocked() === null
+      ? pickRequests(this.slots(), this.pairs(), this.logo())
+      : this.slots().flatMap((s) => (s.own === null ? [] : [{ kind: 'own' as const, file: s.own }]));
+    if (requests === null) {
+      this.failure.set('A thumbnail changed while the others were drawn. Press Generate thumbnails again.');
       return;
     }
-    this.syncing = true;
-    try {
-      do {
-        this.again = false;
-        const record = this.record();
-        if (record === null || record.state === 'off') return;
-        if (this.drawBlocked() === null) {
-          for (const slot of this.slots()) {
-            const change = wantedChange(slot, this.pairs(), this.logo());
-            if (change === null) continue;
-            const asked = this.version;
-            this.drawing.set(slot.n);
-            const ok = await this.act(`Drawing thumbnail ${slot.n}`, () => this.electron.thumbnailsRenderPair(this.data.jobId, this.data.itemId, change));
-            this.drawing.set(null);
-            if (!ok) return;
-            if (this.version !== asked) {
-              this.again = true;
-              break;
-            }
-            const now = this.slots().find((s) => s.n === slot.n)!;
-            if (wantedChange(now, this.pairs(), this.logo()) !== null) {
-              this.failure.set(`Thumbnail ${slot.n} was drawn, and it still does not show what was picked. Close the window and open it again; if it happens again, the record and the picks disagree.`);
-              return;
-            }
-          }
-          if (this.again) continue;
-        }
-        const requests: PickRequest[] | null = this.drawBlocked() === null
-          ? pickRequests(this.slots(), this.pairs(), this.logo())
-          : this.slots().flatMap((s) => (s.own === null ? [] : [{ kind: 'own' as const, file: s.own }]));
-        if (requests === null) continue;
-        if (!samePicks(requests, this.view()?.picks ?? [])) {
-          const ok = await this.act('Saving your picks', () => this.electron.thumbnailsSavePicks(this.data.jobId, this.data.itemId, requests));
-          if (!ok) return;
-        }
-      } while (this.again);
-    } finally {
-      this.syncing = false;
-      this.drawing.set(null);
+    if (!samePicks(requests, this.view()?.picks ?? [])) {
+      await this.act('Saving your picks', () => this.electron.thumbnailsSavePicks(this.data.jobId, this.data.itemId, requests));
     }
   }
 
@@ -293,24 +269,21 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return this.view()?.frames[id] ?? this.more()[id] ?? null;
   }
 
-  sceneLabel(scene: number): string {
-    return this.record()?.scenes.find((s) => s.number === scene)?.label ?? `Scene ${scene}`;
-  }
+  /** The frames shown: the list, and with "Show more" the rest after it. */
+  readonly shownFrames = computed(() => (this.showMore() ? [...this.frameIds().shown, ...this.frameIds().more] : this.frameIds().shown));
 
-  async toggleMore(scene: number, ids: string[]): Promise<void> {
-    const open = new Set(this.moreOpen());
-    if (open.delete(scene)) {
-      this.moreOpen.set(open);
+  async toggleShowMore(): Promise<void> {
+    if (this.showMore()) {
+      this.showMore.set(false);
       return;
     }
-    const missing = ids.filter((id) => this.framePicture(id) === null);
+    const missing = this.frameIds().more.filter((id) => this.framePicture(id) === null);
     if (missing.length > 0) {
-      const got = await this.runner.run(`Loading more frames of ${this.sceneLabel(scene)}`, () => this.electron.thumbnailsFrames(this.data.jobId, this.data.itemId, missing));
+      const got = await this.runner.run('Loading more frames', () => this.electron.thumbnailsFrames(this.data.jobId, this.data.itemId, missing));
       if (got === null) return;
       this.more.set({ ...this.more(), ...got });
     }
-    open.add(scene);
-    this.moreOpen.set(open);
+    this.showMore.set(true);
   }
 
   // ── 2. text ───────────────────────────────────────────────────────────────
@@ -351,40 +324,37 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   // ── 3. photos ─────────────────────────────────────────────────────────────
 
-  /** The thumbnails a photo can be chosen for: every place that is not Owen's own image and has a pair. */
-  readonly photoSlots = computed(() => this.slots().filter((s) => s.own === null && this.pairs().some((p) => p.pair === s.n)));
-
-  photoRow(slot: Slot): PhotoRow[] {
-    const library = this.view()?.photos ?? [];
-    const ranking: Ranked[] = rankingFor(slot, this.pairs());
-    const preview = (name: string) => library.find((p) => p.name === name)?.preview ?? null;
-    const rows: PhotoRow[] = ranking.map((r) => ({ name: r.name, p: r.p, preview: preview(r.name), ranked: true }));
-    for (const p of library) if (!rows.some((r) => r.name === p.name)) rows.push({ name: p.name, p: null, preview: p.preview, ranked: false });
-    return rows;
+  photoNumber(name: string): number | null {
+    return photoNumbers(this.photos(), name)[0] ?? null;
   }
 
-  rankedForLine(slot: Slot): string {
-    const pair = this.pairs().find((p) => p.pair === slot.rankingPair);
-    if (pair === undefined || pair.photos.length === 0) return 'The photos were never ranked for these words; pick one, or leave No photo.';
-    const words = pair.rankedFor === undefined ? pair.default.phrase : pair.rankedFor;
-    return `Ranked for “${words ?? 'no text'}”${slot.text?.phrase !== words ? ' (the closest ranking to these words)' : ''}. Left alone, one of the top 3 is drawn.`;
-  }
+  /** The places "No photo" holds, 1-based. */
+  readonly noPhotoNumbers = computed(() => photoNumbers(this.photos(), null));
 
-  setPhoto(n: number, choice: PhotoChoice): void {
-    const cur = photoOf(this.photos(), n);
-    // Clicking the chosen photo again goes back to the draw.
-    const next = cur === choice && choice !== 'auto' && choice !== null ? 'auto' : choice;
-    this.photos.set({ ...this.photos(), [n]: next });
+  togglePhoto(name: string): void {
+    const r = togglePhoto(this.photos(), name);
+    if (r.refused !== null) {
+      this.notice.set(r.refused);
+      return;
+    }
+    this.photos.set(r.list);
     this.changed();
   }
 
-  photoChoice(n: number): PhotoChoice {
-    return photoOf(this.photos(), n);
+  addNoPhoto(): void {
+    const r = addNoPhoto(this.photos());
+    if (r.refused !== null) {
+      this.notice.set(r.refused);
+      return;
+    }
+    this.photos.set(r.list);
+    this.changed();
   }
 
-  /** The photo thumbnail n shows now (drawn or chosen), for its card. */
-  shownPhoto(n: number): string | null {
-    return this.pairs().find((p) => p.pair === n)?.default.photo ?? null;
+  /** Take one "No photo" out (its badge was clicked); the rest close up. */
+  removeNoPhoto(n: number): void {
+    this.photos.set(removePhotoAt(this.photos(), n - 1));
+    this.changed();
   }
 
   setLogo(on: boolean): void {
@@ -392,7 +362,15 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.changed();
   }
 
-  // ── 4. result ─────────────────────────────────────────────────────────────
+  // ── 4. generate, 5. result ────────────────────────────────────────────────
+
+  /** What Generate thumbnails will draw, one line per place. */
+  readonly plan = computed(() => this.slots().map((s) => {
+    if (s.own !== null) return `${s.n}: your image`;
+    if (!ready(s)) return `${s.n}: ${s.missing ?? 'not picked'}`;
+    const photo = s.photo === null ? 'no photo' : `photo “${s.photo}”`;
+    return `${s.n}: frame ${s.pickIndex! + 1} + ${s.text!.phrase === null ? 'no text' : `text ${s.pickIndex! + 1}`} + ${photo}`;
+  }));
 
   /** The saved pick this place is (1-based), or null while it is not saved. */
   pickOf(slot: Slot): PickView | null {
@@ -400,21 +378,23 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return picks.find((p) => (slot.own !== null ? p.pick.kind === 'own' && p.pick.file === slot.own : p.pick.kind === 'made' && p.pick.pair === slot.n)) ?? null;
   }
 
-  /** The drawn picture of place n: current when it shows what is picked. */
+  /**
+   * The generated picture of place n, once Generate thumbnails has saved it as a pick; `current` is
+   * false when the picks changed since (the card says to generate again).
+   */
   resultPicture(slot: Slot): { src: string; current: boolean } | null {
-    if (slot.own !== null) {
-      const pv = this.pickOf(slot);
-      return pv !== null && pv.picture !== '' ? { src: pv.picture, current: true } : null;
-    }
-    if (slot.missing !== null || this.drawBlocked() !== null) return null;
+    const pv = this.pickOf(slot);
+    if (slot.own !== null) return pv !== null && pv.picture !== '' ? { src: pv.picture, current: true } : null;
+    if (pv === null || this.drawBlocked() !== null) return null;
     const pair = this.pairs().find((p) => p.pair === slot.n);
     if (pair === undefined || !pair.default.render.ok) return null;
     const src = this.view()?.renders[pair.default.render.file];
     if (src === undefined) return null;
-    return { src, current: wantedChange(slot, this.pairs(), this.logo()) === null };
+    return { src, current: ready(slot) && wantedChange(slot, this.pairs(), this.logo()) === null };
   }
 
   renderNotes(slot: Slot): string[] {
+    if (this.pickOf(slot) === null) return [];
     const r = this.pairs().find((p) => p.pair === slot.n)?.default.render;
     return r !== undefined && r.ok ? r.notes : [];
   }
@@ -435,7 +415,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Why "Rewrite words for this title" cannot run now, or null. */
   rewriteBlocked(): string | null {
     if (this.busy() !== null) return `Wait: ${this.busy()!.what.toLowerCase()} is running.`;
-    return this.libraryShort();
+    return null;
   }
 
   async rewrite(slot: Slot): Promise<void> {
@@ -445,14 +425,13 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     const at = slot.pickIndex;
     const ok = await this.act(`Writing the words for “${title}”`, () => this.electron.thumbnailsPairTitle(this.data.jobId, this.data.itemId, slot.n, title));
     if (!ok) return;
-    // Thumbnail n now carries the new words for its title, and the photo drawn for them.
+    // Thumbnail n now carries the new words for its title (drawn with the photo it had).
     const pair = this.pairs().find((p) => p.pair === slot.n);
     const option = pair === undefined ? undefined : this.options().find((o) => o.pair === slot.n && o.phrase === pair.default.phrase);
     if (option !== undefined) {
       const texts = [...this.texts()];
       texts[at] = option;
       this.texts.set(texts);
-      this.photos.set({ ...this.photos(), [slot.n]: 'auto' });
     }
     this.changed();
   }
@@ -472,7 +451,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.changed();
   }
 
-  /** Start from the three the metadata run made: their frames, words and photos. */
+  /** Start from the three the metadata run made: their frames and words (no photos: Owen picks those). */
   suggested(): void {
     const pairs = [...this.pairs()].sort((a, b) => a.pair - b.pair).slice(0, MAX_PICKS);
     const sel = selectionFromPicks(pairs.map((p, i) => ({ n: i + 1, pick: { kind: 'made' as const, pair: p.pair, file: '', wordsFor: p.title }, copy: '', picture: '' })), this.pairs());
@@ -486,7 +465,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   clearAll(): void {
     this.frames.set([]);
     this.texts.set([]);
-    this.photos.set({});
+    this.photos.set([]);
     this.own.set({});
     this.changed();
   }
@@ -500,7 +479,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   }
 
   async remake(): Promise<void> {
-    if (!window.confirm('Make the thumbnails again from scratch? The story is found again, the frames sampled and scored, the words written and the photos ranked (several minutes on the Crucible card). Your own images stay picked.')) return;
+    if (!window.confirm('Make the thumbnails again from scratch? The story is found again, the frames sampled and scored, and the words written (several minutes on the Crucible card). Your own images stay picked.')) return;
     this.failure.set(null);
     const ok = await this.act('Making the thumbnails again', () => this.electron.thumbnailsRemake(this.data.jobId, this.data.itemId));
     if (!ok) return;
@@ -551,7 +530,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   openLook(): void {
     const ref = this.dialog.open(ThumbnailLookDialog, { width: '760px', maxHeight: '90vh', autoFocus: false });
-    // Photos or the logo may have been added: read the thumbnails again.
+    // Photos, the logo or the border may have been added: read the thumbnails again.
     ref.afterClosed().subscribe(async () => {
       if (await this.act('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId))) this.changed();
     });
@@ -559,10 +538,6 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   async showFolder(folder: string): Promise<void> {
     await this.runner.run('Opening the folder', () => this.electron.thumbnailsShowFolder(folder));
-  }
-
-  percent(p: number | null): string {
-    return p === null ? 'not ranked' : `${Math.round(p * 100)}%`;
   }
 
   fileName(file: string): string {
