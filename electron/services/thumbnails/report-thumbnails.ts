@@ -858,7 +858,7 @@ export class ReportThumbnails {
       const setup = this.setup();
       const input = this.itemInput(loc, jobId, record.story?.state === 'linked');
       this.deps.progress({ jobId, itemId, line: plan.run.includes('frames') ? 'Picking the frames, then writing the text...' : plan.run.includes('words') ? 'Writing the text...' : 'Drawing...' });
-      const made = await this.stagesOnOneJob(jobId, itemId, 'Finish making thumbnails',
+      const made = await this.stagesOnOneJob(jobId, itemId, 'Preparing thumbnail frames and text',
         (doors) => ItemThumbnailRun.resume(setup, input, doors, record, plan), this.fieldsOf(loc.item));
       await this.write(loc, jobId, itemId, made);
       log.info(`[Thumbnails] ${loc.where}: finished (kept ${plan.keep.join(', ') || 'nothing'}; ran ${plan.run.join(', ')}): ${made.line}`);

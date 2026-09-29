@@ -401,7 +401,7 @@ check('stages: words per title (one call each, the title in it), the gate\'s ran
     return run.record();
   });
   assert.deepStrictEqual(rec.titles, { order: 'gate ranking', subjects: ['Title three', 'Title one', 'Title four'] });
-  const wordCalls = plainCalls.filter((c) => /^thumbnail words for/.test(c.what));
+  const wordCalls = plainCalls.filter((c) => /^thumbnail text for/.test(c.what));
   assert.strictEqual(wordCalls.length, 3, 'one words call per pair');
   wordCalls.forEach((c, i) => assert.ok(c.prompt.includes(`\n${rec.titles.subjects[i]}\n`), `call ${i + 1} carries its own title`));
   assert.ok(!wordCalls[0].prompt.includes('Title one\n') || wordCalls[0].prompt.indexOf('Title three') > 0);
@@ -732,7 +732,7 @@ check('window, no story: 2 screenshots make 2 pairs for the 2 titles given, a no
   assert.strictEqual(r.source.video, null);
   assert.ok(r.source.lines.some((l) => /Screenshot wide\.png is 1440x900, not 16:9, so its middle was cut to 16:9/.test(l)), r.source.lines.join(' | '));
   assert.ok(r.source.lines.some((l) => /Screenshot exact\.png \(1280x720\) is used whole/.test(l)), r.source.lines.join(' | '));
-  assert.deepStrictEqual(plainCalls.slice(callsBefore).filter((c) => /^thumbnail words/.test(c.what)).map((c) => c.prompt.includes('\nTitle two\n') ? 2 : c.prompt.includes('\nTitle one\n') ? 1 : 0), [2, 1], 'one words call per screenshot, each with its title');
+  assert.deepStrictEqual(plainCalls.slice(callsBefore).filter((c) => /^thumbnail text/.test(c.what)).map((c) => c.prompt.includes('\nTitle two\n') ? 2 : c.prompt.includes('\nTitle one\n') ? 1 : 0), [2, 1], 'one words call per screenshot, each with its title');
   assert.strictEqual(r.story.state, 'none', 'the story (and why there is none) is kept');
   const probe = JSON.parse(execFileSync(FFPROBE, ['-v', 'error', '-show_entries', 'stream=width,height', '-of', 'json', path.join(r.folder, 'full', 'shot1.png')]).toString()).streams[0];
   assert.deepStrictEqual([probe.width, probe.height], [1920, 1080], 'written 16:9 at 1920x1080');

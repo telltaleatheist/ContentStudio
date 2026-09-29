@@ -34,7 +34,7 @@ export async function writeThumbnailWords(input: {
   job?: JobLeases;
 }): Promise<WordsResult> {
   const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript });
-  const what = `thumbnail words for ${input.sourceLabel} (Thumbnails tab)`;
+  const what = `thumbnail text for ${input.sourceLabel}`;
   const answer = await input.aiManager.runPlainRequest(
     prompt,
     input.option.model,
