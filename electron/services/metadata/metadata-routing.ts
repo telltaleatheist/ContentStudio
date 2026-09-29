@@ -37,17 +37,18 @@ export type MetadataRoutingTaskId =
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
-  | 'thumbnail_frames'
   | 'thumbnail_words';
 
 /**
  * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
  * `thumbnails` rows serve the thumbnails: the metadata run's thumbnail stages (thumbnails/pipeline.ts
- * reads the two rows at job time) and the reports page's Thumbnails window (report-thumbnails.ts:
- * words again on demand). The third row, `thumbnail_judge` (the tone and photo ranking), was retired
- * 2026-09-29 (REMOVED_ROUTING_TASKS). The Thumbnails test tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and the dialog's change-all
- * menu still cover the metadata rows only: the thumbnail rows decide no field's words, and a
- * change-all to claude -p would put the frame row on a model that cannot decide.
+ * reads the row at job time) and the reports page's Thumbnails window (report-thumbnails.ts: words
+ * again on demand). One row is left, `thumbnail_words`: `thumbnail_judge` (the tone and photo
+ * ranking) and `thumbnail_frames` (the vision model's frame scoring) were retired 2026-09-29
+ * (REMOVED_ROUTING_TASKS), because Owen picks the photos and the frames himself. The Thumbnails test
+ * tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and
+ * the dialog's change-all menu cover the metadata rows only: the thumbnail words decide no field's
+ * words.
  */
 export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
 
@@ -72,14 +73,6 @@ export interface MetadataRoutingOption {
    * and the transport sends exactly this id: nothing maps it to anything else downstream.
    */
   crucibleModel: string | null;
-  /**
-   * True when the model's manifest declares `image` among its modalities (crucible
-   * models/<id>.toml): it can be asked about a picture. Only such options are offered on a row
-   * that sends images (`thumbnail_frames`). Whether a given SERVER serves images for it is the
-   * server's answer, read at call time: a Mac whose engine cannot is refused by Crucible by name
-   * (`refuse_images_not_served`, `model_text_only`), and the refusal reaches the tab unchanged.
-   */
-  vision?: boolean;
   /**
    * THERE IS NO PER-OPTION HOST, AND NO PROMPT SHAPE TO CHOOSE, as of 2026-08-25.
    *
@@ -231,19 +224,9 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * 4-bit it is refused by name at call time and the dialog marks it unavailable.
    */
   'qwen38-27b-8bit': { kind: 'local', label: 'Qwen 27B (8-bit)', model: 'qwen3.8-27b-8bit', crucibleModel: 'qwen3.8-27b-8bit' },
-  /**
-   * THE VISION RUNGS (2026-09-28), offered on the thumbnail frame row only. Each is a
-   * Crucible manifest that declares `image`: the 9B and 27B with their vision towers served
-   * (`-vl`, sharing their text twins' downloads) and the small 4B/2B/0.8B, which read images as
-   * well as text. The 4B option above is the same model: it is marked `vision` so the frame row can
-   * offer it, and its text rows are unaffected.
-   */
-  'qwen35-9b-vl': { kind: 'local', label: 'Qwen3.5 9B with vision', model: 'qwen3.5-9b-vl', crucibleModel: 'qwen3.5-9b-vl', vision: true },
-  'qwen35-2b': { kind: 'local', label: 'Qwen3.5 2B', model: 'qwen3.5-2b', crucibleModel: 'qwen3.5-2b', vision: true },
-  'qwen35-08b': { kind: 'local', label: 'Qwen3.5 0.8B', model: 'qwen3.5-0.8b', crucibleModel: 'qwen3.5-0.8b', vision: true },
-  'qwen38-27b-vl': { kind: 'local', label: 'Qwen 27B with vision', model: 'qwen3.8-27b-4bit-vl', crucibleModel: 'qwen3.8-27b-4bit-vl', vision: true },
+  // THE VISION RUNGS (qwen35-9b-vl, qwen35-2b, qwen35-08b, qwen38-27b-vl) were offered on the
+  // thumbnail frame row only; they went with it on 2026-09-29 (REMOVED_ROUTING_OPTIONS).
 };
-METADATA_ROUTING_OPTIONS['qwen35-4b'].vision = true;
 
 export interface MetadataRoutingTask {
   id: MetadataRoutingTaskId;
@@ -419,26 +402,6 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   },
   {
     /**
-     * THE THUMBNAILS TAB'S FRAME SCORER (2026-09-28): a vision model asked five fixed-answer
-     * questions about ONE frame per decide call (desktop or video, a clear face, how expressive,
-     * eyes open, a strong thumbnail). Decide needs a distribution, so only local models a Crucible
-     * server holds are offered, and only those whose manifest reads images (`vision`).
-     *
-     * The 9B with vision by default (Owen, 2026-09-28): Crucible 1.0.54 adds logprobs to mlx-vlm
-     * and a Mac entry for it. Before that, NO Mac model serves image decide (the maintainer:
-     * mlx-lm is text-only, mlx-vlm had no logprobs) and a run there is refused by name; the PC
-     * (vLLM) serves the 0.8B/2B/4B. The 9B's manifest says it does not usefully fit a 24 GB PC card
-     * (~1,700 tokens of KV), so on the PC pick the 4B.
-     */
-    id: 'thumbnail_frames',
-    label: 'Thumbnail frames (vision)',
-    options: ['qwen35-9b-vl', 'qwen35-4b', 'qwen35-2b', 'qwen35-08b', 'qwen38-27b-vl'],
-    defaultOptionId: 'qwen35-9b-vl',
-    modal: true,
-    group: 'thumbnails',
-  },
-  {
-    /**
      * THE THUMBNAIL WORDS (2026-09-28): 2-5 words in three kinds (claim, stakes, reaction), written
      * as a pair with one title: the tab's picked title, and in the metadata run each of the three
      * A/B titles (thumbnails/pipeline.ts). The metadata run's old `thumbnail_text` field is retired
@@ -579,6 +542,10 @@ export const REMOVED_ROUTING_TASKS: Record<string, string> = {
     'the thumbnail tone and photo ranking was retired 2026-09-29 by operator decision ("just let me ' +
     'pick the image of myself that goes in the corner instead of letting the model pick it") — Owen ' +
     'picks the reaction photos in the Thumbnails window, so no model call is left for this row to route',
+  thumbnail_frames:
+    'the thumbnail frame scoring was retired 2026-09-29 by operator decision — Owen picks frames 1, 2 ' +
+    'and 3 himself from the grid in the Thumbnails window, so no vision model is asked about frames ' +
+    'and no model call is left for this row to route',
 };
 
 export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
@@ -598,6 +565,11 @@ export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
   'headline-titles-32b':
     'the trained adapters were retired 2026-08-25 by operator decision — prompted models replaced ' +
     'them, so the 32B titles adapter, its MLX shim and adapters.yml are all gone from this build',
+  // The vision rungs, offered on the thumbnail frame row only (retired with it, REMOVED_ROUTING_TASKS).
+  'qwen35-9b-vl': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
+  'qwen35-2b': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
+  'qwen35-08b': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
+  'qwen38-27b-vl': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
 };
 
 /**
@@ -1094,27 +1066,6 @@ export function optionAvailability(
   return { availability: 'not-here', note: offer.reason ?? `"${inventory.server}" does not offer ${option.crucibleModel}.` };
 }
 
-/**
- * A frame-row option: as `optionAvailability`, and additionally NOT HERE when the server's model
- * list says the model reads text only. The server's `modalities` are the manifest's (the same on
- * every host), so a model that passes here can still be refused at call time by a server whose
- * engine does not serve images; that refusal names the model and the server (Law 1).
- */
-export function visionAvailability(
-  option: MetadataRoutingOption,
-  inventory: CatalogInventory
-): { availability: MetadataRoutingAvailability; note?: string } {
-  if (option.vision !== true || option.crucibleModel === null) {
-    return { availability: 'not-here', note: `${option.model} does not read images, so it cannot score frames.` };
-  }
-  const judged = optionAvailability(option, inventory);
-  const modalities = inventory.modalities?.[option.crucibleModel];
-  if (judged.availability !== 'unknown' && modalities !== undefined && !modalities.includes('image')) {
-    return { availability: 'not-here', note: `"${inventory.server}" lists ${option.crucibleModel} as reading text only.` };
-  }
-  return judged;
-}
-
 /** Is this availability one the dialog LISTS? `pullable` is listed: the server can hold it. */
 function offered(availability: MetadataRoutingAvailability): boolean {
   return availability === 'installed' || availability === 'pullable' || availability === 'upstream' || availability === 'outside';
@@ -1139,7 +1090,7 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory, r
       label: task.label,
       options: task.options.flatMap((id) => {
         const option = METADATA_ROUTING_OPTIONS[id];
-        const judged = task.id === 'thumbnail_frames' ? visionAvailability(option, inventory) : optionAvailability(option, inventory);
+        const judged = optionAvailability(option, inventory);
         if (!offered(judged.availability) && id !== resolved[task.id]) return [];
         return [{
           id,

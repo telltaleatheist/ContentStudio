@@ -37,7 +37,8 @@
  *     first, until none is left. Big scenes never fold, so the two hosts' clips stay apart.
  *
  * Scenes are numbered in order of first appearance. Tuned on "f1 - the rapture" (2026-09-24):
- * docs/thumbnails-lab.md has the groups it finds.
+ * docs/thumbnails-lab.md has the groups it finds. The Thumbnails window's grid is at most
+ * GRID_PER_SCENE of each scene's sharpest frames (`gridFrames`, below).
  *
  * PURE: signatures in, groups and counts out, so tools/thumbnail-lab-checks.js pins it on
  * synthetic frames.
@@ -116,33 +117,6 @@ export function foldFragments(
   }
   return clusters.map((c) => c.members.sort((x, y) => x - y)).sort((x, y) => x[0] - y[0]);
 }
-
-/** Every scene offers at least this many frames to the vision model (or all it has, when fewer). */
-export const SCENE_FLOOR = 3;
-
-/** A scene on screen for less than this many seconds offers one frame, not SCENE_FLOOR (Owen 2026-09-28: a few seconds of moving sky is not worth three scoring slots). */
-export const SHORT_SCENE_SECONDS = 10;
-
-function floorOf(s: { size: number; seconds: number }): number {
-  return Math.min(s.seconds < SHORT_SCENE_SECONDS ? 1 : SCENE_FLOOR, s.size);
-}
-
-/**
- * How many frames a "Best by scene" row shows before "More from this scene" (Owen, 2026-09-28:
- * "we dont need 25 of the same pictures"): the best, and the best one that looks clearly
- * different from it (see sceneRows).
- */
-export const SCENE_ROW_SHOWN = 2;
-
-/**
- * The second frame of a row must differ from the best in at least this fraction of the signature's
- * cells (a higher bar than the repeat filter's near-identical hash): measured on the rapture story,
- * a talking-head scene's frames differ from each other by a median 0.12, and 0.15 is its upper
- * quarter, a clearly different pose or framing. Or its expression reading differs by
- * EXPRESSION_DIFFERENT levels or more.
- */
-export const CLEARLY_DIFFERENT_FRACTION = 0.15;
-export const EXPRESSION_DIFFERENT = 1;
 
 /** The fraction of the two signatures' cells whose colour differs by more than the tolerance. */
 export function signatureDistance(a: Uint8Array, b: Uint8Array): number {
@@ -292,120 +266,36 @@ export function groupScenes<T extends { index: number; t: number; colour: Uint8A
 }
 
 /**
- * How many frames each scene sends to the vision model, `cap` in all. Every scene first gets
- * SCENE_FLOOR, or one when it was on screen under SHORT_SCENE_SECONDS (never more than it has); the rest go one at a time to the scene with
- * the most screen time per extra frame already given (D'Hondt: seconds / (extra + 1)), never more
- * than a scene has. When the floors alone exceed the cap (a story of very many scenes), the scenes
- * take one frame each in rounds, longest on screen first, until the cap is reached; `short` then
- * says so. Ties go to the lower scene number.
+ * THE GRID'S CANDIDATES (2026-09-29). Owen picks frames 1, 2 and 3 himself from one flat grid in the
+ * Thumbnails window, so nothing ranks them any more (the vision model's frame scoring was removed
+ * that day). Each scene offers at most GRID_PER_SCENE frames, so the grid is every shot once or
+ * twice and never the same talking head over and over; a scene on screen under SHORT_SCENE_SECONDS
+ * offers one.
  */
-export function allocateScoring(scenes: ReadonlyArray<{ number: number; size: number; seconds: number }>, cap: number): { quota: Map<number, number>; short: boolean } {
-  if (!Number.isInteger(cap) || cap < 1) throw new Error(`allocateScoring: a cap of ${cap} frames is not a count.`);
-  const quota = new Map<number, number>(scenes.map((s) => [s.number, 0]));
-  const total = scenes.reduce((sum, s) => sum + s.size, 0);
-  if (total <= cap) {
-    for (const s of scenes) quota.set(s.number, s.size);
-    return { quota, short: false };
-  }
-  const floors = scenes.reduce((sum, s) => sum + floorOf(s), 0);
-  if (floors > cap) {
-    const byTime = [...scenes].sort((a, b) => b.seconds - a.seconds || a.number - b.number);
-    let given = 0;
-    for (let round = 0; given < cap; round++) {
-      for (const s of byTime) {
-        if (given >= cap) break;
-        if (round < floorOf(s)) {
-          quota.set(s.number, quota.get(s.number)! + 1);
-          given++;
-        }
-      }
-    }
-    return { quota, short: true };
-  }
-  for (const s of scenes) quota.set(s.number, floorOf(s));
-  for (let left = cap - floors; left > 0; left--) {
-    let pick: { number: number; size: number; seconds: number } | null = null;
-    let pickValue = -1;
-    for (const s of scenes) {
-      const q = quota.get(s.number)!;
-      if (q >= s.size) continue;
-      const value = s.seconds / (q - floorOf(s) + 1);
-      if (value > pickValue) {
-        pickValue = value;
-        pick = s;
-      }
-    }
-    if (pick === null) break;
-    quota.set(pick.number, quota.get(pick.number)! + 1);
-  }
-  return { quota, short: false };
+export const GRID_PER_SCENE = 2;
+
+/** A scene on screen for less than this many seconds offers one frame, not GRID_PER_SCENE (Owen 2026-09-28: a few seconds of moving sky is not worth more). */
+export const SHORT_SCENE_SECONDS = 10;
+
+/** How many frames a scene offers the grid: GRID_PER_SCENE, one when it was on screen under SHORT_SCENE_SECONDS, never more than it kept. */
+export function gridQuota(scene: { size: number; seconds: number }): number {
+  if (!Number.isInteger(scene.size) || scene.size < 1) throw new Error(`gridQuota: a scene of ${scene.size} kept frames offers nothing.`);
+  return Math.min(scene.seconds < SHORT_SCENE_SECONDS ? 1 : GRID_PER_SCENE, scene.size);
 }
 
 /**
- * The frames to score: each scene's quota, spread across that scene's own time on screen (the
- * scene's frames thinned across its first to last appearance, sharpest first within a stretch).
- * Returned in time order.
+ * The grid's frames: each scene's quota (gridQuota), the sharpest and spread across that scene's
+ * own time on screen (`thinAcrossRange` over its first to last appearance: with two, the sharpest
+ * of each half, so a scene the story returns to shows both visits). Returned in time order, which
+ * is the order the grid shows them.
  */
-export function framesToScore<T extends { t: number; sharpness: number }>(scenes: ReadonlyArray<Scene<T>>, quota: ReadonlyMap<number, number>): T[] {
+export function gridFrames<T extends { t: number; sharpness: number }>(scenes: ReadonlyArray<Scene<T>>): T[] {
   const out: T[] = [];
   for (const scene of scenes) {
-    const q = quota.get(scene.number) ?? 0;
-    if (q === 0) continue;
+    if (scene.frames.length === 0) throw new Error(`gridFrames: scene ${scene.number} has no kept frames.`);
     const first = scene.frames[0].t;
     const last = scene.frames[scene.frames.length - 1].t;
-    out.push(...thinAcrossRange(scene.frames, first, last + 1, q));
+    out.push(...thinAcrossRange(scene.frames, first, last + 1, gridQuota({ size: scene.frames.length, seconds: scene.seconds })));
   }
   return out.sort((a, b) => a.t - b.t);
-}
-
-/** Two frames of one scene closer than this many seconds are the same moment; only the better shows. */
-export const SCENE_MIN_GAP_SECONDS = 4;
-
-export interface SceneRow {
-  scene: number;
-  /** Shown by default: the best frame, then the best clearly different one (when there is one). */
-  ids: string[];
-  /** The rest of the scene's ranked frames, best first (never two within SCENE_MIN_GAP_SECONDS): "More from this scene". */
-  more: string[];
-  best: number;
-}
-
-/**
- * The "Best by scene" rows: for each scene, the best-ranked frame, then the best-ranked frame that
- * is clearly different from it (signature distance at least CLEARLY_DIFFERENT_FRACTION, or an
- * expression EXPRESSION_DIFFERENT levels apart); a scene with none shows its best alone. Every other
- * ranked frame of the scene (never two within SCENE_MIN_GAP_SECONDS) is in `more`. Scenes are
- * ordered by their best frame's score (ties: lower scene number). `ranked` is best first and holds
- * no rejected frame, so a scene whose frames were all computer screens (or unreadable, or not
- * scored) has no row; `empty` lists those scenes.
- */
-export function sceneRows(
-  ranked: ReadonlyArray<{ id: string; t: number; score: number; reading?: { expression: number } }>,
-  sceneOf: ReadonlyMap<string, number>,
-  scenes: readonly number[],
-  signatureOf: ReadonlyMap<string, Uint8Array>,
-): { rows: SceneRow[]; empty: number[] } {
-  const byScene = new Map<number, Array<(typeof ranked)[number]>>();
-  for (const frame of ranked) {
-    const scene = sceneOf.get(frame.id);
-    if (scene === undefined) throw new Error(`sceneRows: frame ${frame.id} belongs to no scene.`);
-    const list = byScene.get(scene) ?? [];
-    if (!list.some((f) => Math.abs(f.t - frame.t) < SCENE_MIN_GAP_SECONDS)) list.push(frame);
-    byScene.set(scene, list);
-  }
-  const sig = (id: string): Uint8Array => {
-    const s = signatureOf.get(id);
-    if (s === undefined) throw new Error(`sceneRows: frame ${id} has no signature.`);
-    return s;
-  };
-  const rows: SceneRow[] = [...byScene].map(([scene, list]) => {
-    const top = list[0];
-    const other = list.slice(1).find((f) =>
-      signatureDistance(sig(top.id), sig(f.id)) >= CLEARLY_DIFFERENT_FRACTION ||
-      (top.reading !== undefined && f.reading !== undefined && Math.abs(top.reading.expression - f.reading.expression) >= EXPRESSION_DIFFERENT));
-    const ids = other === undefined ? [top.id] : [top.id, other.id];
-    return { scene, ids, more: list.map((f) => f.id).filter((id) => !ids.includes(id)), best: top.score };
-  });
-  rows.sort((a, b) => b.best - a.best || a.scene - b.scene);
-  return { rows, empty: scenes.filter((s) => !byScene.has(s)) };
 }

@@ -380,9 +380,11 @@ export class MetadataGeneratorService {
        *
        * RESOLVED LATE, just before the first call that reads it (the show-prompt assembly, the
        * compilation summaries, the first item's chapters), since the thumbnails pipeline
-       * (2026-09-28): the frame scoring runs on its vision model before the chapters, and a local
-       * distillation run before it would load the text model, then the vision model, then the
-       * text model again. Resolved at most once per run, exactly as before.
+       * (2026-09-28): the frame scoring ran on its vision model before the chapters, and a local
+       * distillation run before it would have loaded the text model, then the vision model, then
+       * the text model again. The frame scoring was removed 2026-09-29 (the thumbnails' first half
+       * is CPU only now); resolving late costs nothing, so it stays. Resolved at most once per run,
+       * exactly as before.
        */
       let lessonsResolved = false;
       const ensureLessons = async (): Promise<void> => {
@@ -712,10 +714,9 @@ export class MetadataGeneratorService {
         console.log('[MetadataGenerator] Individual mode: processing items separately');
 
         // THE THUMBNAILS' FIRST HALF, for every item, before any chapter (thumbnails/pipeline.ts):
-        // the story, the frames (CPU) and the frame scoring on the vision model (GPU). Right after
-        // transcription and before the chapters and the lessons, so the vision model is loaded once
-        // and the text model that follows replaces it: one swap for the whole job. A stage failure is
-        // recorded on the item's record (never thrown); only a stop ends the job here.
+        // the story and the frames (CPU only: the grid Owen picks from; the vision model's frame
+        // scoring was removed 2026-09-29). A stage failure is recorded on the item's record (never
+        // thrown); only a stop ends the job here.
         const channel = promptAssets().channel(params.promptSet);
         const thumbnailRuns = contentItems.map((item, i) => ItemThumbnailRun.start(params.thumbnails, {
           jobId: jobInfo.jobId,
@@ -1298,8 +1299,8 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * The thumbnails stages' doors for one item: THIS JOB's leases (so the vision model and the text
-   * model are holds of the one job, and a model the fields left loaded is not loaded again), the
+   * The thumbnails stages' doors for one item: THIS JOB's leases (so the words' model is a hold of
+   * the one job, and a model the fields left loaded is not loaded again), the
    * run's AI manager for the words, the routing table, the run's stop, and a progress line that is
    * also the job's sign of life (sampling and scene grouping are minutes of CPU with no model call).
    * `leases` is read only when a stage calls a model, so a run that makes no thumbnails needs no server.

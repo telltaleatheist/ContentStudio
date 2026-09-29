@@ -1,13 +1,14 @@
 /**
  * THE THUMBNAILS TAB'S CHEAP FILTERS: no model, only arithmetic on small grey frames.
  *
- * The tab samples a video about once a second (frame-sampler.ts) and most of those frames are
+ * The run samples a video about once a second (frame-sampler.ts) and most of those frames are
  * useless as a thumbnail: the same shot held for a minute, or a frame caught mid-motion. These two
- * filters remove them BEFORE anything is sent to the vision model, because every frame that
- * survives is one decide call on the card (Owen, 2026-09-28: "keep the cheap CPU dedupe + blur
- * filters to cut the call count"). Face presence is NOT judged here: the vision model answers it
- * ("is there a clearly visible human face"), and a CPU face filter would only duplicate that. The
- * deterministic face detector is used later, for exact boxes when the text is placed (layout.ts).
+ * filters remove them before the scenes are grouped and the grid's candidates are chosen
+ * (frame-scenes.ts `gridFrames`: the sharpest of each scene, by the same sharpness). Until
+ * 2026-09-29 every survivor could be one vision-model call; the frame scoring was removed that day
+ * (Owen picks the frames himself from the grid), and the filters stay because they are what keeps
+ * the grid free of held shots and blur. Face presence is NOT judged here. The deterministic face
+ * detector is used later, for exact boxes when the text is placed (layout.ts).
  *
  * PURE. Every function takes a grey frame (one byte per pixel, row-major) and returns numbers, so
  * tools/thumbnail-lab-checks.js exercises them on synthetic frames.
@@ -48,14 +49,6 @@ export const DUPLICATE_MAX_BITS = 8;
  * caught mid-motion, which fall far below it.
  */
 export const BLUR_FRACTION_OF_MEDIAN = 0.35;
-
-/**
- * How many frames at most go to the vision model in one run (Owen: "e.g. ~100"). When more survive
- * the cheap filters, the cap is shared across the story's SCENES (frame-scenes.ts
- * `allocateScoring`: a floor for every scene, the rest by screen time) and each scene's share is
- * thinned across its own time on screen (`thinAcrossRange`).
- */
-export const MAX_FRAMES_TO_SCORE = 120;
 
 /** One sampled frame's cheap measurements. */
 export interface FrameMeasure {

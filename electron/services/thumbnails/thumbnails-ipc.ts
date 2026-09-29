@@ -61,7 +61,6 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     runChoice: () => thumbnailRunChoice({
       requested: true,
       store: { get: (key) => store.get(key) },
-      crucible,
       userDataPath,
       appRoot: app.getAppPath(),
       ffmpeg: paths.ffmpeg,
@@ -83,7 +82,6 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
   // ── the window ──────────────────────────────────────────────────────────────
   ipcMain.handle('thumbnails:summary', (_e, jobId: string, itemId: string) => answer('reading the thumbnails', () => report.summary(jobId, itemId)));
   ipcMain.handle('thumbnails:item', (_e, jobId: string, itemId: string) => answer('reading the thumbnails', () => report.view(jobId, itemId)));
-  ipcMain.handle('thumbnails:frames', (_e, jobId: string, itemId: string, ids: string[]) => answer('reading frames', () => report.framePictures(jobId, itemId, ids)));
   ipcMain.handle('thumbnails:render-pair', (event, jobId: string, itemId: string, change) => {
     progressTo = event.sender;
     return answer('drawing a thumbnail', () => report.renderPair(jobId, itemId, change));

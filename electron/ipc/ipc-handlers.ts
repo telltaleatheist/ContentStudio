@@ -1618,12 +1618,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         rerollGate: resolveRerollGateSettings({ rerollGate: settings.rerollGate, rerollGateTuning: settings.rerollGateTuning }),
         inputNotes: params.inputNotes || {},
         // The three A/B thumbnails (thumbnails/pipeline.ts), on by default; `thumbnails: false` on
-        // the request switches them off for this run, said on every item's record. The look and
-        // the doors are read AT JOB TIME, like the routing above.
+        // the request switches them off for this run, said on every item's record. The look is
+        // read AT JOB TIME, like the routing above.
         thumbnails: thumbnailRunChoice({
           requested: params.thumbnails,
           store: { get: (key) => store.get(key) },
-          crucible: analytics.crucible,
           userDataPath: app.getPath('userData'),
           appRoot: app.getAppPath(),
           ffmpeg: getRuntimePaths().ffmpeg,
@@ -1637,7 +1636,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
       const safeMetadataParams = {
         ...metadataParams,
-        // The setup holds the Crucible doors and the renderer, which are not data to print.
+        // The setup holds the manifest builder and the renderer, which are not data to print.
         thumbnails: metadataParams.thumbnails.mode === 'on' ? '<on: the saved look, the photo library, the thumbnail rows>' : metadataParams.thumbnails,
         // Summarized: the full block is several KB and would drown the log
         insights: insights
