@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import type { CrucibleClient, DecideItemsResponse } from '@crucible/client';
 import type { CrucibleLanes } from '../../crucible/lanes';
 import type { CrucibleTransport } from '../../crucible/transport';
+import type { JobLeases } from '../../crucible/lease';
 import { FrameAnswerUnreadable, readFrameAnswers, type ScoredFrame } from './frame-ranking';
 import { frameAnswersOfItems, frameDecideItems } from './prompts';
 import { clock } from './frame-sampler';
@@ -98,7 +99,7 @@ export class ThumbnailJobWaiting extends Error {
   }
 }
 
-async function engineWidth(deps: ScorerDeps, server: string): Promise<{ width: number; basis: string }> {
+async function engineWidth(deps: Pick<ScorerDeps, 'clientFor'>, server: string): Promise<{ width: number; basis: string }> {
   const activity = await deps.clientFor(server).then((c) => c.activity());
   const stated = activity.chat?.maxInFlight ?? null;
   if (stated === null) return { width: 1, basis: `"${server}" states no admission limit for its engine, so one call at a time` };
@@ -137,56 +138,87 @@ function runScoringJob(deps: ScorerDeps, input: { jobId: string; model: string; 
   const { model } = input;
   return deps.lanes.runJob({ jobId: input.jobId, fast: false, stage: 'fields', controller }, (run) =>
     deps.lanes.aiCall({ lane: 'gpu', model }, `Thumbnail frames (${input.jobId})`, () =>
-      deps.transport.withJobLease(run.server, model, async (job) => {
-        const { width, basis } = await engineWidth(deps, run.server);
-        const scored: ScoredFrame[] = [];
-        const unreadable: ScoreOutcome['unreadable'] = [];
-        let next = 0;
-        let done = 0;
-        // The first refusal stops every worker: a server refusal is about the model or the
-        // server, never one frame, so the frames after it would be refused the same way.
-        let failed = false;
-        const worker = async () => {
-          for (;;) {
-            if (failed) return;
-            if (run.controller.signal.aborted) throw run.controller.signal.reason ?? new Error('Stopped.');
-            const i = next++;
-            if (i >= input.frames.length) return;
-            const frame = input.frames[i];
-            const body = frameDecideItems(fs.readFileSync(frame.image).toString('base64'));
-            const answer: DecideItemsResponse = await deps.transport.decideItems({
-              model,
-              ...body,
-              loadContext: FRAME_LOAD_CONTEXT,
-              job,
-              signal: run.controller.signal,
-              what: `thumbnail frame at ${clock(frame.t)}`,
-              trace: null,
-            });
-            try {
-              scored.push({ id: frame.id, t: frame.t, reading: readFrameAnswers(frameAnswersOfItems(answer.answers)) });
-            } catch (err) {
-              if (!(err instanceof FrameAnswerUnreadable)) throw err;
-              unreadable.push({ id: frame.id, t: frame.t, reason: err.message });
-            }
-            done += 1;
-            run.beat();
-            input.onProgress?.(done, input.frames.length);
-          }
-        };
-        const workers = Array.from({ length: Math.min(width, input.frames.length) }, () =>
-          worker().catch((err) => {
-            failed = true;
-            throw err;
-          }),
-        );
-        const settled = await Promise.allSettled(workers);
-        const refusal = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
-        if (refusal) throw refusal.reason;
-        scored.sort((a, b) => a.t - b.t);
-        unreadable.sort((a, b) => a.t - b.t);
-        return { scored, unreadable, server: run.server, model, width, widthBasis: basis };
-      }, { what: `thumbnail frame scoring (${input.frames.length} frames)`, act: 'decide', loadContext: FRAME_LOAD_CONTEXT, signal: run.controller.signal }),
+      deps.transport.withJobLease(run.server, model, (job) => scoreFramesOnCard(deps, {
+        job,
+        server: run.server,
+        model,
+        frames: input.frames,
+        signal: run.controller.signal,
+        beat: () => run.beat(),
+        ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
+      }), { what: `thumbnail frame scoring (${input.frames.length} frames)`, act: 'decide', loadContext: FRAME_LOAD_CONTEXT, signal: run.controller.signal }),
     ),
   );
+}
+
+/**
+ * THE SCORING ITSELF, under a job the caller already holds and inside the GPU step the caller
+ * already took: the tab's own lane job above, or the metadata job's (thumbnails/pipeline.ts, phase
+ * 1 of moving thumbnails into the metadata run: the frames are scored on that job's lease, so the
+ * vision model is one more hold of that job and the job's next model replaces it on the card). As
+ * many frames in flight as the engine states it admits. The first refusal stops every worker: a
+ * server refusal is about the model or the server, never one frame, so the frames after it would be
+ * refused the same way. Refusals come back as the door wrote them; callers put them in plain words
+ * with `plainScoringError`.
+ */
+export async function scoreFramesOnCard(
+  deps: Pick<ScorerDeps, 'transport' | 'clientFor'>,
+  input: {
+    job: JobLeases;
+    server: string;
+    model: string;
+    frames: readonly FrameToScore[];
+    signal: AbortSignal;
+    beat: () => void;
+    onProgress?: (done: number, total: number) => void;
+  },
+): Promise<ScoreOutcome> {
+  const { model, job } = input;
+  if (input.frames.length === 0) throw new Error('There are no frames to score.');
+  const { width, basis } = await engineWidth(deps, input.server);
+  const scored: ScoredFrame[] = [];
+  const unreadable: ScoreOutcome['unreadable'] = [];
+  let next = 0;
+  let done = 0;
+  let failed = false;
+  const worker = async () => {
+    for (;;) {
+      if (failed) return;
+      if (input.signal.aborted) throw input.signal.reason ?? new Error('Stopped.');
+      const i = next++;
+      if (i >= input.frames.length) return;
+      const frame = input.frames[i];
+      const body = frameDecideItems(fs.readFileSync(frame.image).toString('base64'));
+      const answer: DecideItemsResponse = await deps.transport.decideItems({
+        model,
+        ...body,
+        loadContext: FRAME_LOAD_CONTEXT,
+        job,
+        signal: input.signal,
+        what: `thumbnail frame at ${clock(frame.t)}`,
+        trace: null,
+      });
+      try {
+        scored.push({ id: frame.id, t: frame.t, reading: readFrameAnswers(frameAnswersOfItems(answer.answers)) });
+      } catch (err) {
+        if (!(err instanceof FrameAnswerUnreadable)) throw err;
+        unreadable.push({ id: frame.id, t: frame.t, reason: err.message });
+      }
+      done += 1;
+      input.beat();
+      input.onProgress?.(done, input.frames.length);
+    }
+  };
+  const workers = Array.from({ length: Math.min(width, input.frames.length) }, () =>
+    worker().catch((err) => {
+      failed = true;
+      throw err;
+    }),
+  );
+  const settled = await Promise.allSettled(workers);
+  const refusal = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
+  if (refusal) throw refusal.reason;
+  scored.sort((a, b) => a.t - b.t);
+  unreadable.sort((a, b) => a.t - b.t);
+  return { scored, unreadable, server: input.server, model, width, widthBasis: basis };
 }
