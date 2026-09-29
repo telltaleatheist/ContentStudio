@@ -15,6 +15,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatMenuModule } from '@angular/material/menu';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import {
   AnalyticsChannel,
   ElectronService,
@@ -51,6 +52,9 @@ import {
   describeProvenance,
   type ItemProvenance,
 } from '../../features/transcript-link/transcript-link.types';
+import { ThumbnailsWindow, type ThumbnailsWindowData } from '../thumbnails-window/thumbnails-window';
+import { ThumbnailLookDialog } from '../thumbnails-window/thumbnail-look-dialog';
+import type { ThumbnailsSummary } from '../thumbnails-window/thumbnails.types';
 
 interface MetadataReport {
   name: string;
@@ -442,6 +446,7 @@ interface ParsedMetadata {
     MatProgressSpinnerModule,
     MatChipsModule,
     MatMenuModule,
+    MatDialogModule,
     RouterLink,
   ],
   templateUrl: './metadata-reports.html',
@@ -473,6 +478,16 @@ export class MetadataReports implements OnInit, OnDestroy {
   // and the publish feature.
   readonly publish = inject(PublishState);
   readonly MAX_AB_VARIANTS = MAX_AB_VARIANTS;
+  private readonly dialog = inject(MatDialog);
+
+  // ------------------------------------------------------------ thumbnails (phase 2)
+  //
+  // The metadata run made the title and thumbnail pairs; this is the report's line about them,
+  // the ordered picks (pick 1 the video's thumbnail, 2 and 3 for the A/B test) and the button
+  // that opens the Thumbnails window, where they are picked and changed. Read by item id when the
+  // item opens and again when the window closes. Null: not read yet, or nothing to show.
+  readonly thumbnails = signal<ThumbnailsSummary | null>(null);
+  readonly thumbnailsError = signal<string | null>(null);
 
   // ---------------------------------------------------------------- ten more titles
   //
@@ -1858,8 +1873,9 @@ export class MetadataReports implements OnInit, OnDestroy {
   hasAssets(): boolean {
     const meta = this.metadata();
     if (!meta) return false;
+    // THUMBNAIL TEXT OPTIONS retired (phase 2, 2026-09-28): the Thumbnails block replaced it, and an
+    // older report that still has the field shows nothing for it.
     return (
-      (meta.thumbnail_text?.length ?? 0) > 0 ||
       (meta.chapters?.length ?? 0) > 0 ||
       this.chaptersMissing() !== null ||
       (meta.pinned_comment?.length ?? 0) > 0 ||
@@ -3525,7 +3541,6 @@ export class MetadataReports implements OnInit, OnDestroy {
       const selectedItem = this.normalizeMetadataKeys(jobData.items[report.itemIndex]);
       console.log('[MetadataReports] Selected item from array:', selectedItem);
       console.log('[MetadataReports] Titles array:', selectedItem.titles);
-      console.log('[MetadataReports] Thumbnail text array:', selectedItem.thumbnail_text);
 
       this.metadata.set(selectedItem);
       console.log('[MetadataReports] Final metadata signal value:', this.metadata());
@@ -3568,12 +3583,67 @@ export class MetadataReports implements OnInit, OnDestroy {
       // The prompt set travels with it: it is the only input to channel seeding, and an
       // item opened without one gets a panel that says so rather than an empty picker.
       void this.publish.load(report.itemId, report.promptSet);
+      void this.refreshThumbnails(report.jobId, report.itemId);
     } catch (error) {
       console.error('[MetadataReports] Error loading report:', error);
       this.notificationService.error('Read Error', 'Failed to read report: ' + (error as Error).message);
       this.metadata.set(null);
     } finally {
       this.isLoading.set(false);
+    }
+  }
+
+  // ------------------------------------------------------------ thumbnails (phase 2)
+
+  /** Read the open item's thumbnails line and picks. A report made before thumbnails shows nothing. */
+  private async refreshThumbnails(jobId: string | undefined, itemId: string | undefined): Promise<void> {
+    this.thumbnails.set(null);
+    this.thumbnailsError.set(null);
+    if (!jobId || !itemId) return;
+    try {
+      const summary = await this.electron.thumbnailsSummary(jobId, itemId);
+      if (this.selectedReport()?.itemId !== itemId) return;
+      this.thumbnails.set(summary);
+    } catch (error) {
+      if (this.selectedReport()?.itemId !== itemId) return;
+      this.thumbnailsError.set((error as Error).message);
+    }
+  }
+
+  /** The Thumbnails window for the open item; its line and picks are read again when it closes. */
+  openThumbnails(): void {
+    const open = this.selectedReport();
+    if (!open?.jobId || !open.itemId) return;
+    const data: ThumbnailsWindowData = { jobId: open.jobId, itemId: open.itemId };
+    const ref = this.dialog.open(ThumbnailsWindow, { data, width: '1240px', maxWidth: '96vw', maxHeight: '94vh', autoFocus: false });
+    ref.afterClosed().subscribe(() => void this.refreshThumbnails(open.jobId, open.itemId));
+  }
+
+  openThumbnailLook(): void {
+    this.dialog.open(ThumbnailLookDialog, { width: '760px', maxHeight: '90vh', autoFocus: false });
+  }
+
+  /**
+   * Picks whose words were written for another title than the one they go with now (pick n goes
+   * with chosen title n), said on the report so a reorder is not missed.
+   */
+  readonly thumbnailMismatches = computed(() => {
+    const summary = this.thumbnails();
+    const titles = this.publish.chosenTitles();
+    if (summary === null) return [];
+    return summary.picks.flatMap((p) => {
+      const title = titles[p.n - 1];
+      return p.pick.kind === 'made' && title !== undefined && p.pick.wordsFor !== title
+        ? [`Thumbnail ${p.n} goes with title ${p.n} “${title}”, and its words were written for “${p.pick.wordsFor}”. Open Thumbnails to rewrite them.`]
+        : [];
+    });
+  });
+
+  async showThumbnailPicks(folder: string): Promise<void> {
+    try {
+      await this.electron.thumbnailsShowFolder(folder);
+    } catch (error) {
+      this.notificationService.error('Could not show the picks', (error as Error).message);
     }
   }
 
@@ -3640,7 +3710,17 @@ export class MetadataReports implements OnInit, OnDestroy {
             (report.txtFolder ? ` Look in ${report.txtFolder}.` : ''),
         );
       } else {
-        this.notificationService.success('Deleted', 'Report and its text file deleted');
+        this.notificationService.success(
+          'Deleted',
+          receipt.thumbnailsFolderRemoved !== null
+            ? 'Report, its text file and its thumbnails folder deleted'
+            : 'Report and its text file deleted',
+        );
+      }
+      // A thumbnails folder the record names somewhere other than the report's own
+      // thumbnails folder is never removed, and that is said rather than left to be found.
+      if (receipt.thumbnailsReason) {
+        this.notificationService.warning('Thumbnails folder left', `The report is gone; its thumbnails folder was not removed: ${receipt.thumbnailsReason}.`);
       }
     } catch (error) {
       // A rejected delete did nothing at all — the main process is a single transaction
@@ -4037,15 +4117,6 @@ export class MetadataReports implements OnInit, OnDestroy {
       output += '--- TITLES ---\n\n';
       metadata.titles.forEach((title, i) => {
         output += `${i + 1}. ${title}\n`;
-      });
-      output += '\n';
-    }
-
-    // Thumbnail Text
-    if (metadata.thumbnail_text && metadata.thumbnail_text.length > 0) {
-      output += '--- THUMBNAIL TEXT ---\n\n';
-      metadata.thumbnail_text.forEach((text, i) => {
-        output += `${i + 1}. ${text}\n`;
       });
       output += '\n';
     }

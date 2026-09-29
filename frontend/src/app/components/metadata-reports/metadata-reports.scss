@@ -1697,3 +1697,42 @@ a.ghost.link {
   color: var(--danger-text);
   background: color-mix(in srgb, var(--danger-text) 12%, transparent);
 }
+
+/* — the Thumbnails block (phase 2, 2026-09-28) — the run's line, the ordered picks, the window. */
+.thumbs-line {
+  margin: 0 0 8px;
+  font-size: var(--rp-fs-small);
+  color: var(--rp-ink-2);
+}
+.thumbs-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.thumbs-pick {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 6px;
+  align-items: center;
+  justify-content: start;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-2);
+
+  img {
+    grid-column: 1 / -1;
+    width: 176px;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: 5px;
+    background: var(--rp-hover);
+  }
+  .num { font-weight: 700; color: var(--rp-ink); }
+}
+.ab-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+  align-items: flex-start;
+}
