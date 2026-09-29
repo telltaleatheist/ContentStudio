@@ -253,6 +253,26 @@ check('grid: the sharpest of each half of a scene\'s time on screen (both visits
   assert.throws(() => scenes.gridFrames([{ number: 9, frames: [], sampled: 0, seconds: 0 }]), /scene 9 has no kept frames/);
 });
 
+check('grid: look-alikes are dropped across the whole grid, the sharper kept, in time order', () => {
+  const sig = (fill, changed = 0) => {
+    const s = new Uint8Array(scenes.SIG_BYTES).fill(fill);
+    for (let c = 0; c < changed; c++) s.fill(fill + 100, c * 3, c * 3 + 3);
+    return s;
+  };
+  const cells = scenes.SIG_COLS * scenes.SIG_ROWS;
+  const under = Math.floor(cells * scenes.DISTINCT_MIN_FRACTION); // 36 of 144: not more than the bar, a look-alike
+  const frames = [
+    { t: 1, sharpness: 10, colour: sig(20) },
+    { t: 2, sharpness: 40, colour: sig(20, under) }, // looks like t=1 and is sharper: it stays, t=1 goes
+    { t: 3, sharpness: 5, colour: sig(20, under + 1) }, // differs from t=2 in 1 cell: a look-alike of it
+    { t: 4, sharpness: 5, colour: sig(150) }, // another shot
+  ];
+  assert.strictEqual(scenes.DISTINCT_MIN_FRACTION, 0.25);
+  assert.deepStrictEqual(scenes.distinctFrames(frames).map((f) => f.t), [2, 4]);
+  const apart = [{ t: 9, sharpness: 1, colour: sig(20) }, { t: 5, sharpness: 2, colour: sig(20, under + 1) }];
+  assert.deepStrictEqual(scenes.distinctFrames(apart).map((f) => f.t), [5, 9], 'more than the bar apart: both stay, in time order');
+});
+
 // ── sampling (real ffmpeg, synthetic video) ─────────────────────────────────
 
 check('sampling: one frame a second inside the stretches only, both JPEG sizes written, times in the source video', async () => {

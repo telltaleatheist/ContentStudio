@@ -118,9 +118,9 @@ export type RecordedStage = ThumbnailStage | 'tone-photos' | 'scoring';
 
 export interface FinishView {
   stage: RecordedStage;
-  /** The stage it stopped at has since been removed, so its old reason is not shown. */
+  /** The stage it stopped at has since been removed: the window says only that it is not finished. */
   retired: boolean;
-  reason: string;
+  reason: string | null;
   keep: ThumbnailStage[];
   run: ThumbnailStage[];
   blocked: string | null;

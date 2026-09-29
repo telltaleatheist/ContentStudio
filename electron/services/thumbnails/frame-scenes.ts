@@ -38,7 +38,8 @@
  *
  * Scenes are numbered in order of first appearance. Tuned on "f1 - the rapture" (2026-09-24):
  * docs/thumbnails-lab.md has the groups it finds. The Thumbnails window's grid is at most
- * GRID_PER_SCENE of each scene's sharpest frames (`gridFrames`, below).
+ * GRID_PER_SCENE of each scene's sharpest frames (`gridFrames`, below), with look-alikes across the
+ * whole grid dropped (`distinctFrames`).
  *
  * PURE: signatures in, groups and counts out, so tools/thumbnail-lab-checks.js pins it on
  * synthetic frames.
@@ -298,4 +299,25 @@ export function gridFrames<T extends { t: number; sharpness: number }>(scenes: R
     out.push(...thinAcrossRange(scene.frames, first, last + 1, gridQuota({ size: scene.frames.length, seconds: scene.seconds })));
   }
   return out.sort((a, b) => a.t - b.t);
+}
+
+/**
+ * LOOK-ALIKES DROPPED (2026-09-29, Owen: "can we programmatically select similar frames so we dont
+ * have 60 frames that are basically identical to each other?"). A shot can still split into several
+ * scenes (a window moved, a caption changed), and a scene's two frames can be the same talking head
+ * twice. So the grid keeps a frame only when it differs from every frame already kept in more than
+ * DISTINCT_MIN_FRACTION of the signature's cells, sharpest first, so of two look-alikes the sharper
+ * stays. Measured on Owen's 2026-09-29 runs (their old grids of 105-120 frames): 0.25 took witzke to
+ * 14 distinct shots and the varied Alex Jones trump story to 47; 0.1 left witzke at 23, 0.4 began
+ * dropping different clips of one set.
+ */
+export const DISTINCT_MIN_FRACTION = 0.25;
+
+/** The frames with look-alikes dropped (see LOOK-ALIKES DROPPED), in time order. */
+export function distinctFrames<T extends { t: number; sharpness: number; colour: Uint8Array }>(frames: readonly T[]): T[] {
+  const kept: T[] = [];
+  for (const f of [...frames].sort((a, b) => b.sharpness - a.sharpness || a.t - b.t)) {
+    if (kept.every((k) => signatureDistance(f.colour, k.colour) > DISTINCT_MIN_FRACTION)) kept.push(f);
+  }
+  return kept.sort((a, b) => a.t - b.t);
 }

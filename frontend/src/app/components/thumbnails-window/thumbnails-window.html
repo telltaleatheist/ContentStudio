@@ -37,11 +37,11 @@
     <div class="banner warn stopped">
       <div class="stopped-lines">
         @if (fin.retired) {
-          <strong>These thumbnails stopped at a step that has since been removed.</strong>
+          <strong>These thumbnails are not finished yet.</strong>
         } @else {
           <strong>The thumbnails stopped at the {{ fin.stage }} stage.</strong>
         }
-        <span>{{ fin.reason }}</span>
+        @if (fin.reason; as why) { <span>{{ why }}</span> }
         <span class="hint">
           @if (fin.keep.length > 0) { Kept as they are: {{ stageList(fin.keep) }}. }
           “Finish making thumbnails” runs only {{ stageList(fin.run) }}.

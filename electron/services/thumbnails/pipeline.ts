@@ -51,7 +51,7 @@ import type { SRTSegment } from '../metadata/transcription.service';
 import { routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting } from '../metadata/metadata-routing';
 import type { JobLeases } from '../../crucible/lease';
 import { filterFrames } from './frame-metrics';
-import { GRID_PER_SCENE, gridFrames, groupScenes } from './frame-scenes';
+import { GRID_PER_SCENE, distinctFrames, gridFrames, groupScenes } from './frame-scenes';
 import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel } from './frame-sampler';
 import type { ThumbnailStyle } from './layout';
 import { libraryBorder, libraryLogo, libraryPhotos } from './photo-library';
@@ -245,9 +245,9 @@ function fromScreenshots(r: Pick<ItemThumbnails, 'source' | 'frames'>): boolean 
  * since-removed tone-photos stage on an empty photo library; such a record keeps its words): a
  * stage is kept when what it stores is all there, and every stage after the first one that is not
  * kept runs again (each reads what the one before it wrote). The frames are kept when the record
- * holds its source and its grid frames; a record made before 2026-09-29 keeps the frames it sent
- * to the since-removed scoring as its grid (their scores are ignored), and one that stopped AT the
- * scoring goes on from the words. A record whose backgrounds are screenshots keeps its story and
+ * holds its source and its grid frames. A record made before 2026-09-29 holds the up-to-120 frames
+ * it sent to the since-removed scoring (its scenes say `scored`, not `shown`): those are picked
+ * again, so its grid is the new one with look-alikes dropped (Owen saw 60 near-identical frames). A record whose backgrounds are screenshots keeps its story and
  * frames (there is nothing to sample). The render is kept when every pair that has a frame is
  * drawn and its file is there (a story's pairs have none until Owen picks). `exists` is
  * fs.existsSync in the app (a render file that went missing is drawn again).
@@ -256,7 +256,7 @@ export function resumePlan(r: ItemThumbnails, exists: (file: string) => boolean)
   const shots = fromScreenshots(r);
   const kept: Record<ThumbnailStage, boolean> = { story: false, frames: false, words: false, render: false };
   kept.story = shots || r.story?.state === 'linked';
-  kept.frames = kept.story && (shots || (r.source !== null && r.frames.length > 0));
+  kept.frames = kept.story && (shots || (r.source !== null && r.frames.length > 0 && r.scenes.every((s) => s.shown !== undefined)));
   kept.words = kept.frames && r.titles !== null && r.pairs.length > 0 &&
     r.pairs.every((p) => p.words.claim.length + p.words.stakes.length + p.words.reaction.length > 0);
   kept.render = kept.words && r.pairs.every((p) => p.default.frameId === null || (p.default.render.ok && exists(p.default.render.file)));
@@ -525,7 +525,8 @@ export class ItemThumbnailRun {
     const keptIds = new Set(filtered.kept.map(frameId));
     const kept = sampled.frames.filter((f) => keptIds.has(frameId(f)));
     const scenes = groupScenes(kept, sampled.frames, sampled.every);
-    const grid = gridFrames(scenes);
+    const offered = gridFrames(scenes);
+    const grid = distinctFrames(offered);
     const gridIds = new Set(grid.map(frameId));
     // Only the grid's frames stay on disk: they are what Owen picks from.
     for (const f of sampled.frames) {
@@ -547,7 +548,7 @@ export class ItemThumbnailRun {
     const repeats = filtered.dropped.filter((d) => d.reason === 'repeat').length;
     this.rec.lines.push(
       `Sampled ${sampled.frames.length} frames of the story's ${clock(sampled.seconds)} of screen recording; removed ${repeats} repeated and ${blurry} blurry; ` +
-        `${kept.length} kept in ${scenes.length} scene${scenes.length === 1 ? '' : 's'}; ${grid.length} to pick from (the sharpest, at most ${GRID_PER_SCENE} a scene).`,
+        `${kept.length} kept in ${scenes.length} scene${scenes.length === 1 ? '' : 's'}; ${grid.length} to pick from (the sharpest, at most ${GRID_PER_SCENE} a scene; ${offered.length - grid.length} dropped as look-alikes).`,
     );
   }
 

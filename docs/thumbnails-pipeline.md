@@ -32,7 +32,7 @@ same model is the same hold; a different model replaces it). In `metadata-genera
 |---|-------|-------|---------------------|------|
 | 0 | transcription | GPU | ASR | as before (ipc-handlers `runPipeline`) |
 | 1 | `story` | CPU | none | every item, before any chapter |
-| 2 | `frames` | CPU | none | " (the grid: at most two frames a scene, the sharpest) |
+| 2 | `frames` | CPU | none | " (the grid: at most two frames a scene, the sharpest, look-alikes dropped) |
 | - | channel lessons | GPU/cloud | titles row | just before the first chapter (only when the evidence moved) |
 | - | chapters, fields, scrub, re-roll gate | GPU/cloud | as routed | per item, as before |
 | 3 | `words` | GPU/cloud | `thumbnail_words` (default the 8-bit 27B) | per item, after the gate (the titles are settled and, with the gate on, ranked) |
@@ -523,6 +523,14 @@ each half of its time on screen, so a scene the story returns to shows both visi
 frames stay on disk; the record's `frames` is the grid in time order (`scenes[].shown` says how many
 of each scene's), and the window shows it in time order with no scores and no "Show more".
 
+**Look-alikes dropped** (2026-09-29, Owen: "can we programmatically select similar frames so we dont
+have 60 frames that are basically identical to each other?"; frame-scenes.ts `distinctFrames`): after
+the per-scene quota, the grid keeps a frame only when its colour signature differs from every frame
+already kept in more than `DISTINCT_MIN_FRACTION` (0.25) of the cells, sharpest first. A shot split
+over several scenes, or a scene's two frames of one talking head, collapse to one. Measured on his
+old grids that day: witzke 105 → 14, the Alex Jones trump story 120 → 47 (varied footage stays
+varied), christian nationalist 24 → 5. The frames line in the record counts what was dropped.
+
 **Pairs get no frame from the run.** `default.frameId` / `default.scene` are null for a story's pairs
 (the pair's line says "No frame picked yet: pick one in the Thumbnails window."), the render stage
 draws only pairs that have a frame (screenshot pairs, screenshot n on pair n), and the record's line
@@ -533,10 +541,12 @@ refused by name, and a saved pick whose pair has no frame is refused on reading 
 is substituted). "Start from the suggested three" became **Start from the suggested words** (in the
 Text header): pair n's default words as text n; frames and photos are his.
 
-**Older records.** A record that stopped at `scoring` (`RETIRED_STAGES`) is read; Finish keeps its
-story and its frames (the frames it sent to the scoring become its grid, their scores ignored) and
-runs words and render; the view heads it "These thumbnails stopped at a step that has since been
-removed" and drops the old reason (a refused vision model no longer stands in the way). Resuming a story record (any stop) clears the frames the
+**Older records.** A record that stopped at `scoring` (`RETIRED_STAGES`) is read. Its frames are the
+up-to-120 it sent to the scoring (its scenes say `scored`, not `shown`), so Finish keeps only the
+story and runs frames, words and render: the grid is chosen again, look-alikes dropped. A record
+stopped at a removed stage (`tone-photos`, `scoring`) is headed "These thumbnails are not finished
+yet." with no reason line (Owen: "if the step was removed, why would it say it was removed?"): the
+removed step is not named and its old reason (a refused vision model, an empty library) is not shown. Resuming a story record (any stop) clears the frames the
 old ranking gave its pairs, so only screenshot pairs are drawn. `bestScenes`, `scoring` and the
 per-frame scores stay in old JSON, unread.
 

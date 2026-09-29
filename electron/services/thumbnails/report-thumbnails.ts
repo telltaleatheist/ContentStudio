@@ -158,9 +158,10 @@ export interface ThumbnailsSummary {
  */
 export interface FinishView {
   stage: RecordedStage;
-  /** The stage it stopped at has since been removed, so its old reason is not shown. */
+  /** The stage it stopped at has since been removed: the window says only that it is not finished. */
   retired: boolean;
-  reason: string;
+  /** Why it stopped; null for a removed stage (its old reason no longer applies). */
+  reason: string | null;
   keep: ThumbnailStage[];
   run: ThumbnailStage[];
   blocked: string | null;
@@ -362,15 +363,11 @@ export class ReportThumbnails {
   private finishView(record: ItemThumbnails | null): FinishView | null {
     if (record === null || record.state !== 'failed' || record.failure === null) return null;
     const plan = resumePlan(record, fs.existsSync);
-    // A record that stopped at a removed stage (the model's photo ranking, or its frame scoring):
-    // its old reason (the empty library, a refused vision model) no longer stands in the way, so it
-    // is not repeated; the window says the step is gone and what Finish does instead.
-    const reason = record.failure.stage === 'tone-photos'
-      ? 'That step no longer exists: you pick the photos yourself below. Press “Finish making thumbnails” to make what is missing.'
-      : record.failure.stage === 'scoring'
-        ? 'That step no longer exists: you pick the frames yourself below. Press “Finish making thumbnails” to write the words, then pick and generate.'
-        : record.failure.reason;
+    // A record that stopped at a removed stage (the model's photo ranking, or its frame scoring) is
+    // simply unfinished (Owen: "if the step was removed, why would it say it was removed?"): its old
+    // reason no longer applies and the removed step is not named; the window says what Finish runs.
     const retired = record.failure.stage === 'tone-photos' || record.failure.stage === 'scoring';
+    const reason = retired ? null : record.failure.reason;
     return { stage: record.failure.stage, retired, reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
   }
 

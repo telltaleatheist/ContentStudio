@@ -376,18 +376,19 @@ check('stages: story and frames before the chapters with no model; words and ren
   assert.strictEqual(server.leases.taken.length, 1, 'one lease');
   assert.ok(plainCalls.every((c) => c.job !== undefined), 'every text call carried the job');
   assert.ok(rec.folder.startsWith(path.join(root, 'report', 'thumbnails', 'keeper-job-1')), rec.folder);
-  // The grid: at most two frames a scene, in time order, the only frames on disk.
+  // The grid: at most two frames a scene, look-alikes dropped, in time order, the only frames on disk.
   assert.ok(rec.frames.length >= 3, `${rec.frames.length} frames to pick from`);
   for (let i = 1; i < rec.frames.length; i++) assert.ok(rec.frames[i].t > rec.frames[i - 1].t, 'in time order');
   for (const sc of rec.scenes) {
     const mine = rec.frames.filter((f) => f.scene === sc.number);
     assert.strictEqual(sc.shown, mine.length, `scene ${sc.number} says how many of its frames are in the grid`);
-    assert.ok(mine.length >= 1 && mine.length <= (sc.seconds < 10 ? 1 : 2) && mine.length <= sc.kept, `scene ${sc.number}: ${mine.length} of ${sc.kept} kept, ${sc.seconds} s`);
+    // None when every one looked like a frame of another scene (look-alikes dropped).
+    assert.ok(mine.length <= (sc.seconds < 10 ? 1 : 2) && mine.length <= sc.kept, `scene ${sc.number}: ${mine.length} of ${sc.kept} kept, ${sc.seconds} s`);
   }
   assert.ok(rec.frames.every((f) => fs.existsSync(f.large) && fs.existsSync(f.small)), 'the candidates stay on disk');
   assert.deepStrictEqual(fs.readdirSync(path.join(rec.folder, 'frames')).length, rec.frames.length * 2, 'only the grid\'s frames are kept');
   assert.ok(rec.frames.every((f) => !('score' in f) && !('reading' in f) && !('flag' in f)) && !('scoring' in rec) && !('bestScenes' in rec), 'no score, reading, rows or scoring line is written');
-  assert.ok(rec.lines.some((l) => /; \d+ to pick from \(the sharpest, at most 2 a scene\)\.$/.test(l)), rec.lines.join(' | '));
+  assert.ok(rec.lines.some((l) => /; \d+ to pick from \(the sharpest, at most 2 a scene; \d+ dropped as look-alikes\)\.$/.test(l)), rec.lines.join(' | '));
   assert.deepStrictEqual(renders, [], 'nothing drawn: the renderer is not even opened (no pair has a frame)');
 }));
 
@@ -535,7 +536,7 @@ check('storage: the record rides on the item in its job file, reads back checked
       timings: [{ stage: 'story', seconds: 1 }, { stage: 'frames', seconds: 1 }, { stage: 'scoring', seconds: 1 }],
     };
     assert.strictEqual(record.readItemThumbnails(scored, 'keeper').failure.stage, 'scoring', 'an older record stopped at the scoring is read');
-    assert.deepStrictEqual(pipeline.resumePlan(scored, () => true), { keep: ['story', 'frames'], run: ['words', 'render'] }, 'its scored frames are kept as the grid; Finish goes on from the words');
+    assert.deepStrictEqual(pipeline.resumePlan(scored, () => true), { keep: ['story'], run: ['frames', 'words', 'render'] }, 'its scored frames (up to 120, look-alikes and all) are picked again as the new grid');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -801,7 +802,7 @@ function stoppedAtTonePhotos(rec) {
   return old;
 }
 
-check('errors reach the window: a record stopped at a removed stage (tone-photos, scoring) is read and says that step is gone; with no Crucible server Finish is blocked with the reason and refused before any model call; a failed action becomes a banner line naming it; every window call goes through the runner and every channel answers { ok, error }', () => withWorld({}, async (world) => {
+check('errors reach the window: a record stopped at a removed stage (tone-photos, scoring) is read and shown as not finished, the step unnamed; with no Crucible server Finish is blocked with the reason and refused before any model call; a failed action becomes a banner line naming it; every window call goes through the runner and every channel answers { ok, error }', () => withWorld({}, async (world) => {
   const { server, plainCalls } = world;
   const made = await windowOver(world);
   const old = stoppedAtTonePhotos(made.rec);
@@ -809,7 +810,7 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   const { job, itemId, window } = await windowOver(world, { record: old });
   const v = window.view(job.jobId, itemId);
   assert.deepStrictEqual([v.finish.stage, v.finish.keep, v.finish.run, v.finish.blocked], ['tone-photos', ['story', 'frames', 'words'], ['render'], null]);
-  assert.ok(/^That step no longer exists: you pick the photos yourself below\./.test(v.finish.reason) && v.finish.retired === true, v.finish.reason);
+  assert.ok(v.finish.reason === null && v.finish.retired === true, 'a removed stage is not named, and its old reason is not shown');
   // The draw Owen's clicks sent (the phase-2 log line): refused in words, and those words are the banner.
   const drawErr = await rejection(window.renderPair(job.jobId, itemId, { pair: 1, phrase: null }));
   assert.ok(/There are no thumbnails to change: The thumbnails stopped at the tone-photos stage/.test(drawErr.message), drawErr.message);
@@ -819,7 +820,7 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   const noServer = await windowOver(world, { record: atScoring, gpuVenue: () => ({ server: null, reason: 'no Crucible server is selected in Settings' }) });
   const blocked = noServer.window.view(noServer.job.jobId, noServer.itemId);
   assert.deepStrictEqual([blocked.finish.stage, blocked.finish.keep, blocked.finish.run], ['scoring', ['story', 'frames'], ['words', 'render']], 'a stop at the removed scoring keeps its frames and goes on from the words');
-  assert.ok(/^That step no longer exists: you pick the frames yourself below\./.test(blocked.finish.reason) && !/cannot show pictures/.test(blocked.finish.reason), blocked.finish.reason);
+  assert.ok(blocked.finish.reason === null && blocked.finish.retired === true, 'the refused vision model is not repeated');
   assert.strictEqual(blocked.finish.blocked, 'No Crucible server to run the models on: no Crucible server is selected in Settings');
   const before = [plainCalls.length, server.decideBodies().length, server.leases.taken.length];
   const refused = await rejection(noServer.window.finish(noServer.job.jobId, noServer.itemId));
