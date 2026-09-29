@@ -45,6 +45,7 @@
         <span class="hint">
           @if (fin.keep.length > 0) { Kept as they are: {{ stageList(fin.keep) }}. }
           “Finish making thumbnails” runs only {{ stageList(fin.run) }}.
+          @if (fin.run.includes('frames')) { The frames to pick from appear when it is done. }
         </span>
         @if (fin.blocked; as why) {
           <span class="why">Cannot finish yet: {{ why }}</span>

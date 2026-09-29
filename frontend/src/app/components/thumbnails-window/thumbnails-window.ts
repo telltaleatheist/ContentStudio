@@ -118,7 +118,12 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   readonly record = computed(() => this.view()?.record ?? null);
   readonly pairs = computed<StoredPair[]>(() => this.record()?.pairs ?? []);
   readonly options = computed(() => textOptions(this.pairs()));
-  readonly frameIds = computed(() => frameList(this.record()));
+  /**
+   * The grid. Empty while Finish is going to pick the frames again (an old record's up-to-120
+   * scoring frames, Owen 2026-09-29: "doesnt look like anything changed at all"): the stored ones
+   * are about to be replaced, look-alikes dropped, so they are not offered.
+   */
+  readonly frameIds = computed(() => (this.view()?.finish?.run.includes('frames') ? [] : frameList(this.record())));
   readonly slots = computed<Slot[]>(() => planSlots({ pairs: this.pairs(), frames: this.frames(), texts: this.texts(), photos: this.photos(), own: this.own() }));
   readonly elapsed = computed(() => {
     const b = this.busy();
