@@ -703,6 +703,8 @@ const api = {
   thumbnailsRenderPair: (jobId: string, itemId: string, change: unknown) => ipcRenderer.invoke('thumbnails:render-pair', jobId, itemId, change),
   thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string) => ipcRenderer.invoke('thumbnails:pair-title', jobId, itemId, pair, title),
   thumbnailsSavePicks: (jobId: string, itemId: string, picks: unknown) => ipcRenderer.invoke('thumbnails:save-picks', jobId, itemId, picks),
+  thumbnailsFinish: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:finish', jobId, itemId),
+  thumbnailsRemake: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:remake', jobId, itemId),
   thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) =>
     ipcRenderer.invoke('thumbnails:screenshots', jobId, itemId, files, titles),
   thumbnailsChooseOwn: () => ipcRenderer.invoke('thumbnails:choose-own'),

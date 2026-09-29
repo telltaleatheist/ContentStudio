@@ -31,6 +31,8 @@ export interface StoredDefault {
   scene: number;
   kind: WordKind | null;
   phrase: string | null;
+  /** The title the words were written for; null for typed words or no text; absent in older records. */
+  wordsFor?: string | null;
   photo: string | null;
   draw: PhotoDraw | null;
   logo: boolean;
@@ -75,7 +77,7 @@ export interface ItemThumbnails {
   version: 1;
   state: ThumbnailsState;
   line: string;
-  failure: { stage: string; reason: string } | null;
+  failure: { stage: ThumbnailStage; reason: string } | null;
   story:
     | { state: 'linked'; method: string; line: string }
     | { state: 'none'; reason: string }
@@ -111,6 +113,16 @@ export interface ThumbnailsSummary {
   publishFile: string | null;
 }
 
+export type ThumbnailStage = 'story' | 'frames' | 'scoring' | 'words' | 'tone-photos' | 'render';
+
+export interface FinishView {
+  stage: ThumbnailStage;
+  reason: string;
+  keep: ThumbnailStage[];
+  run: ThumbnailStage[];
+  blocked: string | null;
+}
+
 export interface ThumbnailsView extends ThumbnailsSummary {
   jobId: string;
   itemId: string;
@@ -122,6 +134,8 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   photos: Array<{ name: string; preview: string; note: string | null }>;
   hasLogo: boolean;
   heldModel: string | null;
+  finish: FinishView | null;
+  remake: { blocked: string | null } | null;
 }
 
 export interface PairChange {
@@ -129,7 +143,9 @@ export interface PairChange {
   frameId?: string;
   phrase?: string | null;
   kind?: WordKind | null;
+  wordsFor?: string | null;
   photo?: string | null | 'draw';
+  rankingOf?: number;
   logo?: boolean;
 }
 

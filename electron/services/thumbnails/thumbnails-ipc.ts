@@ -78,6 +78,7 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     progress: (event) => {
       if (progressTo !== null && !progressTo.isDestroyed()) progressTo.send('thumbnails:progress', event);
     },
+    gpuVenue: () => crucible.lanes.gpuVenue(),
   });
   app.on('before-quit', () => {
     void report.releaseHold('the app is quitting');
@@ -94,6 +95,14 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
   ipcMain.handle('thumbnails:pair-title', (event, jobId: string, itemId: string, pair: number, title: string) => {
     progressTo = event.sender;
     return answer('rewriting the words', () => report.pairTitle(jobId, itemId, pair, title));
+  });
+  ipcMain.handle('thumbnails:finish', (event, jobId: string, itemId: string) => {
+    progressTo = event.sender;
+    return answer('finishing the thumbnails', () => report.finish(jobId, itemId));
+  });
+  ipcMain.handle('thumbnails:remake', (event, jobId: string, itemId: string) => {
+    progressTo = event.sender;
+    return answer('making the thumbnails again', () => report.remake(jobId, itemId));
   });
   ipcMain.handle('thumbnails:save-picks', (_e, jobId: string, itemId: string, picks) => answer('saving the picks', () => report.savePicks(jobId, itemId, picks)));
   ipcMain.handle('thumbnails:screenshots', (event, jobId: string, itemId: string, files: string[], titles: string[]) => {

@@ -16,7 +16,18 @@
  *     sit beside it for his manual Test & Compare upload in Studio (YouTube has no API for them);
  *   - for a report with NO STORY (or whose stages failed), gives 1 to 3 of his own screenshots
  *     (`useScreenshots`): that many pairs are made from them, words and photos by the models as in
- *     the run (pipeline.ts ItemThumbnailRun.fromScreenshots).
+ *     the run (pipeline.ts ItemThumbnailRun.fromScreenshots);
+ *   - for a report whose thumbnail stages STOPPED, "Finish making thumbnails" (`finish`, 2026-09-29):
+ *     the stages it stores are kept (frames, scores, words) and only the missing ones run
+ *     (pipeline.ts resumePlan / ItemThumbnailRun.resume); "Make thumbnails again from scratch"
+ *     (`remake`) runs every thumbnail stage again for the item.
+ *
+ * THE WINDOW COMPOSES (2026-09-29, Owen: "i pick three [frames]. the text it generated. i pick
+ * three. it overlays them"): thumbnail n is drawn into pair n from the frame, the words (written for
+ * ANY of the titles: `wordsFor`), the photo (a direct pick, or a draw from the ranking made for
+ * those words' pair: `rankingOf`) and the logo it names. A redrawn pair's old file is removed once
+ * no pick points at it (the picks' copies in `picks/` are what is published), so clicking through
+ * does not pile files up.
  *
  * THE MODEL IS HELD between the words and the tone/photo steps (the tab's pattern, which Owen
  * asked for: "if we're using the 27b anyway we might as well keep it loaded"): one held job per
@@ -43,10 +54,13 @@ import { judgeThumbnails } from './judge';
 import { phraseWords } from './layout';
 import type { ThumbnailLook } from './look';
 import { checkSeed, drawLine, drawPhotos } from './photo-draw';
+import { MIN_PHOTOS_TO_RANK, needPhotosToRank, photosMissingReason } from './photo-library';
 import {
   ItemThumbnailRun,
   defaultWords,
   drawPair,
+  resumePlan,
+  type ThumbnailItemInput,
   type ThumbnailRunChoice,
   type ThumbnailRunSetup,
 } from './pipeline';
@@ -54,12 +68,14 @@ import {
   PAIR_COUNT,
   PAIR_KINDS,
   PICKS_FOLDER,
+  THUMBNAIL_STAGES,
   THUMBNAILS_FOLDER,
   checkPicks,
   readItemThumbnails,
   type ItemThumbnails,
   type StoredPair,
   type ThumbnailPick,
+  type ThumbnailStage,
 } from './pipeline-record';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName } from './renderer';
@@ -88,6 +104,8 @@ export interface ReportThumbnailsDeps {
   newSeed: () => number;
   /** A progress line for the window that asked. */
   progress: (event: { jobId: string; itemId: string; line: string }) => void;
+  /** The Crucible server a GPU step started now would run on, or why there is none (lanes.gpuVenue). */
+  gpuVenue: () => { server: string } | { server: null; reason: string };
 }
 
 /** A change to one pair: every field left out stays as it is. */
@@ -98,8 +116,16 @@ export interface PairChange {
   phrase?: string | null;
   /** Where the words came from (null: typed by Owen, or no text). */
   kind?: WordKind | null;
-  /** A photo name, null for "No photo", or 'draw' for a new draw from the pair's top 3. */
+  /**
+   * The title the words were written for (the window offers every pair's words, so thumbnail n may
+   * carry words written for title 2). Left out: the pair's own title for generated words, null for
+   * typed words or no text.
+   */
+  wordsFor?: string | null;
+  /** A photo name, null for "No photo", or 'draw' for a new draw from a ranking's top 3. */
   photo?: string | null | 'draw';
+  /** With `photo: 'draw'`: the pair whose ranking to draw from (the pair the words came from). Left out: this pair's. */
+  rankingOf?: number;
   logo?: boolean;
 }
 
@@ -128,6 +154,18 @@ export interface ThumbnailsSummary {
   publishFile: string | null;
 }
 
+/**
+ * A record whose stages stopped: where, why, what "Finish making thumbnails" keeps and runs, and why
+ * it cannot run now (null when it can).
+ */
+export interface FinishView {
+  stage: ThumbnailStage;
+  reason: string;
+  keep: ThumbnailStage[];
+  run: ThumbnailStage[];
+  blocked: string | null;
+}
+
 /** Everything the window shows. Pictures are keyed by absolute file path, frames by frame id. */
 export interface ThumbnailsView extends ThumbnailsSummary {
   jobId: string;
@@ -143,6 +181,13 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   hasLogo: boolean;
   /** The text model held for the next words or tone/photo step, or null. */
   heldModel: string | null;
+  /** Set when the record's stages stopped (state `failed`): "Finish making thumbnails". */
+  finish: FinishView | null;
+  /**
+   * "Make thumbnails again from scratch": null when it is not offered (no record, off, or made from
+   * screenshots); else why it cannot run now, or null inside when it can.
+   */
+  remake: { blocked: string | null } | null;
 }
 
 interface Located {
@@ -306,7 +351,37 @@ export class ReportThumbnails {
       photos: this.deps.photoList(),
       hasLogo: this.deps.look.logoFile() !== null,
       heldModel: this.heldModel(),
+      finish: this.finishView(record),
+      remake: this.remakeView(record),
     };
+  }
+
+  /**
+   * Why a run of `stages` cannot start now: too few reaction photos for the tone/photo stage, or no
+   * Crucible server for a GPU stage. Null when it can. Checked again when the button is pressed.
+   */
+  private blockedFor(stages: readonly ThumbnailStage[]): string | null {
+    if (stages.includes('tone-photos')) {
+      const count = this.deps.look.photoNames().length;
+      if (count < MIN_PHOTOS_TO_RANK) return photosMissingReason(count);
+    }
+    if (stages.includes('scoring') || stages.includes('words') || stages.includes('tone-photos')) {
+      const venue = this.deps.gpuVenue();
+      if (venue.server === null) return `No Crucible server to run the models on: ${venue.reason}`;
+    }
+    return null;
+  }
+
+  private finishView(record: ItemThumbnails | null): FinishView | null {
+    if (record === null || record.state !== 'failed' || record.failure === null) return null;
+    const plan = resumePlan(record, fs.existsSync);
+    return { stage: record.failure.stage, reason: record.failure.reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
+  }
+
+  private remakeView(record: ItemThumbnails | null): { blocked: string | null } | null {
+    if (record === null || record.state === 'off') return null;
+    if (record.state === 'made' && record.source !== null && record.source.video === null) return null;
+    return { blocked: this.blockedFor(THUMBNAIL_STAGES) };
   }
 
   /** Pictures of more frames ("More from this scene"), keyed by id. */
@@ -333,6 +408,20 @@ export class ReportThumbnails {
     checkPicks(next.picks, loc.where);
     this.writeCopies(next);
     return loc.handler.updateItemThumbnails(jobId, itemId, () => next);
+  }
+
+  /**
+   * After a pair was drawn again and the record written: its old render goes when nothing points at
+   * it any more (no pick; the published file is the pick's COPY in `picks/`, never the render) and
+   * it sits in the record's folder. Keeps the folder to the renders in use while Owen clicks through.
+   */
+  private dropOldRender(record: ItemThumbnails, old: StoredPair['default']['render'], now: string, where: string): void {
+    if (!old.ok || old.file === now || record.folder === null) return;
+    if (record.picks.some((p) => p.file === old.file)) return;
+    if (path.dirname(path.resolve(old.file)) !== path.resolve(record.folder)) return;
+    if (!fs.existsSync(old.file)) return;
+    fs.rmSync(old.file);
+    log.info(`[Thumbnails] ${where}: removed the replaced render ${path.basename(old.file)} (no pick points at it)`);
   }
 
   /**
@@ -409,16 +498,21 @@ export class ReportThumbnails {
           d.phrase = change.phrase.trim();
           d.kind = kind;
         }
+        if (change.wordsFor !== undefined && change.wordsFor !== null && (typeof change.wordsFor !== 'string' || change.wordsFor.trim() === '')) {
+          throw new Error(`The title the words were written for must be text, got ${JSON.stringify(change.wordsFor)}.`);
+        }
+        d.wordsFor = change.wordsFor !== undefined ? change.wordsFor : d.kind !== null ? pair.title : null;
       }
       if (change.photo !== undefined) {
         if (change.photo === null) {
           d.photo = null;
           d.draw = null;
         } else if (change.photo === 'draw') {
-          if (pair.photos.length === 0) throw new Error(`Pair ${pair.pair} has no photo ranking to draw from.`);
+          const from = change.rankingOf === undefined ? pair : this.pairOf(record, change.rankingOf);
+          if (from.photos.length === 0) throw new Error(`Pair ${from.pair} has no photo ranking to draw from; the photos were never ranked for its words.`);
           const taken = record.pairs.filter((p) => p.pair !== pair.pair).flatMap((p) => (p.default.photo === null ? [] : [p.default.photo]));
           const seed = checkSeed(this.deps.newSeed());
-          const draw = drawPhotos({ X: pair.photos }, ['X'], taken, seed).X;
+          const draw = drawPhotos({ X: from.photos }, ['X'], taken, seed).X;
           d.photo = draw.name;
           d.draw = draw;
         } else {
@@ -464,9 +558,10 @@ export class ReportThumbnails {
           rankedFor: p.rankedFor === undefined ? p.default.phrase : p.rankedFor,
           default: d,
         } : p)),
-        picks: this.followPair(record.picks, pair.pair, drawn.file, pair.title),
+        picks: this.followPair(record.picks, pair.pair, drawn.file, d.wordsFor ?? pair.title),
       };
       await this.write(loc, jobId, itemId, next);
+      this.dropOldRender(next, pair.default.render, drawn.file, loc.where);
       log.info(`[Thumbnails] ${loc.where}: pair ${pair.pair} drawn again (${drawn.file})`);
       return this.view(jobId, itemId);
     });
@@ -497,6 +592,7 @@ export class ReportThumbnails {
       const loc = this.locate(jobId, itemId);
       const record = this.actionable(loc, 'rewrite');
       const pair = this.pairOf(record, n);
+      needPhotosToRank(this.deps.userDataPath);
       const setup = this.setup();
       const ctx = this.itemContext(loc);
       const wordsOption = this.routed('thumbnail_words');
@@ -564,6 +660,7 @@ export class ReportThumbnails {
           scene: pair.default.scene,
           kind: chosen.kind,
           phrase: chosen.phrase,
+          wordsFor: wanted,
           photo: draw.name,
           draw,
           logo: pair.default.logo,
@@ -602,6 +699,7 @@ export class ReportThumbnails {
         picks: this.followPair(record.picks, n, drawn.file, wanted),
       };
       await this.write(loc, jobId, itemId, updated);
+      this.dropOldRender(updated, pair.default.render, drawn.file, loc.where);
       log.info(`[Thumbnails] ${loc.where}: pair ${n}'s words rewritten for “${wanted}” on ${words.model}`);
       return this.view(jobId, itemId);
     });
@@ -627,7 +725,7 @@ export class ReportThumbnails {
         if (r.kind === 'made') {
           const pair = this.pairOf(record, r.pair);
           if (!pair.default.render.ok) throw new Error(`Thumbnail ${pair.pair} was not drawn (${pair.default.render.reason}), so it cannot be picked.`);
-          return { kind: 'made', pair: pair.pair, file: pair.default.render.file, wordsFor: pair.title };
+          return { kind: 'made', pair: pair.pair, file: pair.default.render.file, wordsFor: pair.default.wordsFor ?? pair.title };
         }
         if (r.kind === 'own') {
           if (typeof r.file !== 'string' || !path.isAbsolute(r.file)) throw new Error(`Your own image must be a file on this Mac, got ${JSON.stringify(r.file)}.`);
@@ -678,6 +776,7 @@ export class ReportThumbnails {
       const parent = path.join(txtFolder, THUMBNAILS_FOLDER);
       const folder = record.folder ?? path.join(parent, `${jobId}-${itemId}`);
       if (path.dirname(path.resolve(folder)) !== path.resolve(parent)) throw new Error(`The record's folder ${folder} is not in this report's ${THUMBNAILS_FOLDER} folder, so it is not replaced.`);
+      needPhotosToRank(this.deps.userDataPath);
       const setup = this.setup();
       const ctx = this.itemContext(loc);
       // A failed run's frames, or earlier screenshots, are replaced; the picks folder is rewritten.
@@ -733,6 +832,121 @@ export class ReportThumbnails {
       } finally {
         ai.cleanup?.();
       }
+      return this.view(jobId, itemId);
+    });
+  }
+
+  // ── a report whose thumbnail stages stopped ──────────────────────────────────
+
+  /**
+   * The item as the stages read it, for Finish and From scratch: its saved transcript, channel,
+   * report folder, the content link Owen made on the Inputs page (the story's manual method), and
+   * whether it is a video. The report does not store the item's input kind; a measured video
+   * duration (content_provenance.final_duration_sec, ffprobed by transcription for a video only)
+   * says it is one, and without it the story stage says there is no video to take frames from.
+   * `linked`: the record already linked a story, which only a video item gets.
+   */
+  private itemInput(loc: Located, jobId: string, linked: boolean): ThumbnailItemInput {
+    const ctx = this.itemContext(loc);
+    const txtFolder = loc.job.txt_folder;
+    if (typeof txtFolder !== 'string' || txtFolder === '') throw new Error('The report records no folder, so there is nowhere to put the thumbnails.');
+    const provenance = loc.item.content_provenance ?? null;
+    const measured = provenance !== null && typeof provenance.final_duration_sec === 'number';
+    return {
+      jobId,
+      itemIndex: loc.job.items.indexOf(loc.item),
+      sourceLabel: String(loc.item._title ?? loc.item.item_id),
+      contentType: linked || measured ? 'video' : 'transcript_file',
+      videoPath: typeof loc.item.source_path === 'string' ? loc.item.source_path : null,
+      operatorRef: provenance?.transcript_ref ?? null,
+      segments: ctx.segments,
+      reportFolder: txtFolder,
+      channel: ctx.channel,
+    };
+  }
+
+  /** The item's fields the words and the tone/photo read (as the metadata run hands them over). */
+  private fieldsOf(item: any): { titles: unknown; reroll_gate: any; description_hook: unknown; description: unknown } {
+    return { titles: item.titles, reroll_gate: item.reroll_gate ?? null, description_hook: item.description_hook, description: item.description };
+  }
+
+  /**
+   * Run the stages on ONE held Crucible job (the window's text hold is given back first, so this
+   * window has one job on the card), and give it back after, whatever happened. Every model call
+   * inside is its own GPU step on the lanes, as in the metadata run.
+   */
+  private async stagesOnOneJob(jobId: string, itemId: string, what: string, make: (doors: import('./pipeline').ThumbnailJobDoors) => ItemThumbnailRun, fields: ReturnType<ReportThumbnails['fieldsOf']>): Promise<ItemThumbnails> {
+    await this.releaseHold(`${what} takes the card`);
+    const leases = this.deps.holdJob(what);
+    const ai = this.deps.aiManager();
+    try {
+      const run = make({
+        leases,
+        aiManager: ai,
+        routing: this.routing(),
+        cancelled: () => false,
+        progress: (line) => this.deps.progress({ jobId, itemId, line }),
+      });
+      await run.beforeChapters();
+      await run.afterFields(fields);
+      return run.record();
+    } finally {
+      ai.cleanup?.();
+      const lost = await leases.releaseAll();
+      for (const line of lost) log.error(`[Thumbnails] ${what} lost its lease on ${line} before it was given back`);
+    }
+  }
+
+  /**
+   * "FINISH MAKING THUMBNAILS": a record whose stages stopped goes on from what it stores. The
+   * stages whose output is all there are kept (frames, scores, words are never made again); the
+   * missing ones run in order on the routing table's rows, on one held job. The new record is
+   * written whatever happened: made, or stopped again with the new stage and reason.
+   */
+  finish(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.exclusive(jobId, itemId, 'finishing the thumbnails', async () => {
+      const loc = this.locate(jobId, itemId);
+      const record = this.actionable(loc, 'finish');
+      if (record.state !== 'failed' || record.failure === null) throw new Error(`Nothing stopped, so there is nothing to finish: ${record.line}`);
+      const plan = resumePlan(record, fs.existsSync);
+      const blocked = this.blockedFor(plan.run);
+      if (blocked !== null) throw new Error(blocked);
+      const setup = this.setup();
+      const input = this.itemInput(loc, jobId, record.story?.state === 'linked');
+      this.deps.progress({ jobId, itemId, line: `Finishing: ${plan.keep.length > 0 ? `keeping ${plan.keep.join(', ')}; ` : ''}running ${plan.run.join(', ')}...` });
+      const made = await this.stagesOnOneJob(jobId, itemId, 'Finish making thumbnails',
+        (doors) => ItemThumbnailRun.resume(setup, input, doors, record, plan), this.fieldsOf(loc.item));
+      await this.write(loc, jobId, itemId, made);
+      log.info(`[Thumbnails] ${loc.where}: finished (kept ${plan.keep.join(', ') || 'nothing'}; ran ${plan.run.join(', ')}): ${made.line}`);
+      return this.view(jobId, itemId);
+    });
+  }
+
+  /**
+   * "MAKE THUMBNAILS AGAIN FROM SCRATCH": every thumbnail stage runs again for the item (the story
+   * link found again, frames sampled and scored, words, tone and photos, renders), into its folder,
+   * on one held job. Own-image picks stay; pair picks go (the pairs are new).
+   */
+  remake(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.exclusive(jobId, itemId, 'making the thumbnails again', async () => {
+      const loc = this.locate(jobId, itemId);
+      const record = this.actionable(loc, 'make again');
+      if (this.remakeView(record) === null) throw new Error('These thumbnails were made from your screenshots; choose screenshots again instead.');
+      const blocked = this.blockedFor(THUMBNAIL_STAGES);
+      if (blocked !== null) throw new Error(blocked);
+      const setup = this.setup();
+      const input = this.itemInput(loc, jobId, record.story?.state === 'linked');
+      const parent = path.join(input.reportFolder, THUMBNAILS_FOLDER);
+      const folder = record.folder ?? path.join(parent, `${jobId}-${input.itemIndex + 1}`);
+      if (path.dirname(path.resolve(folder)) !== path.resolve(parent)) throw new Error(`The record's folder ${folder} is not in this report's ${THUMBNAILS_FOLDER} folder, so it is not replaced.`);
+      this.deps.progress({ jobId, itemId, line: 'Making the thumbnails again from scratch...' });
+      const made = await this.stagesOnOneJob(jobId, itemId, 'Make thumbnails again',
+        (doors) => ItemThumbnailRun.start({ mode: 'on', setup }, input, doors, { folder }), this.fieldsOf(loc.item));
+      const next: ItemThumbnails = { ...made, picks: record.picks.filter((p) => p.kind === 'own') };
+      // A record with no folder (no story again) still needs one for Owen's own picks' copies.
+      if (next.folder === null && next.picks.length > 0) next.folder = folder;
+      await this.write(loc, jobId, itemId, next);
+      log.info(`[Thumbnails] ${loc.where}: made again from scratch: ${made.line}`);
       return this.view(jobId, itemId);
     });
   }

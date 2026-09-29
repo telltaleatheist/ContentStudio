@@ -22,6 +22,7 @@ import type { DecideResponse } from '@crucible/client';
 import type { JobLeases } from '../../crucible/lease';
 import { promptAssets } from '../metadata/prompt-assets';
 import { plainScoringError, ThumbnailJobWaiting, type ScorerDeps } from './frame-scorer';
+import { MIN_PHOTOS_TO_RANK, photosMissingReason } from './photo-library';
 import { THUMBNAILS_PROMPT_FILE } from './prompts';
 
 /** The judge's load context: a description, a transcript opening and a 13-line legend. */
@@ -145,7 +146,7 @@ export async function judgeThumbnails(input: {
   const { deps, model } = input;
   const tones = toneOptions();
   const names = input.photos.map((p) => p.name);
-  if (names.length < 2) throw new Error(`Ranking reaction photos needs at least two in the folder; it has ${names.length}.`);
+  if (names.length < MIN_PHOTOS_TO_RANK) throw new Error(photosMissingReason(names.length));
   if (names.length > 26) throw new Error(`A photo question takes at most 26 answers, and the folder has ${names.length} photos.`);
   const toneStateText = toneState(input.tone);
   // The summary is the hook and the description's paragraph together, whichever the report has.

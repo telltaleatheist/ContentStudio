@@ -35,7 +35,8 @@
  *     position); the copies `picks/Pick 1..n` are written and the file to publish is pick 1's copy;
  *     a fourth pick, one pair twice and a stale record shape are refused; with none, the copies go.
  *   - SWAPS REDRAWN AT ONCE: a changed frame, words (or "No text"), photo ("No photo", a new draw
- *     from the top 3) or logo draws a NEW file beside the old one (the old stays); a picked pair's
+ *     from the top 3) or logo draws a NEW file beside the old one (the old one removed once no pick
+ *     points at it, 2026-09-29); a picked pair's
  *     pick follows it; a pre-phase-2 record gets `rankedFor` before its words change.
  *   - OWN IMAGE AS A PICK: Owen's file, checked against YouTube's thumbnail rules and read in place.
  *   - REWRITE WORDS FOR A TITLE: one words call carrying the new title and the tone/photo decides on
@@ -48,6 +49,19 @@
  *   - THE TAB IS GONE: no route, sidebar entry, component, lab service, combine or `thumbs:` channel;
  *     every `thumbnails:` channel the preload offers has a handler and the reverse; the reports page
  *     shows no THUMBNAIL TEXT OPTIONS section; the window sets pick 1 through the publish door.
+ *
+ * The window rebuilt as one flow (2026-09-29, LEDGER #242):
+ *
+ *   - ERRORS REACH THE WINDOW: an empty photo library stops the run at tone-photos naming Thumbnail
+ *     look; the view blocks Finish with that reason and Finish is refused before any model call; the
+ *     window's one runner turns a failure into a banner line naming it; every window call goes
+ *     through the runner and every channel answers { ok, error }.
+ *   - FINISH RESUMES ONLY THE MISSING STAGES: no frame scored or word written again; the tone and
+ *     photo questions on one lease; a stop at render draws only; the plans for a stop at scoring and
+ *     for screenshots. FROM SCRATCH runs every stage on one job.
+ *   - PICKING: frames and texts in click order (out and close up; a fourth refused); thumbnail n =
+ *     frame n + text n + photo n; words written for another title said on the pick; drawing each
+ *     wanted change makes it match; the picks are the places in order and read back on reopening.
  *
  *   npm run build:electron && node tools/thumbnail-pipeline-checks.js
  */
@@ -314,7 +328,7 @@ async function withWorld(options, fn) {
     cancelled: () => controller.signal.aborted, progress: () => undefined,
   });
   try {
-    await fn({ server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, transport: made.ctx.transport });
+    await fn({ server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, transport: made.ctx.transport, lanes: made.ctx.lanes });
   } finally {
     installCrucibleTransport(null);
     installLanes(null);
@@ -517,8 +531,10 @@ function picture(file, size) {
  * The window over the world: a job in `root` (the output directory), the item's transcript saved,
  * its record from a real pipeline run (or `record`), and ReportThumbnails wired as the IPC wires it.
  */
-async function windowOver(world, { record: given = null, noStory = false } = {}) {
+async function windowOver(world, { record: given = null, noStory = false, emptyLibrary = false } = {}) {
   const { root, w, job: inJob, itemRun, setup, userData, transport, aiManager } = world;
+  // Owen's first run (2026-09-29): the library was empty, so the run stopped at tone-photos.
+  if (emptyLibrary) fs.rmSync(library.photosDir(userData), { recursive: true, force: true });
   const out = OutputHandlerService.forOutputDir(root);
   const job = out.initializeJob('f2 - the rapture', 'youtube-fireside', `keeper-window-${noStory ? 'nostory' : 'story'}`);
   const video = w.exportOf(noStory ? 'u9 - unrelated' : 'f2 - the rapture');
@@ -556,6 +572,7 @@ async function windowOver(world, { record: given = null, noStory = false } = {})
     photoList: () => library.libraryPhotos(userData).map((ph) => ({ name: ph.name, preview: `picture of ${ph.name}`, note: null })),
     newSeed: () => 11,
     progress: (e) => progress.push(e.line),
+    gpuVenue: () => world.lanes.gpuVenue(),
   });
   return { out, job, itemId: saved.itemId, window, rec, progress, video };
 }
@@ -584,7 +601,7 @@ check('window, swaps: frame, words ("No text"), photo ("No photo", a new draw fr
   const p1 = noText.record.pairs[0];
   assert.deepStrictEqual([p1.default.phrase, p1.default.kind], [null, null]);
   assert.strictEqual(path.basename(p1.default.render.file), 'Pair 1 - Title one (2).png', 'a new file beside the old');
-  assert.ok(fs.existsSync(first), 'the old file stays (a pick or the publish record may point at it)');
+  assert.ok(!fs.existsSync(first), 'the old file is removed once no pick points at it (the published file is the pick\'s copy)');
   assert.strictEqual(noText.picks[0].pick.file, p1.default.render.file, 'the pick follows its pair');
   assert.ok(fs.readFileSync(noText.publishFile).equals(fs.readFileSync(p1.default.render.file)), 'Pick 1 is the new drawing');
   assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().phrase, null, 'drawn with no words');
@@ -708,6 +725,182 @@ check('delete: deleting an item removes its thumbnails folder (and the empty thu
   const cleanup = deleteJobTxtFiles({ txt_folder: path.join(world.root, 'job-thumbs'), items: [{ txt_path: '', thumbnails: { folder: kept } }, { txt_path: '' }] });
   assert.strictEqual(cleanup.thumbnailFolders, 1);
   assert.ok(!fs.existsSync(kept));
+}));
+
+// ── 2026-09-29: the window rebuilt as one flow (frames, text, photos, thumbnails) ──
+
+/** The window's picking rules (frontend thumbnails-compose.ts), transpiled: it has only type imports. */
+const compose = (() => {
+  const ts = require('typescript');
+  const src = path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-compose.ts');
+  const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }, fileName: src });
+  const mod = { exports: {} };
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, require);
+  return mod.exports;
+})();
+
+const loadsOf = (server) => server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model').map((b) => b.model);
+
+check('errors reach the window: an empty photo library stops the run at tone-photos naming Thumbnail look; the window\'s view says it and blocks Finish with that reason, refused before any model call; a failed action becomes a banner line naming it; every window call goes through the runner and every channel answers { ok, error }', () => withWorld({}, async (world) => {
+  const { server, plainCalls } = world;
+  const { job, itemId, window, rec } = await windowOver(world, { emptyLibrary: true });
+  assert.deepStrictEqual([rec.state, rec.failure.stage], ['failed', 'tone-photos'], rec.line);
+  assert.ok(/has no photos, and ranking them needs at least 2\. Add your reaction photos in Thumbnail look/.test(rec.failure.reason), rec.failure.reason);
+  const v = window.view(job.jobId, itemId);
+  assert.deepStrictEqual([v.finish.stage, v.finish.keep, v.finish.run], ['tone-photos', ['story', 'frames', 'scoring', 'words'], ['tone-photos', 'render']]);
+  assert.ok(/Thumbnail look/.test(v.finish.blocked), v.finish.blocked);
+  assert.ok(/Thumbnail look/.test(v.remake.blocked), 'from scratch is blocked for the same reason');
+  const before = [plainCalls.length, server.decideBodies().length, server.leases.taken.length];
+  const refused = await rejection(window.finish(job.jobId, itemId));
+  assert.ok(/Thumbnail look/.test(refused.message), refused.message);
+  assert.deepStrictEqual([plainCalls.length, server.decideBodies().length, server.leases.taken.length], before, 'refused before any model was called or leased');
+  // The draw Owen's clicks sent (the phase-2 log line): refused in words, and those words are the banner.
+  const drawErr = await rejection(window.renderPair(job.jobId, itemId, { pair: 1, phrase: null }));
+  assert.ok(/There are no thumbnails to change: The thumbnails stopped at the tone-photos stage/.test(drawErr.message), drawErr.message);
+  const seen = { busy: [], failed: [] };
+  const runner = new compose.ActionRunner({ busy: (b) => seen.busy.push(b && b.what), failed: (line) => seen.failed.push(line) }, () => 1000);
+  const [a, b] = await Promise.all([runner.run('Drawing thumbnail 1', async () => { throw drawErr; }), runner.run('Saving your picks', async () => 'saved')]);
+  assert.deepStrictEqual([a, b], [null, 'saved']);
+  assert.deepStrictEqual(seen.failed, [`Drawing thumbnail 1 failed: ${drawErr.message}`], 'the failure is a line naming what failed, with the main process\'s sentence');
+  assert.deepStrictEqual(seen.busy, ['Drawing thumbnail 1', null, 'Saving your picks', null], 'one action at a time, in order, the busy line cleared after each');
+  assert.strictEqual(compose.clockOf(83_400), '1:23');
+  // Every call the window makes goes through the runner (act() is the runner), except giving the model back as it closes.
+  const win = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.ts'), 'utf8');
+  const calls = win.split('\n').filter((l) => /this\.electron\.thumbnails[A-Z]/.test(l));
+  assert.ok(calls.length >= 10, `${calls.length} calls found`);
+  for (const l of calls) assert.ok(/this\.act\(|this\.runner\.run\(/.test(l) || /thumbnailsReleaseModel/.test(l), `a window call outside the runner: ${l.trim()}`);
+  const html = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.html'), 'utf8');
+  assert.ok(/@if \(failure\(\); as f\)/.test(html) && /class="status"/.test(html) && /elapsed\(\)/.test(html), 'the sticky status shows the failure, the running step and its clock');
+  assert.ok(/Finish making thumbnails/.test(html) && /fin\.blocked/.test(html) && /Make thumbnails again from scratch/.test(html), 'the stopped banner offers Finish (with why it cannot) and from scratch');
+  assert.ok(/Pick up to three frames, then up to three lines of text\. Your thumbnails appear below\./.test(html), 'the one line saying what to do');
+  const ipc = fs.readFileSync(path.join(REPO, 'electron/services/thumbnails/thumbnails-ipc.ts'), 'utf8');
+  const handlers = ipc.split(/\n\s*ipcMain\.handle\(/).slice(1);
+  assert.ok(handlers.length >= 20);
+  for (const h of handlers) assert.ok(/answer\(/.test(h.split(/\n\s*\/\/ /)[0]), `a thumbnails channel that does not answer { ok, error }: ${h.slice(0, 60)}`);
+}));
+
+check('finish: a record stopped at tone-photos goes on from what it stores (no frame sampled or scored again, no words written again; the tone and photo questions and the renders on ONE held job); made; own picks stay; a stop at render draws only; the plans for a stop at scoring and for screenshots', () => withWorld({}, async (world) => {
+  const { server, plainCalls, root, userData } = world;
+  const { job, itemId, window, rec } = await windowOver(world, { emptyLibrary: true });
+  library.addPhotos(userData, [path.join(root, 'selfies')], false);
+  const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
+  await window.savePicks(job.jobId, itemId, [{ kind: 'own', file: mine }]);
+  const before = { plain: plainCalls.length, decides: server.decideBodies().length, images: server.decideBodies().filter((d) => Array.isArray(d.images)).length, loads: loadsOf(server).length, leases: server.leases.taken.length };
+  const v = await window.finish(job.jobId, itemId);
+  const r = v.record;
+  assert.strictEqual(r.state, 'made', r.line);
+  assert.strictEqual(r.line, '3 title and thumbnail pairs are ready to pick from.');
+  assert.deepStrictEqual(r.frames.map((f) => f.id), rec.frames.map((f) => f.id), 'the frames as stored');
+  assert.deepStrictEqual(r.bestScenes, rec.bestScenes, 'the scene rows as stored');
+  assert.deepStrictEqual(r.pairs.map((p) => p.words), rec.pairs.map((p) => p.words), 'the words as stored');
+  assert.strictEqual(plainCalls.length, before.plain, 'no words written again');
+  assert.strictEqual(server.decideBodies().filter((d) => Array.isArray(d.images)).length, before.images, 'no frame scored again');
+  assert.strictEqual(server.decideBodies().length - before.decides, 4, 'the tone and one photo question per pair');
+  assert.deepStrictEqual(loadsOf(server).slice(before.loads), [], 'nothing loaded: the fake keeps the 27B the run loaded; the vision model was not asked for');
+  const taken = server.leases.taken.slice(before.leases);
+  assert.deepStrictEqual(taken.map((l) => l.model), ['qwen3.8-27b-8bit'], 'one lease, on the tone/photo model');
+  assert.ok(server.leases.released.includes(taken[0].leaseId), 'given back after');
+  assert.ok(r.pairs.every((p) => p.default.render.ok && fs.existsSync(p.default.render.file) && p.photos.length === 4), 'ranked and drawn');
+  assert.ok(r.lines.some((l) => l === 'Finished in the Thumbnails window after stopping at the tone-photos stage: story, frames, scoring, words kept as stored; tone-photos, render run.'), r.lines.join(' | '));
+  assert.deepStrictEqual(r.timings.map((t) => t.stage), ['story', 'frames', 'scoring', 'words', 'tone-photos', 'tone-photos', 'render'], 'the stopped attempt\'s timings, then only the missing stages');
+  assert.deepStrictEqual([v.finish, v.picks.map((p) => p.pick.kind)], [null, ['own']], 'nothing left to finish; his own pick stays');
+  assert.ok(/Nothing stopped/.test((await rejection(window.finish(job.jobId, itemId))).message));
+  // Stopped at the render: only the drawing runs, no model at all.
+  const atRender = JSON.parse(JSON.stringify(r));
+  Object.assign(atRender, { state: 'failed', failure: { stage: 'render', reason: 'the canvas page closed' }, line: 'The thumbnails stopped at the render stage: the canvas page closed', picks: [] });
+  for (const p of atRender.pairs) p.default.render = { ok: false, reason: 'Not drawn yet.' };
+  const second = await windowOver(world, { record: atRender });
+  const quiet = [plainCalls.length, server.decideBodies().length, server.leases.taken.length];
+  const drawnOnly = await second.window.finish(second.job.jobId, second.itemId);
+  assert.strictEqual(drawnOnly.record.state, 'made', drawnOnly.record.line);
+  assert.deepStrictEqual([plainCalls.length, server.decideBodies().length], quiet.slice(0, 2), 'no model call to draw');
+  assert.deepStrictEqual(drawnOnly.record.pairs.map((p) => p.default.photo), r.pairs.map((p) => p.default.photo), 'the photos as drawn before');
+  // The plans.
+  const exists = () => true;
+  assert.deepStrictEqual(pipeline.resumePlan(atRender, exists), { keep: ['story', 'frames', 'scoring', 'words', 'tone-photos'], run: ['render'] });
+  const atScoring = { ...atRender, failure: { stage: 'scoring', reason: 'x' }, scoring: null, pairs: [], titles: null, tone: null };
+  assert.deepStrictEqual(pipeline.resumePlan(atScoring, exists), { keep: ['story'], run: ['frames', 'scoring', 'words', 'tone-photos', 'render'] }, 'scoring again samples again: the scene rows need the frames\' signatures');
+  const shots = { ...atScoring, story: { state: 'none', reason: 'no story', evidence: null }, source: { video: null, lines: [] }, frames: [{ id: 'shot1' }], bestScenes: [{ scene: 1, ids: ['shot1'], more: [], best: 0 }], failure: { stage: 'words', reason: 'x' } };
+  assert.deepStrictEqual(pipeline.resumePlan(shots, exists), { keep: ['story', 'frames', 'scoring'], run: ['words', 'tone-photos', 'render'] }, 'screenshots keep their backgrounds');
+  assert.deepStrictEqual(pipeline.resumePlan(r, (f) => f !== r.pairs[1].default.render.file).run, ['render'], 'a render file gone from disk is drawn again');
+}));
+
+check('from scratch: every thumbnail stage runs again for the item (the vision model scores, the words are written), on one held job given back after; own picks stay, pair picks go', () => withWorld({}, async (world) => {
+  const { server, plainCalls, root } = world;
+  const { job, itemId, window, rec } = await windowOver(world);
+  const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
+  await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 1 }, { kind: 'own', file: mine }]);
+  const before = { plain: plainCalls.length, images: server.decideBodies().filter((d) => Array.isArray(d.images)).length, leases: server.leases.taken.length };
+  const v = await window.remake(job.jobId, itemId);
+  assert.strictEqual(v.record.state, 'made', v.record.line);
+  assert.strictEqual(v.record.folder, rec.folder, 'into the same folder');
+  assert.ok(v.record.lines.includes('Made again from scratch in the Thumbnails window.') && v.record.lines.some((l) => /were removed to make them again from scratch/.test(l)), v.record.lines.join(' | '));
+  assert.strictEqual(server.decideBodies().filter((d) => Array.isArray(d.images)).length - before.images, v.record.frames.length, 'the frames scored again');
+  assert.strictEqual(plainCalls.length - before.plain, 3, 'the words written again, one call per title');
+  const taken = server.leases.taken.slice(before.leases);
+  assert.deepStrictEqual(taken.map((l) => l.model), ['qwen3.5-9b-vl', 'qwen3.8-27b-8bit'], 'the vision model, then the 27B replacing it, on one job');
+  assert.ok(taken.every((l) => server.leases.released.includes(l.leaseId)), 'both given back');
+  assert.deepStrictEqual(v.picks.map((p) => p.pick.kind), ['own']);
+}));
+
+check('picking: frames and texts in click order (out and close up; a fourth refused); thumbnail n = frame n + text n + photo n; words written for title 2 go on thumbnail 1, said on the pick, its photo drawn from title 2\'s ranking; drawing each wanted change makes it match; the picks are the places in order; reopening reads the same picks back; his own image takes a place and the frames and texts fill the others', () => withWorld({}, async (world) => {
+  const c = compose;
+  const id = (x) => x;
+  let t = c.togglePick([], 'a', id, 'frames');
+  t = c.togglePick(t.list, 'b', id, 'frames');
+  t = c.togglePick(t.list, 'c', id, 'frames');
+  assert.deepStrictEqual(t.list, ['a', 'b', 'c']);
+  const fourth = c.togglePick(t.list, 'd', id, 'frames');
+  assert.deepStrictEqual([fourth.list, /^Up to 3 frames can be picked\. Click a picked one to take it out first\.$/.test(fourth.refused)], [['a', 'b', 'c'], true]);
+  assert.deepStrictEqual(c.togglePick(t.list, 'a', id, 'frames').list, ['b', 'c'], 'out, and the rest close up');
+  assert.deepStrictEqual(c.togglePick(['b', 'c'], 'a', id, 'frames').list, ['b', 'c', 'a'], 'back in, last');
+  assert.throws(() => c.typedText('   '), /Type the words first/);
+
+  const { job, itemId, window, rec } = await windowOver(world);
+  const options = c.textOptions(rec.pairs);
+  assert.ok(options.every((o) => o.kind !== null && typeof o.wordsFor === 'string'), 'every generated line says its kind and its title');
+  assert.deepStrictEqual([options[0].wordsFor, options[0].kind], ['Title one', 'claim']);
+  const fromTitleTwo = options.find((o) => o.wordsFor === 'Title two' && o.phrase === 'MAYBE TOMORROW');
+  const frames = [rec.frames[5].id, rec.frames[0].id, rec.frames[2].id];
+  const texts = [fromTitleTwo, c.NO_TEXT, c.typedText(' MY OWN WORDS ')];
+  const photos = { 2: 'laugh', 3: null };
+  const plan = (pairs, over = {}) => c.planSlots({ pairs, frames, texts, photos, own: {}, ...over });
+  const slots = plan(rec.pairs);
+  assert.deepStrictEqual(slots.map((s) => [s.n, s.frameId, s.text.key, s.photo, s.missing]), [
+    [1, frames[0], fromTitleTwo.key, 'auto', null], [2, frames[1], 'none', 'laugh', null], [3, frames[2], 'typed|MY OWN WORDS', null, null],
+  ], 'No photo (null) is a choice, never the draw');
+  assert.strictEqual(slots[0].rankingPair, 2, 'thumbnail 1\'s photos are ranked for title 2\'s words');
+  let view = window.view(job.jobId, itemId);
+  for (const s of slots) {
+    const change = c.wantedChange(s, view.record.pairs, false);
+    assert.ok(change !== null, `thumbnail ${s.n} needs drawing`);
+    view = await window.renderPair(job.jobId, itemId, change);
+  }
+  const pairs = view.record.pairs;
+  const drawn = plan(pairs);
+  assert.deepStrictEqual(drawn.map((s) => c.wantedChange(s, pairs, false)), [null, null, null], 'each thumbnail shows what was picked: nothing more to draw');
+  assert.deepStrictEqual(pairs.map((p) => [p.default.frameId, p.default.phrase, p.default.wordsFor ?? null, p.default.photo === null ? null : 'a photo']),
+    [[frames[0], 'MAYBE TOMORROW', 'Title two', 'a photo'], [frames[1], null, null, 'a photo'], [frames[2], 'MY OWN WORDS', null, null]]);
+  assert.deepStrictEqual(pairs[0].default.draw.pool.map((r) => r.name), rec.pairs[1].photos.slice(0, 3).map((r) => r.name), 'drawn from the top 3 of title 2\'s ranking');
+  assert.strictEqual(pairs[1].default.photo, 'laugh');
+  const requests = c.pickRequests(drawn, pairs, false);
+  assert.deepStrictEqual(requests, [{ kind: 'made', pair: 1 }, { kind: 'made', pair: 2 }, { kind: 'made', pair: 3 }], 'the places in order');
+  const saved = await window.savePicks(job.jobId, itemId, requests);
+  assert.ok(c.samePicks(requests, saved.picks));
+  assert.deepStrictEqual(saved.picks.map((p) => [p.n, p.pick.pair, p.pick.wordsFor]), [[1, 1, 'Title two'], [2, 2, 'Title two'], [3, 3, 'Title three']], 'pick 1 says its words were written for title 2');
+  assert.strictEqual(saved.publishFile, path.join(saved.record.folder, 'picks', 'Pick 1.png'), 'thumbnail 1 is what is published');
+  const reopened = c.selectionFromPicks(saved.picks, saved.record.pairs);
+  assert.deepStrictEqual([reopened.frames, reopened.texts.map((x) => x.key), reopened.photos], [frames, texts.map((x) => x.key), { 1: 'auto', 2: 'laugh', 3: null }], 'reopening reads the same picks back');
+  // Unpick frame 1: the rest close up; thumbnail 3 now misses its frame and drops out of the picks.
+  const fewer = c.planSlots({ pairs, frames: c.togglePick(frames, frames[0], id, 'frames').list, texts, photos, own: {} });
+  assert.deepStrictEqual(fewer.map((s) => s.frameId), [frames[1], frames[2], null]);
+  assert.strictEqual(fewer[2].missing, 'Pick frame 3 above.');
+  // His own image in place 2: the frames and texts fill places 1 and 3.
+  const withOwn = c.planSlots({ pairs, frames, texts, photos: {}, own: { 2: '/Users/owen/Desktop/mine.png' } });
+  assert.deepStrictEqual(withOwn.map((s) => [s.n, s.own, s.frameId, s.pickIndex]), [[1, null, frames[0], 0], [2, '/Users/owen/Desktop/mine.png', null, null], [3, null, frames[1], 1]]);
+  // The replaced renders went: one current render per pair is left in the folder.
+  const renders = fs.readdirSync(saved.record.folder).filter((f) => /^Pair \d/.test(f));
+  assert.deepStrictEqual(renders.sort(), pairs.map((p) => path.basename(p.default.render.file)).sort(), renders.join(', '));
 }));
 
 check('the tab is gone and nothing dangles: no route, sidebar entry, component, lab service, combine or thumbs: channel; every thumbnails: channel offered has a handler and the reverse; no THUMBNAIL TEXT OPTIONS section; pick 1 is published through the publish door', () => {

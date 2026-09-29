@@ -1,86 +1,282 @@
 <h2 mat-dialog-title>Thumbnails{{ view() ? ' · ' + view()!.title : '' }}</h2>
 <mat-dialog-content class="tw">
-  <div class="top">
-    <div class="top-lines">
-      @if (record(); as r) {
-        <p class="line">{{ r.line }}</p>
-        @if (r.story; as st) {
-          <p class="hint">{{ st.state === 'linked' ? st.line : 'No story: ' + st.reason }}</p>
+  <!-- ═════ WHAT TO DO, WHAT IS RUNNING, WHAT FAILED ═════ Sticky, so a line is seen wherever the
+       click was. Every action goes through one runner: spinner and clock while it runs, a banner
+       naming what failed when it fails. -->
+  <div class="status">
+    <div class="howto">
+      <p class="lead">Pick up to three frames, then up to three lines of text. Your thumbnails appear below.</p>
+      <div class="top-acts">
+        <button mat-stroked-button (click)="openLook()" title="The one look for all three channels: reaction photos, logo, font, colours and spaces">Thumbnail look…</button>
+        @if (record()?.folder; as folder) {
+          <button mat-stroked-button (click)="showFolder(folder)">Show folder</button>
         }
-      } @else if (view()) {
-        <p class="line">This report was made before thumbnails were made with the metadata. Use the Thumbnail row's Choose… for your own image.</p>
-      }
+      </div>
     </div>
-    <div class="top-acts">
-      <button mat-stroked-button (click)="openLook()" title="The one look for all three channels: photos, logo, font, colours and spaces">Thumbnail look…</button>
-      @if (record()?.folder; as folder) {
-        <button mat-stroked-button (click)="showFolder(folder)">Show folder</button>
-      }
-    </div>
+    @if (busy(); as b) {
+      <div class="busy" role="status">
+        <mat-spinner diameter="16"></mat-spinner>
+        <span class="busy-what">{{ b.what }}…</span>
+        <span class="num">{{ elapsed() }}</span>
+        @if (progress(); as p) { <span class="hint">{{ p }}</span> }
+      </div>
+    }
+    @if (failure(); as f) {
+      <div class="banner error" role="alert">
+        <span>{{ f }}</span>
+        <button class="x" (click)="failure.set(null)" title="Close this message">×</button>
+      </div>
+    }
+    @if (notice(); as n) {
+      <div class="banner info"><span>{{ n }}</span><button class="x" (click)="notice.set(null)" title="Close this message">×</button></div>
+    }
   </div>
 
-  @if (busy(); as b) {
-    <div class="busy"><mat-spinner diameter="16"></mat-spinner><span>{{ progress() ?? b + '…' }}</span></div>
+  @if (libraryShort(); as l) {
+    <div class="banner warn">
+      <span>{{ l }}</span>
+      <button mat-stroked-button (click)="openLook()">Thumbnail look…</button>
+    </div>
   }
-  @if (error(); as e) { <p class="error">{{ e }}</p> }
 
-  <!-- ═════ THE PICKS, IN ORDER ═════ Pick n goes with chosen title n (Test & Compare's "title
-       and thumbnail"); pick 1 is the video's thumbnail. -->
-  @if (view() && record() && record()!.state !== 'off') {
-    <section class="picks">
-      <div class="sec-head">
-        <h3>Your picks, in order</h3>
-        <span class="hint">Click a thumbnail below to pick it; the first clicked is 1. Pick 1 becomes the video's thumbnail. With an A/B test, pick 2 and 3 go with title 2 and 3.</span>
+  <!-- ═════ STOPPED ═════ The run's thumbnail stages stopped: where, why, and the way on. -->
+  @if (view()?.finish; as fin) {
+    <div class="banner warn stopped">
+      <div class="stopped-lines">
+        <strong>The thumbnails stopped at the {{ fin.stage }} stage.</strong>
+        <span>{{ fin.reason }}</span>
+        <span class="hint">
+          @if (fin.keep.length > 0) { Kept as they are: {{ stageList(fin.keep) }}. }
+          “Finish making thumbnails” runs only {{ stageList(fin.run) }}.
+        </span>
+        @if (fin.blocked; as why) {
+          <span class="why">{{ why === fin.reason ? 'Cannot finish yet, for the same reason: fix that first, then press Finish.' : 'Cannot finish yet: ' + why }}</span>
+        }
       </div>
-      <div class="slots">
-        @for (slot of slots(); track slot.n) {
-          <div class="slot" [class.filled]="slot.view !== null">
-            <span class="slot-n">{{ slot.n }}</span>
-            @if (slot.view; as pv) {
-              @if (pv.picture) { <img class="slot-img" [src]="pv.picture" [alt]="'Pick ' + slot.n" /> }
-              <div class="slot-lines">
-                <span class="slot-role">{{ slot.n === 1 ? 'The video\'s thumbnail' : 'For your A/B test' }}</span>
-                <span>{{ pv.pick.kind === 'own' ? 'Your image: ' + fileName(pv.pick.file) : 'Thumbnail ' + pv.pick.pair }}</span>
-                @if (slot.title !== null) {
-                  <span class="hint">Goes with title {{ slot.n }}: “{{ slot.title }}”</span>
-                } @else {
-                  <span class="hint">Title {{ slot.n }} is not picked yet.</span>
-                }
-                @if (slot.mismatch) {
-                  <span class="warn">Its words were written for “{{ slot.wordsFor }}”.</span>
-                  <button mat-stroked-button (click)="rewriteForSlot(slot)" [disabled]="busy() !== null"
-                          title="Write this thumbnail's words again for title {{ slot.n }}, rank the photos for them and draw it again (the 27B, about a minute)">Rewrite words for this title</button>
-                }
-                <button class="link" (click)="removePick(slot.n)" [disabled]="busy() !== null">Remove</button>
-              </div>
-            } @else {
-              <span class="hint">Nothing picked</span>
+      <div class="stopped-acts">
+        <button mat-flat-button color="primary" (click)="finish()" [disabled]="busy() !== null || fin.blocked !== null"
+                [title]="fin.blocked ?? (busy() !== null ? 'Wait for the running step' : 'Run the missing stages on the Crucible card')">Finish making thumbnails</button>
+        @if (view()?.remake; as rm) {
+          <button mat-stroked-button (click)="remake()" [disabled]="busy() !== null || rm.blocked !== null"
+                  [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, scoring, words, photos, drawing'">Make thumbnails again from scratch</button>
+        }
+      </div>
+    </div>
+  } @else if (record(); as r) {
+    @if (r.state === 'no-story') {
+      <p class="line">{{ r.line }}</p>
+    } @else if (r.state === 'off') {
+      <div class="banner warn"><span>{{ r.line }}</span></div>
+    }
+  } @else if (view()) {
+    <p class="line">This report was made before thumbnails were made with the metadata. “Use my own image…” below still works.</p>
+  }
+
+  <!-- ═════ 1. FRAMES ═════ -->
+  @if (canPickFrames()) {
+    <section>
+      <div class="sec-head">
+        <h3><span class="step">1</span> Frames</h3>
+        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots.' : 'From the story\'s section, two per scene, best first.' }} Click up to three, in order.</span>
+        <span class="spacer"></span>
+        <span class="count num">{{ frames().length }}/3</span>
+        @if (pairs().length > 0 && drawBlocked() === null) {
+          <button class="link" (click)="suggested()" title="The frames, words and photos the metadata run chose">Start from the suggested three</button>
+        }
+        @if (frames().length + texts().length > 0) {
+          <button class="link" (click)="clearAll()">Clear picks</button>
+        }
+      </div>
+      @for (row of record()!.bestScenes; track row.scene) {
+        <div class="scene">
+          <span class="scene-label">{{ sceneLabel(row.scene) }}</span>
+          <div class="frames">
+            @for (id of row.ids; track id) {
+              <button class="frame" [class.on]="frameNumber(id) !== null" (click)="toggleFrame(id)" [title]="frameInfo(id)">
+                @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
+                @if (frameNumber(id); as k) { <span class="badge">{{ k }}</span> }
+              </button>
+            }
+            @if (moreOpen().has(row.scene)) {
+              @for (id of row.more; track id) {
+                <button class="frame" [class.on]="frameNumber(id) !== null" (click)="toggleFrame(id)" [title]="frameInfo(id)">
+                  @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
+                  @if (frameNumber(id); as k) { <span class="badge">{{ k }}</span> }
+                </button>
+              }
+            }
+            @if (row.more.length > 0) {
+              <button class="link" (click)="toggleMore(row.scene, row.more)">{{ moreOpen().has(row.scene) ? 'Less' : 'More (' + row.more.length + ')' }}</button>
             }
           </div>
+        </div>
+      }
+    </section>
+  } @else if (record() && record()!.state === 'failed') {
+    <section><h3><span class="step">1</span> Frames</h3><p class="hint">No frames were kept before the thumbnails stopped; “Finish making thumbnails” finds them.</p></section>
+  }
+
+  <!-- ═════ 2. TEXT ═════ -->
+  @if (options().length > 0 || canPickFrames()) {
+    <section>
+      <div class="sec-head">
+        <h3><span class="step">2</span> Text</h3>
+        <span class="hint">Every line the model wrote, with the title it was written for. Click up to three, in order.</span>
+        <span class="spacer"></span>
+        <span class="count num">{{ texts().length }}/3</span>
+      </div>
+      @if (options().length === 0) {
+        <p class="hint">No words were written before the thumbnails stopped; “Finish making thumbnails” writes them. You can still type your own.</p>
+      }
+      <div class="texts">
+        @for (o of options(); track o.key) {
+          <button class="text" [class.on]="textNumber(o) !== null" (click)="toggleText(o)">
+            @if (textNumber(o); as k) { <span class="badge">{{ k }}</span> }
+            <span class="phrase">{{ o.phrase }}</span>
+            <span class="label">{{ o.kind }} · for “{{ o.wordsFor }}”</span>
+          </button>
         }
+        @for (o of typedPicked(); track o.key) {
+          <button class="text on" (click)="toggleText(o)">
+            <span class="badge">{{ textNumber(o) }}</span>
+            <span class="phrase">{{ o.phrase }}</span>
+            <span class="label">your words</span>
+          </button>
+        }
+        <button class="text" [class.on]="textNumber(NO_TEXT) !== null" (click)="toggleText(NO_TEXT)">
+          @if (textNumber(NO_TEXT); as k) { <span class="badge">{{ k }}</span> }
+          <span class="phrase">No text</span>
+          <span class="label">the frame and photo only</span>
+        </button>
       </div>
       <div class="row">
-        <button mat-stroked-button (click)="addOwn()" [disabled]="busy() !== null || (view()!.picks.length >= 3)"
-                title="Use your own image file as the next pick (PNG or JPEG, within YouTube's thumbnail limits)">Use my own image…</button>
-        @if (view()!.picks.length > 0) {
-          <button mat-stroked-button (click)="clearPicks()" [disabled]="busy() !== null">Clear picks</button>
-          @if (view()!.picksFolder; as pf) {
-            <button mat-stroked-button (click)="showFolder(pf)" title="Pick 1, 2 and 3 as files, for Studio's Test & Compare">Show the picks</button>
-          }
-        }
+        <input class="own" type="text" placeholder="Type your own words" [value]="typed()" (input)="typed.set($any($event.target).value)" (keydown.enter)="addTyped()" />
+        <button mat-stroked-button (click)="addTyped()" [disabled]="typed().trim() === ''" [title]="typed().trim() === '' ? 'Type the words first' : 'Add them as your next pick'">Add as a pick</button>
       </div>
     </section>
   }
+
+  <!-- ═════ 3. PHOTOS (optional) ═════ -->
+  @if (photoSlots().length > 0 && (canPickFrames() || options().length > 0)) {
+    <section>
+      <div class="sec-head">
+        <h3><span class="step">3</span> Photos <span class="hint">optional</span></h3>
+        <span class="hint">Left alone, each thumbnail's photo is drawn from the top 3 ranked for its words. Click a photo to choose it; click it again to go back to the draw.</span>
+        <span class="spacer"></span>
+        <label class="check" [title]="view()!.hasLogo ? 'Your logo on every thumbnail' : 'No logo is kept in the app: add one in Thumbnail look'">
+          <input type="checkbox" [checked]="logo()" [disabled]="!view()!.hasLogo" (change)="setLogo($any($event.target).checked)" /> Logo
+        </label>
+      </div>
+      @for (s of photoSlots(); track s.n) {
+        <div class="photo-row">
+          <div class="photo-head">
+            <strong>Thumbnail {{ s.n }}</strong>
+            <span class="hint">{{ s.text ? (s.text.phrase ?? 'No text') : 'no text picked yet' }}</span>
+            <span class="hint">{{ rankedForLine(s) }}</span>
+          </div>
+          <div class="photos">
+            <button class="photo choice" [class.on]="photoChoice(s.n) === 'auto'" (click)="setPhoto(s.n, 'auto')" title="Drawn from the top 3 of the ranking">
+              <span>Draw from top 3</span>
+              @if (photoChoice(s.n) === 'auto' && shownPhoto(s.n); as sp) { <span class="pct">now: {{ sp }}</span> }
+            </button>
+            @for (r of photoRow(s); track r.name) {
+              <button class="photo" [class.on]="photoChoice(s.n) === r.name" (click)="setPhoto(s.n, r.name)" [title]="r.name">
+                @if (r.preview) { <img [src]="r.preview" [alt]="r.name" /> }
+                <span>{{ r.name }}</span>
+                <span class="pct">{{ r.ranked ? percent(r.p) : 'not ranked' }}</span>
+              </button>
+            }
+            <button class="photo choice" [class.on]="photoChoice(s.n) === null" (click)="setPhoto(s.n, null)">No photo</button>
+          </div>
+        </div>
+      }
+    </section>
+  }
+
+  <!-- ═════ 4. YOUR THUMBNAILS ═════ Saved as you go: thumbnail 1 is the video's thumbnail; with an
+       A/B test, 2 and 3 go with titles 2 and 3. -->
+  <section>
+    <div class="sec-head">
+      <h3><span class="step">4</span> Your thumbnails</h3>
+      <span class="hint">Saved as you go. The first is the video's thumbnail; with an A/B test, the second and third go with titles 2 and 3.</span>
+      <span class="spacer"></span>
+      @if (view()?.picksFolder; as pf) {
+        @if (view()!.picks.length > 0) {
+          <button class="link" (click)="showFolder(pf)" title="Pick 1, 2 and 3 as files, for Studio's Test & Compare">Show the picks</button>
+        }
+      }
+    </div>
+    @if (drawBlocked(); as why) {
+      <p class="hint">{{ why }}</p>
+    }
+    <div class="results">
+      @for (s of slots(); track s.n) {
+        <div class="result" [class.picked]="pickOf(s) !== null">
+          <div class="result-head">
+            <span class="result-n">{{ s.n }}</span>
+            @if (pickOf(s); as pv) {
+              <span class="role">{{ pv.n === 1 ? 'The video\'s thumbnail' : 'For your A/B test' }}</span>
+            } @else {
+              <span class="hint">Not saved yet</span>
+            }
+          </div>
+          <div class="result-pic" [class.stale]="resultPicture(s) && !resultPicture(s)!.current">
+            @if (resultPicture(s); as pic) {
+              <img class="large" [src]="pic.src" [alt]="'Thumbnail ' + s.n" />
+            } @else {
+              <span class="empty">{{ s.own !== null ? 'Your image' : (s.missing ?? (drawing() === s.n ? 'Drawing…' : 'Not drawn yet')) }}</span>
+            }
+            @if (drawing() === s.n) { <span class="drawing"><mat-spinner diameter="22"></mat-spinner></span> }
+          </div>
+          @if (resultPicture(s); as pic) {
+            <div class="phone">
+              <img [src]="pic.src" [alt]="'Thumbnail ' + s.n + ' at phone size'" />
+              <span class="hint">phone size</span>
+            </div>
+          }
+          <div class="result-lines">
+            @if (s.own !== null) {
+              <span>Your image: {{ fileName(s.own) }}</span>
+            } @else if (s.pickIndex !== null) {
+              <span class="hint">Frame {{ s.pickIndex + 1 }} + text {{ s.pickIndex + 1 }}{{ s.photo === 'auto' ? '' : s.photo === null ? ', no photo' : ', photo ' + s.photo }}</span>
+            }
+            @if (pickOf(s); as pv) {
+              @if (titleFor(pv); as t) {
+                <span class="hint">Goes with title {{ pv.n }}: “{{ t }}”</span>
+              } @else {
+                <span class="hint">Title {{ pv.n }} is not picked yet on the report.</span>
+              }
+            }
+            @if (mismatch(s); as other) {
+              <span class="warn">Its text was written for “{{ other }}”.</span>
+              <button mat-stroked-button (click)="rewrite(s)" [disabled]="rewriteBlocked() !== null"
+                      [title]="rewriteBlocked() ?? 'New words for this title, the photos ranked for them, drawn again (the 27B, about a minute)'">Rewrite words for this title</button>
+              @if (rewriteBlocked(); as why) { <span class="why">{{ why }}</span> }
+            }
+            @for (n of renderNotes(s); track $index) { <span class="hint">{{ n }}</span> }
+            <div class="row">
+              @if (s.own === null) {
+                <button class="link" (click)="useOwn(s)" title="Use your own image file here (PNG or JPEG, within YouTube's thumbnail limits)">Use my own image…</button>
+              } @else {
+                <button class="link" (click)="clearOwn(s)">Use frames and text here instead</button>
+              }
+            </div>
+          </div>
+        </div>
+      }
+    </div>
+  </section>
 
   <!-- ═════ NO STORY: SCREENSHOTS ═════ -->
   @if (canScreenshots()) {
     <section class="shots">
       <h3>{{ record()!.state === 'made' ? 'Make them again from other screenshots' : 'Make thumbnails from your screenshots' }}</h3>
-      <p class="hint">Give 1, 2 or 3 screenshots; that many thumbnails are made, one per title (your picked titles first). The words are written from the transcript for each title, and the photos ranked, on the routing table's models (about a minute).</p>
+      <p class="hint">Give 1, 2 or 3 screenshots; that many thumbnails are made, one per title (your picked titles first). The words are written from the transcript for each title and the photos ranked, on the routing table's models (about a minute).</p>
       <div class="row">
-        <button mat-stroked-button (click)="chooseShots()" [disabled]="busy() !== null">Choose screenshots…</button>
+        <button mat-stroked-button (click)="chooseShots()" [disabled]="busy() !== null" [title]="busy() !== null ? 'Wait for the running step' : ''">Choose screenshots…</button>
         @if (shots().length > 0) {
-          <button mat-flat-button color="primary" (click)="makeFromShots()" [disabled]="busy() !== null">Make {{ shots().length }} thumbnail{{ shots().length === 1 ? '' : 's' }}</button>
+          <button mat-flat-button color="primary" (click)="makeFromShots()" [disabled]="busy() !== null || libraryShort() !== null"
+                  [title]="libraryShort() ?? ''">Make {{ shots().length }} thumbnail{{ shots().length === 1 ? '' : 's' }}</button>
         }
       </div>
       @for (file of shots(); track file; let i = $index) {
@@ -89,122 +285,14 @@
     </section>
   }
 
-  <!-- ═════ THE PAIRS ═════ -->
-  @if (pairs().length > 0) {
-    <section>
-      <div class="sec-head">
-        <h3>Thumbnails</h3>
-        <span class="hint">Click a picture to pick it or unpick it. “Change” opens its pieces below.</span>
-      </div>
-      <div class="pairs">
-        @for (p of pairs(); track p.pair) {
-          <div class="pair" [class.editing]="editing() === p.pair" [class.picked]="pickNumber(p.pair) !== null">
-            <button class="pair-img" (click)="togglePick(p)" [disabled]="busy() !== null"
-                    [title]="pickNumber(p.pair) !== null ? 'Click to remove it from your picks' : (pickBlocked(p.pair) ? 'Remove a pick first: at most 3' : 'Click to pick it')">
-              @if (renderPicture(p); as pic) {
-                <img [src]="pic" [alt]="'Thumbnail ' + p.pair" />
-              } @else {
-                <span class="no-pic">{{ notDrawn(p) ?? 'The picture is not on disk' }}</span>
-              }
-              @if (pickNumber(p.pair); as n) { <span class="badge">{{ n }}</span> }
-            </button>
-            <div class="pair-lines">
-              <span class="hint">Words written for “{{ p.title }}”</span>
-              <span>{{ p.default.phrase ?? 'No text' }} · {{ p.default.photo ?? 'No photo' }}{{ p.default.logo ? ' · logo' : '' }}</span>
-              @for (n of renderNotes(p); track $index) { <span class="hint">{{ n }}</span> }
-              <button mat-stroked-button (click)="edit(p)" [disabled]="editing() === p.pair">{{ editing() === p.pair ? 'Changing below' : 'Change' }}</button>
-            </div>
-          </div>
-        }
-      </div>
-    </section>
-  }
-
-  <!-- ═════ CHANGE ONE PAIR ═════ -->
-  @if (pair(); as p) {
-    <section class="editor">
-      <h3>Change thumbnail {{ p.pair }}</h3>
-      @for (line of p.lines; track $index) { <p class="hint">{{ line }}</p> }
-
-      <div class="sub">
-        <h4>Words <span class="hint">written for “{{ p.title }}” on {{ p.words.model }}</span></h4>
-        <div class="kinds">
-          @for (kind of WORD_KINDS; track kind) {
-            <div class="kind">
-              <span class="kind-name">{{ kind }}</span>
-              @for (w of p.words[kind]; track $index) {
-                <button class="opt" [class.on]="p.default.phrase === w" (click)="useWords(w, kind)" [disabled]="busy() !== null">{{ w }}</button>
-              }
-              @if (p.words[kind].length === 0) { <span class="hint">none written</span> }
-            </div>
-          }
-        </div>
-        <div class="row">
-          <input class="own" type="text" placeholder="Or type your own words" [value]="ownWords()" (input)="ownWords.set($any($event.target).value)" (keydown.enter)="useOwnWords()" />
-          <button mat-stroked-button (click)="useOwnWords()" [disabled]="busy() !== null">Use these words</button>
-          <button mat-stroked-button [class.on]="p.default.phrase === null" (click)="noWords()" [disabled]="busy() !== null">No text</button>
-        </div>
-        <div class="row">
-          <select class="title-select" [value]="otherTitle()" (change)="otherTitle.set($any($event.target).value)">
-            <option value="">Write the words again for another title…</option>
-            @for (t of titleChoices(); track t) { <option [value]="t" [selected]="t === otherTitle()">{{ t }}</option> }
-          </select>
-          <button mat-stroked-button (click)="rewriteFor(otherTitle())" [disabled]="busy() !== null || otherTitle() === ''"
-                  title="New words for this title, the photos ranked for them, drawn again (the 27B, about a minute)">Rewrite words</button>
-        </div>
-      </div>
-
-      <div class="sub">
-        <h4>Photo
-          <span class="hint">
-            ranked for “{{ (p.rankedFor === undefined ? p.default.phrase : p.rankedFor) ?? 'no text' }}”{{ (p.rankedFor !== undefined && p.rankedFor !== p.default.phrase) ? ' (not these words)' : '' }}
-          </span>
-        </h4>
-        <div class="photos">
-          @for (r of p.photos; track r.name) {
-            <button class="photo" [class.on]="p.default.photo === r.name" (click)="usePhoto(r.name)" [disabled]="busy() !== null" [title]="r.name">
-              @if (photoPreview(r.name); as pv) { <img [src]="pv" [alt]="r.name" /> }
-              <span>{{ r.name }}</span>
-              <span class="pct">{{ percent(r.p) }}</span>
-            </button>
-          }
-        </div>
-        <div class="row">
-          <button mat-stroked-button (click)="drawPhoto()" [disabled]="busy() !== null || p.photos.length === 0">Draw again from the top 3</button>
-          <button mat-stroked-button [class.on]="p.default.photo === null" (click)="usePhoto(null)" [disabled]="busy() !== null">No photo</button>
-          <label class="check" [title]="view()!.hasLogo ? '' : 'No logo is kept in the app: add one in Thumbnail look'">
-            <input type="checkbox" [checked]="p.default.logo" [disabled]="busy() !== null || (!view()!.hasLogo && !p.default.logo)"
-                   (change)="setLogo($any($event.target).checked)" /> Logo
-          </label>
-        </div>
-      </div>
-
-      <div class="sub">
-        <h4>Frame <span class="hint">{{ record()!.source?.video === null ? 'your screenshots' : 'two per scene, best first; “More” shows the rest' }}</span></h4>
-        @for (row of record()!.bestScenes; track row.scene) {
-          <div class="scene">
-            <span class="scene-label">{{ sceneLabel(row.scene) }}</span>
-            <div class="frames">
-              @for (id of row.ids; track id) {
-                <button class="frame" [class.on]="p.default.frameId === id" (click)="useFrame(id)" [disabled]="busy() !== null">
-                  @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
-                </button>
-              }
-              @if (moreOpen().has(row.scene)) {
-                @for (id of row.more; track id) {
-                  <button class="frame" [class.on]="p.default.frameId === id" (click)="useFrame(id)" [disabled]="busy() !== null">
-                    @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
-                  </button>
-                }
-              }
-              @if (row.more.length > 0) {
-                <button class="link" (click)="toggleMore(row.scene, row.more)">{{ moreOpen().has(row.scene) ? 'Less' : 'More (' + row.more.length + ')' }}</button>
-              }
-            </div>
-          </div>
-        }
-      </div>
-    </section>
+  @if (view()?.remake; as rm) {
+    @if (!view()?.finish) {
+      <section class="again">
+        <button mat-stroked-button (click)="remake()" [disabled]="busy() !== null || rm.blocked !== null"
+                [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, scoring, words, photos, drawing'">Make thumbnails again from scratch</button>
+        @if (rm.blocked; as why) { <span class="why">{{ why }}</span> }
+      </section>
+    }
   }
 </mat-dialog-content>
 <mat-dialog-actions align="end">
