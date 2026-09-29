@@ -910,7 +910,11 @@ image?", crucible decide.py `question_block`), with `frames.yes` / `frames.no` a
 the expression item offers the five `levels` keyed 1-5. Before: `face`/`eyes`/`strong` as yesno
 questions, `expression` as a score. After: the same words, as choices; P(yes) and the 1-5 expected
 level are read back in code. Never one prompt with numbered slots (measured by the Crucible side and
-rejected: the model copies earlier answers).
+rejected: the model copies earlier answers). *Removed 2026-09-29 (LEDGER #244): Owen picks frames 1,
+2 and 3 himself from the grid, so nothing ranks them; the `frames.*` keys, frame-scorer.ts,
+frame-ranking.ts and the `thumbnail_frames` row went. No frame was ever scored for real: the one
+live attempt was refused before a frame was read (the 9B with vision asked for 8192 of context on a
+host whose ceiling for it is 1700).*
 
 **`tone.*`** and **`photo.*`** (added the same day): two text-only decide questions on the
 `thumbnail_judge` row. `tone.options` is the tone list, one per line (it is also the answer set, so

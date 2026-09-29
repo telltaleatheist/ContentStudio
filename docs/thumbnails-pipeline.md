@@ -14,7 +14,8 @@ Owen's rulings (2026-09-28):
   never restate it (YouTube: the title "is often meant to complement the thumbnail — to provide a
   second chance at winning the click").
 - One look (font, colours, photos, logo) for all three channels.
-- Frame scoring adds about 4 minutes of GPU per video: accepted.
+- Frame scoring adds about 4 minutes of GPU per video: accepted. (Superseded 2026-09-29, LEDGER #244:
+  the frame scoring was removed; Owen picks the frames. See the last section.)
 - The old THUMBNAIL TEXT OPTIONS field retires.
 
 Code: `electron/services/thumbnails/pipeline.ts` (the stages), `pipeline-record.ts` (the stored
@@ -31,19 +32,21 @@ same model is the same hold; a different model replaces it). In `metadata-genera
 |---|-------|-------|---------------------|------|
 | 0 | transcription | GPU | ASR | as before (ipc-handlers `runPipeline`) |
 | 1 | `story` | CPU | none | every item, before any chapter |
-| 2 | `frames` | CPU | none | " |
-| 3 | `scoring` | GPU | `thumbnail_frames` (default the 9B with vision) | " |
-| - | channel lessons | GPU/cloud | titles row | moved here: after the scoring, before the first chapter (only when the evidence moved) |
+| 2 | `frames` | CPU | none | " (the grid: at most two frames a scene, the sharpest) |
+| - | channel lessons | GPU/cloud | titles row | just before the first chapter (only when the evidence moved) |
 | - | chapters, fields, scrub, re-roll gate | GPU/cloud | as routed | per item, as before |
-| 4 | `words` | GPU/cloud | `thumbnail_words` (default the 8-bit 27B) | per item, after the gate (the titles are settled and, with the gate on, ranked) |
-| 5 | `render` | CPU | none | " (no photo: Owen picks them; `tone-photos` and `thumbnail_judge` were removed 2026-09-29, see the last section) |
+| 3 | `words` | GPU/cloud | `thumbnail_words` (default the 8-bit 27B) | per item, after the gate (the titles are settled and, with the gate on, ranked) |
+| 4 | `render` | CPU | none | " (only pairs that have a frame: screenshot pairs; a story's pairs wait for Owen's frame picks. No photo: Owen picks them) |
 | - | save | | | the record rides on the item |
 
-**One swap.** The vision model is loaded once, before the chapters; the chapters' model replaces it
-on the card (the job's lease on the vision model is given back first). The channel lessons were
-moved from the top of the run to just before the first chapter for this: a local distillation
-before the scoring would have loaded the text model, then the vision model, then the text model
-again. **No reload of the 27B**: when routing names the same model for the fields and for the words
+Removed 2026-09-29: `tone-photos` (the `thumbnail_judge` row, LEDGER #243) and `scoring` (the
+`thumbnail_frames` row, the 9B with vision, LEDGER #244). Both are in `RETIRED_STAGES`: an older
+record that names them is still read.
+
+**No model before the chapters** (since 2026-09-29). Until then the vision model was loaded once
+before the chapters for the frame scoring and the chapters' model replaced it (one swap); the channel
+lessons were moved from the top of the run to just before the first chapter for that, and stay there.
+**No reload of the 27B**: when routing names the same model for the fields and for the words
 (and, until 2026-09-29, the tone/photo), they run on the hold the fields left. The exception is stated, not hidden: with
 the re-roll gate ON (it ships off, LEDGER #210) its fixed 9B scorer runs after the fields, so the
 27B is loaded again for the words. A words prompt larger than the window the fields loaded grows the
@@ -53,14 +56,15 @@ window once (lease.ts: growth is legitimate within a job).
 - story: reading the week's story transcripts, a second or two.
 - frames: about 75 s on the rapture story (749.7 s of screen recording: 757 sampled, 300 kept,
   18 then 12 scenes), CPU only.
-- scoring: at most 120 frames, one `decideItems` call each; about 1.9 s a frame on the Mac, so
-  about 4 minutes (Owen accepted this).
+- scoring: removed 2026-09-29 (it was at most 120 `decideItems` calls, about 4 minutes on the Mac).
 - words: three calls (one per title) on the 27B; unmeasured.
 - tone-photos: removed 2026-09-29 (it was one tone decide and three photo decides).
-- render: three renders on the hidden canvas page, about a second each.
+- render: from a story, nothing (no pair has a frame until Owen picks); from screenshots, one render
+  per screenshot on the hidden canvas page, about a second each. The window draws the rest on
+  Generate thumbnails.
 
 Each record carries its own `timings` (seconds per stage). The queue row shows the stages as
-"Thumbnails: scored 40 of 120 frames" (phase `thumbnails`, shown as main writes it).
+"Thumbnails: sampled 50 of 757 frames..." (phase `thumbnails`, shown as main writes it).
 
 ## The story link
 
@@ -94,8 +98,10 @@ record's `transcriptRef` is not written, so no manual link is ever overwritten.
 - **Default of each pair.** Pair 1 starts on its first claim, pair 2 on its first stakes, pair 3 on
   its first reaction (three ideas in the three arms, as the tab does). A kind with no options starts
   on the next kind that has one, said in the pair's `lines`.
-- **Frames.** The best frame of a different scene per pair, best scene first; with fewer scenes
-  than pairs, the scenes' second (clearly different) frames next; a repeat is said.
+- **Frames.** None (since 2026-09-29): the run gives no pair a frame, and each says "No frame picked
+  yet: pick one in the Thumbnails window." Owen picks frames 1, 2 and 3 from the grid; pair n is drawn
+  on frame n when he presses Generate thumbnails. (Until then: the best-ranked frame of a different
+  scene per pair.) Pairs made from his screenshots are drawn on screenshot n.
 - **Tone and photos** (removed 2026-09-29: the defaults are drawn with no photo and Owen picks them;
   kept here as the phase-1 record). One tone decide, then every reaction photo ranked for each pair's default
   words. Each pair's photo is drawn from its top 3 (photo-draw.ts), a photo already on another pair
@@ -112,11 +118,10 @@ record's `transcriptRef` is not written, so no manual link is ever overwritten.
 
 ```
 thumbnails/<jobId>-1/
-  frames/f00013.jpg, s00013.jpg ...   the scored frames only (640 and 320 wide; the rest are deleted)
-  full/f12.png ...                    the default frames at full size
-  Pair 1 - <title>.png                the three defaults (JPEG when the PNG is over 2 MiB)
-  Pair 2 - <title>.png
-  Pair 3 - <title>.png
+  frames/f00013.jpg, s00013.jpg ...   the grid's frames only (640 and 320 wide; the rest are deleted)
+  full/f12.png ...                    the frames drawn, at full size
+  Pair 1 - <title> (2).png            written by Generate thumbnails (JPEG when the PNG is over 2 MiB);
+  ...                                 the run writes none for a story (screenshot pairs: Pair n - <title>.png)
 ```
 
 This is never the week's `thumbnails/` folder: the publish pass proposes only
@@ -133,7 +138,7 @@ from before this build). Version 1:
   "version": 1,
   "state": "made",            // made | no-story | off | failed
   "line": "3 title and thumbnail pairs are ready to pick from.",   // the report's one line
-  "failure": null,            // { "stage": "scoring", "reason": "\"mac\" cannot show pictures ..." }
+  "failure": null,            // { "stage": "words", "reason": "qwen3.5-9b is not downloaded on \"mac\" ..." }
   "story": {                  // null only when "off"
     "state": "linked", "method": "transcript",          // manual | name | transcript
     "ref": { "kind": "acs-story", "path": ".../02-f1-the-rapture.json", "via": "transcript-match", ... },
@@ -142,19 +147,18 @@ from before this build). Version 1:
   },                          // or { "state": "none", "reason": "...", "evidence": ... }
   "folder": ".../thumbnails/job-123-1",
   "source": { "video": ".../2026-09-24 screen capture.mp4", "lines": ["Story \"f1 - the rapture\" ...", ...] },
-  "scenes": [{ "number": 1, "seconds": 182, "label": "Scene 1 · 3:02 on screen", "kept": 84, "scored": 23 }],
+  "scenes": [{ "number": 1, "seconds": 182, "label": "Scene 1 · 3:02 on screen", "kept": 84, "shown": 2 }],
   "frames": [{ "id": "f12", "t": 626.7, "clock": "10:26", "scene": 1, "large": ".../frames/f00013.jpg",
-               "small": ".../frames/s00013.jpg", "score": 0.61, "reading": { "pScreen", "pFace", "expression", "pEyesOpen", "pStrong" },
-               "flag": null }],   // flag: screen | unreadable (then score null)
-  "bestScenes": [{ "scene": 1, "ids": ["f12", "f40"], "more": ["f77"], "best": 0.61 }],
-  "scoring": { "server": "mac", "model": "qwen3.5-9b-vl", "line": "Scored 120 frames ..." },
+               "small": ".../frames/s00013.jpg" }],   // the grid, in time order
+  // Records before 2026-09-29 also carry scenes[].scored, frames[].score/reading/flag, "bestScenes"
+  // and "scoring" (the frame scoring): read and ignored.
   "titles": { "order": "as written", "subjects": ["Title 1", "Title 2", "Title 3"] },
   "tone": { "ranking": [{ "name": "absurd", "p": 0.55 }, ...], "model": "qwen3.8-27b-8bit", "server": "mac" },
   "pairs": [{
     "pair": 1, "title": "Title 1",
     "words": { "claim": [...5], "stakes": [...5], "reaction": [...5], "warnings": [], "model": "qwen3.8-27b-8bit" },
     "photos": [{ "name": "horrified", "p": 0.6 }, ...],     // every photo, for the default words
-    "default": { "frameId": "f12", "scene": 1, "kind": "claim", "phrase": "DON'T STAND UNDER A ROOF",
+    "default": { "frameId": "f12", "scene": 1, "kind": "claim", "phrase": "DON'T STAND UNDER A ROOF",   // frameId/scene null until Owen picks the frame
                  "photo": "horrified", "draw": { "name", "p", "chance", "pool", "repeatForced" }, "logo": true,
                  "render": { "ok": true, "file": ".../Pair 1 - Title 1.png", "format": "png", "bytes": 1340000, "notes": [] } },
     "lines": ["Photo: horrified (60%), drawn from the top 3: ..."]
@@ -169,7 +173,8 @@ from before this build). Version 1:
 ```
 
 **States.** `made`: every stage ran (before phase 2 a pair whose words did not fit carried
-`render.ok: false` and its reason; the words are always drawn now). `no-story`: `story.state` is `none`, its reason in
+`render.ok: false` and its reason; the words are always drawn now; since 2026-09-29 a story's pairs
+are `made` with no frame and no render until Owen picks and generates). `no-story`: `story.state` is `none`, its reason in
 `line`; nothing written, no model called. `off`: switched off for the run, a channel with
 `thumbnails: false`, a channel file that does not say (a locally edited copy), a caller without the
 thumbnail setup (the test CLI), a compilation, or the Thumbnails tab's saved settings unreadable;
@@ -416,7 +421,8 @@ frames, scoring, words, render; after the frame scoring the run asks no decide a
 window." (the record's line ends "; no photo picked yet."). Keeping the render stage kept the record,
 `resumePlan` and Finish as they were; not drawing would have changed what `made` means. The window
 opens with nothing picked; "Start from the suggested three" fills the run's frames and words (no
-photos).
+photos). (Superseded by #244, the last section: the run gives a story's pairs no frame, so it draws
+nothing for them, and the button fills the words only.)
 
 **Older records.** `failure.stage` may still name `tone-photos` (`RETIRED_STAGES`; Owen's first run
 stopped there). Such a record keeps story, frames, scoring and words; the view adds "That step is
@@ -428,6 +434,7 @@ longer written (null / empty).
 
 1. **Frames**: ONE flat grid (`frameList`): the run's two-per-scene frames (still deduplicated) ordered
    best score first, no scene labels; the other candidates behind "Show more (n)". Click order 1/2/3.
+   (Since #244: every candidate in time order, no scores, no "Show more".)
 2. **Text**: a vertical list, one line each: the words, then "kind · for “title”" small. Typed words
    and "No text". Click order 1/2/3.
 3. **Photos**: one row of the library's photos plus "No photo". Click order 1/2/3; photo n goes on
@@ -488,6 +495,60 @@ scratchpad `shots2/shots/`): the window open with nothing picked; frames and tex
 picked 1, No photo 2, laugh 3 with Generate enabled and its plan; the three generated thumbnails; the
 cards after a photo pick changed; Thumbnail look's border and text size; a record stopped at
 tone-photos and Finish.
+
+## The frame scoring removed: Owen picks the frames (2026-09-29, LEDGER #244)
+
+Owen now picks frames 1, 2 and 3 himself from the flat grid, so the vision model's ranking was not
+needed; and its one live run had just failed: the load went to `crucible@owens-pc-wsl` and was
+refused (a context of 8192 over that host's 1700 ceiling for `qwen3.5-9b-vl`). No frame was ever
+scored for real.
+
+**Removed**: the `scoring` stage (`THUMBNAIL_STAGES` is story, frames, words, render), frame-scorer.ts,
+frame-ranking.ts, thumbnails.yml `frames.*` and the frame-question code in prompts.ts, frame-scenes.ts
+`allocateScoring` / `framesToScore` / `sceneRows` (the "best by scene" rows), `MAX_FRAMES_TO_SCORE`,
+`defaultFrames` (each pair's ranked default frame), the setup's Crucible doors (pipeline-setup.ts),
+the `thumbnail_frames` routing row and the four vision rungs offered only on it (`qwen35-9b-vl`,
+`qwen35-2b`, `qwen35-08b`, `qwen38-27b-vl`; a stored selection of either is dropped loudly and written
+back: `REMOVED_ROUTING_TASKS` / `REMOVED_ROUTING_OPTIONS`), `visionAvailability` and the options'
+`vision` flag, the record's `scoring` and `bestScenes` and each frame's `score` / `reading` / `flag`,
+the window's "Show more" and its `thumbnails:frames` channel. The Crucible transport's generic
+`decideItems` and image support are untouched (nothing in the app calls them now).
+
+**How the grid is chosen, on the CPU** (frame-scenes.ts `gridFrames`): sampling, the blur and repeat
+filters and the scene grouping are unchanged; then each scene offers `gridQuota` frames: two
+(`GRID_PER_SCENE`), one when it was on screen under `SHORT_SCENE_SECONDS` (10 s, the short-scene rule
+the scoring allocation had), never more than it kept. They are chosen with `thinAcrossRange` over the
+scene's first to last appearance: the sharpest (Laplacian variance, the blur filter's measure) of
+each half of its time on screen, so a scene the story returns to shows both visits. Only those
+frames stay on disk; the record's `frames` is the grid in time order (`scenes[].shown` says how many
+of each scene's), and the window shows it in time order with no scores and no "Show more".
+
+**Pairs get no frame from the run.** `default.frameId` / `default.scene` are null for a story's pairs
+(the pair's line says "No frame picked yet: pick one in the Thumbnails window."), the render stage
+draws only pairs that have a frame (screenshot pairs, screenshot n on pair n), and the record's line
+is "3 title and thumbnail pairs have their words; pick the frames and photos in the Thumbnails
+window." The window's Generate thumbnails is already gated on a frame and a text being picked for a
+place; drawing a pair with no frame (`renderPair`) and "Rewrite words for this title" on one are
+refused by name, and a saved pick whose pair has no frame is refused on reading the picks (nothing
+is substituted). "Start from the suggested three" became **Start from the suggested words** (in the
+Text header): pair n's default words as text n; frames and photos are his.
+
+**Older records.** A record that stopped at `scoring` (`RETIRED_STAGES`) is read; Finish keeps its
+story and its frames (the frames it sent to the scoring become its grid, their scores ignored) and
+runs words and render; the view says "That step is gone: you pick the frames yourself below, so
+Finish goes on from the words without it." Resuming a story record (any stop) clears the frames the
+old ranking gave its pairs, so only screenshot pairs are drawn. `bestScenes`, `scoring` and the
+per-frame scores stay in old JSON, unread.
+
+**Keeper**: thumbnail-pipeline-checks.js 24 (no model before the chapters and no decide at all, the
+27B the job's only load; the grid's per-scene bound, time order and disk; no pair framed or drawn by
+the run; a words-stage failure; old scored records read and resumed; a frameless pair refused;
+Finish on a tone-photos record draws nothing; a screenshots record stopped at render draws only;
+from scratch loads only the 27B; frameList in time order, suggested words, Show more gone; the
+scorer, ranking, frame prompts, routing row and frames channel gone); thumbnail-lab-checks.js 31
+(grid quota and choice replace the allocation, ranking and scoring checks); routing-publish-checks.js
+(the frame row and vision rungs retired loudly; one thumbnails row); test-crucible-acts.js (the
+option list).
 
 ## Open questions
 
