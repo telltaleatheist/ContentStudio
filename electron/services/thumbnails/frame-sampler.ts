@@ -135,6 +135,16 @@ export function clock(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
+/** A sampled frame's id: `f` and its file number. Shared by the tab and the metadata run's thumbnails stage. */
+export function frameId(frame: { index: number }): string {
+  return `f${frame.index}`;
+}
+
+/** "Scene 3 · 2:41 on screen". */
+export function sceneLabel(scene: { number: number; seconds: number }): string {
+  return `Scene ${scene.number} · ${clock(scene.seconds).replace(/^0(\d:)/, '$1')} on screen`;
+}
+
 /** The sampling rate for this many seconds: one a second, or MAX_SAMPLES evenly when that would be more. */
 export function samplingFor(seconds: number): { count: number; every: number } {
   const count = Math.min(MAX_SAMPLES, Math.max(1, Math.floor(seconds / SAMPLE_EVERY_SECONDS)));
@@ -160,7 +170,7 @@ export function assertSixteenNine(facts: VideoFacts, video: string): void {
   const ratio = facts.width / facts.height;
   if (Math.abs(ratio - 16 / 9) > 0.01) {
     throw new Error(
-      `${path.basename(video)} is ${facts.width}x${facts.height}, not 16:9. The Thumbnails tab only takes 16:9 video, ` +
+      `${path.basename(video)} is ${facts.width}x${facts.height}, not 16:9. Thumbnails are made from 16:9 video only, ` +
         `because fitting another shape would mean cropping it, and that is your choice to make.`,
     );
   }
@@ -285,4 +295,36 @@ export async function extractFullFrame(ffmpeg: string, video: string, t: number,
   fs.mkdirSync(path.dirname(outPng), { recursive: true });
   await run(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-ss', t.toFixed(3), '-i', video, '-frames:v', '1', '-y', outPng], signal);
   if (!fs.existsSync(outPng) || fs.statSync(outPng).size === 0) throw new Error(`ffmpeg wrote no frame at ${clock(t)} of ${path.basename(video)}.`);
+}
+
+/** The size a screenshot background is written at: 16:9, the renderer scales it to 1280x720. */
+export const STILL_SIZE = { w: 1920, h: 1080 } as const;
+
+/**
+ * One of Owen's screenshots as a thumbnail background (a report with no story, phase 2): cut to
+ * 16:9 around its centre when it is another shape, scaled to STILL_SIZE, written as PNG. What was
+ * done comes back as a plain line, so the window can say it (Law 8). His file is only read.
+ */
+export async function prepareStill(ffmpeg: string, ffprobe: string, image: string, outPng: string): Promise<{ line: string }> {
+  if (!fs.existsSync(image)) throw new Error(`The screenshot is not on disk: ${image}`);
+  const out = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', image]);
+  const stream = (JSON.parse(out) as { streams?: Array<{ width?: number; height?: number }> }).streams?.[0];
+  if (!stream || !stream.width || !stream.height) throw new Error(`ffprobe found no picture in ${image}.`);
+  const { width, height } = stream;
+  const ratio = width / height;
+  const cut = Math.abs(ratio - 16 / 9) > 0.01;
+  fs.mkdirSync(path.dirname(outPng), { recursive: true });
+  await run(ffmpeg, [
+    '-hide_banner', '-nostdin', '-v', 'error', '-i', image, '-frames:v', '1',
+    '-vf', `crop=min(iw\\,ih*16/9):min(ih\\,iw*9/16),scale=${STILL_SIZE.w}:${STILL_SIZE.h},setsar=1`,
+    '-y', outPng,
+  ]);
+  if (!fs.existsSync(outPng) || fs.statSync(outPng).size === 0) throw new Error(`ffmpeg wrote no picture from ${path.basename(image)}.`);
+  const name = path.basename(image);
+  const small = width < STILL_SIZE.w * 0.66 ? ` It is small, so it was enlarged and may look soft.` : '';
+  return {
+    line: cut
+      ? `${name} is ${width}x${height}, not 16:9, so its middle was cut to 16:9 (the ${ratio > 16 / 9 ? 'left and right' : 'top and bottom'} edges were left out).${small}`
+      : `${name} (${width}x${height}) is used whole.${small}`,
+  };
 }

@@ -695,37 +695,37 @@ const api = {
   //
   // Nothing here returns an envelope. A bad id or a corrupt session file rejects with the
   // sentence naming the file, and the UI prints it.
-  // The Thumbnails tab (testing, 2026-09-28). Each answers { ok, value } or { ok: false, error }.
-  thumbsListItems: () => ipcRenderer.invoke('thumbs:list-items'),
-  thumbsStoryState: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbs:story-state', jobId, itemId),
-  thumbsLinkStory: (jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string) =>
-    ipcRenderer.invoke('thumbs:link-story', jobId, itemId, projectFolder, storyNumber, storySlug),
-  thumbsChooseProject: () => ipcRenderer.invoke('thumbs:choose-project'),
-  thumbsFindFrames: (req: { jobId: string; itemId: string }) => ipcRenderer.invoke('thumbs:find-frames', req),
-  thumbsFramePicture: (runId: string, id: string) => ipcRenderer.invoke('thumbs:frame-picture', runId, id),
-  thumbsScore: (runId: string) => ipcRenderer.invoke('thumbs:score', runId),
-  thumbsStop: (runId: string) => ipcRenderer.invoke('thumbs:stop', runId),
-  thumbsWords: (runId: string, title: string) => ipcRenderer.invoke('thumbs:words', runId, title),
-  thumbsGetStyle: () => ipcRenderer.invoke('thumbs:get-style'),
-  thumbsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbs:set-style', style),
-  thumbsRender: (runId: string, variants: unknown, options: unknown) => ipcRenderer.invoke('thumbs:render', runId, variants, options),
-  thumbsLogo: () => ipcRenderer.invoke('thumbs:logo'),
-  thumbsChooseLogo: () => ipcRenderer.invoke('thumbs:choose-logo'),
-  thumbsPhotos: () => ipcRenderer.invoke('thumbs:photos'),
-  thumbsSetPhotoNote: (name: string, note: string) => ipcRenderer.invoke('thumbs:set-photo-note', name, note),
-  thumbsSuggest: (runId: string, variants: unknown) => ipcRenderer.invoke('thumbs:suggest', runId, variants),
-  thumbsCombine: (fav: unknown, how: unknown, rank: unknown) => ipcRenderer.invoke('thumbs:combine', fav, how, rank),
-  thumbsChoosePhotos: () => ipcRenderer.invoke('thumbs:choose-photos'),
-  thumbsAddPhotos: (chosen: string[], replace: boolean) => ipcRenderer.invoke('thumbs:add-photos', chosen, replace),
-  thumbsRemovePhoto: (name: string) => ipcRenderer.invoke('thumbs:remove-photo', name),
-  thumbsCopyOldPhotos: () => ipcRenderer.invoke('thumbs:copy-old-photos'),
-  thumbsCopyOldLogo: () => ipcRenderer.invoke('thumbs:copy-old-logo'),
-  thumbsReleaseModel: () => ipcRenderer.invoke('thumbs:release-model'),
-  thumbsShowFolder: (folder: string) => ipcRenderer.invoke('thumbs:show-folder', folder),
-  onThumbsProgress: (callback: (event: { runId: string; stage: string; done: number; total: number }) => void) => {
-    const listener = (_e: unknown, event: { runId: string; stage: string; done: number; total: number }) => callback(event);
-    ipcRenderer.on('thumbs:progress', listener);
-    return () => ipcRenderer.removeListener('thumbs:progress', listener);
+  // The reports page's Thumbnails window and the Thumbnail look (phase 2, 2026-09-28; the test
+  // tab's `thumbs:*` channels are gone). Each answers { ok, value } or { ok: false, error }.
+  thumbnailsSummary: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:summary', jobId, itemId),
+  thumbnailsItem: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:item', jobId, itemId),
+  thumbnailsFrames: (jobId: string, itemId: string, ids: string[]) => ipcRenderer.invoke('thumbnails:frames', jobId, itemId, ids),
+  thumbnailsRenderPair: (jobId: string, itemId: string, change: unknown) => ipcRenderer.invoke('thumbnails:render-pair', jobId, itemId, change),
+  thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string) => ipcRenderer.invoke('thumbnails:pair-title', jobId, itemId, pair, title),
+  thumbnailsSavePicks: (jobId: string, itemId: string, picks: unknown) => ipcRenderer.invoke('thumbnails:save-picks', jobId, itemId, picks),
+  thumbnailsFinish: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:finish', jobId, itemId),
+  thumbnailsRemake: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:remake', jobId, itemId),
+  thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) =>
+    ipcRenderer.invoke('thumbnails:screenshots', jobId, itemId, files, titles),
+  thumbnailsChooseOwn: () => ipcRenderer.invoke('thumbnails:choose-own'),
+  thumbnailsChooseScreenshots: () => ipcRenderer.invoke('thumbnails:choose-screenshots'),
+  thumbnailsReleaseModel: () => ipcRenderer.invoke('thumbnails:release-model'),
+  thumbnailsShowFolder: (folder: string) => ipcRenderer.invoke('thumbnails:show-folder', folder),
+  thumbnailsGetStyle: () => ipcRenderer.invoke('thumbnails:get-style'),
+  thumbnailsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbnails:set-style', style),
+  thumbnailsPhotos: () => ipcRenderer.invoke('thumbnails:photos'),
+  thumbnailsSetPhotoNote: (name: string, note: string) => ipcRenderer.invoke('thumbnails:set-photo-note', name, note),
+  thumbnailsChoosePhotos: () => ipcRenderer.invoke('thumbnails:choose-photos'),
+  thumbnailsAddPhotos: (chosen: string[], replace: boolean) => ipcRenderer.invoke('thumbnails:add-photos', chosen, replace),
+  thumbnailsRemovePhoto: (name: string) => ipcRenderer.invoke('thumbnails:remove-photo', name),
+  thumbnailsCopyOldPhotos: () => ipcRenderer.invoke('thumbnails:copy-old-photos'),
+  thumbnailsLogo: () => ipcRenderer.invoke('thumbnails:logo'),
+  thumbnailsChooseLogo: () => ipcRenderer.invoke('thumbnails:choose-logo'),
+  thumbnailsCopyOldLogo: () => ipcRenderer.invoke('thumbnails:copy-old-logo'),
+  onThumbnailsProgress: (callback: (event: { jobId: string; itemId: string; line: string }) => void) => {
+    const listener = (_e: unknown, event: { jobId: string; itemId: string; line: string }) => callback(event);
+    ipcRenderer.on('thumbnails:progress', listener);
+    return () => ipcRenderer.removeListener('thumbnails:progress', listener);
   },
   streamMarksList: () => ipcRenderer.invoke('stream-marks:list'),
   streamMarksGet: (id: string) => ipcRenderer.invoke('stream-marks:get', id),

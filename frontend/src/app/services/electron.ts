@@ -30,28 +30,17 @@ import type {
   VideoSource,
 } from '../features/publish/publish.types';
 import type {
-  ThumbsAnswer,
-  ThumbsItem,
-  ThumbsLogo,
-  ThumbsLogoState,
-  ThumbsAddPhotos,
-  ThumbsRankings,
-  ThumbsRenderOutcome,
-  ThumbsWrittenWords,
-  ThumbsStoryChoice,
-  ThumbsStoryState,
-  ThumbsCombineMode,
-  ThumbsCombineResult,
-  ThumbsPhotos,
-  ThumbsProgress,
-  ThumbsSuggestion,
-  ThumbsWordPick,
-  ThumbsRenderResult,
-  ThumbsRun,
-  ThumbsStyle,
-  ThumbsVariantRequest,
-  ThumbsWords,
-} from '../components/thumbnails/thumbnails.types';
+  LookAddPhotos,
+  LookLogo,
+  LookPhotos,
+  LookStyle,
+  PairChange,
+  PickRequest,
+  ThumbnailsAnswer,
+  ThumbnailsProgress,
+  ThumbnailsSummary,
+  ThumbnailsView,
+} from '../components/thumbnails-window/thumbnails.types';
 import type {
   MasterFileTimes,
   StreamMarkResult,
@@ -695,6 +684,10 @@ export interface DeleteItemReceipt {
   txtReason?: string;
   txtFolderRemoved: boolean;
   selectionDeleted: boolean;
+  /** The item's thumbnails folder that was removed, or null. */
+  thumbnailsFolderRemoved: string | null;
+  /** Present when the item names a thumbnails folder that was NOT removed, saying why. */
+  thumbnailsReason?: string;
   inputsSpliced: boolean;
   inputTypesSpliced: boolean;
 }
@@ -1105,33 +1098,33 @@ declare global {
       // that fires while neither is focused — hence the push listener, which returns its own
       // unsubscribe rather than a removeAll: the main window's tab and the editor's import
       // dialog both listen, and one leaving must not deafen the other.
-      // The Thumbnails tab (testing, 2026-09-28): every call answers { ok, value } or { ok: false, error }.
-      thumbsListItems: () => Promise<ThumbsAnswer<ThumbsItem[]>>;
-      thumbsStoryState: (jobId: string, itemId: string) => Promise<ThumbsAnswer<ThumbsStoryState>>;
-      thumbsLinkStory: (jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string) => Promise<ThumbsAnswer<ThumbsStoryState>>;
-      thumbsChooseProject: () => Promise<ThumbsAnswer<{ choices: ThumbsStoryChoice[]; problems: string[] } | null>>;
-      thumbsFindFrames: (req: { jobId: string; itemId: string }) => Promise<ThumbsAnswer<ThumbsRun>>;
-      thumbsFramePicture: (runId: string, id: string) => Promise<ThumbsAnswer<string>>;
-      thumbsScore: (runId: string) => Promise<ThumbsAnswer<ThumbsRun>>;
-      thumbsStop: (runId: string) => Promise<ThumbsAnswer<void>>;
-      thumbsWords: (runId: string, title: string) => Promise<ThumbsAnswer<ThumbsWords>>;
-      thumbsGetStyle: () => Promise<ThumbsAnswer<{ style: ThumbsStyle; stored: boolean }>>;
-      thumbsSetStyle: (style: ThumbsStyle) => Promise<ThumbsAnswer<ThumbsStyle>>;
-      thumbsRender: (runId: string, variants: ThumbsVariantRequest[], options: { logo: boolean; seed: number | null }) => Promise<ThumbsAnswer<ThumbsRenderOutcome>>;
-      thumbsLogo: () => Promise<ThumbsAnswer<ThumbsLogoState>>;
-      thumbsChooseLogo: () => Promise<ThumbsAnswer<ThumbsLogoState | null>>;
-      thumbsPhotos: () => Promise<ThumbsAnswer<ThumbsPhotos>>;
-      thumbsSetPhotoNote: (name: string, note: string) => Promise<ThumbsAnswer<void>>;
-      thumbsSuggest: (runId: string, variants: Array<{ letter: string; text: string | null }>) => Promise<ThumbsAnswer<ThumbsSuggestion>>;
-      thumbsCombine: (fav: { frames: string[]; texts: ThumbsWordPick[]; photos: string[]; written: ThumbsWrittenWords | null }, how: ThumbsCombineMode, rank: ThumbsRankings | null) => Promise<ThumbsAnswer<ThumbsCombineResult>>;
-      thumbsChoosePhotos: () => Promise<ThumbsAnswer<ThumbsAddPhotos | null>>;
-      thumbsAddPhotos: (chosen: string[], replace: boolean) => Promise<ThumbsAnswer<ThumbsAddPhotos>>;
-      thumbsRemovePhoto: (name: string) => Promise<ThumbsAnswer<void>>;
-      thumbsCopyOldPhotos: () => Promise<ThumbsAnswer<{ added: string[]; replaced: string[]; already: string[] }>>;
-      thumbsCopyOldLogo: () => Promise<ThumbsAnswer<ThumbsLogoState>>;
-      thumbsReleaseModel: () => Promise<ThumbsAnswer<string | null>>;
-      thumbsShowFolder: (folder: string) => Promise<ThumbsAnswer<void>>;
-      onThumbsProgress: (callback: (event: ThumbsProgress) => void) => () => void;
+      // The reports page's Thumbnails window and the Thumbnail look (phase 2, 2026-09-28): every
+      // call answers { ok, value } or { ok: false, error }.
+      thumbnailsSummary: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsSummary>>;
+      thumbnailsItem: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsFrames: (jobId: string, itemId: string, ids: string[]) => Promise<ThumbnailsAnswer<Record<string, string>>>;
+      thumbnailsRenderPair: (jobId: string, itemId: string, change: PairChange) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsSavePicks: (jobId: string, itemId: string, picks: PickRequest[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsFinish: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsRemake: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsChooseOwn: () => Promise<ThumbnailsAnswer<string | null>>;
+      thumbnailsChooseScreenshots: () => Promise<ThumbnailsAnswer<string[] | null>>;
+      thumbnailsReleaseModel: () => Promise<ThumbnailsAnswer<string | null>>;
+      thumbnailsShowFolder: (folder: string) => Promise<ThumbnailsAnswer<void>>;
+      thumbnailsGetStyle: () => Promise<ThumbnailsAnswer<{ style: LookStyle; stored: boolean }>>;
+      thumbnailsSetStyle: (style: LookStyle) => Promise<ThumbnailsAnswer<LookStyle>>;
+      thumbnailsPhotos: () => Promise<ThumbnailsAnswer<LookPhotos>>;
+      thumbnailsSetPhotoNote: (name: string, note: string) => Promise<ThumbnailsAnswer<void>>;
+      thumbnailsChoosePhotos: () => Promise<ThumbnailsAnswer<LookAddPhotos | null>>;
+      thumbnailsAddPhotos: (chosen: string[], replace: boolean) => Promise<ThumbnailsAnswer<LookAddPhotos>>;
+      thumbnailsRemovePhoto: (name: string) => Promise<ThumbnailsAnswer<void>>;
+      thumbnailsCopyOldPhotos: () => Promise<ThumbnailsAnswer<{ added: string[]; replaced: string[]; already: string[] }>>;
+      thumbnailsLogo: () => Promise<ThumbnailsAnswer<LookLogo>>;
+      thumbnailsChooseLogo: () => Promise<ThumbnailsAnswer<LookLogo | null>>;
+      thumbnailsCopyOldLogo: () => Promise<ThumbnailsAnswer<LookLogo>>;
+      onThumbnailsProgress: (callback: (event: ThumbnailsProgress) => void) => () => void;
       streamMarksList: () => Promise<StreamMarkSessionSummary[]>;
       streamMarksGet: (id: string) => Promise<StreamMarkSession>;
       streamMarksLive: () => Promise<StreamMarkSession | null>;
@@ -2586,63 +2579,66 @@ export class ElectronService {
     this.editorBridge.removeArchiveListeners();
   }
 
-  // ── Thumbnails tab ──────────────────────────────────────────────────────────
+  // ── Thumbnails window and Thumbnail look ────────────────────────────────────
   //
   // Throws outside Electron, like the stream-marks group, and unwraps the main process's
   // { ok, error } answer into a thrown Error carrying its sentence unchanged.
 
-  private get thumbsBridge(): NonNullable<typeof window.launchpad> {
-    if (!this.ipcRenderer) throw noBridge('The Thumbnails tab');
+  private get thumbnailsBridge(): NonNullable<typeof window.launchpad> {
+    if (!this.ipcRenderer) throw noBridge('Thumbnails');
     return this.ipcRenderer;
   }
 
-  private async thumbs<T>(call: Promise<ThumbsAnswer<T>>): Promise<T> {
+  private async thumbnails<T>(call: Promise<ThumbnailsAnswer<T>>): Promise<T> {
     const answer = await call;
     if (answer.ok === true) return answer.value;
     throw new Error((answer as { error: string }).error);
   }
 
-  thumbsListItems(): Promise<ThumbsItem[]> { return this.thumbs(this.thumbsBridge.thumbsListItems()); }
-  thumbsStoryState(jobId: string, itemId: string): Promise<ThumbsStoryState> {
-    return this.thumbs(this.thumbsBridge.thumbsStoryState(jobId, itemId));
+  thumbnailsSummary(jobId: string, itemId: string): Promise<ThumbnailsSummary> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsSummary(jobId, itemId));
   }
-  thumbsLinkStory(jobId: string, itemId: string, projectFolder: string, storyNumber: number, storySlug: string): Promise<ThumbsStoryState> {
-    return this.thumbs(this.thumbsBridge.thumbsLinkStory(jobId, itemId, projectFolder, storyNumber, storySlug));
+  thumbnailsItem(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsItem(jobId, itemId));
   }
-  thumbsChooseProject(): Promise<{ choices: ThumbsStoryChoice[]; problems: string[] } | null> {
-    return this.thumbs(this.thumbsBridge.thumbsChooseProject());
+  thumbnailsFrames(jobId: string, itemId: string, ids: string[]): Promise<Record<string, string>> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsFrames(jobId, itemId, ids));
   }
-  thumbsFindFrames(req: { jobId: string; itemId: string }): Promise<ThumbsRun> {
-    return this.thumbs(this.thumbsBridge.thumbsFindFrames(req));
+  thumbnailsRenderPair(jobId: string, itemId: string, change: PairChange): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsRenderPair(jobId, itemId, change));
   }
-  thumbsFramePicture(runId: string, id: string): Promise<string> { return this.thumbs(this.thumbsBridge.thumbsFramePicture(runId, id)); }
-  thumbsScore(runId: string): Promise<ThumbsRun> { return this.thumbs(this.thumbsBridge.thumbsScore(runId)); }
-  thumbsStop(runId: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsStop(runId)); }
-  thumbsWords(runId: string, title: string): Promise<ThumbsWords> { return this.thumbs(this.thumbsBridge.thumbsWords(runId, title)); }
-  thumbsGetStyle(): Promise<{ style: ThumbsStyle; stored: boolean }> { return this.thumbs(this.thumbsBridge.thumbsGetStyle()); }
-  thumbsSetStyle(style: ThumbsStyle): Promise<ThumbsStyle> { return this.thumbs(this.thumbsBridge.thumbsSetStyle(style)); }
-  thumbsRender(runId: string, variants: ThumbsVariantRequest[], options: { logo: boolean; seed: number | null }): Promise<ThumbsRenderOutcome> {
-    return this.thumbs(this.thumbsBridge.thumbsRender(runId, variants, options));
+  thumbnailsPairTitle(jobId: string, itemId: string, pair: number, title: string): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsPairTitle(jobId, itemId, pair, title));
   }
-  thumbsLogo(): Promise<ThumbsLogoState> { return this.thumbs(this.thumbsBridge.thumbsLogo()); }
-  thumbsChooseLogo(): Promise<ThumbsLogoState | null> { return this.thumbs(this.thumbsBridge.thumbsChooseLogo()); }
-  thumbsPhotos(): Promise<ThumbsPhotos> { return this.thumbs(this.thumbsBridge.thumbsPhotos()); }
-  thumbsSetPhotoNote(name: string, note: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsSetPhotoNote(name, note)); }
-  thumbsSuggest(runId: string, variants: Array<{ letter: string; text: string | null }>): Promise<ThumbsSuggestion> {
-    return this.thumbs(this.thumbsBridge.thumbsSuggest(runId, variants));
+  thumbnailsSavePicks(jobId: string, itemId: string, picks: PickRequest[]): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsSavePicks(jobId, itemId, picks));
   }
-  thumbsCombine(fav: { frames: string[]; texts: ThumbsWordPick[]; photos: string[]; written: ThumbsWrittenWords | null }, how: ThumbsCombineMode, rank: ThumbsRankings | null): Promise<ThumbsCombineResult> {
-    return this.thumbs(this.thumbsBridge.thumbsCombine(fav, how, rank));
+  thumbnailsFinish(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsFinish(jobId, itemId));
   }
-  thumbsChoosePhotos(): Promise<ThumbsAddPhotos | null> { return this.thumbs(this.thumbsBridge.thumbsChoosePhotos()); }
-  thumbsAddPhotos(chosen: string[], replace: boolean): Promise<ThumbsAddPhotos> { return this.thumbs(this.thumbsBridge.thumbsAddPhotos(chosen, replace)); }
-  thumbsRemovePhoto(name: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsRemovePhoto(name)); }
-  thumbsCopyOldPhotos(): Promise<{ added: string[]; replaced: string[]; already: string[] }> { return this.thumbs(this.thumbsBridge.thumbsCopyOldPhotos()); }
-  thumbsCopyOldLogo(): Promise<ThumbsLogoState> { return this.thumbs(this.thumbsBridge.thumbsCopyOldLogo()); }
-  thumbsReleaseModel(): Promise<string | null> { return this.thumbs(this.thumbsBridge.thumbsReleaseModel()); }
-  thumbsShowFolder(folder: string): Promise<void> { return this.thumbs(this.thumbsBridge.thumbsShowFolder(folder)); }
-  onThumbsProgress(callback: (event: ThumbsProgress) => void): () => void {
-    return this.thumbsBridge.onThumbsProgress((event) => this.ngZone.run(() => callback(event)));
+  thumbnailsRemake(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsRemake(jobId, itemId));
+  }
+  thumbnailsScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsScreenshots(jobId, itemId, files, titles));
+  }
+  thumbnailsChooseOwn(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseOwn()); }
+  thumbnailsChooseScreenshots(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseScreenshots()); }
+  thumbnailsReleaseModel(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsReleaseModel()); }
+  thumbnailsShowFolder(folder: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsShowFolder(folder)); }
+  thumbnailsGetStyle(): Promise<{ style: LookStyle; stored: boolean }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsGetStyle()); }
+  thumbnailsSetStyle(style: LookStyle): Promise<LookStyle> { return this.thumbnails(this.thumbnailsBridge.thumbnailsSetStyle(style)); }
+  thumbnailsPhotos(): Promise<LookPhotos> { return this.thumbnails(this.thumbnailsBridge.thumbnailsPhotos()); }
+  thumbnailsSetPhotoNote(name: string, note: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsSetPhotoNote(name, note)); }
+  thumbnailsChoosePhotos(): Promise<LookAddPhotos | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChoosePhotos()); }
+  thumbnailsAddPhotos(chosen: string[], replace: boolean): Promise<LookAddPhotos> { return this.thumbnails(this.thumbnailsBridge.thumbnailsAddPhotos(chosen, replace)); }
+  thumbnailsRemovePhoto(name: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsRemovePhoto(name)); }
+  thumbnailsCopyOldPhotos(): Promise<{ added: string[]; replaced: string[]; already: string[] }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsCopyOldPhotos()); }
+  thumbnailsLogo(): Promise<LookLogo> { return this.thumbnails(this.thumbnailsBridge.thumbnailsLogo()); }
+  thumbnailsChooseLogo(): Promise<LookLogo | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseLogo()); }
+  thumbnailsCopyOldLogo(): Promise<LookLogo> { return this.thumbnails(this.thumbnailsBridge.thumbnailsCopyOldLogo()); }
+  onThumbnailsProgress(callback: (event: ThumbnailsProgress) => void): () => void {
+    return this.thumbnailsBridge.onThumbnailsProgress((event) => this.ngZone.run(() => callback(event)));
   }
 
   // ── Stream marks ────────────────────────────────────────────────────────────

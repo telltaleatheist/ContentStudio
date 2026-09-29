@@ -43,9 +43,11 @@ export type MetadataRoutingTaskId =
 
 /**
  * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
- * `thumbnails` rows serve the Thumbnails tab (2026-09-28) and nothing else: a metadata job never
- * reads them (its transcript ceiling, its log line and the dialog's change-all menu cover the
- * metadata rows only), and the tab reads nothing else.
+ * `thumbnails` rows serve the thumbnails: the metadata run's thumbnail stages (thumbnails/pipeline.ts
+ * reads the three rows at job time) and the reports page's Thumbnails window (report-thumbnails.ts:
+ * words and photos again on demand). The Thumbnails test tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and the dialog's change-all
+ * menu still cover the metadata rows only: the thumbnail rows decide no field's words, and a
+ * change-all to claude -p would put the frame and tone/photo rows on a model that cannot decide.
  */
 export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
 
@@ -230,7 +232,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    */
   'qwen38-27b-8bit': { kind: 'local', label: 'Qwen 27B (8-bit)', model: 'qwen3.8-27b-8bit', crucibleModel: 'qwen3.8-27b-8bit' },
   /**
-   * THE VISION RUNGS (2026-09-28), offered on the Thumbnails tab's frame row only. Each is a
+   * THE VISION RUNGS (2026-09-28), offered on the thumbnail frame row only. Each is a
    * Crucible manifest that declares `image`: the 9B and 27B with their vision towers served
    * (`-vl`, sharing their text twins' downloads) and the small 4B/2B/0.8B, which read images as
    * well as text. The 4B option above is the same model: it is marked `vision` so the frame row can
@@ -437,10 +439,13 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   },
   {
     /**
-     * THE THUMBNAILS TAB'S WORDS (2026-09-28): 2-5 words in three kinds (claim, stakes,
-     * reaction), written as a pair with the title the operator picks. Its own row, separate from
-     * the metadata run's `thumbnail_text` field, which is untouched until Owen decides after
-     * testing. The same rungs as that field (the 8-bit 27B first, the default since 2026-09-28, Owen).
+     * THE THUMBNAIL WORDS (2026-09-28): 2-5 words in three kinds (claim, stakes, reaction), written
+     * as a pair with one title: the tab's picked title, and in the metadata run each of the three
+     * A/B titles (thumbnails/pipeline.ts). The metadata run's old `thumbnail_text` field is retired
+     * the same day (no shipped channel declares it; its row stays for the re-roll button on older
+     * reports until phase 2 removes that field's UI). The same rungs as that field (the 8-bit 27B
+     * first, the default since 2026-09-28, Owen), so a run whose fields are on the 27B writes the
+     * words on the model it already holds.
      */
     id: 'thumbnail_words',
     label: 'Thumbnail words',

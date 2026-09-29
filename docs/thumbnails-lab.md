@@ -1,9 +1,23 @@
-# The Thumbnails tab (testing)
+# The Thumbnails tab (testing) — RETIRED
+
+> **Retired 2026-09-28 (phase 2, LEDGER #241).** The tab, its route, sidebar entry, component,
+> `lab-service.ts`, `thumbnail-lab-ipc.ts`, `combine.ts` and the `thumbs:*` channels are gone. What
+> it built lives on in the metadata run and the reports page's Thumbnails window:
+> **docs/thumbnails-pipeline.md** is the current doc. The look, the photo library and the logo moved
+> to `look.ts` and the Thumbnail look dialog (from the Thumbnails window, or Settings); the text
+> rules changed (the box left of the photo, one or two lines, shrink instead of refuse). This file is
+> kept as the record of how the modules were found and measured; where it and the pipeline doc
+> disagree, the pipeline doc is right.
 
 Built 2026-09-28 (LEDGER #236). A testing tab for Owen to try an automated YouTube-thumbnail
 workflow on one processed video: find usable frames, pick three, add words, and render three
-thumbnails for a title/thumbnail A/B test. Nothing in the metadata run or the publish pipeline
-reads it; the metadata report's THUMBNAIL TEXT OPTIONS field is untouched.
+thumbnails for a title/thumbnail A/B test. Nothing in the publish pipeline reads it.
+
+**Moving into the metadata run (LEDGER #240, same day): docs/thumbnails-pipeline.md.** Phase 1 is
+built: the metadata job makes three title and thumbnail pairs with this tab's modules (the story's
+screen recording, scenes, scoring, words, tone/photos, the look, the library, the renderer) and
+stores them on the report; THUMBNAIL TEXT OPTIONS is no longer generated. Phase 2 moves this tab's
+controls onto the reports page and removes the tab.
 
 Open it from the sidebar: **Thumbnails** (between Stream marks and Analytics).
 
@@ -265,8 +279,9 @@ Deterministic, no model:
     of that piece and makes as many thumbnails as there are (up to three).
 
 ## Routing (the routing table is the only model authority)
-Two rows under "Thumbnails tab (testing)" in the Routing dialog, in their own group: a metadata
-run never reads them, its log line leaves them out, and the change-all menu does not touch them.
+Three rows under "Thumbnails" in the Routing dialog, in their own group. Since LEDGER #240 the
+metadata run reads them too (its thumbnail stages); its routing log line and the change-all menu
+still leave them out.
 - **Thumbnail frames (vision)**: local vision models only (decide needs a distribution; no upstream
   gives one). Default **Qwen3.5 9B with vision** (`qwen3.5-9b-vl`); also 4B, 2B, 0.8B and the 27B
   with vision. A server that lists a model as text-only shows it as not here.
@@ -349,7 +364,11 @@ unreadable logo refused, the library copy and read-back of a cut-out and a logo,
 frame's face found and avoided, "TAKE YOUR CLOTHES OFF" on the reference frame, and the evidence
 renders with text, photo and logo).
 
-## Retiring the old THUMBNAIL TEXT OPTIONS field (Owen decides after testing)
+## Retiring the old THUMBNAIL TEXT OPTIONS field (done in part, LEDGER #240)
+Owen ruled it retires (2026-09-28). `thumbnail_text` is gone from every channel's `fields:` list, so it
+is no longer generated; its UI, routing row and re-roll readers stay until phase 2 (see
+docs/thumbnails-pipeline.md, "What changed"). The plan as first written:
+
 If this tab's words win: drop `thumbnail_text` from each channel's `fields:` list (the field stops
 being generated and shown), remove its routing row with an entry in `REMOVED_ROUTING_TASKS`, and move
 the tab's words step onto the reports page as the thumbnail field. Its re-roll gate rules and the

@@ -89,7 +89,7 @@ export interface TranscriptRef {
   durationSeconds: number;
   wordCount: number;
   linkedAt: string;
-  via: 'exact-title' | 'label-match' | 'manual';
+  via: 'exact-title' | 'label-match' | 'manual' | 'transcript-match';
 }
 
 /**

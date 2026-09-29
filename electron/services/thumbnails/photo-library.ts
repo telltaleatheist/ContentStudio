@@ -53,6 +53,25 @@ function startsWith(file: string, signature: Buffer): boolean {
   }
 }
 
+/** A photo ranking is a question, and a question needs at least two answers (judge.ts). */
+export const MIN_PHOTOS_TO_RANK = 2;
+
+/**
+ * The stop reason when the library is too small to rank (2026-09-29: Owen's run stopped at
+ * tone-photos on "it has 0" and nothing said where photos are added). Said by the run, the
+ * Thumbnails window's Finish and Rewrite, and the screenshots path, before any model is called.
+ */
+export function photosMissingReason(count: number): string {
+  return `The app's reaction photo library has ${count === 0 ? 'no photos' : count === 1 ? 'one photo' : `${count} photos`}, and ranking them needs at least ${MIN_PHOTOS_TO_RANK}. ` +
+    'Add your reaction photos in Thumbnail look (the "Thumbnail look…" button in the Thumbnails window on the reports page, or Settings › Thumbnails).';
+}
+
+/** Throws `photosMissingReason` when the library holds fewer than MIN_PHOTOS_TO_RANK photos. */
+export function needPhotosToRank(userData: string): void {
+  const count = libraryPhotos(userData).length;
+  if (count < MIN_PHOTOS_TO_RANK) throw new Error(photosMissingReason(count));
+}
+
 /** The library's photos, by name, sorted. An empty or absent library is an empty list. */
 export function libraryPhotos(userData: string): Array<{ name: string; file: string }> {
   const dir = photosDir(userData);

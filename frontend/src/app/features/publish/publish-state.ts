@@ -269,6 +269,8 @@ export class PublishState {
   });
 
   readonly selection = this._selection.asReadonly();
+  /** The item this state is loaded for (the reports page's open item), or null. */
+  readonly itemId = this._itemId.asReadonly();
   readonly resolved = this._resolved.asReadonly();
   readonly saving = this._saving.asReadonly();
   readonly error = this._error.asReadonly();

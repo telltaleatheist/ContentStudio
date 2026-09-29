@@ -694,6 +694,27 @@
                     <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
                   }
 
+                  <!-- Picks 2 and 3 from the Thumbnails window: YouTube has no API for Test &
+                       Compare, so they are files beside pick 1 for Owen to upload in Studio. -->
+                  @if (thumbnails(); as th) {
+                    @if (th.picks.length > 1) {
+                      <div class="ab-picks">
+                        <span class="why">For your A/B test (upload in Studio's Test &amp; Compare, with titles 2 and 3):</span>
+                        @for (p of th.picks.slice(1); track p.n) {
+                          <div class="thumb">
+                            @if (p.picture) { <img class="thumb-img" [src]="p.picture" [alt]="'Pick ' + p.n" /> }
+                            <div class="thumb-facts">
+                              <span class="thumb-fn" [title]="p.copy">{{ p.n }} · {{ fileName(p.copy) }}</span>
+                            </div>
+                          </div>
+                        }
+                        @if (th.picksFolder; as pf) {
+                          <button class="ghost" (click)="showThumbnailPicks(pf)">Show the picks</button>
+                        }
+                      </div>
+                    }
+                  }
+
                   <!-- A thumbnail found on disk next to this item's export. NEVER applied
                        on its own: slots are renumbered between export and upload often
                        enough (13 of 40 live exports) that a pre-applied proposal would be
@@ -1123,6 +1144,47 @@
             </section>
           }
 
+          <!-- ═════ THUMBNAILS (phase 2, 2026-09-28) ═════ The metadata run made the title and
+               thumbnail pairs; the window picks them IN ORDER, as the titles are picked: pick 1 is
+               the video's thumbnail, and with an A/B test pick n goes with title n. A report made
+               before thumbnails were made with the metadata shows nothing here; its own image is
+               still chosen on the Thumbnail row above. -->
+          @if (thumbnails(); as th) {
+            @if (th.state !== null) {
+              <section class="block thumbs-block">
+                <div class="bhead">
+                  <h3>Thumbnails</h3>
+                  <span class="cnt num">{{ th.picks.length }}/3 picked</span>
+                  <span class="pane-head-spacer"></span>
+                  <button class="ghost" (click)="openThumbnailLook()" title="The one look for all three channels: photos, logo, font, colours and spaces">Look…</button>
+                  @if (th.canOpen) {
+                    <button class="ghost primary-ghost" (click)="openThumbnails()">{{ th.state === 'made' ? 'Open thumbnails…' : 'Make thumbnails…' }}</button>
+                  }
+                </div>
+                <p class="thumbs-line">{{ th.line }}</p>
+                @if (th.picks.length > 0) {
+                  <div class="thumbs-picks">
+                    @for (p of th.picks; track p.n) {
+                      <div class="thumbs-pick" [title]="p.copy">
+                        @if (p.picture) { <img [src]="p.picture" [alt]="'Pick ' + p.n" /> }
+                        <span class="num">{{ p.n }}</span>
+                        <span class="thumbs-role">{{ p.n === 1 ? "the video's thumbnail" : 'for your A/B test' }}</span>
+                      </div>
+                    }
+                  </div>
+                }
+                @for (m of thumbnailMismatches(); track $index) {
+                  <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ m }}</span></div>
+                }
+              </section>
+            }
+          } @else if (thumbnailsError(); as te) {
+            <section class="block thumbs-block">
+              <div class="bhead"><h3>Thumbnails</h3></div>
+              <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ te }}</span></div>
+            </section>
+          }
+
           <!-- ═════ REWRITE PASSES ═════
                Two buttons, one block, because they are the same kind of control: a model
                picker and one button that sends calls over the finished text of this item.
@@ -1494,52 +1556,9 @@
                 <span class="cnt">click any line to copy it</span>
               </div>
 
-              @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('thumbnail-text')">
-                    <mat-icon>image</mat-icon>
-                    <span class="asset-name">Thumbnail text</span>
-                    <span class="cnt num">{{ metadata()!.thumbnail_text.length }}</span>
-                    <span class="chev">{{ isAssetOpen('thumbnail-text') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('thumbnail-text')) {
-                    <div class="asset-body">
-                      <div class="asset-acts">
-                  <button class="ghost reroll" [class.armed]="rerollArmed() === 'thumbnail_text'"
-                          [disabled]="rerollBusy() !== '' || scrubBusy()"
-                          (click)="rerollSection('thumbnail_text')"
-                          (mouseleave)="rerollArmed() === 'thumbnail_text' && disarmReroll()"
-                          title="Write the thumbnail text options again: this item's own prompt for it goes to the model the routing table names for it, and the answer replaces what is here. The version it replaces is kept.">
-                    {{ rerollBusy() === 'thumbnail_text' ? 'Re-rolling…' : rerollArmed() === 'thumbnail_text' ? rerollArmedLabel('thumbnail_text') : 'Re-roll' }}
-                  </button>
-                  @if (keptVersions('thumbnail_text') > 0) {
-                    <button class="ghost"
-                            [disabled]="rerollBusy() !== '' || scrubBusy()"
-                            (click)="putBackSection('thumbnail_text')"
-                            [title]="'Swap in the thumbnail text options this one replaced. The one here now is kept, so pressing it again swaps back. ' + keptVersions('thumbnail_text') + ' earlier version(s) kept.'">Put back</button>
-                  }
-                      </div>
-                      @if (rerollMessage(); as m) {
-              @if (m.field === 'thumbnail_text') {
-                <div class="reroll-msg" [class.err]="m.error">
-                  @for (line of m.lines; track $index) { <p>{{ line }}</p> }
-                </div>
-              }
-            }
-                      @for (text of metadata()!.thumbnail_text; track $index; let i = $index) {
-                        <div class="asset-line"
-                             [class.copied]="isCopied('thumb-' + i)"
-                             (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + i)"
-                             title="Click to copy">
-                          <span class="asset-n num">{{ i + 1 }}</span>
-                          <span>{{ getThumbnailText(text) }}</span>
-                          <span class="asset-copy">{{ isCopied('thumb-' + i) ? '✓' : '⧉' }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
-              }
+              <!-- THUMBNAIL TEXT OPTIONS retired (phase 2, 2026-09-28): the Thumbnails block under the
+                   titles replaced it, and an older report that still has the field shows nothing
+                   for it. -->
 
               <!-- No chapters entry here. The list under the description is the one that
                    is edited, composed and pushed; a second, click-to-copy rendering of the

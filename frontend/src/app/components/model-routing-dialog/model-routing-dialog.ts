@@ -144,7 +144,7 @@ export type ModelRoutingDialogResult = boolean | undefined;
              stored entries pass through Save untouched. -->
         @for (task of rowTasks(); track task.id) {
           @if (task.id === thumbnailTasks()[0]?.id) {
-            <div class="group-heading">Thumbnails tab (testing). Not used by metadata runs.</div>
+            <div class="group-heading">Thumbnails. Used by metadata runs (the A/B thumbnails) and the reports page's Thumbnails window.</div>
           }
           <div class="routing-row">
             <div class="field-label">
@@ -350,11 +350,11 @@ export class ModelRoutingDialog implements OnInit {
 
   /**
    * The metadata run's rows, in the registry's order. The change-all menu covers these only: the
-   * Thumbnails tab's rows (#236) serve another page, and its frame row takes vision models only,
+   * thumbnail rows (#236, #240) are grouped apart, and the frame row takes vision models only,
    * so including it would leave change-all with nothing every row offers.
    */
   readonly modalTasks = computed(() => this.tasks().filter(task => task.modal && task.group !== 'thumbnails'));
-  /** The Thumbnails tab's rows, shown under their own heading after the metadata rows. */
+  /** The thumbnail rows, shown under their own heading after the metadata rows. */
   readonly thumbnailTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'thumbnails'));
   /** Every row the dialog shows, metadata first. */
   readonly rowTasks = computed(() => [...this.modalTasks(), ...this.thumbnailTasks()]);

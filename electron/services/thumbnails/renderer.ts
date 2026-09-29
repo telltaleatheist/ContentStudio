@@ -5,11 +5,11 @@
  * Output is always 1280x720 (the frame YouTube stores; a 1920x1080 source is scaled down), PNG
  * first. A PNG over the 2 MiB limit is written as JPEG instead, quality 92 then 85, and the result
  * says so (Law 8). The written file then goes through the app's own strict door,
- * `validateThumbnailFile` (thumbnail-validate.ts, LEDGER #219), so nothing this tab writes could
- * be refused at upload.
+ * `validateThumbnailFile` (thumbnail-validate.ts, LEDGER #219), so nothing written here could be
+ * refused at upload.
  *
- * A phrase that does not fit at the smallest allowed letter size is NOT rendered: the result is
- * `{ ok: false, reason }` in plain words, and the operator picks another option (layout.ts).
+ * The words are always drawn (Owen, 2026-09-28 phase 2): layout.ts shrinks them into the text box,
+ * one or two lines, and when they could not be kept off a face the render's notes say so.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -17,14 +17,18 @@ import { MAX_THUMBNAIL_BYTES, measureThumbnailFile, validateThumbnailFile } from
 import { bytesOfDataUrl, dataUrlOf, type ThumbnailCanvas } from './canvas-page';
 import { REFERENCE_SIZE, phraseWords, placeLogo, placeReaction, planText, type ReactionPlacement, type Rect, type TextPlan, type ThumbnailStyle } from './layout';
 
+/** Text made safe for a file name: path and reserved characters become spaces, at most 80 characters. */
+export function safeFileName(text: string): string {
+  return text.replace(/[/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
 export const OUTPUT_WIDTH = 1280;
 export const OUTPUT_HEIGHT = 720;
 
 /** The JPEG qualities tried, in order, when the PNG is over the byte limit. */
 export const JPEG_QUALITIES = [0.92, 0.85] as const;
 
-export type RenderResult =
-  | {
+export interface RenderResult {
       ok: true;
       path: string;
       bytes: number;
@@ -36,10 +40,9 @@ export type RenderResult =
       reaction: ReactionPlacement | null;
       /** Where the logo was drawn, or null for none. */
       logo: Rect | null;
-      /** Plain sentences worth showing: a JPEG fallback-by-rule, no faces found. */
+      /** Plain sentences worth showing: a JPEG fallback-by-rule, no faces found, words over a face. */
       notes: string[];
-    }
-  | { ok: false; reason: string };
+}
 
 export async function renderThumbnail(input: {
   canvas: ThumbnailCanvas;
@@ -86,8 +89,8 @@ export async function renderThumbnail(input: {
     const words = phraseWords(input.phrase);
     const measured = await input.canvas.measure(input.style.font, words, REFERENCE_SIZE);
     const placed = planText({ words, ...measured }, faces, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT, reaction?.avoid ?? null, logo);
-    if (!placed.ok) return { ok: false, reason: placed.reason };
     plan = placed.plan;
+    if (placed.note !== null) notes.push(placed.note);
   }
 
   fs.mkdirSync(path.dirname(input.outStem), { recursive: true });

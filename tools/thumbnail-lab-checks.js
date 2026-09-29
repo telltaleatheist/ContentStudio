@@ -1,5 +1,7 @@
 /**
- * Keeper: the Thumbnails tab (2026-09-28), the Node half of `npm run check:thumbnail-lab`.
+ * Keeper: the thumbnail modules the metadata run and the reports page's Thumbnails window share
+ * (built for the Thumbnails test tab on 2026-09-28; the tab was retired in phase 2 the same day,
+ * and its tab-only checks went with it). The Node half of `npm run check:thumbnail-lab`.
  *
  * What it pins, against the COMPILED main process and the fake Crucible (no live server, no card):
  *
@@ -10,10 +12,9 @@
  *     is refused naming its size.
  *   - THE STORY SOURCE (2026-09-28): regions minus cuts, the timeline mapped piece by piece through
  *     the segment table, master to screen recording by the alignment's offset and drift, cut to the
- *     recording's length; an unlinked report gets the picker and never a name match, the pick is
- *     saved as the selection record's transcriptRef, frames come only from the story's stretches,
- *     and an untrusted alignment, a missing or split screen recording and a renamed story are
- *     refused by name. The real 2026-09-24 session is read (never written) as a fixture reference.
+ *     recording's length; frames come only from the story's stretches of the screen recording; an
+ *     untrusted alignment, a missing or split screen recording and a renamed story are refused by
+ *     name. The real 2026-09-24 session is read (never written) as a fixture reference.
  *   - SCENES (2026-09-28): kept frames group by how they look across the whole story (alternating
  *     clips rejoin their scene, a speaker moving inside a clip does not split it, a scene of two
  *     frames stays its own); the nearest-neighbour chain gives the same groups as merging the
@@ -24,25 +25,18 @@
  *     left out and named; a frame with a missing option letter is unreadable, not guessed.
  *   - TEXT: the words prompt fills every slot from thumbnails.yml; the plain-text answer parses into
  *     the three kinds with decoration stripped and off-brief options warned about, never dropped.
- *   - FACE-SAFE BOX: the text never touches a padded face or a reserved slot, sits bottom-left
- *     when it can, fits by shrinking, and a phrase that cannot keep the letter floor is REFUSED
- *     (never shrunk below it, never truncated).
- *   - NOTHING LEFT OFF WITHOUT A CHOICE (2026-09-28): combine never makes a picture-only or
- *     photo-less thumbnail unless "No text" was starred or "No photo" picked; with no starred words
- *     A/B/C take the top claim, stakes and reaction, and with nothing written it refuses plainly; a
- *     thumbnail with no photo chosen runs the photo suggestion first (fake Crucible) for its exact
- *     words, re-runs it when the words changed, and is refused plainly with no photos folder; the
- *     logo is fitted in its space with its aspect kept and the words avoid its drawn bounds; the
- *     empty-space outlines are off by default and never drawn over a drawn photo or logo.
- *   - 2026-09-28 (Owen ran the tab): text shrinks to fit on up to three lines at a 7% floor ("TAKE
- *     YOUR CLOTHES OFF" fits where it was refused); the reaction photos and logo are copied into the
- *     app's library (add, duplicate refused then replaced, remove, the one-click copy offer from the
- *     old folder setting, originals untouched) on a CONTENTSTUDIO_USER_DATA scratch folder; a
- *     "top-ranked" photo is drawn from the top 3 with a stated seed, reproducibly, avoiding repeats;
- *     the best view shows 2 frames per scene (the best and the best clearly different one) with the
- *     rest behind "More", and small interleaved fragments of one moving shot fold into one scene;
- *     the words and the tone/photo steps share one held lease on one model, released when the frame
- *     scorer needs the vision model.
+ *   - THE TEXT ALWAYS FITS (phase 2, Owen 2026-09-28): the text box runs from the left margin to
+ *     where the reaction photo begins and from the top margin to the bottom margin; one or two
+ *     lines, shrunk to fit, never refused and never cut; off the padded faces and the logo when a
+ *     face-free space holds the words at the 7% floor, else in the whole box at the floor or smaller
+ *     where they cover the least of a face, said in the note.
+ *   - the logo is fitted in its space with its aspect kept and the words avoid its drawn bounds;
+ *     the reaction photos and logo are copied into the app's library (ThumbnailLook: add,
+ *     duplicate refused then replaced, remove, the one-click copy offer from the old folder
+ *     setting, originals untouched) on a CONTENTSTUDIO_USER_DATA scratch folder; a "top-ranked"
+ *     photo is drawn from the top 3 with a stated seed, reproducibly, avoiding repeats; the best
+ *     view shows 2 frames per scene with the rest behind "More", and small interleaved fragments of
+ *     one moving shot fold into one scene.
  *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
  *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
  *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
@@ -505,65 +499,79 @@ check('frames: the items\' answers read back as the five readings (P(yes), the e
 const STYLE = layout.validateStyle(layout.DEFAULT_STYLE);
 const FW = 1280, FH = 720;
 
-check('layout: the text avoids the padded face and both reserved slots, bottom-left, letters at or above the floor', () => {
+/** The text box for the default look with no photo drawn: left margin to the reaction space, top to bottom margin. */
+const BOX = layout.textBox(STYLE, FW, FH, null);
+function insideBox(r, box = BOX) {
+  return r.x >= box.x - 1e-6 && r.y >= box.y - 1e-6 && r.x + r.w <= box.x + box.w + 1e-6 && r.y + r.h <= box.y + box.h + 1e-6;
+}
+
+check('layout: the text box runs from the left margin to where the reaction photo begins, and from the top margin to the bottom; the text stays in it, off the padded face, bottom-left, 1-2 lines', () => {
+  const m = layout.MARGIN_FRACTION * FH;
+  assert.deepStrictEqual([BOX.x, BOX.y, BOX.x + BOX.w, BOX.y + BOX.h].map((v) => Number(v.toFixed(3))),
+    [m, m, layout.slotRect(STYLE.reactionSlot, FW, FH).x, FH - m].map((v) => Number(v.toFixed(3))));
   const face = { x: 515, y: 164, w: 236, h: 236 }; // the rapture frame's face, in output pixels
   const r = layout.planText(metricsFor('DON\'T STAND UNDER A ROOF'), [face], STYLE, FW, FH);
-  assert.ok(r.ok, r.reason);
   const p = r.plan;
+  assert.deepStrictEqual([p.placement, r.note], ['clear', null]);
+  assert.ok(insideBox(p.patch), `inside the text box (${JSON.stringify(p.patch)})`);
   assert.ok(!overlaps(p.patch, layout.paddedFace(face, FW, FH)), 'patch clear of the face');
-  assert.ok(!overlaps(p.patch, layout.slotRect(STYLE.reactionSlot, FW, FH)), 'patch clear of the reaction slot');
-  assert.ok(!overlaps(p.patch, layout.slotRect(STYLE.logoSlot, FW, FH)), 'patch clear of the logo slot');
+  assert.ok(!overlaps(p.patch, layout.slotRect(STYLE.reactionSlot, FW, FH)), 'patch clear of the reaction space');
   assert.ok(p.capPx >= STYLE.minCapFraction * FH - 1e-6 && p.capPx <= STYLE.maxCapFraction * FH + 1e-6, `cap ${p.capPx}`);
-  assert.ok(p.lines.length <= 2);
+  assert.ok(p.lines.length >= 1 && p.lines.length <= 2);
   assert.ok(p.lines.every((l) => Math.abs(l.x - p.lines[0].x) < 1e-9), 'left-aligned');
-  const m = layout.MARGIN_FRACTION * FH;
   assert.ok(Math.abs(p.patch.y + p.patch.h - (FH - m)) < 0.5 && p.patch.x - m < 1, `bottom-left (patch at ${JSON.stringify(p.patch)})`);
-  assert.ok(p.patch.x >= m - 1e-6 && p.patch.x + p.patch.w <= FW - m + 1e-6 && p.patch.y >= m - 1e-6, 'inside the margins');
 });
 
 check('layout: two faces side by side (a split screen) are both avoided', () => {
-  const faces = [{ x: 150, y: 120, w: 200, h: 200 }, { x: 760, y: 110, w: 210, h: 210 }];
+  const faces = [{ x: 150, y: 120, w: 200, h: 200 }, { x: 560, y: 110, w: 210, h: 210 }];
   const r = layout.planText(metricsFor('SHE\'S SERIOUS'), faces, STYLE, FW, FH);
-  assert.ok(r.ok, r.reason);
+  assert.strictEqual(r.plan.placement, 'clear');
   for (const f of faces) assert.ok(!overlaps(r.plan.patch, layout.paddedFace(f, FW, FH)));
+  assert.ok(insideBox(r.plan.patch));
 });
 
 check('layout: a short phrase is fitted large (up to the ceiling), and shrinks as the space shrinks', () => {
   const open = layout.planText(metricsFor('MAYBE TOMORROW'), [], STYLE, FW, FH);
-  assert.ok(open.ok);
   assert.ok(Math.abs(open.plan.capPx - STYLE.maxCapFraction * FH) < 1e-6, `with room, the ceiling (${open.plan.capPx})`);
   const tight = layout.planText(metricsFor('MAYBE TOMORROW'), [{ x: 420, y: 80, w: 300, h: 300 }], STYLE, FW, FH);
-  assert.ok(tight.ok);
   assert.ok(tight.plan.capPx < open.plan.capPx && tight.plan.capPx >= STYLE.minCapFraction * FH - 1e-6);
+  assert.strictEqual(tight.plan.placement, 'clear');
 });
 
-check('layout: a phrase that cannot keep the letter floor is refused in plain words, never shrunk or cut', () => {
-  const face = { x: 400, y: 100, w: 380, h: 420 };
-  const r = layout.planText(metricsFor('THE RAPTURE HAS FAILED EVERY SINGLE YEAR SINCE NINETEEN EIGHTY EIGHT AND IT WILL AGAIN'), [face], STYLE, FW, FH);
-  assert.strictEqual(r.ok, false);
-  assert.ok(/too long for the space beside the faces/.test(r.reason) && /smallest allowed is 51 px \(7%/.test(r.reason) && /Pick a shorter option/.test(r.reason), r.reason);
+check('layout: words no face-free space holds at the 7% floor are still drawn: in the whole box, no bigger than the floor, shrunk until they fit, covering the least of a face, said; never refused, never cut, never three lines', () => {
+  assert.strictEqual(layout.MAX_LINES, 2);
+  assert.deepStrictEqual(layout.splits(['A', 'B', 'C', 'D']).map((l) => l.length).sort().join(''), '1222', 'every split into one or two lines, in order');
+  const face = { x: 300, y: 100, w: 380, h: 420 };
+  const phrase = 'THE RAPTURE HAS FAILED EVERY SINGLE YEAR SINCE NINETEEN EIGHTY EIGHT AND IT WILL AGAIN';
+  const r = layout.planText(metricsFor(phrase), [face], STYLE, FW, FH);
+  assert.strictEqual(r.plan.placement, 'over-faces');
+  assert.ok(/^No space in the text box clear of the faces holds these words at 51 px/.test(r.note) && /drawn \d+ px tall at the (top|bottom) of the box/.test(r.note), r.note);
+  assert.ok(r.plan.capPx <= 0.07 * FH + 1e-6 && r.plan.capPx > 0, `at most the floor (${r.plan.capPx})`);
+  assert.ok(r.plan.lines.length <= 2, 'one or two lines');
+  assert.strictEqual(r.plan.lines.map((l) => l.text).join(' '), phrase, 'every word, none cut');
+  assert.ok(insideBox(r.plan.patch), 'inside the text box');
+  // A face that fills the whole box: still drawn, still in the box.
+  const whole = layout.planText(metricsFor('SHE MEANS IT'), [{ x: 0, y: 0, w: 1000, h: 720 }], STYLE, FW, FH);
+  assert.ok(whole.plan.placement === 'over-faces' && insideBox(whole.plan.patch) && whole.note !== null);
+  // The side the words go on covers less of the face: a face low in the box sends them to the top.
+  const low = layout.planText(metricsFor(phrase), [{ x: 100, y: 330, w: 600, h: 330 }], STYLE, FW, FH);
+  assert.ok(/at the top of the box/.test(low.note), low.note);
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, fill: 'orange' }), /letter colour.*#RRGGBB/);
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionSlot: { x: 0.8, y: 0.5, w: 0.4, h: 0.4 } }), /runs off the picture/);
+  assert.throws(() => layout.textBox({ ...STYLE, reactionSlot: { x: 0, y: 0.5, w: 0.3, h: 0.4 } }, FW, FH, null), /leaves no room for words/);
 });
 
-check('layout: "TAKE YOUR CLOTHES OFF", refused at 12% on two lines, now fits on up to three lines at the 7% floor, clear of the faces', () => {
+check('layout: "TAKE YOUR CLOTHES OFF" between two faces is drawn whole on one or two lines, clear of the faces when the floor allows', () => {
   assert.strictEqual(layout.DEFAULT_STYLE.minCapFraction, 0.07);
-  assert.strictEqual(layout.MAX_LINES, 3);
-  assert.deepStrictEqual(layout.splits(['A', 'B', 'C', 'D']).map((l) => l.length).sort().join(''), '1222333', 'every split into one to three lines, in order');
-  // The shape of Owen's frame: two faces side by side, a narrow column beside them.
   const faces = [{ x: 250, y: 200, w: 208, h: 560 }, { x: 510, y: 200, w: 208, h: 560 }];
-  const m = metricsFor('TAKE YOUR CLOTHES OFF');
-  const old = layout.planText(m, faces, { ...STYLE, minCapFraction: 0.12 }, FW, FH);
-  assert.strictEqual(old.ok, false, 'at the old 12% floor it is refused');
-  const now = layout.planText(m, faces, STYLE, FW, FH);
-  assert.ok(now.ok, now.reason);
-  assert.ok(now.plan.capPx >= 0.07 * FH - 1e-6 && now.plan.capPx < 0.12 * FH, `smaller letters, above the floor (${now.plan.capPx.toFixed(1)} px)`);
-  assert.ok(now.plan.lines.length <= 3);
-  assert.deepStrictEqual(now.plan.lines.map((l) => l.text).join(' '), 'TAKE YOUR CLOTHES OFF', 'every word, none cut');
-  for (const f of faces) assert.ok(!overlaps(now.plan.patch, layout.paddedFace(f, FW, FH)), 'clear of each face');
-  // With room, a short phrase reaches the ceiling without a needless third line (fewer lines win a tie).
+  const r = layout.planText(metricsFor('TAKE YOUR CLOTHES OFF'), faces, STYLE, FW, FH);
+  assert.ok(r.plan.lines.length <= 2);
+  assert.deepStrictEqual(r.plan.lines.map((l) => l.text).join(' '), 'TAKE YOUR CLOTHES OFF', 'every word, none cut');
+  assert.ok(insideBox(r.plan.patch));
+  if (r.plan.placement === 'clear') for (const f of faces) assert.ok(!overlaps(r.plan.patch, layout.paddedFace(f, FW, FH)), 'clear of each face');
+  else assert.ok(r.note !== null, 'over a face only with the note');
   const open = layout.planText(metricsFor('MAYBE TOMORROW'), [], STYLE, FW, FH);
-  assert.ok(open.plan.lines.length < 3 && Math.abs(open.plan.capPx - STYLE.maxCapFraction * FH) < 1e-6, JSON.stringify(open.plan.lines));
+  assert.ok(open.plan.lines.length <= 2 && Math.abs(open.plan.capPx - STYLE.maxCapFraction * FH) < 1e-6, JSON.stringify(open.plan.lines));
 });
 
 // ── reaction photos: trim and placement ─────────────────────────────────────
@@ -604,16 +612,15 @@ check('photos: fitted into the reaction space, right side anchored, running off 
   // A wide photo: width limits it; its top sits lower than the space's top.
   const wide = layout.placeReaction(1600, 600, style, FW, FH);
   assert.ok(Math.abs(wide.w - slot.w) < 1e-6 && wide.y > slot.y);
-  // With a narrow photo the text may use the space the photo does not cover.
+  // The text box ends where the drawn photo begins: a narrow photo leaves the box wider.
   const narrow = layout.placeReaction(200, 1000, style, FW, FH);
   const face = { x: 515, y: 164, w: 236, h: 236 };
   const phrase = metricsFor('EVERY YEAR SINCE 1988 AGAIN');
-  const withSpace = layout.planText(phrase, [face], { ...style, minCapFraction: 0.12 }, FW, FH, null);
-  const withPhoto = layout.planText(phrase, [face], { ...style, minCapFraction: 0.12 }, FW, FH, narrow.avoid);
-  assert.strictEqual(withSpace.ok, false, 'with the whole space kept clear it is too long (at a 12% floor)');
-  assert.ok(withPhoto.ok, 'with only the narrow photo to avoid it fits');
+  const withSpace = layout.planText(phrase, [face], style, FW, FH, null);
+  const withPhoto = layout.planText(phrase, [face], style, FW, FH, narrow.avoid);
+  assert.ok(Math.abs(withPhoto.plan.box.x + withPhoto.plan.box.w - narrow.avoid.x) < 1e-6, 'the box ends at the photo\'s drawn left edge');
+  assert.ok(withPhoto.plan.box.w > withSpace.plan.box.w, 'wider than the whole reaction space allows');
   assert.ok(!overlaps(withPhoto.plan.patch, narrow.avoid), 'the text clears the photo');
-  assert.ok(withPhoto.plan.space.x + withPhoto.plan.space.w > slot.x, 'by reaching into the space the photo leaves free');
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionOutlinePx: 99 }), /photo outline/);
 });
 
@@ -715,7 +722,6 @@ check('scoring: a model that is not installed is refused naming it and the serve
 // ── tone and photo suggestion ───────────────────────────────────────────────
 
 const judge = services('thumbnails/judge.js');
-const combine = services('thumbnails/combine.js');
 
 const PHOTOS = [
   { name: 'laugh', note: 'laughing; light topics only, never for deaths or real victims' },
@@ -772,83 +778,12 @@ check('tone and photo over the door: one job, text-only decides on the judge mod
   assert.deepStrictEqual(loads.map((b) => b.model), ['qwen3.5-9b'], 'one load, one lease');
 }));
 
-// ── auto-combine ────────────────────────────────────────────────────────────
-
-const FAV = {
-  frames: ['f1', 'f2', 'f3', 'f4'],
-  texts: [{ phrase: 'CLAIM ONE', kind: 'claim' }, { phrase: 'STAKES ONE', kind: 'stakes' }],
-  photos: ['laugh', 'oh please'],
-  written: null,
-};
-const WRITTEN = { claim: ['TOP CLAIM', 'CLAIM TWO'], stakes: ['TOP STAKES'], reaction: ['TOP REACTION', 'REACTION TWO'] };
-const photoOf = (v) => (v.photo.pick === 'photo' ? v.photo.name : v.photo.pick === 'top' ? `top:${v.photo.of}` : 'none');
-
-check('combine, best package: every piece varies; short lists repeat from their start; photos follow a suggestion made for these words only', () => {
-  const r = combine.combine(FAV, { mode: 'best' });
-  assert.ok(r.ok);
-  assert.deepStrictEqual(r.variants.map((v) => [v.letter, v.frameId, v.text.phrase, photoOf(v)]), [
-    ['A', 'f1', 'CLAIM ONE', 'laugh'], ['B', 'f2', 'STAKES ONE', 'oh please'], ['C', 'f3', 'CLAIM ONE', 'laugh'],
-  ]);
-  const rank = {
-    A: { text: 'CLAIM ONE', ranked: ['horrified', 'oh please', 'laugh'] },
-    B: { text: 'STAKES ONE', ranked: ['laugh', 'horrified', 'oh please'] },
-    C: { text: 'CLAIM ONE', ranked: ['horrified', 'ooh', 'laugh', 'oh please'] },
-  };
-  const ranked = combine.combine(FAV, { mode: 'best' }, rank);
-  assert.deepStrictEqual(ranked.variants.map(photoOf), ['oh please', 'laugh', 'laugh'], 'each variant takes its highest-ranked favourite');
-  const stale = combine.combine(FAV, { mode: 'best' }, { ...rank, A: { text: 'OTHER WORDS', ranked: ['oh please', 'laugh'] } });
-  assert.deepStrictEqual(stale.variants.map(photoOf), ['laugh', 'laugh', 'laugh'], 'a ranking made for other words is ignored');
-  assert.deepStrictEqual(combine.combine({ frames: [], texts: [], photos: [], written: WRITTEN }, { mode: 'best' }), { ok: false, reason: 'Star at least one frame first.' });
-});
-
-check('combine never leaves words off without a starred "No text": no stars takes the top claim, stakes and reaction; nothing written is refused', () => {
-  const r = combine.combine({ frames: ['f1'], texts: [], photos: [], written: WRITTEN }, { mode: 'best' });
-  assert.ok(r.ok, r.reason);
-  assert.deepStrictEqual(r.variants.map((v) => [v.letter, v.text.phrase, v.text.kind]), [
-    ['A', 'TOP CLAIM', 'claim'], ['B', 'TOP STAKES', 'stakes'], ['C', 'TOP REACTION', 'reaction'],
-  ]);
-  assert.ok(r.variants.every((v) => v.text.phrase !== null), 'no picture-only variant without a choice');
-  for (const vary of ['frame', 'photo']) {
-    const t = combine.combine({ frames: ['f1', 'f2'], texts: [], photos: ['laugh', 'ooh'], written: WRITTEN }, { mode: 'test', vary });
-    assert.ok(t.ok && t.variants.every((v) => v.text.phrase === 'TOP CLAIM'), `test ${vary}: the held words are the top claim`);
-  }
-  const refused = combine.combine({ frames: ['f1'], texts: [], photos: [], written: null }, { mode: 'best' });
-  assert.deepStrictEqual(refused, { ok: false, reason: 'Write words first, or star “No text”.' });
-  assert.strictEqual(combine.combine({ frames: ['f1'], texts: [], photos: [], written: { claim: [], stakes: [], reaction: [] } }, { mode: 'test', vary: 'frame' }).reason, combine.WRITE_WORDS_FIRST);
-  const noStakes = combine.combine({ frames: ['f1'], texts: [], photos: [], written: { ...WRITTEN, stakes: [] } }, { mode: 'best' });
-  assert.ok(!noStakes.ok && /No stakes lines were written, so B has no words/.test(noStakes.reason), noStakes.reason);
-  const chosen = combine.combine({ frames: ['f1'], texts: [{ phrase: null, kind: null }], photos: [], written: null }, { mode: 'best' });
-  assert.ok(chosen.ok && chosen.variants.every((v) => v.text.phrase === null), 'a starred "No text" still makes picture-only thumbnails');
-});
-
-check('combine never leaves the photo off without a choice: no starred photo is "the top-ranked photo for these words"', () => {
-  const r = combine.combine({ ...FAV, photos: [] }, { mode: 'best' });
-  assert.deepStrictEqual(r.variants.map((v) => v.photo), [{ pick: 'top', of: 'A' }, { pick: 'top', of: 'B' }, { pick: 'top', of: 'C' }]);
-  const held = combine.combine({ ...FAV, photos: [] }, { mode: 'test', vary: 'text' });
-  assert.deepStrictEqual(held.variants.map((v) => v.photo), [{ pick: 'top', of: 'A' }, { pick: 'top', of: 'A' }], 'a held photo is A\'s top-ranked one on every variant');
-  for (const how of [{ mode: 'best' }, { mode: 'test', vary: 'frame' }, { mode: 'test', vary: 'text' }]) {
-    for (const photos of [[], ['laugh'], ['laugh', 'ooh']]) {
-      const out = combine.combine({ ...FAV, photos, written: WRITTEN }, how);
-      assert.ok(out.ok && out.variants.every((v) => v.photo.pick !== 'none'), `combine never picks "No photo" (${JSON.stringify(how)}, ${photos.length} starred)`);
-    }
-  }
-});
-
-check('combine, test one thing: two pieces held, the chosen one varies; fewer than two favourites of it is said plainly', () => {
-  const text = combine.combine(FAV, { mode: 'test', vary: 'text' });
-  assert.deepStrictEqual(text.variants.map((v) => [v.frameId, v.text.phrase, photoOf(v)]), [['f1', 'CLAIM ONE', 'laugh'], ['f1', 'STAKES ONE', 'laugh']], 'two favourites make two variants');
-  const frame = combine.combine(FAV, { mode: 'test', vary: 'frame' });
-  assert.deepStrictEqual(frame.variants.map((v) => [v.frameId, v.text.phrase, photoOf(v)]), [['f1', 'CLAIM ONE', 'laugh'], ['f2', 'CLAIM ONE', 'laugh'], ['f3', 'CLAIM ONE', 'laugh']]);
-  const photo = combine.combine(FAV, { mode: 'test', vary: 'photo' }, { A: { text: 'CLAIM ONE', ranked: ['oh please', 'laugh'] } });
-  assert.deepStrictEqual(photo.variants.map((v) => [v.frameId, v.text.phrase, photoOf(v)]), [['f1', 'CLAIM ONE', 'oh please'], ['f1', 'CLAIM ONE', 'laugh']], 'photos in the suggestion\'s order');
-  assert.deepStrictEqual(combine.combine({ ...FAV, photos: ['laugh'] }, { mode: 'test', vary: 'photo' }), { ok: false, reason: 'To test photos, star at least two photos.' });
-});
-
 // ── the story source: regions minus cuts, the segment table, the alignment (2026-09-28) ──────────
 
 const timelineMap = require(path.join(DIST, 'shared', 'master-timeline-map.js'));
 const storySource = services('thumbnails/story-source.js');
-const { ThumbnailLab } = services('thumbnails/lab-service.js');
+const { ThumbnailLook } = services('thumbnails/look.js');
+const link = services('metadata/editor-transcript-link.js');
 
 const MASTER = '/sessions/2026-01-05/2026-01-05 master.mp4';
 /** A timeline with removed air: 0-10 plays master 0-10, 10-30 plays 15-35, 30-60 plays 40-70, 60-100 plays 80-120. */
@@ -932,107 +867,44 @@ function syntheticWeek(root, { screenSeconds = 60 } = {}) {
   return { week, project, master, alignment, source: path.join(week, 'complete', 'f2 - the rapture.mov') };
 }
 
-/** The lab over fakes: a stand-in item list, an in-memory selection store, the synthetic manifest. */
-function labOver(root, w, { runStoryRef = undefined } = {}) {
-  const records = new Map();
-  const updates = [];
-  const publishStore = {
-    get: (itemId) => records.get(itemId) ?? null,
-    update: async (itemId, seed, patch) => {
-      updates.push({ itemId, seed, patch });
-      const next = { itemId, jobId: seed.jobId, transcriptRef: seed.transcriptRef ?? null, ...(records.get(itemId) ?? {}), ...patch };
-      records.set(itemId, next);
-      return next;
-    },
-  };
-  const manifests = [];
-  const lab = new ThumbnailLab({
-    store: { get: () => undefined, set: () => { throw new Error('the story path writes no settings'); } },
-    userDataPath: path.join(root, 'userData'),
-    ffmpeg: FFMPEG,
-    ffprobe: FFPROBE,
-    canvas: () => { throw new Error('no canvas here'); },
-    scorer: () => { throw new Error('no scorer here'); },
-    aiManager: () => { throw new Error('no model here'); },
-    publishStore,
-    manifest: async (zipPath) => { manifests.push(zipPath); return syntheticManifest(w.master); },
-    progress: () => {},
-  });
-  const item = {
-    jobId: 'job-1', itemId: 'itm-1', title: 'f2 - the rapture', createdAt: '', sourcePath: w.source, titles: ['A title'], promptSet: null,
-    hasTranscript: true, reportFolder: null, hook: '', description: '', runStoryRef, problem: null,
-  };
-  lab.listItems = () => [item];
-  return { lab, records, updates, manifests };
+/** The story's link, as the metadata run or the Inputs page makes it: the transcript-link module's own ref. */
+function storyRef(w, number, slug) {
+  const candidate = link.listProjectStories(w.project).candidates.find((c) => c.storyNumber === number && c.storySlug === slug);
+  assert.ok(candidate, `story ${number} "${slug}" is in the synthetic session`);
+  return link.refFromCandidate(candidate, 'manual');
 }
+const sourceDeps = (w, manifests = []) => ({
+  manifest: async (zipPath) => { manifests.push(zipPath); return syntheticManifest(w.master); },
+  duration: async (video) => (await sampler.probeVideo(FFPROBE, video)).duration,
+});
 
-check('story link: an unlinked report gets the picker (never a name match); the pick is saved as its link; frames come only from the story\'s stretches of the screen recording', async () => {
+check('story source: frames come only from the story\'s stretches of the screen recording (its session\'s manifest, the alignment\'s offset), cut to the recording\'s length, said', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-story-'));
   try {
     const w = syntheticWeek(root);
-    const { lab, records, updates, manifests } = labOver(root, w);
-    const state = lab.storyState('job-1', 'itm-1');
-    assert.strictEqual(state.link, null, 'the report "f2 - the rapture" is NOT linked to the story "f1 - the rapture" by its name');
-    assert.deepStrictEqual(state.choices.map((c) => [c.session, c.number, c.title, c.why === null]), [
-      ['2026-01-05', 1, 'u1 - prophecy', true], ['2026-01-05', 2, 'f1 - the rapture', true], ['2026-01-05', 3, 'f3 - never exported', false],
-    ]);
-    assert.ok(/never been exported/.test(state.choices[2].why), state.choices[2].why);
-    assert.ok(state.searched.includes(path.join(w.week, 'files')), state.searched);
-    assert.ok(/not linked to an editor story yet/.test((await rejection(lab.findFrames({ jobId: 'job-1', itemId: 'itm-1' }))).message));
-    assert.ok(/cannot link "f3 - never exported"/.test((await rejection(lab.linkStory('job-1', 'itm-1', w.project, 3, 'f3-never-exported'))).message));
-    assert.strictEqual(updates.length, 0, 'a refused link writes nothing');
-
-    const linked = await lab.linkStory('job-1', 'itm-1', w.project, 2, 'f1-the-rapture');
-    assert.strictEqual(updates.length, 1);
-    assert.strictEqual(updates[0].seed.jobId, 'job-1');
-    assert.deepStrictEqual([updates[0].patch.transcriptRef.kind, updates[0].patch.transcriptRef.via, updates[0].patch.transcriptRef.storyNumber, updates[0].patch.transcriptRef.projectFolder],
-      ['acs-story', 'manual', 2, w.project], 'the link is the transcript-link module\'s own ref, on the selection record');
-    assert.deepStrictEqual([linked.link.storyTitle, linked.link.from], ['f1 - the rapture', 'saved']);
-
-    const run = await lab.findFrames({ jobId: 'job-1', itemId: 'itm-1' });
+    const manifests = [];
+    const src = await storySource.resolveStorySource(storyRef(w, 2, 'f1-the-rapture'), sourceDeps(w, manifests));
     assert.deepStrictEqual(manifests, [path.join(w.project, '2026-01-05_compounds.zip')], 'the manifest is the session zip\'s');
-    assert.ok(run.video.endsWith('2026-01-05 screen capture.mp4'), run.video);
+    assert.ok(src.screenFile.endsWith('2026-01-05 screen capture.mp4'), src.screenFile);
     // Master stretches 5-10, 15-25, 30-35, 40-55, 90-100 at offset +2 s: 3-8, 13-23, 28-33, 38-53, and 88-98 lies past the 60 s recording.
     const spans = [[3, 8], [13, 23], [28, 33], [38, 53]];
-    const sampledLine = run.lines.find((l) => l.startsWith('Sampled '));
-    assert.ok(/^Sampled (3[3-7]) frames across those stretches \(00:35 of the screen recording/.test(sampledLine), sampledLine);
-    assert.ok(run.frames.length >= 3, `${run.frames.length} frames kept after the repeat filter`);
-    assert.ok(run.frames.every((f) => spans.some(([a, b]) => f.t >= a - 1e-6 && f.t < b)), `frames outside the story: ${run.frames.map((f) => f.t).join(', ')}`);
-    assert.ok(run.scenes.length >= 1 && run.frames.every((f) => run.scenes.some((s) => s.number === f.scene)), 'every kept frame is in a scene');
-    assert.strictEqual(run.scenes.reduce((sum, s) => sum + s.kept, 0), run.frames.length);
-    assert.ok(run.scenes.every((s) => /^Scene \d+ · \d+:\d{2} on screen$/.test(s.label)), run.scenes.map((s) => s.label).join(' | '));
-    assert.ok(run.lines.some((l) => /^The kept frames look like \d+ different scenes?/.test(l)), run.lines.join(' | '));
-    assert.strictEqual(run.bestScenes, null, 'nothing is ranked before scoring');
-    assert.ok(run.lines[0].startsWith('Story "f1 - the rapture" (story 2 of session 2026-01-05)') && run.lines[0].includes('5 stretches'), run.lines[0]);
-    assert.ok(run.lines.some((l) => /records no drift factor/.test(l)), 'the rate with no drift factor is declared');
-    assert.ok(run.lines.some((l) => /^10\.0 s of the story fall outside the screen recording/.test(l)), run.lines.join(' | '));
-    assert.ok(records.get('itm-1').transcriptRef.storySlug === 'f1-the-rapture');
+    const sampled = await sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video: src.screenFile, spans: src.plan.screen, outDir: path.join(root, 'frames') });
+    assert.ok(sampled.frames.length >= 30, `${sampled.frames.length} frames sampled`);
+    assert.ok(sampled.frames.every((f) => spans.some(([a, b]) => f.t >= a - 1e-6 && f.t < b)), `frames outside the story: ${sampled.frames.map((f) => f.t).join(', ')}`);
+    assert.ok(src.lines[0].startsWith('Story "f1 - the rapture" (story 2 of session 2026-01-05)') && src.lines[0].includes('5 stretches'), src.lines[0]);
+    assert.ok(src.lines.some((l) => /records no drift factor/.test(l)), 'the rate with no drift factor is declared');
+    assert.ok(src.lines.some((l) => /^10\.0 s of the story fall outside the screen recording/.test(l)), src.lines.join(' | '));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-check('story link: the run\'s story seeds the link until a record exists; a record\'s cleared link stays cleared', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-seed-'));
-  try {
-    const w = syntheticWeek(root, { screenSeconds: 3 });
-    const ref = { kind: 'acs-story', path: path.join(w.project, '2026-01-05_stories_transcripts', '02-f1-the-rapture.json'), sourceSession: '2026-01-05', projectFolder: w.project, storyNumber: 2, storySlug: 'f1-the-rapture', storyTitle: 'f1 - the rapture', durationSeconds: 40, wordCount: 1, linkedAt: '', via: 'exact-title' };
-    const { lab, records } = labOver(root, w, { runStoryRef: ref });
-    assert.deepStrictEqual([lab.storyState('job-1', 'itm-1').link.storyTitle, lab.storyState('job-1', 'itm-1').link.from], ['f1 - the rapture', 'run']);
-    records.set('itm-1', { itemId: 'itm-1', jobId: 'job-1', transcriptRef: null });
-    assert.strictEqual(lab.storyState('job-1', 'itm-1').link, null, 'the operator\'s record wins over the run\'s seed');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-check('story link: an untrusted alignment, a missing or split screen recording, and a renamed story are each refused by name', async () => {
+check('story source: an untrusted alignment, a missing or split screen recording, and a renamed story are each refused by name', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-refuse-'));
   try {
     const w = syntheticWeek(root, { screenSeconds: 3 });
-    const { lab } = labOver(root, w);
-    await lab.linkStory('job-1', 'itm-1', w.project, 2, 'f1-the-rapture');
-    const find = async () => (await rejection(lab.findFrames({ jobId: 'job-1', itemId: 'itm-1' }))).message;
+    const ref = storyRef(w, 2, 'f1-the-rapture');
+    const find = async () => (await rejection(storySource.resolveStorySource(ref, sourceDeps(w)))).message;
     const alignmentFile = path.join(w.project, '2026-01-05_alignment.json');
 
     fs.writeFileSync(alignmentFile, JSON.stringify({ ...w.alignment, sources: [{ ...w.alignment.sources[0], trusted: false, confidence: 0.4 }] }));
@@ -1081,9 +953,7 @@ check('story source, real fixture: "f1 - the rapture" of 2026-09-24 maps to 126 
   assert.ok(src.screenFile.endsWith('2026-09-24 screen capture.mp4'));
 });
 
-// ── making the thumbnails: the photo suggestion runs first when needed; logo; placeholders (2026-09-28) ──
-
-const { saveTranscript } = services('metadata/saved-transcript.service.js');
+// ── the logo and the library (2026-09-28) ──
 
 const library = services('thumbnails/photo-library.js');
 const draw = services('thumbnails/photo-draw.js');
@@ -1098,100 +968,6 @@ function scratchUserData(root) {
   return choice.path;
 }
 
-/** The lab over the fake Crucible with a saved transcript, the photos in the app's library, and one open run. */
-function photoLab(root, deps, { folder = true, seed = 7 } = {}) {
-  const video = path.join(root, 'complete', 'f2 - the rapture.mov');
-  fs.mkdirSync(path.dirname(video), { recursive: true });
-  fs.writeFileSync(video, 'a video');
-  saveTranscript({
-    outputDir: root, videoPath: video, durationSec: 4, whisperModel: 'keeper', words: null, speakerTagging: null,
-    segments: [{ index: 1, start: '00:00:01,000', end: '00:00:03,000', text: 'She says the rapture is here.' }],
-  });
-  const photosDir = path.join(root, 'selfies');
-  fs.mkdirSync(photosDir);
-  for (const p of PHOTOS) fs.writeFileSync(path.join(photosDir, `selfie ${p.name}.png`), PNG_BYTES);
-  const userData = scratchUserData(root);
-  if (folder) library.addPhotos(userData, [photosDir], false);
-  const settings = { outputDirectory: root };
-  const progress = [];
-  const lab = new ThumbnailLab({
-    store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } },
-    userDataPath: userData,
-    newSeed: () => seed,
-    ffmpeg: FFMPEG,
-    ffprobe: FFPROBE,
-    canvas: () => { throw new Error('no canvas here'); },
-    scorer: () => deps,
-    aiManager: () => { throw new Error('no model here'); },
-    publishStore: { get: () => null, update: async () => { throw new Error('no link here'); } },
-    manifest: async () => { throw new Error('no manifest here'); },
-    progress: (e) => progress.push(e),
-  });
-  const item = {
-    jobId: 'job-1', itemId: 'itm-1', title: 'f2 - the rapture', createdAt: '', sourcePath: video, titles: ['A title'], promptSet: 'youtube-fireside',
-    hasTranscript: true, reportFolder: root, hook: 'She says the rapture is here.', description: 'A rapture claim.\n\nLinks', runStoryRef: null, problem: null,
-  };
-  lab.runs.set('run-1', { runId: 'run-1', item, frames: [], suggestion: null, lines: [] });
-  return { lab, progress, photosDir, settings, userData };
-}
-
-const variant = (letter, phrase, photo) => ({ letter, frameId: 'f1', phrase, kind: phrase === null ? null : 'claim', photo });
-
-check('making: no photo starred and no suggestion yet runs the suggestion first for the variants\' words, then takes each one\'s top photo', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-make-'));
-  try {
-    const { lab, progress } = photoLab(root, deps);
-    const set = [
-      variant('A', "DON'T STAND UNDER A ROOF", { pick: 'top', of: 'A' }),
-      variant('B', 'MAYBE TOMORROW', { pick: 'top', of: 'B' }),
-      variant('C', 'THE RAPTURE IS HERE', { pick: 'none' }),
-    ];
-    const first = await lab.resolvePhotos('run-1', set, 7);
-    assert.strictEqual(first.ran, true);
-    assert.strictEqual(first.names.C, null, 'an explicit "No photo" stays none');
-    for (const of of ['A', 'B']) {
-      const top3 = first.suggestion.photos[of].slice(0, 3).map((r) => r.name);
-      assert.ok(top3.includes(first.names[of]), `${of}'s photo is drawn from its top 3 (${first.names[of]} of ${top3})`);
-      assert.strictEqual(first.draws[of].name, first.names[of]);
-      assert.ok(/drawn from the top 3/.test(first.draws[of].line), first.draws[of].line);
-    }
-    assert.notStrictEqual(first.names.A, first.names.B, 'A and B do not repeat a photo while another of the top 3 remains');
-    assert.deepStrictEqual(first.suggestion.texts, { A: "DON'T STAND UNDER A ROOF", B: 'MAYBE TOMORROW', C: 'THE RAPTURE IS HERE' });
-    assert.ok(progress.some((e) => e.stage === 'suggesting'), 'the progress line is told the suggestion is running');
-    assert.strictEqual(server.decideBodies().length, 4, 'the tone and one ranking per variant');
-
-    const again = await lab.resolvePhotos('run-1', set, 7);
-    assert.strictEqual(again.ran, false, 'a suggestion made for these exact words is reused');
-    assert.deepStrictEqual(again.names, first.names, 'the same seed draws the same photos');
-    assert.strictEqual(server.decideBodies().length, 4);
-
-    const changed = await lab.resolvePhotos('run-1', [set[0], variant('B', 'SOMETHING ELSE', { pick: 'top', of: 'B' }), set[2]], 7);
-    assert.strictEqual(changed.ran, true, 'words changed since the suggestion: it runs again');
-    assert.deepStrictEqual(changed.suggestion.photos.B.slice(0, 1).map((r) => r.name), ['laugh'], 'ranked for the new words');
-    assert.strictEqual(server.decideBodies().length, 8);
-
-    const chosen = await lab.resolvePhotos('run-1', [variant('A', 'X', { pick: 'photo', name: 'ooh' }), variant('B', 'Y', { pick: 'none' })], 7);
-    assert.deepStrictEqual([chosen.ran, chosen.names], [false, { A: 'ooh', B: null }], 'chosen photos need no suggestion');
-    assert.strictEqual(server.decideBodies().length, 8);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-check('making: with no photos folder, a thumbnail waiting for its suggested photo is refused plainly; explicit choices still go through', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-nofolder-'));
-  try {
-    const { lab } = photoLab(root, deps, { folder: false });
-    const err = await rejection(lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'top', of: 'A' })], 7));
-    assert.strictEqual(err.message, 'Add your reaction photos, or set each thumbnail to “No photo”.');
-    assert.strictEqual(server.decideBodies().length, 0);
-    const none = await lab.resolvePhotos('run-1', [variant('A', 'WORDS', { pick: 'none' })], 7);
-    assert.deepStrictEqual(none.names, { A: null });
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
 check('logo: fitted inside its space with its aspect kept, against the top and right edges, whole pixels; the text avoids its drawn bounds', () => {
   const style = layout.validateStyle(layout.DEFAULT_STYLE);
   const slot = layout.slotRect(style.logoSlot, 1280, 720);
@@ -1205,35 +981,24 @@ check('logo: fitted inside its space with its aspect kept, against the top and r
     assert.ok(Math.abs(r.x + r.w - (slot.x + slot.w)) <= 1 && Math.abs(r.y - slot.y) <= 0.5, 'top and right anchored');
   }
   assert.ok(Math.abs(wide.w / wide.h - 4) <= 4 / wide.h, `aspect kept (${wide.w}x${wide.h})`);
-  // A tall logo space: with the logo drawn small at its top, words may use the space below it.
-  const tall = { ...style, logoSlot: { x: 0.6, y: 0.03, w: 0.37, h: 0.9 }, reactionSlot: { x: 0.0, y: 0.0, w: 0.05, h: 0.05 } };
+  // A tall logo space reaching into the text box: with the logo drawn small at its top, words may use the space below it.
+  const tall = { ...style, logoSlot: { x: 0.55, y: 0.03, w: 0.37, h: 0.9 }, reactionSlot: { x: 0.95, y: 0.9, w: 0.04, h: 0.05 } };
   const logo = layout.placeLogo(400, 100, tall, 1280, 720);
   const m = metricsFor('BIG WORDS');
   const withLogo = layout.planText(m, [], tall, 1280, 720, null, logo);
   const withSlot = layout.planText(m, [], tall, 1280, 720, null, null);
-  assert.ok(withLogo.ok && withSlot.ok);
+  assert.ok(withLogo.plan.placement === 'clear' && withSlot.plan.placement === 'clear');
   assert.ok(!overlaps(withLogo.plan.patch, logo), 'the words clear the drawn logo');
   assert.ok(withLogo.plan.size >= withSlot.plan.size, 'the words may use the space the logo does not cover');
 });
 
-check('placeholders: the empty photo and logo spaces are off by default, and never drawn over a slot that has a photo or logo', () => {
-  const ts = fs.readFileSync(path.join(REPO, 'frontend', 'src', 'app', 'components', 'thumbnails', 'thumbnails.ts'), 'utf8');
-  const html = fs.readFileSync(path.join(REPO, 'frontend', 'src', 'app', 'components', 'thumbnails', 'thumbnails.html'), 'utf8');
-  assert.ok(/readonly showSlots = signal\(false\);/.test(ts), 'showSlots starts off');
-  const boxes = html.match(/<span class="slot-box"[^\n]*/g) ?? [];
-  assert.strictEqual(boxes.length, 2);
-  assert.ok(/@if \(showSlots\(\) && res\.photo === null\) \{ <span class="slot-box" \[ngStyle\]="slotBox\('reactionSlot'\)"/.test(html), 'the photo box only when no photo was drawn');
-  assert.ok(/@if \(showSlots\(\) && !res\.logo\) \{ <span class="slot-box" \[ngStyle\]="slotBox\('logoSlot'\)"/.test(html), 'the logo box only when no logo was drawn');
-  assert.ok(/this\.logoOn\.set\(state\.logo !== null\)/.test(ts), 'the logo switch is on whenever a logo is set');
-});
-
-// ── the library, the draw, the held text model (2026-09-28) ─────────────────
+// ── the library (ThumbnailLook) and the draw (2026-09-28) ────────────────────
 
 check('library: photos are copied into <userData>/thumbnail-lab/reaction-photos (CONTENTSTUDIO_USER_DATA); a name already there is refused, then replaced on request; remove; the originals untouched', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-library-'));
   try {
     const userData = scratchUserData(root);
-    const lab = new ThumbnailLab({ store: { get: () => undefined, set: () => {} }, userDataPath: userData });
+    const lab = new ThumbnailLook({ store: { get: () => undefined, set: () => {} }, userDataPath: userData });
     const src = path.join(root, 'Downloads', 'selfies');
     fs.mkdirSync(src, { recursive: true });
     for (const n of ['selfie laugh.png', 'selfie oh please.png', 'notes.txt']) fs.writeFileSync(path.join(src, n), n.endsWith('.png') ? PNG_BYTES : 'x');
@@ -1287,7 +1052,7 @@ check('library: an old folder or logo setting is OFFERED for copying (never copi
     fs.mkdirSync(path.dirname(logoFile), { recursive: true });
     fs.writeFileSync(logoFile, PNG_BYTES);
     const settings = { 'thumbnailLab.reactionFolder': old, 'thumbnailLab.logo': logoFile };
-    const lab = new ThumbnailLab({ store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } }, userDataPath: userData });
+    const lab = new ThumbnailLook({ store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } }, userDataPath: userData });
     const offered = lab.photos();
     assert.deepStrictEqual([offered.photos.length, offered.offer], [0, { from: old, count: 2 }], 'offered, not copied');
     const photosOffer = () => library.photoCopyOffer(userData, old);
@@ -1345,71 +1110,4 @@ check('draw: a "top-ranked" photo is drawn from the top 3 by probability, reprod
   assert.throws(() => draw.drawPhotos({ A: rank(['x', null], ['y', null]) }, ['A'], [], 3), /no probability/);
 });
 
-check('draw over the lab: the render\'s seed is stated in the run lines and a held photo is one draw for every thumbnail', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-draw-'));
-  try {
-    const { lab } = photoLab(root, deps);
-    const held = [variant('A', 'ONE', { pick: 'top', of: 'A' }), variant('B', 'ONE', { pick: 'top', of: 'A' }), variant('C', 'ONE', { pick: 'photo', name: 'ooh' })];
-    const out = await lab.resolvePhotos('run-1', held, 99);
-    assert.strictEqual(out.names.A, out.names.B, 'a photo held across "Test one thing" is one draw');
-    assert.deepStrictEqual(Object.keys(out.draws), ['A']);
-    assert.strictEqual(out.names.C, 'ooh', 'a direct pick unchanged');
-    assert.notStrictEqual(out.names.A, 'ooh', 'the draw avoids the directly picked photo');
-    const ts = fs.readFileSync(path.join(DIST, 'services', 'thumbnails', 'lab-service.js'), 'utf8');
-    assert.ok(/Photos drawn with seed \$\{seed\}/.test(ts), 'the render writes its seed into the run lines');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-check('held text model: the words and the tone/photo on one model share ONE lease (no reload between them); the frame scorer\'s vision model releases it first', () => withFake({
-  decideProbs: judgeProbs,
-  chatReplies: { 'qwen3.8-27b-8bit': () => ({ content: 'CLAIM\nTHE RAPTURE IS HERE\nSTAKES\nMAYBE TOMORROW\nREACTION\nSHE MEANS IT', finishReason: 'stop' }) },
-}, async (server, deps) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-hold-'));
-  try {
-    const { lab, settings } = photoLab(root, deps);
-    // Both text rows on the 8-bit 27B (their defaults).
-    const routing = services('metadata/metadata-routing.js');
-    assert.strictEqual(routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words').defaultOptionId, 'qwen38-27b-8bit');
-    assert.strictEqual(routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_judge').defaultOptionId, 'qwen38-27b-8bit');
-    // The words door as AIManagerService.runPlainRequest calls the transport (queueAITask: a
-    // standalone GPU step), the held job passed through.
-    const jobsSeen = [];
-    lab.deps.aiManager = () => ({
-      runPlainRequest: async (prompt, model, what, shape) => {
-        jobsSeen.push(shape.job);
-        const answer = await deps.lanes.aiCall({ lane: 'gpu', model }, what, () =>
-          deps.transport.chat({ model, prompt, act: 'generate', thinking: false, maxTokens: shape.maxTokens, loadContext: shape.loadContext, job: shape.job, what, trace: null }));
-        return answer.text;
-      },
-    });
-    // Tone/photo first (it takes the hold), then the words, then tone/photo again: all on one lease.
-    await lab.suggest('run-1', [{ letter: 'A', text: 'THE RAPTURE IS HERE' }]);
-    assert.strictEqual(lab.heldTextModel(), 'qwen3.8-27b-8bit');
-    const words = await lab.words('run-1', 'A title');
-    assert.deepStrictEqual(words.claim, ['THE RAPTURE IS HERE']);
-    assert.ok(jobsSeen[0] !== undefined, 'the words ran under the tab\'s held job');
-    await lab.suggest('run-1', [{ letter: 'A', text: 'MAYBE TOMORROW' }]);
-    const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
-    assert.deepStrictEqual(loads.map((b) => b.model), ['qwen3.8-27b-8bit'], 'ONE load for the words and both tone/photo runs');
-    assert.strictEqual(server.leases.released.length, 0, 'nothing given back between the steps');
-    assert.strictEqual(server.decideBodies().length, 4);
-    // The frame scorer needs the vision model: the text model is released first.
-    lab.runs.get('run-1').toScore = new Set();
-    lab.runs.get('run-1').frames = [];
-    lab.runs.get('run-1').scenes = [];
-    lab.runs.get('run-1').sceneOf = new Map();
-    lab.runs.get('run-1').signatures = new Map();
-    settings.metadataRouting = { thumbnail_frames: 'qwen35-9b-vl' };
-    await lab.score('run-1').catch(() => undefined);
-    assert.strictEqual(lab.heldTextModel(), null, 'released before scoring');
-    assert.ok(server.leases.released.length >= 1, 'the lease went back to the server');
-    assert.strictEqual(await lab.releaseTextHold('again'), null, 'releasing twice is a no-op');
-  } finally {
-    await Promise.resolve();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-}));
-
-run('thumbnails tab: frame filters, sampling, the story source and link, ranking, words, face-safe layout, scoring, tone and photos, combine, making (suggest first, logo, placeholders)');
+run('thumbnail modules: frame filters, sampling, the story source, ranking, words, the text always fits, scoring, tone and photos, logo, library, draw');
