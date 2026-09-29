@@ -54,7 +54,7 @@ import { plainScoringError, scoreFramesOnCard, type ScorerDeps } from './frame-s
 import { draftNotes, judgeThumbnails } from './judge';
 import type { ThumbnailStyle } from './layout';
 import { drawLine, drawPhotos } from './photo-draw';
-import { libraryLogo, libraryPhotos } from './photo-library';
+import { libraryLogo, libraryPhotos, needPhotosToRank } from './photo-library';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName, type RenderResult } from './renderer';
 import type { StoredRender } from './pipeline-record';
@@ -64,6 +64,7 @@ import { writeThumbnailWords } from './words-writer';
 import {
   PAIR_COUNT,
   PAIR_KINDS,
+  THUMBNAIL_STAGES,
   THUMBNAILS_FOLDER,
   THUMBNAILS_RECORD_VERSION,
   type ItemThumbnails,
@@ -245,6 +246,30 @@ export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind):
   return { kind: other, phrase: words[other][0], line: `The model wrote no ${kind} words, so this pair starts on its first ${other} option.` };
 }
 
+/**
+ * WHAT "FINISH MAKING THUMBNAILS" KEEPS AND WHAT IT RUNS (2026-09-29, Owen's run stopped at
+ * tone-photos on an empty photo library): a stage is kept when what it stores is all there, and
+ * every stage after the first one that is not kept runs again (each reads what the one before it
+ * wrote). The frames and the scoring are kept or run TOGETHER: the scene rows are built from the
+ * frames' colour signatures, which are not stored, so scoring again means sampling again. A record
+ * whose backgrounds are screenshots keeps its story, frames and scoring (there is nothing to sample
+ * or score). `exists` is fs.existsSync in the app (a render file that went missing is drawn again).
+ */
+export function resumePlan(r: ItemThumbnails, exists: (file: string) => boolean): { keep: ThumbnailStage[]; run: ThumbnailStage[] } {
+  const fromShots = r.source !== null && r.source.video === null && r.frames.length > 0;
+  const kept: Record<ThumbnailStage, boolean> = { story: false, frames: false, scoring: false, words: false, 'tone-photos': false, render: false };
+  kept.story = fromShots || r.story?.state === 'linked';
+  kept.frames = kept.story && (fromShots || (r.source !== null && r.frames.length > 0 && r.scoring !== null && r.bestScenes.length > 0));
+  kept.scoring = kept.frames;
+  kept.words = kept.scoring && r.titles !== null && r.pairs.length > 0 &&
+    r.pairs.every((p) => p.words.claim.length + p.words.stakes.length + p.words.reaction.length > 0);
+  kept['tone-photos'] = kept.words && r.tone !== null && r.pairs.every((p) => p.photos.length > 0);
+  kept.render = kept['tone-photos'] && r.pairs.every((p) => p.default.render.ok && exists(p.default.render.file));
+  const firstRun = THUMBNAIL_STAGES.findIndex((s) => !kept[s]);
+  if (firstRun === -1) return { keep: [...THUMBNAIL_STAGES], run: [] };
+  return { keep: THUMBNAIL_STAGES.slice(0, firstRun), run: THUMBNAIL_STAGES.slice(firstRun) };
+}
+
 function offRecord(line: string, story: ItemThumbnails['story'] = null, state: 'off' | 'no-story' = 'off'): ItemThumbnails {
   return {
     version: THUMBNAILS_RECORD_VERSION, state, line, failure: null, story, folder: null, source: null, scenes: [], frames: [], bestScenes: [],
@@ -260,6 +285,10 @@ function offRecord(line: string, story: ItemThumbnails['story'] = null, state: '
 export class ItemThumbnailRun {
   private readonly rec: ItemThumbnails;
   private stopped: boolean;
+  /** Stages a resumed run keeps as stored (ItemThumbnailRun.resume): they do not run again. */
+  private skip = new Set<ThumbnailStage>();
+  /** What the frames stage says when it replaces an existing folder. */
+  private replacingLine: (folder: string) => string = (folder) => `An earlier attempt of this job left thumbnail files in ${folder}; they were replaced.`;
   private video: string | null = null;
   private frameFiles = new Map<string, { t: number; large: string }>();
 
@@ -273,8 +302,12 @@ export class ItemThumbnailRun {
     this.stopped = rec.state !== 'made';
   }
 
-  /** The run for one item, or a record that already says why there are none. */
-  static start(choice: ThumbnailRunChoice | undefined, item: ThumbnailItemInput, doors: ThumbnailJobDoors): ItemThumbnailRun {
+  /**
+   * The run for one item, or a record that already says why there are none. `again` is the
+   * Thumbnails window's "Make thumbnails again from scratch": the item's existing folder (which the
+   * frames stage replaces, said in the record's lines).
+   */
+  static start(choice: ThumbnailRunChoice | undefined, item: ThumbnailItemInput, doors: ThumbnailJobDoors, again?: { folder: string }): ItemThumbnailRun {
     const off = (line: string) => new ItemThumbnailRun(null, item, doors, offRecord(line));
     if (choice === undefined) return off('This run was started without the thumbnail setup (the test CLI, or a caller from before the thumbnails pipeline), so no thumbnails were made.');
     if (choice.mode === 'off') return off(choice.reason);
@@ -284,10 +317,75 @@ export class ItemThumbnailRun {
     if (item.channel.thumbnails === false) return off(`The channel "${item.channel.name}" makes no thumbnails.`);
     const rec = offRecord('Thumbnails are being made.');
     rec.state = 'made';
-    rec.folder = path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);
+    rec.folder = again?.folder ?? path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);
     rec.look = choice.setup.style;
     if (!choice.setup.styleSaved) rec.lines.push('No thumbnail look is saved, so the default look is used.');
-    return new ItemThumbnailRun(choice.setup, item, doors, rec);
+    const run = new ItemThumbnailRun(choice.setup, item, doors, rec);
+    if (again !== undefined) {
+      rec.lines.push('Made again from scratch in the Thumbnails window.');
+      run.replacingLine = (folder) => `The earlier thumbnails in ${folder} were removed to make them again from scratch.`;
+    }
+    return run;
+  }
+
+  /**
+   * "FINISH MAKING THUMBNAILS" (the Thumbnails window, 2026-09-29): a record whose stages stopped
+   * (state `failed`) goes on from what it stores. The stages `plan.keep` names are not run again
+   * (their frames, scores and words are used as stored); the rest run in order, on the doors given
+   * (the window's one held job), exactly as in the metadata run. What each later stage writes is
+   * cleared first, so nothing half-written from the stopped attempt survives. Own-image picks stay;
+   * pair picks go (their pairs are drawn again).
+   */
+  static resume(
+    setup: ThumbnailRunSetup,
+    item: ThumbnailItemInput,
+    doors: ThumbnailJobDoors,
+    stored: ItemThumbnails,
+    plan: { keep: readonly ThumbnailStage[]; run: readonly ThumbnailStage[] },
+  ): ItemThumbnailRun {
+    if (plan.run.length === 0) throw new Error('Nothing is missing from these thumbnails, so there is nothing to finish.');
+    const rec = JSON.parse(JSON.stringify(stored)) as ItemThumbnails;
+    const keep = new Set(plan.keep);
+    const stoppedAt = stored.failure === null ? null : `${stored.failure.stage}`;
+    rec.state = 'made';
+    rec.failure = null;
+    rec.line = 'Thumbnails are being finished.';
+    rec.look = setup.style;
+    rec.picks = rec.picks.filter((p) => p.kind === 'own');
+    if (!keep.has('story')) rec.story = null;
+    if (!keep.has('frames')) {
+      rec.source = null;
+      rec.scenes = [];
+      rec.frames = [];
+      rec.bestScenes = [];
+      rec.scoring = null;
+    }
+    if (!keep.has('words')) {
+      rec.titles = null;
+      rec.pairs = [];
+    }
+    if (!keep.has('tone-photos')) {
+      rec.tone = null;
+      rec.seed = null;
+      for (const p of rec.pairs) {
+        p.photos = [];
+        delete p.rankedFor;
+        p.default.photo = null;
+        p.default.draw = null;
+        p.lines = p.lines.filter((l) => !l.startsWith('Photo: '));
+      }
+    }
+    for (const p of rec.pairs) p.default.render = { ok: false, reason: 'Not drawn yet.' };
+    rec.lines.push(
+      `Finished in the Thumbnails window${stoppedAt === null ? '' : ` after stopping at the ${stoppedAt} stage`}: ` +
+        (plan.keep.length > 0 ? `${plan.keep.join(', ')} kept as stored; ` : '') + `${plan.run.join(', ')} run.`,
+    );
+    const run = new ItemThumbnailRun(setup, item, doors, rec);
+    // `render` is never kept (a plan with nothing to run is refused above), so every pair is drawn.
+    for (const s of plan.keep) run.skip.add(s);
+    run.video = rec.source?.video ?? null;
+    for (const f of rec.frames) run.frameFiles.set(f.id, { t: f.t, large: f.large });
+    return run;
   }
 
   /**
@@ -341,7 +439,7 @@ export class ItemThumbnailRun {
   }
 
   private async stage(name: ThumbnailStage, fn: () => Promise<void> | void): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped || this.skip.has(name)) return;
     const t0 = Date.now();
     try {
       await fn();
@@ -396,7 +494,7 @@ export class ItemThumbnailRun {
       // Only an earlier attempt of THIS job writes here (the folder is named by the job id), and
       // starting the job again rewrote its report without that attempt's items.
       fs.rmSync(folder, { recursive: true, force: true });
-      this.rec.lines.push(`An earlier attempt of this job left thumbnail files in ${folder}; they were replaced.`);
+      this.rec.lines.push(this.replacingLine(folder));
     }
     this.doors.progress('Thumbnails: finding frames in the story\'s screen recording...');
     const source = await resolveStorySource(story.ref, {
@@ -559,6 +657,9 @@ export class ItemThumbnailRun {
     const option = routed(this.doors.routing, 'thumbnail_judge');
     const model = option.crucibleModel;
     if (model === null) throw new Error(`The "Thumbnail tone and photo" row names ${option.label}, which is not a Crucible model.`);
+    // Said before the model is called, naming where photos are added (Owen's run stopped here on
+    // an empty library and the window said nothing, 2026-09-29).
+    needPhotosToRank(setup.userDataPath);
     const drafts = draftNotes();
     const photos = libraryPhotos(setup.userDataPath).map((p) => ({
       name: p.name,

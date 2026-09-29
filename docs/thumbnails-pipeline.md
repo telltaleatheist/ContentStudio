@@ -310,6 +310,90 @@ its line in the text export); an older report that still has the field shows not
 kept for older reports: the field definition, its routing row, the section re-roll's field and the
 scrub/soften/gate readers (no UI reaches the re-roll for it now).
 
+## The window rebuilt as one flow (2026-09-29, LEDGER #242)
+
+Owen tried the phase-2 window: "im clicking things and nothing is doing anything at all ... the
+images it gathered from the original section should be at the top. i pick three. the text it
+generated. i pick three. it overlays them." His run had stopped at `tone-photos` (the photo library
+was empty; the copy-into-app offer had lived in the removed tab), the window let him click the
+editor of a stopped record, and every refusal reached only the log.
+
+**The window, top to bottom** (`thumbnails-window.{ts,html,scss}`; the picking rules are pure in
+`thumbnails-compose.ts`):
+
+1. One line: "Pick up to three frames, then up to three lines of text. Your thumbnails appear
+   below." A sticky status under it: the running step with a spinner and a running clock (and the
+   main process's progress line), a red banner for any failure ("Drawing thumbnail 3 failed: ..."),
+   a neutral line for a refused click (a fourth pick).
+2. **Frames** from the story's section: two per scene, More per scene. Up to three in click order,
+   badges 1/2/3; clicking a picked one takes it out and the rest close up. "Start from the suggested
+   three" fills frames, words and photos from the run's three pairs; "Clear picks".
+3. **Text**: every generated line in one list, each labelled with its kind and the title it was
+   written for; "No text"; typed words ("Add as a pick"). Up to three in click order, badges 1/2/3.
+4. **Photos** (optional), per thumbnail: "Draw from top 3" (the default), the ranked photos with
+   their percentages (the ranking of the pair the words came from, said: "ranked for ..."), the
+   library's unranked photos after them, "No photo"; the Logo switch.
+5. **Your thumbnails**: thumbnail n = frame n + text n + photo n + logo, large and phone-size, drawn
+   on the CPU as soon as both are picked. **Saved as you go** (chosen over a Save button: the drawn
+   thumbnails ARE the picks, in order; pick 1 is set as the video's thumbnail through
+   `PublishState.setThumbnail` whenever its source changes). Each card: its role, the title it goes
+   with (pick k with chosen title k), "Rewrite words for this title" when its words were written for
+   another title, "Use my own image..." (his file takes that place; the frames and texts fill the
+   others), a missing piece said ("Pick frame 3 above."). A card whose drawing is stale (a failed
+   redraw) is dimmed.
+6. Screenshots for a no-story record (unchanged) and "Make thumbnails again from scratch".
+
+**How a thumbnail is drawn.** Thumbnail n is drawn into pair n of the record (`wantedChange`: the
+fields pair n must change to show place n, or null). `PairChange` gained `wordsFor` (words written
+for any title; stored as `default.wordsFor`, and the pick's `wordsFor` comes from it) and
+`rankingOf` (the pair whose ranking a draw uses). An auto photo is kept while it was drawn from the
+top 3 of that ranking. The window draws, then saves the picks when they differ; a click while it
+runs makes it go round again; a draw that still does not match afterwards stops with a banner (no
+loop). A redrawn pair's old render is removed once no pick points at it (the published file is the
+pick's copy in `picks/`), so clicking through does not pile files up.
+
+**Every failure shows in the window.** Every call goes through one `ActionRunner` (one action at a
+time, in order; busy line and clock; a failure becomes "<what> failed: <the main process's
+sentence>"). Buttons that cannot act are disabled with the reason written beside them, not only in a
+tooltip. Too few reaction photos is a banner at the top with "Thumbnail look...".
+
+**A stopped record.** The banner names the stage and the reason, what is kept and what Finish runs,
+and why it cannot finish yet. **Finish making thumbnails** (`thumbnails:finish`,
+`ReportThumbnails.finish`): `pipeline.ts resumePlan` keeps each stage whose output is all stored
+(story; frames and scoring together, since the scene rows need the frames' colour signatures, which
+are not stored; words; tone-photos) and runs every stage from the first missing one;
+`ItemThumbnailRun.resume` clears what the later stages write, keeps own-image picks, and says
+"Finished in the Thumbnails window after stopping at the X stage: ... kept as stored; ... run." in
+the record's lines. The render always runs. **Make thumbnails again from scratch**
+(`thumbnails:remake`): `ItemThumbnailRun.start` with the item's folder (the frames stage replaces
+it, said), own-image picks kept. Both run on ONE held job (`transport.job`; the window's text hold
+is given back first; every model call is its own GPU step on the lanes, as in the run) given back
+after. Both are refused before any model call when the library has fewer than two photos or no
+Crucible server is selected (`lanes.gpuVenue`); the view carries the reason (`finish.blocked`,
+`remake.blocked`). The item's input kind is not stored: a record that linked a story, or a measured
+video duration in `content_provenance`, makes it a video.
+
+**The empty library at pipeline time** stays a stated stop (no fallback), now said before the tone
+call and naming where photos are added (`photo-library.ts photosMissingReason`): "The app's reaction
+photo library has no photos, and ranking them needs at least 2. Add your reaction photos in
+Thumbnail look (...)". Rewrite and screenshots check it first too.
+
+**Keeper** (`tools/thumbnail-pipeline-checks.js`, +4): errors reach the window (the empty-library
+stop, Finish blocked and refused before any model call, the runner's banner line, every window call
+through the runner, every channel answering `{ ok, error }`); Finish resumes only the missing stages
+(no frame scored or word written again; 1 tone + 3 photo decides on one lease; a stop at render
+draws only; the plans for scoring and screenshots; a render file gone is drawn again); from scratch
+runs everything on one job; picking (click order, close up, fourth refused, thumbnail n = frame n +
+text n + photo n, words for title 2 on thumbnail 1 said on the pick, drawing each wanted change makes
+it match, the picks in order, reopening reads them back, own image in a place). The swap check now
+expects the replaced render removed.
+
+**Looked at** on scratch data (`CONTENTSTUDIO_USER_DATA` scratch folder, a fixture from the keeper's
+synthetic session, the fake Crucible standalone; no live Crucible call): the stopped banner with the
+empty-library reason and Finish disabled, Finish enabled once photos are in, Finish running (clock,
+progress) and finishing on the fake, three hand-picked overlays, reopening with the picks read back,
+a photo choice, and a draw failure as a banner.
+
 ## Open questions
 
 - The name method: the tab's rule was "never linked by name" ("f2 - the rapture" is made from "f1 -
@@ -327,7 +411,10 @@ scrub/soften/gate readers (no UI reaches the re-roll for it now).
 - A screenshot of another shape is cut to 16:9 around its centre (said). Owen may prefer to choose
   the crop, or to be refused.
 - Swapping the words does not re-rank the photos (the ranking says which words it was made for);
-  "Rewrite words" does. A "rank the photos for these words" button would be the 27B again.
+  "Rewrite words" does. A "rank the photos for these words" button would be the 27B again. Since
+  the 2026-09-29 rebuild the window at least uses the ranking of the pair the words came from.
+- Frames and texts picked beyond the drawn places (e.g. three frames and one text) are not stored;
+  closing the window forgets them. The saved picks are read back on reopening.
 - The per-run switch is still not on the queue (the Inputs page was off-limits).
 - The tab's per-item frame caches (`<userData>/thumbnail-lab/<item id>/`) are left on disk; the
   photo library and logo live beside them and are kept. A one-time cleanup (retired-components.ts)

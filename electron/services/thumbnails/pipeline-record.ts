@@ -101,6 +101,12 @@ export interface StoredDefault {
   kind: WordKind | null;
   /** Null: Owen chose "No text" for this pair. */
   phrase: string | null;
+  /**
+   * The title the words were written for (2026-09-29: the window takes words written for ANY of
+   * the titles, so thumbnail n's words need not be pair n's own). Null: typed words or no text.
+   * Absent in older records: the pair's own title when `kind` is set, else null.
+   */
+  wordsFor?: string | null;
   /** Null: Owen chose "No photo" for this pair. */
   photo: string | null;
   /** The top-3 draw that chose the photo, or null when Owen chose the photo (or none) himself. */

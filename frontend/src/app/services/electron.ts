@@ -1106,6 +1106,8 @@ declare global {
       thumbnailsRenderPair: (jobId: string, itemId: string, change: PairChange) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsSavePicks: (jobId: string, itemId: string, picks: PickRequest[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsFinish: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsRemake: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsChooseOwn: () => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsChooseScreenshots: () => Promise<ThumbnailsAnswer<string[] | null>>;
@@ -2610,6 +2612,12 @@ export class ElectronService {
   }
   thumbnailsSavePicks(jobId: string, itemId: string, picks: PickRequest[]): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsSavePicks(jobId, itemId, picks));
+  }
+  thumbnailsFinish(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsFinish(jobId, itemId));
+  }
+  thumbnailsRemake(jobId: string, itemId: string): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsRemake(jobId, itemId));
   }
   thumbnailsScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsScreenshots(jobId, itemId, files, titles));
