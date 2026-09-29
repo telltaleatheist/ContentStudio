@@ -16,6 +16,11 @@
  * pixels, fitted in its space with its aspect kept, drawn exactly there (and nowhere else in the
  * space), and a missing or unreadable logo file is refused naming it.
  *
+ * The border (2026-09-29, Owen: "this goes over the thumbnail. it's a border i always use"): a
+ * synthetic 16:9 PNG with a transparent middle and black edges is drawn over the frame scaled to the
+ * output (the corners black, the middle untouched), and a missing, non-16:9, fully transparent or
+ * fully opaque border is refused naming the file. Its text size: the default draws 15% smaller.
+ *
  * The library (2026-09-28): a real PNG cut-out and logo are copied into a scratch userData's
  * `thumbnail-lab/` (never Owen's), read back from there by ThumbnailLook (look.ts), and an
  * unreadable logo is refused before anything is copied. "TAKE YOUR CLOTHES OFF" is rendered on the
@@ -39,6 +44,7 @@ const layout = require(path.join(ROOT, 'services/thumbnails/layout.js'));
 const tv = require(path.join(ROOT, 'services/publish/thumbnail-validate.js'));
 const photos = require(path.join(ROOT, 'services/thumbnails/reaction-photos.js'));
 const logos = require(path.join(ROOT, 'services/thumbnails/logo.js'));
+const borders = require(path.join(ROOT, 'services/thumbnails/border.js'));
 const library = require(path.join(ROOT, 'services/thumbnails/photo-library.js'));
 const { photoName } = require(path.join(ROOT, 'services/thumbnails/photo-trim.js'));
 const { ThumbnailLook } = require(path.join(ROOT, 'services/thumbnails/look.js'));
@@ -104,6 +110,42 @@ app.whenReady().then(async () => {
     assert(m.spaceWidth > 5, `space ${m.spaceWidth}`);
   });
 
+  await check('the border: drawn over the whole frame scaled to the output, under the words (the corners black, the middle untouched); a missing, non-16:9, fully transparent or fully opaque border is refused naming the file', async () => {
+    const bw = 1920, bh = 1080, band = 60;
+    const bb = Buffer.alloc(bw * bh * 4);
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      const edge = x < band || y < band || x >= bw - band || y >= bh - band;
+      const i = (y * bw + x) * 4;
+      bb[i] = 0; bb[i + 1] = 0; bb[i + 2] = 0; bb[i + 3] = edge ? 255 : 0;
+    }
+    const borderFile = path.join(scratch, 'thumbnail-border.png');
+    fs.writeFileSync(borderFile, nativeImage.createFromBitmap(bb, { width: bw, height: bh }).toPNG());
+    const border = borders.readBorder(borderFile);
+    assert(border.width === 1920 && border.height === 1080 && border.name === 'thumbnail-border.png', JSON.stringify({ w: border.width, h: border.height }));
+    const without = await renderThumbnail({ canvas, border: null, frame: synthetic, phrase: null, style, photo: null, logo: null, outStem: path.join(scratch, 'no border') });
+    const withBorder = await renderThumbnail({ canvas, border: border.png, frame: synthetic, phrase: null, style, photo: null, logo: null, outStem: path.join(scratch, 'border') });
+    const px = (file, x, y) => { const b = nativeImage.createFromPath(file).toBitmap(); const i = (y * OUTPUT_WIDTH + x) * 4; return [b[i + 2], b[i + 1], b[i]]; };
+    const corner = px(withBorder.path, 5, 5);
+    assert(corner.every((c) => c <= 3), `the corner is the border's black: ${corner}`);
+    const mid = [px(withBorder.path, 640, 360), px(without.path, 640, 360)];
+    assert(mid[0].every((c, k) => Math.abs(c - mid[1][k]) <= 2), `the middle is untouched: ${mid[0]} vs ${mid[1]}`);
+    // The band scales with the output: 60 px at 1080 is 40 px at 720.
+    const inside = px(withBorder.path, 45, 360), plain = px(without.path, 45, 360);
+    assert(inside.every((c, k) => Math.abs(c - plain[k]) <= 2), `just inside the scaled band the frame shows: ${inside} vs ${plain}`);
+    tv.validateThumbnailFile(withBorder.path);
+    const refused = (file) => { try { borders.readBorder(file); return null; } catch (e) { return e.message; } };
+    const square = path.join(scratch, 'square border.png');
+    fs.writeFileSync(square, nativeImage.createFromBitmap(Buffer.alloc(100 * 100 * 4, 255), { width: 100, height: 100 }).toPNG());
+    assert(/is 100x100, not 16:9 .*square border\.png/.test(refused(square)), refused(square));
+    const clear = path.join(scratch, 'clear border.png');
+    fs.writeFileSync(clear, nativeImage.createFromBitmap(Buffer.alloc(160 * 90 * 4, 0), { width: 160, height: 90 }).toPNG());
+    assert(/fully transparent.*clear border\.png/.test(refused(clear)), refused(clear));
+    const solid = path.join(scratch, 'solid border.png');
+    fs.writeFileSync(solid, nativeImage.createFromBitmap(Buffer.alloc(160 * 90 * 4, 255), { width: 160, height: 90 }).toPNG());
+    assert(/no transparent part.*solid border\.png/.test(refused(solid)), refused(solid));
+    assert(/The border file is not there: .*gone\.png/.test(refused(path.join(scratch, 'gone.png'))), refused(path.join(scratch, 'gone.png')));
+  });
+
   await check('a font this Mac does not have is refused by name, never drawn in a stand-in face', async () => {
     let threw = null;
     try { await canvas.measure('No Such Font 12345', ['HELLO'], 100); } catch (e) { threw = e; }
@@ -111,7 +153,7 @@ app.whenReady().then(async () => {
   });
 
   await check('an image-only variant renders at 1280x720 inside YouTube\'s bounds, and notes that no face was found', async () => {
-    const r = await renderThumbnail({ canvas, frame: synthetic, phrase: null, style, photo: null, logo: null, outStem: path.join(scratch, 'plain') });
+    const r = await renderThumbnail({ canvas, border: null, frame: synthetic, phrase: null, style, photo: null, logo: null, outStem: path.join(scratch, 'plain') });
     assert(r.ok, JSON.stringify(r));
     const meta = tv.measureThumbnailFile(r.path);
     assert(meta.width === OUTPUT_WIDTH && meta.height === OUTPUT_HEIGHT, `${meta.width}x${meta.height}`);
@@ -120,7 +162,7 @@ app.whenReady().then(async () => {
   });
 
   await check('a phrase renders with the text kept clear of the reaction and logo slots', async () => {
-    const r = await renderThumbnail({ canvas, frame: synthetic, phrase: 'maybe tomorrow', style, photo: null, logo: null, outStem: path.join(scratch, 'tomorrow') });
+    const r = await renderThumbnail({ canvas, border: null, frame: synthetic, phrase: 'maybe tomorrow', style, photo: null, logo: null, outStem: path.join(scratch, 'tomorrow') });
     assert(r.ok && r.plan, JSON.stringify(r));
     const slot = layout.slotRect(style.reactionSlot, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     const p = r.plan.patch;
@@ -134,7 +176,7 @@ app.whenReady().then(async () => {
     const stem = path.join(scratch, 'too-long');
     const phrase = 'the rapture keeps failing every single year since nineteen eighty eight';
     const tight = { ...style, reactionSlot: { x: 0.3, y: 0.2, w: 0.68, h: 0.78 } };
-    const r = await renderThumbnail({ canvas, frame: synthetic, phrase, style: tight, photo: null, logo: null, outStem: stem });
+    const r = await renderThumbnail({ canvas, border: null, frame: synthetic, phrase, style: tight, photo: null, logo: null, outStem: stem });
     assert(r.ok && r.plan, JSON.stringify(r));
     assert(r.plan.lines.length <= 2 && r.plan.lines.map((l) => l.text).join(' ') === phrase.toUpperCase(), JSON.stringify(r.plan.lines));
     const box = r.plan.box, p = r.plan.patch;
@@ -161,7 +203,7 @@ app.whenReady().then(async () => {
     // The person grown by EDGE_GROW (3 px) on the sides that are not the canvas's bottom edge.
     assert(t.width === 600 + 6 && t.height === 880 + 3, `trimmed to ${t.width}x${t.height}`);
     assert(t.note && /1 stray speck/.test(t.note), t.note);
-    const r = await renderThumbnail({ canvas, frame: synthetic, phrase: 'maybe tomorrow', style, photo: t, logo: null, outStem: path.join(scratch, 'with-photo') });
+    const r = await renderThumbnail({ canvas, border: null, frame: synthetic, phrase: 'maybe tomorrow', style, photo: t, logo: null, outStem: path.join(scratch, 'with-photo') });
     assert(r.ok && r.reaction, JSON.stringify(r));
     const slot = layout.slotRect(style.reactionSlot, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     assert(Math.abs(r.reaction.x + r.reaction.w - (slot.x + slot.w)) < 1e-6, 'right side anchored');
@@ -188,7 +230,7 @@ app.whenReady().then(async () => {
     const logo = logos.readLogo(logoFile);
     assert(logo.width === 400 && logo.height === 100 && logo.fileWidth === 600, `visible ${logo.width}x${logo.height} of ${logo.fileWidth}x${logo.fileHeight}`);
     const r = await renderThumbnail({
-      canvas, frame: synthetic, phrase: 'maybe tomorrow', style, photo: null, outStem: path.join(scratch, 'with-logo'),
+      canvas, border: null, frame: synthetic, phrase: 'maybe tomorrow', style, photo: null, outStem: path.join(scratch, 'with-logo'),
       logo: { width: logo.width, height: logo.height, at: (w, h) => logos.logoAt(logo, w, h) },
     });
     assert(r.ok && r.logo, JSON.stringify(r));
@@ -211,11 +253,11 @@ app.whenReady().then(async () => {
     const renderer = electronThumbnailRenderer(REPO);
     try {
       const cut = listIn(cutDir)[0];
-      const r = await renderer.render({ frame: synthetic, phrase: 'maybe tomorrow', style, photo: { name: cut.name, file: cut.file }, logoFile, outStem: path.join(scratch, 'pipeline-pair') });
+      const r = await renderer.render({ frame: synthetic, phrase: 'maybe tomorrow', style, photo: { name: cut.name, file: cut.file }, logoFile, borderFile: null, outStem: path.join(scratch, 'pipeline-pair') });
       assert(r.ok && r.reaction && r.logo, JSON.stringify(r));
       const meta = tv.measureThumbnailFile(r.path);
       assert(meta.width === OUTPUT_WIDTH && meta.height === OUTPUT_HEIGHT && meta.bytes <= tv.MAX_THUMBNAIL_BYTES, JSON.stringify(meta));
-      const none = await renderer.render({ frame: synthetic, phrase: 'maybe tomorrow', style, photo: { name: cut.name, file: cut.file }, logoFile: null, outStem: path.join(scratch, 'pipeline-pair-no-logo') });
+      const none = await renderer.render({ frame: synthetic, phrase: 'maybe tomorrow', style, photo: { name: cut.name, file: cut.file }, logoFile: null, borderFile: null, outStem: path.join(scratch, 'pipeline-pair-no-logo') });
       assert(none.ok && none.logo === null, 'no logo file: none drawn');
     } finally {
       renderer.close();
@@ -272,7 +314,7 @@ app.whenReady().then(async () => {
         ['rapture - B (stakes - MAYBE TOMORROW, horrified)', 'MAYBE TOMORROW', 'horrified'],
         ['rapture - C (no text, laugh)', null, 'laugh'],
       ]) {
-        const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase, style, photo: named(name), logo: null, outStem: path.join(outDir, stem) });
+        const r = await renderThumbnail({ canvas, border: null, frame: REFERENCE_FRAME, phrase, style, photo: named(name), logo: null, outStem: path.join(outDir, stem) });
         assert(r.ok, JSON.stringify(r));
         tv.validateThumbnailFile(r.path);
         console.log(`       wrote ${r.path} (${(r.bytes / 1024).toFixed(0)} KB)${r.notes.length ? ' — ' + r.notes.join(' ') : ''}`);
@@ -283,14 +325,14 @@ app.whenReady().then(async () => {
   }
 
   if (fs.existsSync(REFERENCE_FRAME) && fs.existsSync(SELFIES) && fs.existsSync(LOGO)) {
-    await check('the reference frame as the run\'s three defaults: the top claim, stakes and reaction, each pair\'s top-ranked photo (a stubbed ranking) and Owen\'s logo (evidence renders)', async () => {
+    await check('the reference frame as three picked thumbnails: the top claim, stakes and reaction, a photo picked for each and Owen\'s logo (evidence renders)', async () => {
       const variants = [
         { letter: 'A', text: { kind: 'claim', phrase: 'DON\'T STAND UNDER A ROOF' } },
         { letter: 'B', text: { kind: 'stakes', phrase: 'MAYBE TOMORROW' } },
         { letter: 'C', text: { kind: 'reaction', phrase: 'THE RAPTURE IS HERE' } },
       ];
-      // The judge's ranking, stubbed locally (no Crucible): what the tone/photo step would hand back per pair.
-      const stub = { A: ['horrified', 'oh please'], B: ['oh please', 'laugh'], C: ['laugh', 'oh wow'] };
+      // The photos as Owen would pick them in the window (the model's ranking is gone, 2026-09-29).
+      const stub = { A: ['horrified'], B: ['oh please'], C: ['laugh'] };
       const list = listIn(SELFIES);
       const logo = logos.readLogo(LOGO);
       for (const v of variants) {
@@ -298,7 +340,7 @@ app.whenReady().then(async () => {
         const file = list.find((p) => p.name === name);
         assert(file, `no "${name}" photo`);
         const r = await renderThumbnail({
-          canvas, frame: REFERENCE_FRAME, phrase: v.text.phrase, style, photo: photos.trimmedPhoto(file),
+          canvas, border: null, frame: REFERENCE_FRAME, phrase: v.text.phrase, style, photo: photos.trimmedPhoto(file),
           logo: { width: logo.width, height: logo.height, at: (w, h) => logos.logoAt(logo, w, h) },
           outStem: path.join(outDir, `rapture - ${v.letter} (${v.text.kind} - ${v.text.phrase.replace(/'/g, '')}, ${name}, logo)`),
         });
@@ -314,7 +356,7 @@ app.whenReady().then(async () => {
   if (fs.existsSync(REFERENCE_FRAME)) {
     await check('"TAKE YOUR CLOTHES OFF" on the reference frame is drawn whole on one or two lines, clear of the face when the 7% floor allows (evidence render)', async () => {
       assert(style.minCapFraction === 0.07, `floor ${style.minCapFraction}`);
-      const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off') });
+      const r = await renderThumbnail({ canvas, border: null, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off') });
       assert(r.ok, JSON.stringify(r));
       assert(r.plan.lines.length <= 2 && r.plan.lines.map((l) => l.text).join(' ') === 'TAKE YOUR CLOTHES OFF', JSON.stringify(r.plan.lines));
       if (r.plan.placement === 'clear') for (const f of r.faces) {
@@ -325,13 +367,13 @@ app.whenReady().then(async () => {
       console.log(`       wrote ${r.path} (letters ${r.plan.capPx.toFixed(0)} px on ${r.plan.lines.length} line(s): ${r.plan.lines.map((l) => l.text).join(' / ')})`);
       // Squeezed by a reaction space as wide as Owen's frame left: drawn anyway, smaller, and said.
       const tight = { ...style, reactionSlot: { x: 0.36, y: 0.3, w: 0.62, h: 0.68 } };
-      const now = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: tight, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - tight space') });
+      const now = await renderThumbnail({ canvas, border: null, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: tight, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - tight space') });
       console.log(`       tight space: drawn at ${now.plan.capPx.toFixed(0)} px on ${now.plan.lines.length} line(s) (${now.plan.placement})${now.notes.length ? ' - ' + now.notes.join(' ') : ''}`);
       assert(now.ok && now.plan.lines.length <= 2, JSON.stringify(now.plan.lines));
     });
 
     await check('the reference frame: Apple Vision finds her face, the text avoids it, and the render passes the door (evidence render)', async () => {
-      const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'DON\'T STAND UNDER A ROOF', style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-a') });
+      const r = await renderThumbnail({ canvas, border: null, frame: REFERENCE_FRAME, phrase: 'DON\'T STAND UNDER A ROOF', style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-a') });
       assert(r.ok, JSON.stringify(r));
       assert(r.faces.length >= 1, 'no face found');
       const face = layout.paddedFace(r.faces[0], OUTPUT_WIDTH, OUTPUT_HEIGHT);
@@ -340,9 +382,9 @@ app.whenReady().then(async () => {
       assert(!(b.x < face.x + face.w - e && face.x < b.x + b.w - e && b.y < face.y + face.h - e && face.y < b.y + b.h - e), 'the letters overlap the face');
       tv.validateThumbnailFile(r.path);
       console.log(`       wrote ${r.path} (${(r.bytes / 1024).toFixed(0)} KB ${r.format}; letters ${r.plan.capPx.toFixed(0)} px tall on ${r.plan.lines.length} line(s))`);
-      const none = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: null, style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-c') });
+      const none = await renderThumbnail({ canvas, border: null, frame: REFERENCE_FRAME, phrase: null, style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-c') });
       assert(none.ok, JSON.stringify(none));
-      const tomorrow = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'MAYBE TOMORROW', style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-b') });
+      const tomorrow = await renderThumbnail({ canvas, border: null, frame: REFERENCE_FRAME, phrase: 'MAYBE TOMORROW', style, photo: null, logo: null, outStem: path.join(scratch, 'rapture-b') });
       assert(tomorrow.ok, JSON.stringify(tomorrow));
     });
   } else {

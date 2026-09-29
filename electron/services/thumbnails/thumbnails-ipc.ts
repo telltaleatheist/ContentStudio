@@ -8,7 +8,6 @@
  * asked, on `thumbnails:progress`.
  */
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
-import { randomInt } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
@@ -52,7 +51,6 @@ async function chooseFiles(event: Electron.IpcMainInvokeEvent, multi: boolean): 
 
 export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext, userDataPath: string): void {
   const paths = getRuntimePaths();
-  const newSeed = () => randomInt(1, 0x7fffffff);
   const look = new ThumbnailLook({ store: { get: (key) => store.get(key), set: (key, value) => store.set(key, value) }, userDataPath });
   let progressTo: Electron.WebContents | null = null;
   const report = new ReportThumbnails({
@@ -68,13 +66,11 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
       appRoot: app.getAppPath(),
       ffmpeg: paths.ffmpeg,
       ffprobe: paths.ffprobe,
-      newSeed,
     }),
     holdJob: (what) => crucible.transport.job(what),
     aiManager: () => new AIManagerService({ promptSetsDir: path.join(app.getPath('userData'), 'prompt_sets') }),
     picture,
-    photoList: () => look.photos().photos.map((p) => ({ name: p.name, preview: p.preview, note: p.note })),
-    newSeed,
+    photoList: () => look.photos().photos.map((p) => ({ name: p.name, preview: p.preview })),
     progress: (event) => {
       if (progressTo !== null && !progressTo.isDestroyed()) progressTo.send('thumbnails:progress', event);
     },
@@ -124,7 +120,6 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
   ipcMain.handle('thumbnails:get-style', () => answer('reading the look', () => look.getStyle()));
   ipcMain.handle('thumbnails:set-style', (_e, style: unknown) => answer('saving the look', () => look.setStyle(style)));
   ipcMain.handle('thumbnails:photos', () => answer('reading the reaction photos', () => look.photos()));
-  ipcMain.handle('thumbnails:set-photo-note', (_e, name: string, note: string) => answer('saving a photo note', () => look.setPhotoNote(name, note)));
   // "Add photos…": PNG files and/or folders (a folder adds its PNGs), copied into the app's library.
   // Returns the chosen paths with the outcome, so a refusal for names already there can be
   // confirmed and sent again with replace (thumbnails:add-photos).
@@ -155,4 +150,14 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     }),
   );
   ipcMain.handle('thumbnails:copy-old-logo', () => answer('copying the logo into the app', () => look.copyOldLogo()));
+  ipcMain.handle('thumbnails:border', () => answer('reading the border', () => look.border()));
+  ipcMain.handle('thumbnails:choose-border', (event) =>
+    answer('choosing the border file', async () => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = { properties: ['openFile' as const], filters: [{ name: 'PNG with a transparent middle', extensions: ['png'] }] };
+      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || picked.filePaths.length === 0) return null;
+      return look.setBorder(picked.filePaths[0]);
+    }),
+  );
 }

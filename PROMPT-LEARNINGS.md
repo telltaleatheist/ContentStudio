@@ -919,4 +919,6 @@ draft note per photo (`name: note`), shown until he saves his own in the tab; th
 photo question reads in its legend, so a note says what the photo shows and when it fits, in
 positive form ("light topics only, never for deaths or real victims" states the use as a limit on
 the photo, not a wrong example). `photo.no_text` is what the state says for a picture-only variant.
-Unmeasured.
+Unmeasured. *Removed 2026-09-29 (LEDGER #243): Owen picks his reaction photos himself ("just let me
+pick the image of myself that goes in the corner instead of letting the model pick it. itll be
+faster"); the `tone.*` and `photo.*` keys, the `thumbnail_judge` row and the photo notes went.*

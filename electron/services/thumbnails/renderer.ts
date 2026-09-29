@@ -1,6 +1,6 @@
 /**
- * ONE THUMBNAIL, rendered deterministically: the frame, the face-safe text, the reaction photo and
- * the logo (each only when given), written to disk inside YouTube's bounds.
+ * ONE THUMBNAIL, rendered deterministically: the frame, Owen's border overlay, the face-safe text,
+ * the reaction photo and the logo (each only when given), written to disk inside YouTube's bounds.
  *
  * Output is always 1280x720 (the frame YouTube stores; a 1920x1080 source is scaled down), PNG
  * first. A PNG over the 2 MiB limit is written as JPEG instead, quality 92 then 85, and the result
@@ -51,6 +51,8 @@ export async function renderThumbnail(input: {
   /** The words, or null for an image-only variant. */
   phrase: string | null;
   style: ThumbnailStyle;
+  /** The border overlay's PNG bytes (border.ts readBorder), drawn over the frame scaled to the output, or null for none. */
+  border: Buffer | null;
   /** The trimmed reaction photo (PNG bytes and size), or null for none. */
   photo: { png: Buffer; width: number; height: number; note: string | null } | null;
   /**
@@ -93,13 +95,14 @@ export async function renderThumbnail(input: {
     if (placed.note !== null) notes.push(placed.note);
   }
 
+  const border = input.border === null ? null : `data:image/png;base64,${input.border.toString('base64')}`;
   fs.mkdirSync(path.dirname(input.outStem), { recursive: true });
   let format: 'png' | 'jpeg' = 'png';
-  let bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality: null }));
+  let bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, border, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality: null }));
   if (bytes.length > MAX_THUMBNAIL_BYTES) {
     const pngBytes = bytes.length;
     for (const quality of JPEG_QUALITIES) {
-      bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality: quality }));
+      bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, border, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality: quality }));
       format = 'jpeg';
       if (bytes.length <= MAX_THUMBNAIL_BYTES) {
         notes.push(`Saved as JPEG (quality ${Math.round(quality * 100)}): as PNG it was ${(pngBytes / 1048576).toFixed(1)} MB, over YouTube's 2 MB limit.`);

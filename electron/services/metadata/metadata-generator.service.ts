@@ -893,7 +893,7 @@ export class MetadataGeneratorService {
 
           // THE THUMBNAILS' SECOND HALF (thumbnails/pipeline.ts): the titles are settled (after the
           // scrub and the gate, which may re-roll and rank them), so each of the three pairs gets its
-          // words, the tone and the photo ranking run, and the three defaults are drawn. On the job's
+          // words, and the three defaults are drawn (no photo: Owen picks them). On the job's
           // own leases, so a 27B the fields left loaded is not loaded again. A stage failure is on the
           // record and in the run's warnings; the item is saved either way.
           const thumbnails = thumbnailRuns[i];

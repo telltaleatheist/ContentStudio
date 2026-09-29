@@ -5,6 +5,9 @@
  *
  *   <userData>/thumbnail-lab/reaction-photos/<name>.png   one file per photo, named by its name
  *   <userData>/thumbnail-lab/logo/<file name>              the one logo file
+ *   <userData>/thumbnail-lab/border/<file name>            the one border overlay (2026-09-29, Owen:
+ *                                                          "this goes over the thumbnail. it's a
+ *                                                          border i always use"), a PNG with alpha
  *
  * Until this, the tab read a folder he pointed it at in place (store key
  * `thumbnailLab.reactionFolder`) and a logo path (`thumbnailLab.logo`). Those keys are now read for
@@ -30,6 +33,7 @@ import { photoName } from './photo-trim';
 export const LAB_DIR = 'thumbnail-lab';
 export const PHOTOS_DIR = 'reaction-photos';
 export const LOGO_DIR = 'logo';
+export const BORDER_DIR = 'border';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
@@ -42,6 +46,10 @@ export function logoDir(userData: string): string {
   return path.join(userData, LAB_DIR, LOGO_DIR);
 }
 
+export function borderDir(userData: string): string {
+  return path.join(userData, LAB_DIR, BORDER_DIR);
+}
+
 function startsWith(file: string, signature: Buffer): boolean {
   const fd = fs.openSync(file, 'r');
   try {
@@ -51,25 +59,6 @@ function startsWith(file: string, signature: Buffer): boolean {
   } finally {
     fs.closeSync(fd);
   }
-}
-
-/** A photo ranking is a question, and a question needs at least two answers (judge.ts). */
-export const MIN_PHOTOS_TO_RANK = 2;
-
-/**
- * The stop reason when the library is too small to rank (2026-09-29: Owen's run stopped at
- * tone-photos on "it has 0" and nothing said where photos are added). Said by the run, the
- * Thumbnails window's Finish and Rewrite, and the screenshots path, before any model is called.
- */
-export function photosMissingReason(count: number): string {
-  return `The app's reaction photo library has ${count === 0 ? 'no photos' : count === 1 ? 'one photo' : `${count} photos`}, and ranking them needs at least ${MIN_PHOTOS_TO_RANK}. ` +
-    'Add your reaction photos in Thumbnail look (the "Thumbnail look…" button in the Thumbnails window on the reports page, or Settings › Thumbnails).';
-}
-
-/** Throws `photosMissingReason` when the library holds fewer than MIN_PHOTOS_TO_RANK photos. */
-export function needPhotosToRank(userData: string): void {
-  const count = libraryPhotos(userData).length;
-  if (count < MIN_PHOTOS_TO_RANK) throw new Error(photosMissingReason(count));
 }
 
 /** The library's photos, by name, sorted. An empty or absent library is an empty list. */
@@ -201,4 +190,36 @@ export function setLibraryLogo(userData: string, file: string, check: (file: str
 export function logoCopyOffer(userData: string, oldFile: string | null): { from: string } | null {
   if (oldFile === null || libraryLogo(userData) !== null) return null;
   return fs.existsSync(oldFile) && fs.statSync(oldFile).isFile() ? { from: oldFile } : null;
+}
+
+/** The library's border file, or null when none is kept. More than one file there is refused naming them. */
+export function libraryBorder(userData: string): string | null {
+  const dir = borderDir(userData);
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir).filter((f) => !f.startsWith('.'));
+  if (files.length === 0) return null;
+  if (files.length > 1) throw new Error(`The app's border folder holds ${files.length} files (${files.join(', ')}); it keeps one. ${dir}`);
+  return path.join(dir, files[0]);
+}
+
+/**
+ * Copy a border file into the library, replacing the one kept there. A border is drawn OVER the
+ * picture, so it is a PNG (its transparent middle is what lets the frame show). The picture is
+ * checked by `check` (border.ts readBorder, which needs Electron) BEFORE anything is copied, so an
+ * unreadable file is refused and the kept border stays. The chosen file is only read.
+ */
+export function setLibraryBorder(userData: string, file: string, check: (file: string) => void): string {
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`The border file is not there: ${file}`);
+  if (!/\.png$/i.test(file) || !startsWith(file, PNG_SIGNATURE)) {
+    throw new Error(`The border must be a PNG picture with a transparent middle: ${file}`);
+  }
+  check(file);
+  const dir = borderDir(userData);
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, path.basename(file));
+  const temp = path.join(path.dirname(dir), `.border-adding-${process.pid}.png`);
+  fs.copyFileSync(file, temp);
+  for (const old of fs.readdirSync(dir)) fs.rmSync(path.join(dir, old));
+  fs.renameSync(temp, dest);
+  return dest;
 }

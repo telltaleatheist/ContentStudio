@@ -11,8 +11,10 @@
  *   2. MEASURING the phrase in the chosen font (canvas measureText), after checking the font is
  *      really installed: a family the system lacks silently renders in a default face, so the
  *      page compares against two generic families and refuses a font that matches both.
- *   3. DRAWING the thumbnail: the frame, the vignette, the soft blurred and darkened patch, the
- *      outlined letters, the reaction photo and the logo, exactly where layout.ts placed them.
+ *   3. DRAWING the thumbnail, in this order: the frame, Owen's border overlay (scaled to the
+ *      picture, normal alpha; it replaced the procedural vignette 2026-09-29), the soft blurred and
+ *      darkened patch, the outlined letters, the reaction photo and the logo, exactly where
+ *      layout.ts placed them.
  *
  * The page functions below are injected as source (`fn.toString()`), so each is SELF-CONTAINED:
  * no imports, no helpers from this module, nothing but its argument. They run in the page.
@@ -59,7 +61,8 @@ async function pageDraw(arg: {
   image: string;
   width: number;
   height: number;
-  style: { font: string; fill: string; stroke: string; patch: boolean; patchDarken: number; vignette: boolean; vignetteStrength: number };
+  style: { font: string; fill: string; stroke: string; patch: boolean; patchDarken: number };
+  border: string | null;
   plan: { size: number; capPx: number; strokePx: number; lines: Array<{ text: string; x: number; y: number }>; patches: Array<{ x: number; y: number; w: number; h: number }> } | null;
   reaction: { image: string; x: number; y: number; w: number; h: number; outlinePx: number } | null;
   logo: { image: string; x: number; y: number; w: number; h: number } | null;
@@ -78,13 +81,12 @@ async function pageDraw(arg: {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, W, H);
 
-  if (arg.style.vignette && arg.style.vignetteStrength > 0) {
-    const r = Math.hypot(W, H) / 2;
-    const grad = ctx.createRadialGradient(W / 2, H / 2, r * 0.55, W / 2, H / 2, r);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, `rgba(0,0,0,${arg.style.vignetteStrength})`);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
+  if (arg.border !== null) {
+    // Owen's border, over the whole frame and under everything else, scaled to the picture.
+    const border = new g.Image();
+    border.src = arg.border;
+    await border.decode();
+    ctx.drawImage(border, 0, 0, W, H);
   }
 
   const plan = arg.plan;
@@ -252,6 +254,8 @@ export class ThumbnailCanvas {
     width: number;
     height: number;
     style: ThumbnailStyle;
+    /** The border overlay as a data URL, or null for none. */
+    border: string | null;
     plan: TextPlan | null;
     reaction: { image: string; x: number; y: number; w: number; h: number; outlinePx: number } | null;
     logo: { image: string; x: number; y: number; w: number; h: number } | null;
@@ -267,9 +271,8 @@ export class ThumbnailCanvas {
         stroke: input.style.stroke,
         patch: input.style.patch,
         patchDarken: input.style.patchDarken,
-        vignette: input.style.vignette,
-        vignetteStrength: input.style.vignetteStrength,
       },
+      border: input.border,
       plan: input.plan === null ? null : { size: input.plan.size, capPx: input.plan.capPx, strokePx: input.plan.strokePx, lines: input.plan.lines, patches: input.plan.linePatches },
       reaction: input.reaction,
       logo: input.logo,

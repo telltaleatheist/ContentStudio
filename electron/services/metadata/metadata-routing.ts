@@ -38,16 +38,16 @@ export type MetadataRoutingTaskId =
   | 'thumbnail_text'
   | 'pinned_comment'
   | 'thumbnail_frames'
-  | 'thumbnail_words'
-  | 'thumbnail_judge';
+  | 'thumbnail_words';
 
 /**
  * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
  * `thumbnails` rows serve the thumbnails: the metadata run's thumbnail stages (thumbnails/pipeline.ts
- * reads the three rows at job time) and the reports page's Thumbnails window (report-thumbnails.ts:
- * words and photos again on demand). The Thumbnails test tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and the dialog's change-all
+ * reads the two rows at job time) and the reports page's Thumbnails window (report-thumbnails.ts:
+ * words again on demand). The third row, `thumbnail_judge` (the tone and photo ranking), was retired
+ * 2026-09-29 (REMOVED_ROUTING_TASKS). The Thumbnails test tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and the dialog's change-all
  * menu still cover the metadata rows only: the thumbnail rows decide no field's words, and a
- * change-all to claude -p would put the frame and tone/photo rows on a model that cannot decide.
+ * change-all to claude -p would put the frame row on a model that cannot decide.
  */
 export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
 
@@ -454,20 +454,6 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     modal: true,
     group: 'thumbnails',
   },
-  {
-    /**
-     * THE THUMBNAILS TAB'S TONE AND PHOTO SUGGESTION (2026-09-28): two text-only decide questions
-     * (judge.ts). Its own row rather than the words row, because the words row offers cloud and
-     * claude -p rungs and a decide needs logprobs, which only a local Crucible model gives. The 8-bit
-     * 27B by default since 2026-09-28 (Owen: use the 27B 8-bit where it is available).
-     */
-    id: 'thumbnail_judge',
-    label: 'Thumbnail tone and photo',
-    options: ['qwen38-27b-8bit', 'qwen35-9b', 'qwen35-4b', 'qwen38-27b'],
-    defaultOptionId: 'qwen38-27b-8bit',
-    modal: true,
-    group: 'thumbnails',
-  },
 ];
 
 /**
@@ -589,6 +575,10 @@ export const REMOVED_ROUTING_TASKS: Record<string, string> = {
   clip_suggestions:
     'clip suggestions were retired 2026-08-25 by operator decision — the field is not generated, ' +
     'not published and not offered any more, so there is nothing left for a routing entry to name',
+  thumbnail_judge:
+    'the thumbnail tone and photo ranking was retired 2026-09-29 by operator decision ("just let me ' +
+    'pick the image of myself that goes in the corner instead of letting the model pick it") — Owen ' +
+    'picks the reaction photos in the Thumbnails window, so no model call is left for this row to route',
 };
 
 export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {

@@ -714,7 +714,6 @@ const api = {
   thumbnailsGetStyle: () => ipcRenderer.invoke('thumbnails:get-style'),
   thumbnailsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbnails:set-style', style),
   thumbnailsPhotos: () => ipcRenderer.invoke('thumbnails:photos'),
-  thumbnailsSetPhotoNote: (name: string, note: string) => ipcRenderer.invoke('thumbnails:set-photo-note', name, note),
   thumbnailsChoosePhotos: () => ipcRenderer.invoke('thumbnails:choose-photos'),
   thumbnailsAddPhotos: (chosen: string[], replace: boolean) => ipcRenderer.invoke('thumbnails:add-photos', chosen, replace),
   thumbnailsRemovePhoto: (name: string) => ipcRenderer.invoke('thumbnails:remove-photo', name),
@@ -722,6 +721,8 @@ const api = {
   thumbnailsLogo: () => ipcRenderer.invoke('thumbnails:logo'),
   thumbnailsChooseLogo: () => ipcRenderer.invoke('thumbnails:choose-logo'),
   thumbnailsCopyOldLogo: () => ipcRenderer.invoke('thumbnails:copy-old-logo'),
+  thumbnailsBorder: () => ipcRenderer.invoke('thumbnails:border'),
+  thumbnailsChooseBorder: () => ipcRenderer.invoke('thumbnails:choose-border'),
   onThumbnailsProgress: (callback: (event: { jobId: string; itemId: string; line: string }) => void) => {
     const listener = (_e: unknown, event: { jobId: string; itemId: string; line: string }) => callback(event);
     ipcRenderer.on('thumbnails:progress', listener);

@@ -297,17 +297,32 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
 });
 
 /**
+ * THE TONE/PHOTO ROW RETIRED (2026-09-29, Owen picks his reaction photos himself): a store that
+ * still names `thumbnail_judge` is migrated LOUDLY (dropped with a notice quoting the reason, the
+ * caller told to write it back), never thrown on and never silently kept; the other rows are kept.
+ */
+check('thumbnail_judge retired: a stored selection is dropped with a notice and a write-back, the rest kept', () => {
+  eq(typeof routing.REMOVED_ROUTING_TASKS.thumbnail_judge, 'string');
+  const out = routing.migrateStoredRouting({ thumbnail_judge: 'qwen38-27b-8bit', thumbnail_words: 'qwen35-9b' });
+  eq(out.changed, true, 'the drop is written back');
+  eq('thumbnail_judge' in out.selections, false, 'the retired row is gone from the selections');
+  eq(out.selections.thumbnail_words, 'qwen35-9b', 'the other rows are kept');
+  eq(out.notices.some((n) => /dropped metadataRouting\.thumbnail_judge .*retired 2026-09-29/.test(n)), true, 'the notice names the row and why');
+  let threw = null;
+  try { routing.validateRoutingSelection('thumbnail_judge', 'qwen38-27b-8bit'); } catch (e) { threw = e.message; }
+  eq(threw !== null, true, 'the modal can no longer set it');
+});
+
+/**
  * THE THUMBNAILS TAB'S ROWS (#236, 2026-09-28): their own group, so a metadata run never reads
  * them. The frame row offers ONLY image-reading local models (decide needs a distribution; no
  * upstream gives one), defaults to the 9B with vision (Owen), and judges a server that lists a
  * model as text-only "not here". The words row offers the thumbnail_text field's rungs.
  */
-check('the Thumbnails tab rows: their own group, vision-only frames on the 9B with vision, words and tone/photo on the 8-bit 27B', () => {
+check('the Thumbnails rows: their own group, vision-only frames on the 9B with vision, words on the 8-bit 27B; the tone/photo row is retired', () => {
   const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
-  eq(rows.join(','), 'thumbnail_frames,thumbnail_words,thumbnail_judge');
-  const judge = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_judge');
-  eq(judge.defaultOptionId, 'qwen38-27b-8bit');
-  eq(judge.options.every((id) => routing.METADATA_ROUTING_OPTIONS[id].kind === 'local'), true, 'decide needs logprobs: local rungs only');
+  eq(rows.join(','), 'thumbnail_frames,thumbnail_words');
+  eq(routing.METADATA_ROUTING_TASKS.some((t) => t.id === 'thumbnail_judge'), false, 'no thumbnail_judge row (2026-09-29)');
   const frames = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_frames');
   eq(frames.defaultOptionId, 'qwen35-9b-vl');
   for (const id of frames.options) {

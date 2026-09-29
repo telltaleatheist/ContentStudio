@@ -1,11 +1,13 @@
 /**
  * THE ONE THUMBNAIL LOOK, for every channel (Owen, 2026-09-28): the font, colours and spaces
- * (`ThumbnailStyle`), Owen's reaction photos with their notes, and the logo. Moved here from the
+ * (`ThumbnailStyle`), Owen's reaction photos, and the logo. (The photos' notes went on 2026-09-29
+ * with the model's photo ranking they were written for: Owen picks the photos himself now. His
+ * saved notes stay in the settings under `thumbnailLab.reactionNotes`, unread.) Moved here from the
  * retired Thumbnails test tab (lab-service.ts) in phase 2; the metadata run reads the same store
  * keys at job time (pipeline-setup.ts), and the "Thumbnail look" dialog (opened from the reports
  * page's Thumbnails window) edits them.
  *
- * The store keys keep their `thumbnailLab.` names ON PURPOSE: they hold Owen's saved look and notes
+ * The store keys keep their `thumbnailLab.` names ON PURPOSE: they hold Owen's saved look
  * from the tab, and a new name would drop them. The photos and the logo stay where the tab copied
  * them (`<userData>/thumbnail-lab/reaction-photos/` and `.../logo/`, photo-library.ts) for the same
  * reason.
@@ -14,18 +16,20 @@
  * the page unchanged.
  */
 import * as log from 'electron-log';
-import { draftNotes } from './judge';
-import { DEFAULT_STYLE, validateStyle, type ThumbnailStyle } from './layout';
+import { DEFAULT_STYLE, readStoredStyle, validateStyle, type ThumbnailStyle } from './layout';
+import { borderPreview, readBorder } from './border';
 import { logoPreview, readLogo } from './logo';
 import {
   PhotosAlreadyThere,
   addPhotos,
+  libraryBorder,
   libraryLogo,
   libraryPhotos,
   logoCopyOffer,
   photoCopyOffer,
   photosDir,
   removePhoto,
+  setLibraryBorder,
   setLibraryLogo,
 } from './photo-library';
 import { photoPreview, trimmedPhoto } from './reaction-photos';
@@ -39,13 +43,6 @@ export const STYLE_STORE_KEY = 'thumbnailLab.style';
  */
 export const PHOTO_FOLDER_STORE_KEY = 'thumbnailLab.reactionFolder';
 
-/**
- * Owen's note per reaction photo (name -> note), kept in the app's settings, never in the repo. A
- * photo with no stored note shows the draft from thumbnails.yml `photo.drafts`, marked as a draft,
- * until he saves one; a photo with neither has no note, and the legend lists its name alone.
- */
-export const PHOTO_NOTES_STORE_KEY = 'thumbnailLab.reactionNotes';
-
 /** The OLD setting: the logo file's path, read in place. Read only to offer copying it into the app. */
 export const LOGO_STORE_KEY = 'thumbnailLab.logo';
 
@@ -55,9 +52,6 @@ export interface LookPhoto {
   preview: string;
   /** What the trim did (specks dropped), or null. */
   trim: string | null;
-  note: string | null;
-  /** True when the note is the drafted one, not Owen's own. */
-  draft: boolean;
 }
 
 export interface LookPhotos {
@@ -70,6 +64,10 @@ export interface LookPhotos {
 export interface LookLogo {
   logo: { file: string; name: string; width: number; height: number; preview: string } | null;
   offer: { from: string } | null;
+}
+
+export interface LookBorder {
+  border: { file: string; name: string; width: number; height: number; preview: string } | null;
 }
 
 export interface LookDeps {
@@ -86,10 +84,12 @@ export class ThumbnailLook {
 
   // ── the look ────────────────────────────────────────────────────────────────
 
-  getStyle(): { style: ThumbnailStyle; stored: boolean } {
+  /** The look, whether it is saved, and a line when a saved look was read with a newer default (readStoredStyle). */
+  getStyle(): { style: ThumbnailStyle; stored: boolean; line: string | null } {
     const stored = this.deps.store.get(STYLE_STORE_KEY);
-    if (stored === undefined || stored === null) return { style: DEFAULT_STYLE, stored: false };
-    return { style: validateStyle(stored), stored: true };
+    if (stored === undefined || stored === null) return { style: DEFAULT_STYLE, stored: false, line: null };
+    const read = readStoredStyle(stored);
+    return { style: read.style, stored: true, line: read.line };
   }
 
   setStyle(value: unknown): ThumbnailStyle {
@@ -132,7 +132,7 @@ export class ThumbnailLook {
     }
   }
 
-  /** Remove one photo from the library (its note stays saved under its name). */
+  /** Remove one photo from the library. */
   removePhoto(name: string): void {
     removePhoto(this.userData(), name);
     log.info(`[Thumbnails] reaction photo removed from the app: ${name}`);
@@ -145,46 +145,18 @@ export class ThumbnailLook {
     return this.addPhotos([offer.from], false);
   }
 
-  /** Owen's saved notes, checked. */
-  storedNotes(): Record<string, string> {
-    const stored = this.deps.store.get(PHOTO_NOTES_STORE_KEY);
-    if (stored === undefined || stored === null) return {};
-    if (typeof stored !== 'object' || Array.isArray(stored) || Object.values(stored).some((v) => typeof v !== 'string')) {
-      throw new Error(`The saved reaction photo notes are not a list of name: note (${JSON.stringify(stored).slice(0, 120)}).`);
-    }
-    return stored as Record<string, string>;
-  }
-
-  /** Each photo's note: Owen's saved one, else the draft (marked), else none. */
-  notesFor(names: readonly string[]): Array<{ name: string; note: string | null; draft: boolean }> {
-    const stored = this.storedNotes();
-    const drafts = draftNotes();
-    return names.map((name) =>
-      stored[name] !== undefined ? { name, note: stored[name], draft: false }
-      : drafts[name] !== undefined ? { name, note: drafts[name], draft: true }
-      : { name, note: null, draft: false });
-  }
-
-  /** Save one photo's note (an empty note is saved as empty: the legend then lists the name alone). */
-  setPhotoNote(name: string, note: string): void {
-    if (typeof note !== 'string') throw new Error(`A photo note is text, got ${JSON.stringify(note)}.`);
-    if (!this.photoNames().includes(name)) throw new Error(`There is no reaction photo "${name}" in the app's library.`);
-    this.deps.store.set(PHOTO_NOTES_STORE_KEY, { ...this.storedNotes(), [name]: note.trim() });
-  }
-
   /**
-   * The library's photos, trimmed, each with a small picture and its note; and, while the library
+   * The library's photos, trimmed, each with a small picture; and, while the library
    * is empty, the old folder's photos offered for copying.
    */
   photos(): LookPhotos {
     const list = libraryPhotos(this.userData());
-    const notes = this.notesFor(list.map((p) => p.name));
     return {
       folder: photosDir(this.userData()),
       offer: photoCopyOffer(this.userData(), this.oldPhotoFolder()),
-      photos: list.map((p, i) => {
+      photos: list.map((p) => {
         const trimmed = trimmedPhoto(p);
-        return { name: p.name, preview: photoPreview(trimmed), trim: trimmed.note, note: notes[i].note, draft: notes[i].draft };
+        return { name: p.name, preview: photoPreview(trimmed), trim: trimmed.note };
       }),
     };
   }
@@ -227,5 +199,26 @@ export class ThumbnailLook {
     const offer = logoCopyOffer(this.userData(), this.oldLogoFile());
     if (offer === null) throw new Error('There is no logo to copy: the app already holds one, or the old setting is not set or its file is not there.');
     return this.setLogo(offer.from);
+  }
+
+  // ── the border ─────────────────────────────────────────────────────────────
+
+  /**
+   * The border overlay as the page shows it (file name, size, a small picture), or null for none.
+   * A kept border that cannot be read throws naming it. Whether it is drawn is the look's
+   * `border` switch (saved with the look).
+   */
+  border(): LookBorder {
+    const file = libraryBorder(this.userData());
+    if (file === null) return { border: null };
+    const border = readBorder(file);
+    return { border: { file, name: border.name, width: border.width, height: border.height, preview: borderPreview(border) } };
+  }
+
+  /** Copy a border file into the app (replacing the one kept), after reading it: an unreadable file is refused and nothing changes. */
+  setBorder(file: string): LookBorder {
+    const kept = setLibraryBorder(this.userData(), file, (f) => void readBorder(f));
+    log.info(`[Thumbnails] border copied into the app: ${file} -> ${kept}`);
+    return this.border();
   }
 }
