@@ -61,7 +61,6 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 
 /* ── 1. frames: one flat grid ── */
 .frames { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.more { margin-top: 8px; }
 .frame {
   position: relative; padding: 0; border: 3px solid transparent; border-radius: 5px; cursor: pointer; background: none;
   img { width: 176px; height: 99px; object-fit: cover; display: block; border-radius: 2px; }

@@ -51,7 +51,7 @@
                 [title]="fin.blocked ?? (busy() !== null ? 'Wait for the running step' : 'Run the missing stages')">Finish making thumbnails</button>
         @if (view()?.remake; as rm) {
           <button mat-stroked-button (click)="remake()" [disabled]="busy() !== null || rm.blocked !== null"
-                  [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, scoring, words, drawing'">Make thumbnails again from scratch</button>
+                  [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, words'">Make thumbnails again from scratch</button>
         }
       </div>
     </div>
@@ -65,32 +65,27 @@
     <p class="line">This report was made before thumbnails were made with the metadata. “Use my own image…” below still works.</p>
   }
 
-  <!-- ═════ 1. FRAMES ═════ One flat list, best first (Owen: "we dont need to separate by scene"). -->
+  <!-- ═════ 1. FRAMES ═════ One flat list in time order (Owen: "we dont need to separate by scene"):
+       at most two per scene, the sharpest; nothing ranks them. -->
   @if (canPickFrames()) {
     <section>
       <div class="sec-head">
         <h3><span class="step">1</span> Frames</h3>
-        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots.' : 'From the story, best first.' }} Click in the order you want them: 1, 2, 3.</span>
+        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots.' : 'From the story, in time order: the sharpest of each shot.' }} Click in the order you want them: 1, 2, 3.</span>
         <span class="spacer"></span>
         <span class="count num">{{ frames().length }}/3</span>
-        @if (pairs().length > 0 && drawBlocked() === null) {
-          <button class="link" (click)="suggested()" title="The frames and words the metadata run chose (no photos: you pick those)">Start from the suggested three</button>
-        }
         @if (frames().length + texts().length + photos().length > 0) {
           <button class="link" (click)="clearAll()">Clear picks</button>
         }
       </div>
       <div class="frames">
-        @for (id of shownFrames(); track id) {
+        @for (id of frameIds(); track id) {
           <button class="frame" [class.on]="frameNumber(id) !== null" (click)="toggleFrame(id)" [title]="frameInfo(id)">
             @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
             @if (frameNumber(id); as k) { <span class="badge">{{ k }}</span> }
           </button>
         }
       </div>
-      @if (frameIds().more.length > 0) {
-        <button class="link more" (click)="toggleShowMore()">{{ showMore() ? 'Show fewer' : 'Show more (' + frameIds().more.length + ')' }}</button>
-      }
     </section>
   } @else if (record() && record()!.state === 'failed') {
     <section><h3><span class="step">1</span> Frames</h3><p class="hint">No frames were kept before the thumbnails stopped; “Finish making thumbnails” finds them.</p></section>
@@ -104,6 +99,9 @@
         <span class="hint">Click in the order you want them: 1, 2, 3.</span>
         <span class="spacer"></span>
         <span class="count num">{{ texts().length }}/3</span>
+        @if (pairs().length > 0 && drawBlocked() === null) {
+          <button class="link" (click)="suggested()" title="The words the metadata run chose for each title, as texts 1, 2, 3 (you pick the frames and photos)">Start from the suggested words</button>
+        }
       </div>
       @if (options().length === 0) {
         <p class="hint">No words were written before the thumbnails stopped; “Finish making thumbnails” writes them. You can still type your own.</p>
@@ -285,7 +283,7 @@
     @if (!view()?.finish) {
       <section class="again">
         <button mat-stroked-button (click)="remake()" [disabled]="busy() !== null || rm.blocked !== null"
-                [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, scoring, words, drawing'">Make thumbnails again from scratch</button>
+                [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, words'">Make thumbnails again from scratch</button>
         @if (rm.blocked; as why) { <span class="why">{{ why }}</span> }
       </section>
     }
