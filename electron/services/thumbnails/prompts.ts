@@ -47,6 +47,22 @@ export function transcriptLine(startSeconds: number, text: string): string {
   return `[${clock}] ${text.replace(/\s+/g, ' ').trim()}`;
 }
 
+/** A caption's `HH:MM:SS,mmm` start in seconds; anything else is refused naming the caption. */
+export function srtSeconds(value: string, what: string): number {
+  const m = /^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/.exec(value.trim());
+  if (!m) throw new Error(`${what}: "${value}" is not a caption time.`);
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, '0')) / 1000;
+}
+
+/**
+ * A transcript's captions as the words prompt and the tone state show them, one `[m:ss] text` line
+ * each. Shared by the Thumbnails tab (the saved transcript) and the metadata run's thumbnails stage
+ * (the item's own captions, thumbnails/pipeline.ts).
+ */
+export function transcriptLines(segments: ReadonlyArray<{ start: string; text: string }>): string[] {
+  return segments.map((s, i) => transcriptLine(srtSeconds(s.start, `caption ${i + 1}`), s.text));
+}
+
 /**
  * The words prompt, every slot filled in one pass with a function replacer (PROMPT-LEARNINGS:
  * a `$` in a transcript must never be read as a replacement pattern). An unfilled slot throws.

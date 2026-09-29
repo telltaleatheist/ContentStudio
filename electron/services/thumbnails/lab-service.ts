@@ -48,7 +48,7 @@ import { resolveMetadataRouting, routingOption, type MetadataRoutingOption } fro
 import { MAX_FRAMES_TO_SCORE, filterFrames } from './frame-metrics';
 import { rankFrames, type FrameReading, type RankedFrame } from './frame-ranking';
 import { SCENE_FLOOR, allocateScoring, framesToScore, groupScenes, sceneRows, type Scene, type SceneRow } from './frame-scenes';
-import { clock, extractFullFrame, probeVideo, sampleFrames, type SampledFrame } from './frame-sampler';
+import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel, type SampledFrame } from './frame-sampler';
 import { resolveStorySource, type StorySource } from './story-source';
 import {
   isLinkable,
@@ -62,9 +62,9 @@ import {
 import type { ChosenMetadata, TranscriptRef } from '../publish/publish-types';
 import type { SelectionSeed } from '../publish/publish-store.service';
 import { scoreFrames, type ScorerDeps } from './frame-scorer';
-import { transcriptLine, type WordKind, type WordOptions } from './prompts';
+import { transcriptLines, type WordKind, type WordOptions } from './prompts';
 import { writeThumbnailWords } from './words-writer';
-import { renderThumbnail } from './renderer';
+import { renderThumbnail, safeFileName } from './renderer';
 import { DEFAULT_STYLE, validateStyle, type ThumbnailStyle } from './layout';
 import { dataUrlOf, type ThumbnailCanvas } from './canvas-page';
 import type { AIManagerService } from '../metadata/ai-manager.service';
@@ -287,25 +287,6 @@ export interface LabPhotoDraw extends PhotoDraw {
   /** The letter whose words the ranking was made for. */
   of: string;
   line: string;
-}
-
-function frameId(frame: { index: number }): string {
-  return `f${frame.index}`;
-}
-
-function srtSeconds(value: string, what: string): number {
-  const m = /^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/.exec(value.trim());
-  if (!m) throw new Error(`${what}: "${value}" is not a caption time.`);
-  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, '0')) / 1000;
-}
-
-/** "Scene 3 · 2:41 on screen". */
-function sceneLabel(scene: { number: number; seconds: number }): string {
-  return `Scene ${scene.number} · ${clock(scene.seconds).replace(/^0(\d:)/, '$1')} on screen`;
-}
-
-function safeFileName(text: string): string {
-  return text.replace(/[/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
 export class ThumbnailLab {
@@ -655,7 +636,7 @@ export class ThumbnailLab {
     const terms = (channel.brandTerms ?? []).map((t) => t.trim()).filter((t) => t.length > 0);
     if (terms.length === 0) throw new Error(`The prompt set "${channel.name}" declares no brand_terms, so nothing says who its creator is.`);
     const { record } = loadSavedTranscript(this.outputDir(), run.item.sourcePath!);
-    const transcript = record.segments.map((s, i) => transcriptLine(srtSeconds(s.start, `caption ${i + 1}`), s.text));
+    const transcript = transcriptLines(record.segments);
     const ai = this.deps.aiManager();
     const option = this.routed('thumbnail_words');
     const job = await this.textJob(option);
@@ -798,7 +779,7 @@ export class ThumbnailLab {
         creator: terms.join(', '),
         hook: run.item.hook,
         description: run.item.description,
-        transcript: record.segments.map((s, i) => transcriptLine(srtSeconds(s.start, `caption ${i + 1}`), s.text)),
+        transcript: transcriptLines(record.segments),
       },
       photos: this.notesFor(names),
       variants,

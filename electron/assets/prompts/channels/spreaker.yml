@@ -12,6 +12,8 @@ fields:
   - description
   - tags
 
+thumbnails: false
+
 counts:
   titles: 10
 

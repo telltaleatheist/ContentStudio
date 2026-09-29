@@ -314,8 +314,12 @@ export interface TranscriptRef {
   wordCount: number;
   /** ISO. When the operator made this link. */
   linkedAt: string;
-  /** How the candidate was found — never a silent auto-link; see spec §3.2. */
-  via: 'exact-title' | 'label-match' | 'manual';
+  /**
+   * How the candidate was found — never a silent auto-link of the CONTENT fields; see spec §3.2.
+   * 'transcript-match' is the thumbnails pipeline's own link (thumbnails/story-match.ts, 2026-09-28):
+   * it is recorded on the report's `thumbnails.story` and never becomes the content link.
+   */
+  via: 'exact-title' | 'label-match' | 'manual' | 'transcript-match';
 }
 
 /**

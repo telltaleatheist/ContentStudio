@@ -197,6 +197,22 @@ app.whenReady().then(async () => {
     assert(!(p.x < L.x + L.w - e && L.x < p.x + p.w - e && p.y < L.y + L.h - e && L.y < p.y + p.h - e), 'the words clear the logo');
   });
 
+  await check('the metadata run\'s renderer (pipeline-electron.ts): the photo trimmed and the logo cut as the tab does, drawn on its own canvas page, closed after', async () => {
+    const { electronThumbnailRenderer } = require(path.join(ROOT, 'services/thumbnails/pipeline-electron.js'));
+    const renderer = electronThumbnailRenderer(REPO);
+    try {
+      const cut = listIn(cutDir)[0];
+      const r = await renderer.render({ frame: synthetic, phrase: 'maybe tomorrow', style, photo: { name: cut.name, file: cut.file }, logoFile, outStem: path.join(scratch, 'pipeline-pair') });
+      assert(r.ok && r.reaction && r.logo, JSON.stringify(r));
+      const meta = tv.measureThumbnailFile(r.path);
+      assert(meta.width === OUTPUT_WIDTH && meta.height === OUTPUT_HEIGHT && meta.bytes <= tv.MAX_THUMBNAIL_BYTES, JSON.stringify(meta));
+      const none = await renderer.render({ frame: synthetic, phrase: 'maybe tomorrow', style, photo: { name: cut.name, file: cut.file }, logoFile: null, outStem: path.join(scratch, 'pipeline-pair-no-logo') });
+      assert(none.ok && none.logo === null, 'no logo file: none drawn');
+    } finally {
+      renderer.close();
+    }
+  });
+
   await check('a missing or unreadable logo file is refused naming it', async () => {
     let err = null;
     try { logos.readLogo(path.join(scratch, 'no-logo.png')); } catch (e) { err = e; }

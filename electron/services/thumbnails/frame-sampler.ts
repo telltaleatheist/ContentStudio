@@ -135,6 +135,16 @@ export function clock(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
+/** A sampled frame's id: `f` and its file number. Shared by the tab and the metadata run's thumbnails stage. */
+export function frameId(frame: { index: number }): string {
+  return `f${frame.index}`;
+}
+
+/** "Scene 3 · 2:41 on screen". */
+export function sceneLabel(scene: { number: number; seconds: number }): string {
+  return `Scene ${scene.number} · ${clock(scene.seconds).replace(/^0(\d:)/, '$1')} on screen`;
+}
+
 /** The sampling rate for this many seconds: one a second, or MAX_SAMPLES evenly when that would be more. */
 export function samplingFor(seconds: number): { count: number; every: number } {
   const count = Math.min(MAX_SAMPLES, Math.max(1, Math.floor(seconds / SAMPLE_EVERY_SECONDS)));

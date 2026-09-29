@@ -144,7 +144,7 @@ export type ModelRoutingDialogResult = boolean | undefined;
              stored entries pass through Save untouched. -->
         @for (task of rowTasks(); track task.id) {
           @if (task.id === thumbnailTasks()[0]?.id) {
-            <div class="group-heading">Thumbnails tab (testing). Not used by metadata runs.</div>
+            <div class="group-heading">Thumbnails. Used by metadata runs (the three A/B thumbnails) and the Thumbnails tab.</div>
           }
           <div class="routing-row">
             <div class="field-label">

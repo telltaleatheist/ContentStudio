@@ -17,6 +17,11 @@ import { MAX_THUMBNAIL_BYTES, measureThumbnailFile, validateThumbnailFile } from
 import { bytesOfDataUrl, dataUrlOf, type ThumbnailCanvas } from './canvas-page';
 import { REFERENCE_SIZE, phraseWords, placeLogo, placeReaction, planText, type ReactionPlacement, type Rect, type TextPlan, type ThumbnailStyle } from './layout';
 
+/** Text made safe for a file name: path and reserved characters become spaces, at most 80 characters. */
+export function safeFileName(text: string): string {
+  return text.replace(/[/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
 export const OUTPUT_WIDTH = 1280;
 export const OUTPUT_HEIGHT = 720;
 

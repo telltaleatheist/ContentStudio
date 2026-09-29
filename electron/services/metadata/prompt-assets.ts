@@ -43,6 +43,16 @@ export interface ChannelData {
   /** Which fields this channel publishes, in emission order. */
   fields: string[];
   counts: Record<string, number>;
+  /**
+   * Whether a metadata run on this channel makes the three A/B thumbnails (thumbnails pipeline,
+   * 2026-09-28; docs/thumbnails-pipeline.md). Every shipped channel file says it, true or false:
+   * the three YouTube long-form channels true (one look for all three, Owen 2026-09-28), shorts and
+   * the podcast false. NULL when the file says nothing (an installed copy with local edits keeps its
+   * old text: ipc-handlers `ensurePromptSetsDirectory` withholds the update): the app still starts, and a
+   * run on that channel makes no thumbnails and its report says the key is missing. Never read as
+   * true or false on its own.
+   */
+  thumbnails: boolean | null;
   /** Replaces the shared titles length/format line where the channel has its own convention. */
   titleFormat?: string;
   /**
@@ -290,8 +300,15 @@ export class PromptAssets {
         );
       }
     }
+    if (raw.thumbnails !== undefined && typeof raw.thumbnails !== 'boolean') {
+      throw new Error(
+        `Channel "${id}" (${filePath}) has a "thumbnails" key that is ${JSON.stringify(raw.thumbnails)}. ` +
+          `Write thumbnails: true or thumbnails: false.`
+      );
+    }
     return {
       id,
+      thumbnails: raw.thumbnails === undefined ? null : raw.thumbnails,
       name: this.requireString(raw, filePath, 'name'),
       editorialVariant: this.requireString(raw, filePath, 'editorial_variant'),
       fieldVariant: this.requireString(raw, filePath, 'field_variant'),
