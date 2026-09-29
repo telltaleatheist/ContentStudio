@@ -535,8 +535,8 @@ Text header): pair n's default words as text n; frames and photos are his.
 
 **Older records.** A record that stopped at `scoring` (`RETIRED_STAGES`) is read; Finish keeps its
 story and its frames (the frames it sent to the scoring become its grid, their scores ignored) and
-runs words and render; the view says "That step is gone: you pick the frames yourself below, so
-Finish goes on from the words without it." Resuming a story record (any stop) clears the frames the
+runs words and render; the view heads it "These thumbnails stopped at a step that has since been
+removed" and drops the old reason (a refused vision model no longer stands in the way). Resuming a story record (any stop) clears the frames the
 old ranking gave its pairs, so only screenshot pairs are drawn. `bestScenes`, `scoring` and the
 per-frame scores stay in old JSON, unread.
 

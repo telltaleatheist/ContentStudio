@@ -158,6 +158,8 @@ export interface ThumbnailsSummary {
  */
 export interface FinishView {
   stage: RecordedStage;
+  /** The stage it stopped at has since been removed, so its old reason is not shown. */
+  retired: boolean;
   reason: string;
   keep: ThumbnailStage[];
   run: ThumbnailStage[];
@@ -361,14 +363,15 @@ export class ReportThumbnails {
     if (record === null || record.state !== 'failed' || record.failure === null) return null;
     const plan = resumePlan(record, fs.existsSync);
     // A record that stopped at a removed stage (the model's photo ranking, or its frame scoring):
-    // its reason (the empty library, a refused vision model) no longer stands in the way, and
-    // that is said.
+    // its old reason (the empty library, a refused vision model) no longer stands in the way, so it
+    // is not repeated; the window says the step is gone and what Finish does instead.
     const reason = record.failure.stage === 'tone-photos'
-      ? `${record.failure.reason} That step is gone: you pick the photos yourself below, so Finish only goes on from what is missing.`
+      ? 'That step no longer exists: you pick the photos yourself below. Press “Finish making thumbnails” to make what is missing.'
       : record.failure.stage === 'scoring'
-        ? `${record.failure.reason} That step is gone: you pick the frames yourself below, so Finish goes on from the words without it.`
+        ? 'That step no longer exists: you pick the frames yourself below. Press “Finish making thumbnails” to write the words, then pick and generate.'
         : record.failure.reason;
-    return { stage: record.failure.stage, reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
+    const retired = record.failure.stage === 'tone-photos' || record.failure.stage === 'scoring';
+    return { stage: record.failure.stage, retired, reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
   }
 
   private remakeView(record: ItemThumbnails | null): { blocked: string | null } | null {

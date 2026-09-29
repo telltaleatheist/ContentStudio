@@ -809,7 +809,7 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   const { job, itemId, window } = await windowOver(world, { record: old });
   const v = window.view(job.jobId, itemId);
   assert.deepStrictEqual([v.finish.stage, v.finish.keep, v.finish.run, v.finish.blocked], ['tone-photos', ['story', 'frames', 'words'], ['render'], null]);
-  assert.ok(/That step is gone: you pick the photos yourself below, so Finish only goes on from what is missing\./.test(v.finish.reason), v.finish.reason);
+  assert.ok(/^That step no longer exists: you pick the photos yourself below\./.test(v.finish.reason) && v.finish.retired === true, v.finish.reason);
   // The draw Owen's clicks sent (the phase-2 log line): refused in words, and those words are the banner.
   const drawErr = await rejection(window.renderPair(job.jobId, itemId, { pair: 1, phrase: null }));
   assert.ok(/There are no thumbnails to change: The thumbnails stopped at the tone-photos stage/.test(drawErr.message), drawErr.message);
@@ -819,7 +819,7 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   const noServer = await windowOver(world, { record: atScoring, gpuVenue: () => ({ server: null, reason: 'no Crucible server is selected in Settings' }) });
   const blocked = noServer.window.view(noServer.job.jobId, noServer.itemId);
   assert.deepStrictEqual([blocked.finish.stage, blocked.finish.keep, blocked.finish.run], ['scoring', ['story', 'frames'], ['words', 'render']], 'a stop at the removed scoring keeps its frames and goes on from the words');
-  assert.ok(/That step is gone: you pick the frames yourself below, so Finish goes on from the words without it\./.test(blocked.finish.reason), blocked.finish.reason);
+  assert.ok(/^That step no longer exists: you pick the frames yourself below\./.test(blocked.finish.reason) && !/cannot show pictures/.test(blocked.finish.reason), blocked.finish.reason);
   assert.strictEqual(blocked.finish.blocked, 'No Crucible server to run the models on: no Crucible server is selected in Settings');
   const before = [plainCalls.length, server.decideBodies().length, server.leases.taken.length];
   const refused = await rejection(noServer.window.finish(noServer.job.jobId, noServer.itemId));

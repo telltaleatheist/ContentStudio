@@ -134,7 +134,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     const r = v.record;
     if (r === null) return 'This report was made before thumbnails were made with the metadata. Use the Thumbnail row\'s Choose… for your own image, or “Use my own image…” below.';
     if (r.state === 'off') return r.line;
-    if (r.state === 'failed') return `The thumbnails stopped at the ${r.failure?.stage ?? 'unknown'} stage, so they cannot be drawn yet. Press “Finish making thumbnails” above.`;
+    if (r.state === 'failed') return 'The thumbnails are not finished yet, so they cannot be drawn. Press “Finish making thumbnails” above.';
     if (r.state === 'no-story') return 'This report has no story to take frames from. Make thumbnails from your screenshots below.';
     return null;
   });
