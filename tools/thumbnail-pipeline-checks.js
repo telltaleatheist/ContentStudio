@@ -29,6 +29,26 @@
  *     the picks written through the one door; bad picks and another record version are refused and
  *     leave the file as it was.
  *
+ * Phase 2 (the reports page's Thumbnails window, report-thumbnails.ts, 2026-09-28):
+ *
+ *   - ORDERED PICKS AND PAIRING: picks are saved in click order (pick n goes with chosen title n by
+ *     position); the copies `picks/Pick 1..n` are written and the file to publish is pick 1's copy;
+ *     a fourth pick, one pair twice and a stale record shape are refused; with none, the copies go.
+ *   - SWAPS REDRAWN AT ONCE: a changed frame, words (or "No text"), photo ("No photo", a new draw
+ *     from the top 3) or logo draws a NEW file beside the old one (the old stays); a picked pair's
+ *     pick follows it; a pre-phase-2 record gets `rankedFor` before its words change.
+ *   - OWN IMAGE AS A PICK: Owen's file, checked against YouTube's thumbnail rules and read in place.
+ *   - REWRITE WORDS FOR A TITLE: one words call carrying the new title and the tone/photo decides on
+ *     ONE held load of the 27B; the pair and its pick follow; a second action on the item while one
+ *     runs is refused; the hold is given back on request.
+ *   - NO STORY -> SCREENSHOTS: N screenshots make N pairs, one per title given, a non-16:9 one cut to
+ *     16:9 (said); own picks kept; a report whose pairs came from its story refuses them.
+ *   - DELETE: deleting an item removes its thumbnails folder (and the empty thumbnails/ folder); a
+ *     record naming a folder elsewhere is left and said; a whole job's cleanup removes each item's.
+ *   - THE TAB IS GONE: no route, sidebar entry, component, lab service, combine or `thumbs:` channel;
+ *     every `thumbnails:` channel the preload offers has a handler and the reverse; the reports page
+ *     shows no THUMBNAIL TEXT OPTIONS section; the window sets pick 1 through the publish door.
+ *
  *   npm run build:electron && node tools/thumbnail-pipeline-checks.js
  */
 const path = require('path');
@@ -254,8 +274,10 @@ async function withWorld(options, fn) {
         renders.push(input);
         const file = `${input.outStem}.png`;
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, PNG_BYTES);
-        return { ok: true, path: file, bytes: PNG_BYTES.length, format: 'png', faces: [], plan: null, reaction: null, logo: null, notes: [] };
+        // Each drawing's bytes name it, so a copy can be told from another drawing.
+        const bytes = Buffer.concat([PNG_BYTES, Buffer.from(path.basename(input.outStem))]);
+        fs.writeFileSync(file, bytes);
+        return { ok: true, path: file, bytes: bytes.length, format: 'png', faces: [], plan: null, reaction: null, logo: null, notes: [] };
       },
       close: () => renders.push('closed'),
     }),
@@ -286,13 +308,13 @@ async function withWorld(options, fn) {
   const itemRun = (leases, controller, over = {}) => pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
     jobId: 'keeper-job', itemIndex: 0, sourceLabel: 'f2 - the rapture.mov', contentType: 'video',
     videoPath: w.exportOf(over.name ?? 'f2 - the rapture'), operatorRef: undefined, segments: captions(STORY_TEXT[over.story ?? 2]),
-    reportFolder: path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
+    reportFolder: over.reportFolder ?? path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
   }, {
     leases, aiManager, routing: routing.resolveMetadataRouting(over.routing ?? {}), signal: controller.signal,
     cancelled: () => controller.signal.aborted, progress: () => undefined,
   });
   try {
-    await fn({ server, w, root, renders, plainCalls, aiManager, job, itemRun });
+    await fn({ server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, transport: made.ctx.transport });
   } finally {
     installCrucibleTransport(null);
     installLanes(null);
@@ -456,14 +478,18 @@ check('storage: the record rides on the item in its job file, reads back checked
       { content_fields: 'final-export-whisper', timed_fields: 'final-export-whisper', transcript_ref: null, final_duration_sec: null, transcript_duration_sec: null, drift_sec: null, drift_pct: null, declared_at: new Date().toISOString() });
     const back = out.getJobMetadata(job.jobId).items[0];
     assert.deepStrictEqual(record.readItemThumbnails(back.thumbnails, 'keeper'), rec, 'the record round-trips unchanged');
-    const picked = await out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ title: 'T2', file: '/r/2.png' }, { title: 'T1', file: '/r/1.png' }] }));
-    assert.deepStrictEqual(picked.picks.map((p) => p.title), ['T2', 'T1']);
-    assert.deepStrictEqual(out.getJobMetadata(job.jobId).items[0].thumbnails.picks.map((p) => p.title), ['T2', 'T1'], 'the ordered picks are on disk');
+    const picked = await out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ kind: 'made', pair: 2, file: '/r/2.png', wordsFor: 'T2' }, { kind: 'own', file: '/mine.png' }] }));
+    assert.deepStrictEqual(picked.picks.map((p) => p.file), ['/r/2.png', '/mine.png']);
+    assert.deepStrictEqual(out.getJobMetadata(job.jobId).items[0].thumbnails.picks.map((p) => p.kind), ['made', 'own'], 'the ordered picks are on disk');
     const before = fs.readFileSync(job.jsonPath, 'utf8');
-    const twice = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ title: 'T1', file: '/a' }, { title: 'T1', file: '/b' }] })));
-    assert.ok(/picks one title twice/.test(twice.message), twice.message);
-    const four = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [1, 2, 3, 4].map((n) => ({ title: `T${n}`, file: '/x' })) })));
+    const twice = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ kind: 'own', file: '/a' }, { kind: 'own', file: '/a' }] })));
+    assert.ok(/picks one file twice/.test(twice.message), twice.message);
+    const pairTwice = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ kind: 'made', pair: 1, file: '/a', wordsFor: 'T1' }, { kind: 'made', pair: 1, file: '/b', wordsFor: 'T1' }] })));
+    assert.ok(/picks one pair twice/.test(pairTwice.message), pairTwice.message);
+    const four = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [1, 2, 3, 4].map((n) => ({ kind: 'own', file: `/x${n}` })) })));
     assert.ok(/at most 3/.test(four.message), four.message);
+    const old = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ title: 'T1', file: '/a' }] })));
+    assert.ok(/neither a pair's render nor your own image/.test(old.message), old.message);
     assert.strictEqual(fs.readFileSync(job.jsonPath, 'utf8'), before, 'a refused write leaves the file byte for byte');
     assert.throws(() => record.readItemThumbnails({ ...rec, version: 2 }, 'keeper'), /is version 2, and this build reads version 1/);
     assert.strictEqual(record.readItemThumbnails(undefined, 'keeper'), null, 'an item from before the pipeline has none');
@@ -472,4 +498,240 @@ check('storage: the record rides on the item in its job file, reads back checked
   }
 });
 
-run('thumbnails in the metadata run: the story link, stage order and one swap, words per title, no story, failures, off, storage');
+// ── phase 2: the Thumbnails window (report-thumbnails.ts) ───────────────────
+
+const { ReportThumbnails } = services('thumbnails/report-thumbnails.js');
+const { ThumbnailLook } = services('thumbnails/look.js');
+const { saveTranscript } = services('metadata/saved-transcript.service.js');
+const { deleteJobTxtFiles } = services('metadata/output-handler.service.js');
+const PROVENANCE = { content_fields: 'final-export-whisper', timed_fields: 'final-export-whisper', transcript_ref: null, final_duration_sec: null, transcript_duration_sec: null, drift_sec: null, drift_pct: null, declared_at: '2026-09-28T00:00:00.000Z' };
+
+/** A real 16:9 image of a given size (the own-image and screenshot checks read real pictures). */
+function picture(file, size) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', `testsrc=size=${size}:rate=1:duration=1`, '-frames:v', '1', '-y', file]);
+  return file;
+}
+
+/**
+ * The window over the world: a job in `root` (the output directory), the item's transcript saved,
+ * its record from a real pipeline run (or `record`), and ReportThumbnails wired as the IPC wires it.
+ */
+async function windowOver(world, { record: given = null, noStory = false } = {}) {
+  const { root, w, job: inJob, itemRun, setup, userData, transport, aiManager } = world;
+  const out = OutputHandlerService.forOutputDir(root);
+  const job = out.initializeJob('f2 - the rapture', 'youtube-fireside', `keeper-window-${noStory ? 'nostory' : 'story'}`);
+  const video = w.exportOf(noStory ? 'u9 - unrelated' : 'f2 - the rapture');
+  fs.writeFileSync(video, 'a video');
+  const segments = captions(noStory ? words(77, 400) : STORY_TEXT[2]);
+  saveTranscript({ outputDir: root, videoPath: video, segments, durationSec: 200, whisperModel: 'keeper', words: null, speakerTagging: null });
+  const rec = given ?? await inJob(async (leases, controller) => {
+    const run = itemRun(leases, controller, { reportFolder: job.txtFolder, ...(noStory ? { name: 'u9 - unrelated', story: 1 } : {}) });
+    if (noStory) {
+      const r = pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
+        jobId: job.jobId, itemIndex: 0, sourceLabel: 'u9.mov', contentType: 'video', videoPath: video, operatorRef: undefined,
+        segments, reportFolder: job.txtFolder, channel: assets.promptAssets().channel('youtube-fireside'),
+      }, { leases, aiManager, routing: routing.resolveMetadataRouting({}), cancelled: () => false, progress: () => undefined });
+      await r.beforeChapters();
+      return r.record();
+    }
+    await run.beforeChapters();
+    await run.afterFields(FIELDS);
+    return run.record();
+  });
+  const saved = await out.addItemToJob(job.jobId, {
+    titles: FIELDS.titles, _title: 'f2 - the rapture', _prompt_set: 'youtube-fireside', description_hook: FIELDS.description_hook, description: FIELDS.description, thumbnails: rec,
+  }, { source_key: 'f2 - the rapture', source_path: video }, PROVENANCE);
+  const settings = { outputDirectory: root };
+  const progress = [];
+  const window = new ReportThumbnails({
+    store: { get: (k) => settings[k] },
+    userDataPath: userData,
+    ffprobe: FFPROBE,
+    look: new ThumbnailLook({ store: { get: (k) => settings[k], set: (k, v) => { settings[k] = v; } }, userDataPath: userData }),
+    runChoice: () => ({ mode: 'on', setup }),
+    holdJob: (what) => transport.job(what),
+    aiManager: () => aiManager,
+    picture: (file, width) => `picture of ${path.basename(file)} at ${width}`,
+    photoList: () => library.libraryPhotos(userData).map((ph) => ({ name: ph.name, preview: `picture of ${ph.name}`, note: null })),
+    newSeed: () => 11,
+    progress: (e) => progress.push(e.line),
+  });
+  return { out, job, itemId: saved.itemId, window, rec, progress, video };
+}
+
+check('window, picks: saved in click order, pick n pairs with chosen title n by position; copies Pick 1..n; the file to publish is pick 1\'s copy; a fourth pick, one pair twice and an old pick shape are refused; none removes the copies', () => withWorld({}, async (world) => {
+  const { job, itemId, window } = await windowOver(world);
+  const v = await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 2 }, { kind: 'made', pair: 1 }]);
+  assert.deepStrictEqual(v.picks.map((p) => [p.n, p.pick.kind, p.pick.pair, p.pick.wordsFor]), [[1, 'made', 2, 'Title two'], [2, 'made', 1, 'Title one']], 'the order clicked, each with the title its words were written for');
+  const folder = v.record.folder;
+  assert.deepStrictEqual(v.picks.map((p) => p.copy), [path.join(folder, 'picks', 'Pick 1.png'), path.join(folder, 'picks', 'Pick 2.png')]);
+  assert.strictEqual(v.publishFile, path.join(folder, 'picks', 'Pick 1.png'), 'pick 1 is what is published');
+  assert.ok(fs.readFileSync(v.publishFile).equals(fs.readFileSync(v.record.pairs[1].default.render.file)), 'Pick 1 is thumbnail 2, the first clicked');
+  assert.deepStrictEqual(window.summary(job.jobId, itemId).picks.map((p) => p.n), [1, 2], 'the reports page reads the same picks');
+  assert.ok(/at most 3/.test((await rejection(window.savePicks(job.jobId, itemId, [1, 2, 3].map((pair) => ({ kind: 'made', pair })).concat([{ kind: 'made', pair: 1 }])))).message));
+  assert.ok(/Thumbnail 1 is picked twice/.test((await rejection(window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 1 }, { kind: 'made', pair: 1 }]))).message));
+  assert.ok(/neither a pair nor your own image/.test((await rejection(window.savePicks(job.jobId, itemId, [{ title: 'Title one', file: '/x.png' }]))).message));
+  const none = await window.savePicks(job.jobId, itemId, []);
+  assert.deepStrictEqual([none.picks.length, none.publishFile, fs.existsSync(path.join(folder, 'picks'))], [0, null, false], 'no picks: nothing to publish, no copies');
+}));
+
+check('window, swaps: frame, words ("No text"), photo ("No photo", a new draw from the top 3) and logo are drawn at once as a NEW file beside the old; a picked pair\'s pick follows it; rankedFor is kept before the words change', () => withWorld({}, async (world) => {
+  const { job, itemId, window, rec } = await windowOver(world);
+  const first = rec.pairs[0].default.render.file;
+  await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 1 }]);
+  const noText = await window.renderPair(job.jobId, itemId, { pair: 1, phrase: null });
+  const p1 = noText.record.pairs[0];
+  assert.deepStrictEqual([p1.default.phrase, p1.default.kind], [null, null]);
+  assert.strictEqual(path.basename(p1.default.render.file), 'Pair 1 - Title one (2).png', 'a new file beside the old');
+  assert.ok(fs.existsSync(first), 'the old file stays (a pick or the publish record may point at it)');
+  assert.strictEqual(noText.picks[0].pick.file, p1.default.render.file, 'the pick follows its pair');
+  assert.ok(fs.readFileSync(noText.publishFile).equals(fs.readFileSync(p1.default.render.file)), 'Pick 1 is the new drawing');
+  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().phrase, null, 'drawn with no words');
+  assert.strictEqual(p1.rankedFor, rec.pairs[0].default.phrase, 'the ranking still says which words it was made for');
+  const typed = await window.renderPair(job.jobId, itemId, { pair: 1, phrase: 'my own words', kind: null });
+  assert.deepStrictEqual([typed.record.pairs[0].default.phrase, typed.record.pairs[0].default.kind], ['my own words', null]);
+  const noPhoto = await window.renderPair(job.jobId, itemId, { pair: 2, photo: null, logo: false });
+  assert.deepStrictEqual([noPhoto.record.pairs[1].default.photo, noPhoto.record.pairs[1].default.logo], [null, false]);
+  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().photo, null, 'drawn with no photo');
+  const drawn = await window.renderPair(job.jobId, itemId, { pair: 3, photo: 'draw' });
+  const d3 = drawn.record.pairs[2].default;
+  assert.ok(d3.draw !== null && d3.draw.pool.length <= 3 && d3.draw.pool.some((r) => r.name === d3.photo), JSON.stringify(d3.draw));
+  const other = rec.frames.find((f) => f.id !== rec.pairs[0].default.frameId);
+  const moved = await window.renderPair(job.jobId, itemId, { pair: 1, frameId: other.id });
+  assert.deepStrictEqual([moved.record.pairs[0].default.frameId, moved.record.pairs[0].default.scene], [other.id, other.scene]);
+  assert.ok(/not among this report's candidate frames/.test((await rejection(window.renderPair(job.jobId, itemId, { pair: 1, frameId: 'f999999' }))).message));
+  assert.ok(/no reaction photo "nobody"/.test((await rejection(window.renderPair(job.jobId, itemId, { pair: 1, photo: 'nobody' }))).message));
+  // A record from before phase 2 (no rankedFor): the first words change records what the ranking was for.
+  const oldRec = JSON.parse(JSON.stringify(rec));
+  for (const p of oldRec.pairs) delete p.rankedFor;
+  const again = await windowOver(world, { record: oldRec });
+  const changed = await again.window.renderPair(again.job.jobId, again.itemId, { pair: 2, phrase: 'OTHER WORDS', kind: 'claim' });
+  assert.strictEqual(changed.record.pairs[1].rankedFor, rec.pairs[1].default.phrase);
+}));
+
+check('window, own image: Owen\'s file is a pick (checked against YouTube\'s rules, read in place, never moved); a too-small image is refused by the thumbnail door', () => withWorld({}, async (world) => {
+  const { job, itemId, window } = await windowOver(world);
+  const { root } = world;
+  const mine = picture(path.join(root, 'Desktop', 'my thumbnail.png'), '1280x720');
+  const before = fs.readFileSync(mine);
+  const v = await window.savePicks(job.jobId, itemId, [{ kind: 'own', file: mine }, { kind: 'made', pair: 3 }]);
+  assert.deepStrictEqual(v.picks.map((p) => p.pick.kind), ['own', 'made']);
+  assert.ok(fs.readFileSync(v.publishFile).equals(before), 'his image is pick 1, and it is what is published');
+  assert.ok(fs.readFileSync(mine).equals(before) && fs.existsSync(mine), 'his file is only read');
+  const small = picture(path.join(root, 'Desktop', 'tiny.png'), '320x180');
+  const err = await rejection(window.savePicks(job.jobId, itemId, [{ kind: 'own', file: small }]));
+  assert.ok(/320x180/.test(err.message), err.message);
+  // The only pick, on a report with no story (no folder yet): the picks get one.
+  const bare = await windowOver(world, { noStory: true });
+  const only = await bare.window.savePicks(bare.job.jobId, bare.itemId, [{ kind: 'own', file: mine }]);
+  assert.strictEqual(only.record.state, 'no-story');
+  assert.ok(only.publishFile.startsWith(path.join(bare.job.txtFolder, 'thumbnails', `${bare.job.jobId}-${bare.itemId}`)), only.publishFile);
+}));
+
+check('window, rewrite words for a title: one words call carrying the title and the tone/photo decides on ONE held load of the 27B; the pair and its pick follow; a second action while one runs is refused; the hold is given back', () => withWorld({}, async (world) => {
+  const { job, itemId, window } = await windowOver(world);
+  const { server, plainCalls } = world;
+  await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 2 }]);
+  const leasesBefore = server.leases.taken.length;
+  const callsBefore = plainCalls.length;
+  const decidesBefore = server.decideBodies().length;
+  const running = window.pairTitle(job.jobId, itemId, 2, 'Title four');
+  const busy = await rejection(window.renderPair(job.jobId, itemId, { pair: 1, phrase: null }));
+  assert.ok(/^Still writing words for this report/.test(busy.message), busy.message);
+  const v = await running;
+  const words = plainCalls.slice(callsBefore);
+  assert.strictEqual(words.length, 1, 'one words call');
+  assert.ok(words[0].prompt.includes('\nTitle four\n'), 'carrying the new title');
+  assert.ok(words[0].job !== undefined, 'under the window\'s held job');
+  assert.strictEqual(server.decideBodies().length - decidesBefore, 2, 'the tone and one photo question');
+  // The fake keeps a model in memory after its lease goes back, so a reload shows as a second lease.
+  const leases = server.leases.taken.slice(leasesBefore);
+  assert.deepStrictEqual(leases.map((l) => l.model), ['qwen3.8-27b-8bit'], 'one lease on the 27B for the words and the photos (no reload between them)');
+  const p2 = v.record.pairs[1];
+  assert.deepStrictEqual([p2.title, p2.default.kind, p2.default.phrase, p2.rankedFor], ['Title four', 'stakes', 'MAYBE TOMORROW', 'MAYBE TOMORROW']);
+  assert.deepStrictEqual([v.picks[0].pick.pair, v.picks[0].pick.wordsFor, v.picks[0].pick.file], [2, 'Title four', p2.default.render.file], 'the pick follows, now written for its title');
+  assert.strictEqual(window.heldModel(), 'qwen3.8-27b-8bit');
+  const released = server.leases.released.length;
+  assert.strictEqual(await window.releaseHold('the window closed'), 'qwen3.8-27b-8bit');
+  assert.ok(server.leases.released.length > released, 'the lease went back to the server');
+  assert.strictEqual(await window.releaseHold('again'), null);
+}));
+
+check('window, no story: 2 screenshots make 2 pairs for the 2 titles given, a non-16:9 one cut to 16:9 and said; own picks kept; a report whose pairs came from its story refuses screenshots', () => withWorld({}, async (world) => {
+  const { job, itemId, window } = await windowOver(world, { noStory: true });
+  const { root } = world;
+  const { plainCalls } = world;
+  const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
+  await window.savePicks(job.jobId, itemId, [{ kind: 'own', file: mine }]);
+  const wide = picture(path.join(root, 'Desktop', 'Screenshot wide.png'), '1440x900');
+  const exact = picture(path.join(root, 'Desktop', 'Screenshot exact.png'), '1280x720');
+  const callsBefore = plainCalls.length;
+  const v = await window.useScreenshots(job.jobId, itemId, [wide, exact], ['Title two', 'Title one']);
+  const r = v.record;
+  assert.strictEqual(r.state, 'made', r.line);
+  assert.deepStrictEqual(r.pairs.map((p) => [p.pair, p.title, p.default.frameId]), [[1, 'Title two', 'shot1'], [2, 'Title one', 'shot2']]);
+  assert.strictEqual(r.source.video, null);
+  assert.ok(r.source.lines.some((l) => /Screenshot wide\.png is 1440x900, not 16:9, so its middle was cut to 16:9/.test(l)), r.source.lines.join(' | '));
+  assert.ok(r.source.lines.some((l) => /Screenshot exact\.png \(1280x720\) is used whole/.test(l)), r.source.lines.join(' | '));
+  assert.deepStrictEqual(plainCalls.slice(callsBefore).filter((c) => /^thumbnail words/.test(c.what)).map((c) => c.prompt.includes('\nTitle two\n') ? 2 : c.prompt.includes('\nTitle one\n') ? 1 : 0), [2, 1], 'one words call per screenshot, each with its title');
+  assert.strictEqual(r.story.state, 'none', 'the story (and why there is none) is kept');
+  const probe = JSON.parse(execFileSync(FFPROBE, ['-v', 'error', '-show_entries', 'stream=width,height', '-of', 'json', path.join(r.folder, 'full', 'shot1.png')]).toString()).streams[0];
+  assert.deepStrictEqual([probe.width, probe.height], [1920, 1080], 'written 16:9 at 1920x1080');
+  assert.ok(r.pairs.every((p) => p.default.render.ok && fs.existsSync(p.default.render.file)));
+  assert.deepStrictEqual(v.picks.map((p) => p.pick.kind), ['own'], 'his own pick stays');
+  assert.strictEqual(r.line, '2 title and thumbnail pairs are ready to pick from.');
+  assert.ok(/1 to 3 screenshots/.test((await rejection(window.useScreenshots(job.jobId, itemId, [wide, exact, wide, exact], ['a', 'b', 'c', 'd']))).message));
+  assert.ok(/needs a title/.test((await rejection(window.useScreenshots(job.jobId, itemId, [wide], []))).message));
+  await window.releaseHold('the check moves on');
+  const story = await windowOver(world);
+  assert.ok(/already has thumbnails from its story/.test((await rejection(story.window.useScreenshots(story.job.jobId, story.itemId, [wide], ['Title one']))).message));
+}));
+
+check('delete: deleting an item removes its thumbnails folder (and the empty thumbnails/ folder); a folder named elsewhere is left and said; a whole job\'s cleanup removes each item\'s folder', () => withWorld({}, async (world) => {
+  const { out, job, itemId, rec } = await windowOver(world);
+  const parent = path.join(job.txtFolder, 'thumbnails');
+  assert.ok(fs.existsSync(rec.folder) && path.dirname(rec.folder) === parent, rec.folder);
+  const receipt = await out.deleteItem(job.jobId, itemId, { removeSelection: async () => ({ removed: false }) });
+  assert.strictEqual(receipt.thumbnailsFolderRemoved, rec.folder);
+  assert.ok(!fs.existsSync(rec.folder) && !fs.existsSync(parent), 'the folder, and the emptied thumbnails/ folder, are gone');
+  // A record naming a folder outside the report's thumbnails folder is never removed.
+  const elsewhere = path.join(world.root, 'Movies', 'keep me');
+  fs.mkdirSync(elsewhere, { recursive: true });
+  const odd = await windowOver(world, { record: { ...rec, folder: elsewhere, picks: [] } });
+  const r2 = await odd.out.deleteItem(odd.job.jobId, odd.itemId, { removeSelection: async () => ({ removed: false }) });
+  assert.strictEqual(r2.thumbnailsFolderRemoved, null);
+  assert.ok(/is not in this report's thumbnails folder/.test(r2.thumbnailsReason) && fs.existsSync(elsewhere), r2.thumbnailsReason);
+  // The whole-job cleanup (history delete, the four-week prune).
+  const kept = path.join(world.root, 'job-thumbs', 'thumbnails', 'j-1');
+  fs.mkdirSync(kept, { recursive: true });
+  const cleanup = deleteJobTxtFiles({ txt_folder: path.join(world.root, 'job-thumbs'), items: [{ txt_path: '', thumbnails: { folder: kept } }, { txt_path: '' }] });
+  assert.strictEqual(cleanup.thumbnailFolders, 1);
+  assert.ok(!fs.existsSync(kept));
+}));
+
+check('the tab is gone and nothing dangles: no route, sidebar entry, component, lab service, combine or thumbs: channel; every thumbnails: channel offered has a handler and the reverse; no THUMBNAIL TEXT OPTIONS section; pick 1 is published through the publish door', () => {
+  const read = (rel) => fs.readFileSync(path.join(REPO, rel), 'utf8');
+  for (const gone of ['electron/services/thumbnails/lab-service.ts', 'electron/services/thumbnails/thumbnail-lab-ipc.ts', 'electron/services/thumbnails/combine.ts', 'frontend/src/app/components/thumbnails']) {
+    assert.ok(!fs.existsSync(path.join(REPO, gone)), `${gone} is still there`);
+  }
+  assert.ok(!/path: 'thumbnails'/.test(read('frontend/src/app/app.routes.ts')), 'the route is gone');
+  assert.ok(!/routerLink="\/thumbnails"/.test(read('frontend/src/app/app.html')), 'the sidebar entry is gone');
+  const main = read('electron/main.ts');
+  assert.ok(/setupThumbnailsIpc\(/.test(main) && !/setupThumbnailLabIpc/.test(main));
+  const preload = read('electron/preload.ts');
+  const ipc = read('electron/services/thumbnails/thumbnails-ipc.ts');
+  const bridge = read('frontend/src/app/services/electron.ts');
+  assert.ok(!/'thumbs:/.test(preload) && !/'thumbs:/.test(ipc) && !/thumbs[A-Z]/.test(bridge), 'no thumbs: channel anywhere');
+  const offered = new Set([...preload.matchAll(/ipcRenderer\.(?:invoke|on)\('(thumbnails:[a-z-]+)'/g)].map((m) => m[1]));
+  const handled = new Set([...ipc.matchAll(/ipcMain\.handle\('(thumbnails:[a-z-]+)'/g)].map((m) => m[1]));
+  handled.add('thumbnails:progress'); // pushed by main, listened to by the preload
+  assert.deepStrictEqual([...offered].sort(), [...handled].sort(), 'the preload and the handlers name the same channels');
+  const html = read('frontend/src/app/components/metadata-reports/metadata-reports.html');
+  assert.ok(!/thumbnail_text|Thumbnail text/.test(html), 'no THUMBNAIL TEXT OPTIONS section on the reports page');
+  assert.ok(/openThumbnails\(\)/.test(html), 'the reports page opens the Thumbnails window');
+  const win = read('frontend/src/app/components/thumbnails-window/thumbnails-window.ts');
+  assert.ok(/this\.publish\.setThumbnail\(view\.publishFile\)/.test(win), 'pick 1 goes through the publish record\'s one thumbnail door');
+});
+
+run('thumbnails in the metadata run and the reports page\'s window: the story link, stage order and one swap, words per title, no story, failures, off, storage, ordered picks, swaps, own image, rewrite for a title, screenshots, delete, the tab gone');

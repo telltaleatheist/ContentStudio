@@ -198,7 +198,7 @@ export async function judgeThumbnails(input: {
     throw plainScoringError(err, model);
   });
   if (outcome.kind === 'parked') {
-    await deps.lanes.stopJob(input.jobId, 'the Thumbnails tab does not wait for a busy server');
+    await deps.lanes.stopJob(input.jobId, 'thumbnails do not wait for a busy server');
     const server = outcome.result.server ?? 'no server';
     throw new ThumbnailJobWaiting(server, `${outcome.result.server === null ? 'No Crucible server can take the job' : `"${server}" cannot take the job now`}: ${outcome.result.holderLine}. Press Suggest again when it is free.`);
   }

@@ -43,9 +43,9 @@ export type MetadataRoutingTaskId =
 
 /**
  * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
- * `thumbnails` rows serve the thumbnails: the Thumbnails tab (2026-09-28) and, since the thumbnails
- * pipeline the same day, the metadata run's thumbnail stages (thumbnails/pipeline.ts reads the three
- * rows at job time). The run's transcript ceiling, its routing log line and the dialog's change-all
+ * `thumbnails` rows serve the thumbnails: the metadata run's thumbnail stages (thumbnails/pipeline.ts
+ * reads the three rows at job time) and the reports page's Thumbnails window (report-thumbnails.ts:
+ * words and photos again on demand). The Thumbnails test tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and the dialog's change-all
  * menu still cover the metadata rows only: the thumbnail rows decide no field's words, and a
  * change-all to claude -p would put the frame and tone/photo rows on a model that cannot decide.
  */
@@ -232,7 +232,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    */
   'qwen38-27b-8bit': { kind: 'local', label: 'Qwen 27B (8-bit)', model: 'qwen3.8-27b-8bit', crucibleModel: 'qwen3.8-27b-8bit' },
   /**
-   * THE VISION RUNGS (2026-09-28), offered on the Thumbnails tab's frame row only. Each is a
+   * THE VISION RUNGS (2026-09-28), offered on the thumbnail frame row only. Each is a
    * Crucible manifest that declares `image`: the 9B and 27B with their vision towers served
    * (`-vl`, sharing their text twins' downloads) and the small 4B/2B/0.8B, which read images as
    * well as text. The 4B option above is the same model: it is marked `vision` so the frame row can

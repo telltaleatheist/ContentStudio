@@ -136,6 +136,19 @@
     </mat-card-content>
   </mat-card>
 
+  <!-- The one thumbnail look (phase 2, 2026-09-28): the reaction photos, the logo and the font,
+       colours and spaces, for all three channels. The same dialog opens from the reports page's
+       Thumbnails window; saved on its own, not by "Save Settings". -->
+  <mat-card class="settings-card" id="thumbnail-look-section">
+    <mat-card-header>
+      <mat-card-title>Thumbnails</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <p class="small">One look for all three channels: your reaction photos and their notes, the logo, and the font, colours and spaces. The metadata run draws the thumbnails with it.</p>
+      <button mat-stroked-button (click)="openThumbnailLook()">Thumbnail look…</button>
+    </mat-card-content>
+  </mat-card>
+
   <!-- Spreaker Section
        Its own Save button, and deliberately not part of "Save Settings" below: these two
        values live in their own 0600 file in userData and are validated together in the

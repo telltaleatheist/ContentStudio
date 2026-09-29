@@ -1,4 +1,6 @@
-import { Component, signal, OnInit, OnDestroy, computed } from '@angular/core';
+import { Component, signal, OnInit, OnDestroy, computed, inject } from '@angular/core';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { ThumbnailLookDialog } from '../thumbnails-window/thumbnail-look-dialog';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -29,6 +31,7 @@ interface DownloadComponent {
     MatInputModule,
     MatSelectModule,
     FormsModule,
+    MatDialogModule,
     CrucibleServers
   ],
   templateUrl: './settings.html',
@@ -141,6 +144,13 @@ export class Settings implements OnInit, OnDestroy {
     if (!status.hasRefreshToken) missing.push('no refresh token is stored');
     return missing.join(', ');
   });
+
+  private readonly dialog = inject(MatDialog);
+
+  /** The one thumbnail look for all three channels (also reachable from the reports page's Thumbnails window). */
+  openThumbnailLook(): void {
+    this.dialog.open(ThumbnailLookDialog, { width: '760px', maxHeight: '90vh', autoFocus: false });
+  }
 
   constructor(
     private electron: ElectronService,

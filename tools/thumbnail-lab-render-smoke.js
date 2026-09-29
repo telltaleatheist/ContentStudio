@@ -1,10 +1,14 @@
 /**
- * Thumbnails tab — the ELECTRON half of `npm run check:thumbnail-lab` (2026-09-28).
+ * The thumbnail renderer: the ELECTRON half of `npm run check:thumbnail-lab` (2026-09-28; built
+ * for the Thumbnails test tab, which phase 2 retired: the metadata run and the reports page's
+ * Thumbnails window draw with it now).
  *
  * The pure half (tools/thumbnail-lab-checks.js) proves the arithmetic; this proves the page:
  * the hidden canvas finds faces with Apple Vision (Chromium's FaceDetector), measures in a real
  * installed font, refuses a font that is not installed, draws, and the file it writes passes the
- * app's own thumbnail door (≤ 2 MiB, 1280x720). It needs the electron binary for the page:
+ * app's own thumbnail door (≤ 2 MiB, 1280x720). Words are always drawn (phase 2): a phrase no
+ * face-free space holds is drawn smaller in the text box, never refused. It needs the electron
+ * binary for the page:
  *
  *   npm run build:electron && npx electron tools/thumbnail-lab-render-smoke.js [outDir]
  *
@@ -13,9 +17,9 @@
  * space), and a missing or unreadable logo file is refused naming it.
  *
  * The library (2026-09-28): a real PNG cut-out and logo are copied into a scratch userData's
- * `thumbnail-lab/` (never Owen's), read back from there by the tab's own lab, and an unreadable
- * logo is refused before anything is copied. "TAKE YOUR CLOTHES OFF" is rendered on the reference
- * frame at the new 7% floor, up to three lines (evidence render).
+ * `thumbnail-lab/` (never Owen's), read back from there by ThumbnailLook (look.ts), and an
+ * unreadable logo is refused before anything is copied. "TAKE YOUR CLOTHES OFF" is rendered on the
+ * reference frame on one or two lines (evidence render).
  *
  * Its inputs are synthetic (a drawn "face" is not a face Vision will find, so the face path is
  * checked on the reference frame when it is on this Mac, and skipped by name when it is not).
@@ -35,10 +39,9 @@ const layout = require(path.join(ROOT, 'services/thumbnails/layout.js'));
 const tv = require(path.join(ROOT, 'services/publish/thumbnail-validate.js'));
 const photos = require(path.join(ROOT, 'services/thumbnails/reaction-photos.js'));
 const logos = require(path.join(ROOT, 'services/thumbnails/logo.js'));
-const combine = require(path.join(ROOT, 'services/thumbnails/combine.js'));
 const library = require(path.join(ROOT, 'services/thumbnails/photo-library.js'));
 const { photoName } = require(path.join(ROOT, 'services/thumbnails/photo-trim.js'));
-const { ThumbnailLab } = require(path.join(ROOT, 'services/thumbnails/lab-service.js'));
+const { ThumbnailLook } = require(path.join(ROOT, 'services/thumbnails/look.js'));
 require(path.join(ROOT, 'services/metadata/prompt-assets.js')).initPromptAssets(path.join(REPO, 'electron', 'assets', 'prompts'));
 
 /** The PNG photos of a folder by name, read in place (Owen's own folder is only ever read here). */
@@ -127,11 +130,17 @@ app.whenReady().then(async () => {
     assert(r.plan.lines.every((l) => l.text === l.text.toUpperCase()), 'not capitals');
   });
 
-  await check('a phrase too long for the space is refused in plain words and nothing is written', async () => {
+  await check('a phrase too long for the space at the floor is still drawn: every word, one or two lines, inside the text box, and the file passes the door', async () => {
     const stem = path.join(scratch, 'too-long');
-    const r = await renderThumbnail({ canvas, frame: synthetic, phrase: 'the rapture keeps failing every single year since nineteen eighty eight', style: { ...style, reactionSlot: { x: 0.3, y: 0.2, w: 0.68, h: 0.78 } }, photo: null, logo: null, outStem: stem });
-    assert(!r.ok && /too long/.test(r.reason) && /Pick a shorter option/.test(r.reason), JSON.stringify(r));
-    assert(!fs.existsSync(`${stem}.png`) && !fs.existsSync(`${stem}.jpg`), 'a file was written');
+    const phrase = 'the rapture keeps failing every single year since nineteen eighty eight';
+    const tight = { ...style, reactionSlot: { x: 0.3, y: 0.2, w: 0.68, h: 0.78 } };
+    const r = await renderThumbnail({ canvas, frame: synthetic, phrase, style: tight, photo: null, logo: null, outStem: stem });
+    assert(r.ok && r.plan, JSON.stringify(r));
+    assert(r.plan.lines.length <= 2 && r.plan.lines.map((l) => l.text).join(' ') === phrase.toUpperCase(), JSON.stringify(r.plan.lines));
+    const box = r.plan.box, p = r.plan.patch;
+    assert(p.x >= box.x - 0.01 && p.x + p.w <= box.x + box.w + 0.01 && p.y >= box.y - 0.01 && p.y + p.h <= box.y + box.h + 0.01, `the patch leaves the text box: ${JSON.stringify(p)} in ${JSON.stringify(box)}`);
+    assert(fs.existsSync(`${stem}.png`) || fs.existsSync(`${stem}.jpg`), 'no file was written');
+    tv.validateThumbnailFile(r.path);
   });
 
   // A synthetic cut-out: a 1920x1080 transparent canvas, an opaque "person" block down to the
@@ -234,7 +243,7 @@ app.whenReady().then(async () => {
 
   await check('the library: a cut-out and a logo are copied into <userData>/thumbnail-lab (a scratch userData) and read from there; an unreadable logo is refused before anything is copied', async () => {
     const userData = path.join(scratch, 'userData');
-    const lab = new ThumbnailLab({ store: { get: () => undefined, set: () => {} }, userDataPath: userData });
+    const lab = new ThumbnailLook({ store: { get: () => undefined, set: () => {} }, userDataPath: userData });
     const added = lab.addPhotos([cutDir], false);
     assert(added.added.join() === 'keeper', JSON.stringify(added));
     const shown = lab.photos();
@@ -274,17 +283,18 @@ app.whenReady().then(async () => {
   }
 
   if (fs.existsSync(REFERENCE_FRAME) && fs.existsSync(SELFIES) && fs.existsSync(LOGO)) {
-    await check('the reference frame, nothing starred but a frame: A/B/C take the top claim, stakes and reaction, each variant\'s top-ranked photo (a stubbed ranking) and Owen\'s logo (evidence renders)', async () => {
-      const written = { claim: ['DON\'T STAND UNDER A ROOF', 'SHE SAYS JESUS TOLD HER'], stakes: ['MAYBE TOMORROW'], reaction: ['THE RAPTURE IS HERE', 'OH PLEASE'] };
-      const out = combine.combine({ frames: ['f800'], texts: [], photos: [], written }, { mode: 'best' });
-      assert(out.ok, out.reason);
-      // The judge's ranking, stubbed locally (no Crucible): what the suggestion would hand back per variant.
+    await check('the reference frame as the run\'s three defaults: the top claim, stakes and reaction, each pair\'s top-ranked photo (a stubbed ranking) and Owen\'s logo (evidence renders)', async () => {
+      const variants = [
+        { letter: 'A', text: { kind: 'claim', phrase: 'DON\'T STAND UNDER A ROOF' } },
+        { letter: 'B', text: { kind: 'stakes', phrase: 'MAYBE TOMORROW' } },
+        { letter: 'C', text: { kind: 'reaction', phrase: 'THE RAPTURE IS HERE' } },
+      ];
+      // The judge's ranking, stubbed locally (no Crucible): what the tone/photo step would hand back per pair.
       const stub = { A: ['horrified', 'oh please'], B: ['oh please', 'laugh'], C: ['laugh', 'oh wow'] };
       const list = listIn(SELFIES);
       const logo = logos.readLogo(LOGO);
-      for (const v of out.variants) {
-        assert(v.text.phrase !== null && v.photo.pick === 'top', `${v.letter}: ${JSON.stringify(v)}`);
-        const name = stub[v.photo.of][0];
+      for (const v of variants) {
+        const name = stub[v.letter][0];
         const file = list.find((p) => p.name === name);
         assert(file, `no "${name}" photo`);
         const r = await renderThumbnail({
@@ -302,23 +312,22 @@ app.whenReady().then(async () => {
   }
 
   if (fs.existsSync(REFERENCE_FRAME)) {
-    await check('"TAKE YOUR CLOTHES OFF" on the reference frame fits at the 7% floor on up to three lines, clear of the face (evidence render)', async () => {
+    await check('"TAKE YOUR CLOTHES OFF" on the reference frame is drawn whole on one or two lines, clear of the face when the 7% floor allows (evidence render)', async () => {
       assert(style.minCapFraction === 0.07, `floor ${style.minCapFraction}`);
-      const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - 7% floor') });
+      const r = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off') });
       assert(r.ok, JSON.stringify(r));
-      assert(r.plan.lines.length <= 3 && r.plan.capPx >= 0.07 * OUTPUT_HEIGHT - 0.01, JSON.stringify(r.plan.lines));
-      for (const f of r.faces) {
+      assert(r.plan.lines.length <= 2 && r.plan.lines.map((l) => l.text).join(' ') === 'TAKE YOUR CLOTHES OFF', JSON.stringify(r.plan.lines));
+      if (r.plan.placement === 'clear') for (const f of r.faces) {
         const face = layout.paddedFace(f, OUTPUT_WIDTH, OUTPUT_HEIGHT), b = r.plan.patch, e = 0.01;
         assert(!(b.x < face.x + face.w - e && face.x < b.x + b.w - e && b.y < face.y + face.h - e && face.y < b.y + b.h - e), 'the words overlap a face');
       }
       tv.validateThumbnailFile(r.path);
       console.log(`       wrote ${r.path} (letters ${r.plan.capPx.toFixed(0)} px on ${r.plan.lines.length} line(s): ${r.plan.lines.map((l) => l.text).join(' / ')})`);
-      // Squeezed by a reaction space as wide as Owen's frame left: the 12% floor refuses, 7% fits.
+      // Squeezed by a reaction space as wide as Owen's frame left: drawn anyway, smaller, and said.
       const tight = { ...style, reactionSlot: { x: 0.36, y: 0.3, w: 0.62, h: 0.68 } };
-      const old = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: { ...tight, minCapFraction: 0.12 }, photo: null, logo: null, outStem: path.join(scratch, 'tight-12') });
-      const now = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: tight, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - tight space, 7% floor') });
-      console.log(`       tight space: at 12% ${old.ok ? 'fits at ' + old.plan.capPx.toFixed(0) + ' px' : 'refused: ' + old.reason}; at 7% ${now.ok ? 'fits at ' + now.plan.capPx.toFixed(0) + ' px on ' + now.plan.lines.length + ' line(s)' : 'refused: ' + now.reason}`);
-      assert(now.ok, JSON.stringify(now));
+      const now = await renderThumbnail({ canvas, frame: REFERENCE_FRAME, phrase: 'TAKE YOUR CLOTHES OFF', style: tight, photo: null, logo: null, outStem: path.join(outDir, 'take your clothes off - tight space') });
+      console.log(`       tight space: drawn at ${now.plan.capPx.toFixed(0)} px on ${now.plan.lines.length} line(s) (${now.plan.placement})${now.notes.length ? ' - ' + now.notes.join(' ') : ''}`);
+      assert(now.ok && now.plan.lines.length <= 2, JSON.stringify(now.plan.lines));
     });
 
     await check('the reference frame: Apple Vision finds her face, the text avoids it, and the render passes the door (evidence render)', async () => {

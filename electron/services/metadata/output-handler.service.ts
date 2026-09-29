@@ -8,7 +8,7 @@ import * as path from 'path';
 import { MetadataResult } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
 import { METADATA_FIELDS } from './metadata-fields';
-import { readItemThumbnails, type ItemThumbnails } from '../thumbnails/pipeline-record';
+import { THUMBNAILS_FOLDER, readItemThumbnails, type ItemThumbnails } from '../thumbnails/pipeline-record';
 import type { ScrubFailure, ScrubRecord } from './scrub';
 import {
   putBackPrevious,
@@ -175,6 +175,10 @@ export interface DeleteItemReceipt {
   txtReason?: string;
   txtFolderRemoved: boolean;
   selectionDeleted: boolean;
+  /** The item's thumbnails folder that was removed (`<report folder>/thumbnails/<jobId>-<n>/`), or null. */
+  thumbnailsFolderRemoved: string | null;
+  /** Present when the item names a thumbnails folder that was NOT removed, saying why. */
+  thumbnailsReason?: string;
   /** False when the array's length didn't match items[] and was therefore left alone. */
   inputsSpliced: boolean;
   inputTypesSpliced: boolean;
@@ -757,6 +761,11 @@ export class OutputHandlerService {
       txtDeleted = true;
     }
 
+    // 2b. The item's thumbnails folder (phase 2, Owen 2026-09-28: deleting a report removes its
+    //     thumbnails). Only the folder the item's own record names, and only when it sits where
+    //     the metadata run puts it (`<report folder>/thumbnails/`); anything else is left and said.
+    const thumbs = removeItemThumbnailsFolder(item, job.txt_folder);
+
     // 3. The job file, atomically. `original_inputs` / `input_types` are spliced only
     //    when they are actually aligned with items[]; when they are not (compilations,
     //    and the 16 live files that already disagree) they are left exactly as they are
@@ -803,6 +812,8 @@ export class OutputHandlerService {
       ...(txtReason ? { txtReason } : {}),
       txtFolderRemoved,
       selectionDeleted: selection.removed,
+      thumbnailsFolderRemoved: thumbs.removed,
+      ...(thumbs.reason ? { thumbnailsReason: thumbs.reason } : {}),
       inputsSpliced,
       inputTypesSpliced,
     };
@@ -1108,6 +1119,8 @@ export function sanitizeItemFilename(name: string): string {
  */
 export interface JobTxtCleanup {
   deleted: number;
+  /** Items' thumbnails folders removed (`<report folder>/thumbnails/<jobId>-<n>/`). */
+  thumbnailFolders: number;
   /** Recorded a path, but nothing was there. */
   missing: number;
   /** Left on disk because the item recorded no path. */
@@ -1118,10 +1131,17 @@ export interface JobTxtCleanup {
 }
 
 export function deleteJobTxtFiles(job: { items?: any[]; txt_folder?: string }): JobTxtCleanup {
-  const result: JobTxtCleanup = { deleted: 0, missing: 0, left: 0, folderRemoved: false, failed: [] };
+  const result: JobTxtCleanup = { deleted: 0, thumbnailFolders: 0, missing: 0, left: 0, folderRemoved: false, failed: [] };
 
   const items = Array.isArray(job.items) ? job.items : [];
   for (const item of items) {
+    try {
+      const thumbs = removeItemThumbnailsFolder(item, job.txt_folder);
+      if (thumbs.removed !== null) result.thumbnailFolders++;
+      if (thumbs.reason) result.failed.push({ path: String(item?.thumbnails?.folder), error: thumbs.reason });
+    } catch (error) {
+      result.failed.push({ path: String(item?.thumbnails?.folder), error: error instanceof Error ? error.message : String(error) });
+    }
     const txtPath = item && typeof item.txt_path === 'string' ? item.txt_path.trim() : '';
     if (!txtPath) {
       result.left++;
@@ -1154,4 +1174,28 @@ export function deleteJobTxtFiles(job: { items?: any[]; txt_folder?: string }): 
   }
 
   return result;
+}
+
+/**
+ * Remove one item's thumbnails folder: the folder its `thumbnails` record names, when it sits
+ * directly in `<report folder>/thumbnails/` (where the metadata run and the Thumbnails window put
+ * it). A folder named anywhere else is never removed: the reason comes back instead. The
+ * `thumbnails/` folder itself goes too once it is empty. Owen's own image files are read in place
+ * and never inside it, so they are never touched.
+ */
+export function removeItemThumbnailsFolder(item: any, txtFolder: string | undefined): { removed: string | null; reason?: string } {
+  const record = item?.thumbnails;
+  if (record === undefined || record === null || typeof record !== 'object') return { removed: null };
+  const folder = record.folder;
+  if (folder === null || folder === undefined) return { removed: null };
+  if (typeof folder !== 'string' || folder.trim() === '') return { removed: null, reason: `its thumbnails record names no usable folder (${JSON.stringify(folder)})` };
+  if (typeof txtFolder !== 'string' || txtFolder.trim() === '') return { removed: null, reason: `the report records no folder, so ${folder} was left` };
+  const parent = path.resolve(txtFolder, THUMBNAILS_FOLDER);
+  if (path.dirname(path.resolve(folder)) !== parent) {
+    return { removed: null, reason: `${folder} is not in this report's ${THUMBNAILS_FOLDER} folder (${parent}), so it was left` };
+  }
+  if (!fs.existsSync(folder)) return { removed: null };
+  fs.rmSync(folder, { recursive: true, force: true });
+  if (fs.existsSync(parent) && fs.readdirSync(parent).length === 0) fs.rmdirSync(parent);
+  return { removed: folder };
 }

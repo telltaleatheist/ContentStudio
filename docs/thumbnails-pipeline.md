@@ -1,10 +1,12 @@
-# Thumbnails in the metadata run (phase 1)
+# Thumbnails: the metadata run and the reports page
 
-Built 2026-09-28 (LEDGER #240). The metadata job now makes the thumbnails while its models are
+Phase 1 built 2026-09-28 (LEDGER #240): the metadata job makes the thumbnails while its models are
 loaded, so the report opens with **three title and thumbnail pairs** ready for YouTube's Test &
-Compare ("title and thumbnail" mode takes up to 3 pairs). Phase 2 (a later build) adds the reports
-page's thumbnail pop-up, reordering and swapping, the ordered picks, publishing, and removes the
-Thumbnails test tab. This file is the contract phase 2 is written against.
+Compare ("title and thumbnail" mode takes up to 3 pairs). Phase 2 built the same day (LEDGER #241):
+the reports page's **Thumbnails window** (ordered picks, swaps, rewriting words for a title, own
+images, screenshots for a report with no story), publishing pick 1, the one **Thumbnail look**, the
+new text rules, deleting a report's thumbnails with it, and the Thumbnails test tab removed
+(docs/thumbnails-lab.md is kept, marked retired). Phase 2 is described in its own section below.
 
 Owen's rulings (2026-09-28):
 - Thumbnails are produced during the metadata job, while models are loaded.
@@ -98,9 +100,10 @@ record's `transcriptRef` is not written, so no manual link is ever overwritten.
 - **Tone and photos.** One tone decide, then every reaction photo ranked for each pair's default
   words. Each pair's photo is drawn from its top 3 (photo-draw.ts), a photo already on another pair
   left out while another remains, with ONE seed per item stored as `seed`.
-- **Render.** 1280x720 on the saved look (`thumbnailLab.style`, the tab's; the default look when
-  none is saved, said), the logo kept in the app (none kept: none drawn, said), the renderer's own
-  rules (face-safe text, 7% floor, too long refused for that pair and said).
+- **Render.** 1280x720 on the saved look (`thumbnailLab.style`, look.ts; the default look when none
+  is saved, said), the logo kept in the app (none kept: none drawn, said), the renderer's own rules
+  (phase 2: the text box left of the photo, one or two lines, shrunk to fit, never refused; see
+  "The text always fits" below).
 
 ## Where it is stored
 
@@ -161,12 +164,12 @@ from before this build). Version 1:
   "logo": "<userData>/thumbnail-lab/logo/logo.png",
   "lines": ["Sampled 757 frames ...", "The tone reads as absurd (55%) ...; photos drawn with seed 1234567."],
   "timings": [{ "stage": "story", "seconds": 0.8 }, ...],
-  "picks": []                  // phase 2: ordered [{ "title", "file" }], at most 3, no title twice
+  "picks": []                  // phase 2: ordered, at most 3 (see "The ordered picks" below)
 }
 ```
 
-**States.** `made`: every stage ran (a pair whose words did not fit carries `render.ok: false` and
-its reason; the line says how many were drawn). `no-story`: `story.state` is `none`, its reason in
+**States.** `made`: every stage ran (before phase 2 a pair whose words did not fit carried
+`render.ok: false` and its reason; the words are always drawn now). `no-story`: `story.state` is `none`, its reason in
 `line`; nothing written, no model called. `off`: switched off for the run, a channel with
 `thumbnails: false`, a channel file that does not say (a locally edited copy), a caller without the
 thumbnail setup (the test CLI), a compilation, or the Thumbnails tab's saved settings unreadable;
@@ -178,6 +181,13 @@ a park or a stall is never a failure: it ends the job through the generator's on
 **The one write door**: `OutputHandlerService.updateItemThumbnails(jobId, itemId, update)` (on the
 write queue; the record is read and checked, `update` returns the new record, which is checked
 again before it is written; a refused write leaves the file byte for byte).
+
+**Phase 2 additions to version 1** (no record had picks before, so the version did not change):
+`pairs[].default.phrase`, `.kind`, `.photo` and `.draw` may be null (Owen's "No text", typed words,
+"No photo", a photo he chose); `pairs[].rankedFor` says which words the photo ranking was made for
+(absent in phase-1 records, where it is the first default's words, and written before the first
+swap changes them); `source.video` is null when the backgrounds are screenshots; `picks` is the
+shape below.
 
 ## The per-run switch
 
@@ -197,43 +207,108 @@ inputs page was off-limits for this build); phase 2 may add it to the queue's op
   still writes the field, and its runs make no thumbnails ("its thumbnails key is missing").
 - The routing dialog's thumbnails group heading no longer says "Not used by metadata runs".
 
-## What phase 2 needs (IPC to build)
+## Phase 2: the reports page (built 2026-09-28, LEDGER #241)
 
-Every write goes through `updateItemThumbnails`. GPU steps outside a metadata job run as their own
-lane job (like the tab: `lanes.runJob`, or standalone `queueAITask` steps under one held job so the
-words and the tone/photo share a load, `lab-service.ts textJob`).
+Owen's rulings (2026-09-28): a Thumbnails pop-up from the metadata report; ordered picks 1/2/3
+like the titles, pair n = title n + thumbnail n, pick 1 the primary with no A/B test; swaps redrawn
+at once on the CPU; "Rewrite words for this title" (27B on demand) when a pair's title changes;
+text always drawn (1 or 2 lines, shrink, the box from the left margin to the photo and up to the
+top, off faces where possible, never refused); manual upload stays and can be a pick; no story:
+1-3 of his screenshots make that many thumbnails; deleting a report removes its thumbnails folder;
+one look for all three channels; pick 1 published through the existing thumbnail path, picks 2-3
+beside it for Test & Compare in Studio; the test tab and the old THUMBNAIL TEXT OPTIONS UI removed.
 
-1. **List candidates**: `thumbnails:item {jobId, itemId}` → the record, plus picture data for the
-   frames it shows (`bestScenes` rows first; `more` on demand; `frames[].small`/`large` are paths).
-2. **Re-render a pair with swapped pieces**: `thumbnails:render-pair {jobId, itemId, pair, frameId?,
-   phrase? (or kind + option index), photo? (a name, or "draw" with a seed), logo: boolean}` → extract
-   the frame (`full/`), render with the record's `look` (or the current saved look, said), write a NEW
-   file beside the old (`Pair 1 - <title> (2).png`), and set `pairs[n].default` to it. Earlier files
-   stay (a pick may point at one). "No text" / "No photo" are Owen's picks only (the tab's rule).
-3. **Re-write words for a different title** (Owen reorders or swaps titles): `thumbnails:pair-title
-   {jobId, itemId, pair, title}` → the words call for that title (`thumbnail_words` row), the photo
-   ranking for the pair's new default words (`thumbnail_judge`; the tone may be reused from
-   `tone`), a new draw and a new render; `pairs[n].title/words/photos/default` replaced. When Owen
-   reorders the report's titles (the publish record's `chosenTitles`), call it for each pair whose
-   title changed. Words already written for a title can be reused when that title moves to another
-   pair (look it up in `pairs[].title`).
-4. **Save ordered picks**: `thumbnails:save-picks {jobId, itemId, picks: [{title, file}]}` → `picks`
-   (index 0 is the first A/B arm; at most 3; no title twice). Publishing reads the picks; nothing
-   before that attaches a thumbnail.
-5. **No story / failed**: `thumbnails:link {jobId, itemId, projectFolder, storyNumber, storySlug}`
-   records a manual link (build the ref with `refFromCandidate(candidate, 'manual')`), then
-   `thumbnails:run {jobId, itemId}` runs the stages for that item as its own lane job (the item's
-   saved transcript for the words; its `titles`/`reroll_gate`/`description` for the pairs).
+### Where things live
 
-**Before the tab goes**: the photo library, photo notes, logo and look are managed only on the tab
-(`lab-service.ts`: add/remove photos, notes, logo, style). `pipeline-setup.ts` imports the store
-keys `STYLE_STORE_KEY` and `PHOTO_NOTES_STORE_KEY` from `lab-service.ts`; move them (and that UI)
-first. Shared modules the pipeline uses and must keep: story-source, story-match, frame-sampler,
-frame-metrics, frame-scenes, frame-ranking, frame-scorer, prompts, words-writer, judge,
-photo-library, photo-draw, reaction-photos, photo-trim, logo, layout, renderer, canvas-page,
-pipeline*. Lab-only: lab-service, thumbnail-lab-ipc, combine, the frontend `components/thumbnails/`.
-The tab's own `linkOf` reads the publish record / `content_provenance`; the pipeline's link is
-`thumbnails.story`, which the pop-up should show.
+| What | Where |
+|------|-------|
+| The window (MatDialog, like the Inputs page's dialogs) | `frontend/src/app/components/thumbnails-window/thumbnails-window.{ts,html,scss}`, opened by the reports page's **Thumbnails** block (under the titles: the record's line, the picks, "Open thumbnails…") |
+| The look (photos, notes, logo, font, colours, spaces) | `thumbnail-look-dialog.ts` (same folder), opened from the window's "Thumbnail look…", the Thumbnails block's "Look…", and **Settings › Thumbnails** — a dialog, because the look is one setting for all three channels and is best edited next to the pictures it changes; Settings reaches the same dialog |
+| Main process | `report-thumbnails.ts` (the window's actions), `look.ts` (the look, moved out of the tab's `lab-service.ts`; the store keys keep their `thumbnailLab.*` names so Owen's saved look and notes stay), `thumbnails-ipc.ts` (the `thumbnails:*` channels) |
+| Keeper | `tools/thumbnail-pipeline-checks.js` (the phase-2 checks at its end) and `tools/thumbnail-lab-checks.js` (the text rules), both in `npm run check:thumbnail-lab` |
+
+IPC (`thumbnails:*`, each answering `{ ok, value }` or `{ ok: false, error }`): `summary`, `item`,
+`frames`, `render-pair`, `pair-title`, `save-picks`, `screenshots`, `choose-own`,
+`choose-screenshots`, `release-model`, `show-folder`, and the look's `get-style`, `set-style`,
+`photos`, `set-photo-note`, `choose-photos`, `add-photos`, `remove-photo`, `copy-old-photos`, `logo`,
+`choose-logo`, `copy-old-logo`; progress on `thumbnails:progress`. Every write goes through
+`updateItemThumbnails`. One action per item at a time (a second is refused in plain words while
+one runs).
+
+### The ordered picks
+
+`picks` is ordered, at most 3, each `{ kind: 'made', pair, file, wordsFor }` (a pair's current
+render and the title its words were written for) or `{ kind: 'own', file }` (Owen's own image, read
+in place, checked against YouTube's thumbnail rules, thumbnail-validate.ts). No file twice, no pair
+twice. The interaction is the titles' (publish-state.ts `toggleTitle`): the first thumbnail clicked
+is pick 1, clicking a picked one removes it and the rest close the gap, a fourth is refused.
+
+**Pairing is by position and read live**: pick n goes with the report's chosen title n (the publish
+record's `chosenTitles`). When pick n's words were written for another title (Owen reordered his
+titles), the window and the report say so and offer **Rewrite words for this title**
+(`thumbnails:pair-title`: the words row for that title, the tone/photo row for the new words, a new
+draw and a new render, on ONE held lease of the 27B; the pair and its pick follow).
+
+**Copies and publishing.** Every save writes `<folder>/picks/Pick 1.png`, `Pick 2.png`, `Pick 3.png`
+(`.jpg` for a JPEG), exactly the picks, in order (the folder is emptied first; no picks, no
+folder). **Pick 1's copy is the video's thumbnail**: the window sets it through
+`PublishState.setThumbnail` (the same door as the Thumbnail row's Choose…; recorded as a manual
+choice, uploaded by the existing publish path, LEDGER #219 limits) whenever pick 1 changes; with no
+picks left, a thumbnail that was pick 1's copy is cleared, and one Owen chose himself is left.
+Picks 2 and 3 are shown on the Thumbnail row as "For your A/B test" with "Show the picks": YouTube
+has no API for Test & Compare, so he uploads them in Studio beside titles 2 and 3.
+
+### Swaps
+
+`thumbnails:render-pair { pair, frameId?, phrase? (null: No text), kind?, photo? (a name, null: No
+photo, 'draw': a new draw from the pair's top 3), logo? }` redraws that pair on the CPU with the
+**current** saved look, as a NEW file beside the old (`Pair 1 - <title> (2).png`; the old file stays,
+a pick or the publish record may point at it). A picked pair's pick follows it. The window shows the
+scene strip (two frames per scene, "More" loads the rest), the words per kind (or typed words), the
+photos ranked with their percentages (and for which words the ranking was made), the logo switch,
+and "Write the words again for another title".
+
+### The text always fits (layout.ts)
+
+The text box runs from the left margin to where the reaction photo begins (its drawn bounds with
+the outline; its whole space when no photo is drawn) and from the top margin to the bottom margin.
+One or two lines, left-aligned, shrunk from the largest size (`maxCapFraction`) until it fits.
+Faces (and the logo, if its space reaches into the box) are kept clear when a face-free space in
+the box holds the words at `minCapFraction` (7%); otherwise the words go in the whole box, no bigger
+than 7% and smaller until they fit, at the top or the bottom, whichever covers less of a face, and
+the render's notes say so. Nothing is refused and nothing is cut. (Until phase 2 a phrase that could
+not keep the 7% floor clear of the faces was refused, and the text could sit anywhere on up to three
+lines.)
+
+### No story: screenshots
+
+For a report whose record is `no-story` or `failed` (or made from screenshots before), the window
+takes 1, 2 or 3 of Owen's screenshots (PNG or JPEG) and makes that many pairs, one per title (his
+chosen titles first, then the generated ones): each screenshot is cut to 16:9 around its centre when
+it is another shape and scaled to 1920x1080 (said per screenshot), the words, tone and photos run on
+the routing table's rows as in the run (pipeline.ts `ItemThumbnailRun.fromScreenshots`), and the
+record becomes `made` with `source.video: null`; its story (and why there was none) is kept, his own
+picks stay, pair picks are cleared. A report whose pairs came from its story refuses screenshots.
+The folder is `<report folder>/thumbnails/<jobId>-<item id>/` (a folder the window creates is named
+by the item id, which never collides; the run's are named by the item number).
+
+### Deleting
+
+Deleting an item on the reports page removes the folder its record names, when it sits directly in
+`<report folder>/thumbnails/` (and that `thumbnails/` folder once empty); a folder named anywhere
+else is left and the page says so (`DeleteItemReceipt.thumbnailsFolderRemoved` /
+`thumbnailsReason`). The whole-job cleanup (history delete, the four-week prune,
+`deleteJobTxtFiles`) removes each item's folder the same way. The app does not ask before deleting
+a report (it never has); the notification says the thumbnails folder went with it. Owen's own image
+files are never inside it.
+
+### What went
+
+The Thumbnails tab (route, sidebar entry, component), `lab-service.ts`, `thumbnail-lab-ipc.ts`,
+`combine.ts` and every `thumbs:*` channel. The reports page's THUMBNAIL TEXT OPTIONS section (and
+its line in the text export); an older report that still has the field shows nothing for it. Still
+kept for older reports: the field definition, its routing row, the section re-roll's field and the
+scrub/soften/gate readers (no UI reaches the re-roll for it now).
 
 ## Open questions
 
@@ -243,16 +318,29 @@ The tab's own `linkOf` reads the publish record / `content_provenance`; the pipe
 - The words prompt was not changed; "adds something the title leaves unsaid" is the complement rule
   already. A line citing "a second chance at winning the click" would be a prompt change for Owen.
 - Imported story transcripts (`transcript_file` items) carry their story's identity in `importMeta`
-  but no week folder; they get "no story" today.
-- Whether a pair should fall back to the next word option when its default is too long for the
-  space (today: that pair is not drawn and says why).
-- Deleting an item from the reports page does not remove its thumbnails folder yet (phase 2: add it
-  to `deleteItem`'s receipt).
-- No live run: the stage timings above are not measured in the job.
+  but no week folder; they get "no story" today (screenshots now cover them).
+- No live run: the stage timings above are not measured in the job, and the window was built and
+  checked offline, never opened (no app launch on Owen's data).
+- Words over a face: when no face-free space holds the words at 7%, they are drawn at 7% or smaller
+  at the top or bottom of the box, whichever covers less of a face. Owen may prefer them even
+  smaller but face-free; the floor is the look's "Smallest letters kept off faces".
+- A screenshot of another shape is cut to 16:9 around its centre (said). Owen may prefer to choose
+  the crop, or to be refused.
+- Swapping the words does not re-rank the photos (the ranking says which words it was made for);
+  "Rewrite words" does. A "rank the photos for these words" button would be the 27B again.
+- The per-run switch is still not on the queue (the Inputs page was off-limits).
+- The tab's per-item frame caches (`<userData>/thumbnail-lab/<item id>/`) are left on disk; the
+  photo library and logo live beside them and are kept. A one-time cleanup (retired-components.ts)
+  could remove the caches.
+- Manual story link / re-run for a `no-story` item (the phase-1 plan's `thumbnails:link` /
+  `thumbnails:run`) was not built; Owen's ruling for no story is screenshots.
 
 ## Handoff
 
-Built on the agent branch from `crucible` (dcdd0c4), not merged. Commits, in order: shared pieces
-out of the tab + the scorer under a caller's job; the story link; the pipeline, record, setup,
-channels, keeper; this doc and the ledger. Checks: build:all, check:thumbnail-lab (54 + 11 + 15),
-check:pure, check:crucible, check:p4, tools/routing-publish-checks.js.
+Phase 1: built on its agent branch from `crucible` (dcdd0c4), merged into `crucible` (0bab4dc).
+Phase 2: built on its agent branch from `crucible` (0bab4dc), not merged. Commits: the main
+process (look.ts, the text rules, report-thumbnails.ts, thumbnails-ipc.ts, delete, the tab's
+backend removed); the reports page (the window, the look dialog, the block, the picks on the
+Thumbnail row, the tab and THUMBNAIL TEXT OPTIONS UI removed); the keeper; this doc and the ledger.
+Checks: build:all, check:thumbnail-lab (44 + 18 + 15 electron), check:thumbnail, check:pure,
+check:crucible, check:p4, tools/routing-publish-checks.js.

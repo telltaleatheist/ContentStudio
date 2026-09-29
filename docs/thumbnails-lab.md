@@ -1,4 +1,13 @@
-# The Thumbnails tab (testing)
+# The Thumbnails tab (testing) — RETIRED
+
+> **Retired 2026-09-28 (phase 2, LEDGER #241).** The tab, its route, sidebar entry, component,
+> `lab-service.ts`, `thumbnail-lab-ipc.ts`, `combine.ts` and the `thumbs:*` channels are gone. What
+> it built lives on in the metadata run and the reports page's Thumbnails window:
+> **docs/thumbnails-pipeline.md** is the current doc. The look, the photo library and the logo moved
+> to `look.ts` and the Thumbnail look dialog (from the Thumbnails window, or Settings); the text
+> rules changed (the box left of the photo, one or two lines, shrink instead of refuse). This file is
+> kept as the record of how the modules were found and measured; where it and the pipeline doc
+> disagree, the pipeline doc is right.
 
 Built 2026-09-28 (LEDGER #236). A testing tab for Owen to try an automated YouTube-thumbnail
 workflow on one processed video: find usable frames, pick three, add words, and render three
