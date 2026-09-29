@@ -83,6 +83,8 @@ export interface ReportThumbnailsDeps {
   aiManager: () => Pick<AIManagerService, 'runPlainRequest'> & { cleanup?(): void };
   /** A picture of a file as a data URL, at most `width` pixels wide (Electron nativeImage in the app). */
   picture: (file: string, width: number) => string;
+  /** The library's photos with a small picture each (look.ts photos(): trimming needs Electron). */
+  photoList: () => Array<{ name: string; preview: string; note: string | null }>;
   newSeed: () => number;
   /** A progress line for the window that asked. */
   progress: (event: { jobId: string; itemId: string; line: string }) => void;
@@ -292,7 +294,6 @@ export class ReportThumbnails {
         }
       }
     }
-    const look = this.deps.look.photos();
     return {
       ...this.summaryOf(record, 320),
       jobId,
@@ -302,7 +303,7 @@ export class ReportThumbnails {
       titles: Array.isArray(item.titles) ? [...new Set((item.titles as unknown[]).filter((t): t is string => typeof t === 'string' && t.trim() !== ''))] : [],
       renders,
       frames,
-      photos: look.photos.map((p) => ({ name: p.name, preview: p.preview, note: p.note })),
+      photos: this.deps.photoList(),
       hasLogo: this.deps.look.logoFile() !== null,
       heldModel: this.heldModel(),
     };
@@ -618,6 +619,9 @@ export class ReportThumbnails {
       if (requests.length > PAIR_COUNT) throw new Error(`Test & Compare takes at most ${PAIR_COUNT} thumbnails; ${requests.length} were picked.`);
       const loc = this.locate(jobId, itemId);
       const record = this.actionable(loc, 'pick');
+      const pairsAsked = requests.flatMap((r) => (r !== null && typeof r === 'object' && r.kind === 'made' ? [r.pair] : []));
+      const twice = pairsAsked.find((n, i) => pairsAsked.indexOf(n) !== i);
+      if (twice !== undefined) throw new Error(`Thumbnail ${twice} is picked twice; each thumbnail is one pick.`);
       const picks: ThumbnailPick[] = requests.map((r, i) => {
         if (r === null || typeof r !== 'object') throw new Error(`Pick ${i + 1} is not a pick: ${JSON.stringify(r)}.`);
         if (r.kind === 'made') {

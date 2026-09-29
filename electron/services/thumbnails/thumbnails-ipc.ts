@@ -73,6 +73,7 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     holdJob: (what) => crucible.transport.job(what),
     aiManager: () => new AIManagerService({ promptSetsDir: path.join(app.getPath('userData'), 'prompt_sets') }),
     picture,
+    photoList: () => look.photos().photos.map((p) => ({ name: p.name, preview: p.preview, note: p.note })),
     newSeed,
     progress: (event) => {
       if (progressTo !== null && !progressTo.isDestroyed()) progressTo.send('thumbnails:progress', event);
