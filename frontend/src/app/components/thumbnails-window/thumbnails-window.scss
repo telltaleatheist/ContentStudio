@@ -60,6 +60,8 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 }
 
 /* ── 1. frames: one flat grid ── */
+.frame-badges { position: absolute; top: 4px; left: 4px; display: flex; gap: 4px; }
+.frame-badges .badge { position: static; cursor: pointer; }
 .frames { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .frame {
   position: relative; padding: 0; border: 3px solid transparent; border-radius: 5px; cursor: pointer; background: none;

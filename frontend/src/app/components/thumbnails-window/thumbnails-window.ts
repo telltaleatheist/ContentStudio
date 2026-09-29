@@ -9,7 +9,9 @@ import {
   ActionRunner,
   MAX_PICKS,
   NO_TEXT,
+  addFrame,
   addNoPhoto,
+  frameNumbers,
   clockOf,
   drawChange,
   failureLine,
@@ -19,6 +21,7 @@ import {
   pickRequests,
   planSlots,
   ready,
+  removeFrameAt,
   removePhotoAt,
   samePicks,
   selectionFromPicks,
@@ -261,18 +264,24 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   // ── 1. frames ─────────────────────────────────────────────────────────────
 
-  frameNumber(id: string): number | null {
-    const i = this.frames().indexOf(id);
-    return i === -1 ? null : i + 1;
+  frameNumbers(id: string): number[] {
+    return frameNumbers(this.frames(), id);
   }
 
-  toggleFrame(id: string): void {
-    const r = togglePick(this.frames(), id, (x) => x, 'frames');
+  addFrame(id: string): void {
+    const r = addFrame(this.frames(), id);
     if (r.refused !== null) {
       this.notice.set(r.refused);
       return;
     }
     this.frames.set(r.list);
+    this.changed();
+  }
+
+  /** Takes out pick k (1-based); the rest close up. */
+  removeFrame(k: number, event: Event): void {
+    event.stopPropagation();
+    this.frames.set(removeFrameAt(this.frames(), k - 1));
     this.changed();
   }
 

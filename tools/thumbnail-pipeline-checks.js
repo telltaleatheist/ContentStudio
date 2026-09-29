@@ -928,6 +928,13 @@ check('picking: frames (one flat list in time order, every candidate), texts and
   assert.deepStrictEqual(c.togglePick(t.list, 'a', id, 'frames').list, ['b', 'c'], 'out, and the rest close up');
   assert.deepStrictEqual(c.togglePick(['b', 'c'], 'a', id, 'frames').list, ['b', 'c', 'a'], 'back in, last');
   assert.throws(() => c.typedText('   '), /Type the words first/);
+  // FRAMES can be picked more than once (the same frame on all three), each place out on its own badge.
+  let fr = c.addFrame([], 'a').list;
+  fr = c.addFrame(fr, 'b').list;
+  fr = c.addFrame(fr, 'a').list;
+  assert.deepStrictEqual([fr, c.frameNumbers(fr, 'a'), c.frameNumbers(fr, 'b')], [['a', 'b', 'a'], [1, 3], [2]]);
+  assert.ok(/^Up to 3 frames can be picked\. Click a number on a picked frame/.test(c.addFrame(fr, 'a').refused), 'a fourth refused');
+  assert.deepStrictEqual(c.removeFrameAt(fr, 0), ['b', 'a'], 'pick 1 out on its badge, the rest close up');
 
   // PHOTOS: one row, clicked 1, 2, 3; "No photo" can be picked twice and each is taken out on its badge.
   let ph = c.addNoPhoto([]).list;
@@ -1006,6 +1013,16 @@ check('picking: frames (one flat list in time order, every candidate), texts and
   // The replaced renders went: one current render per pair is left in the folder.
   const renders = fs.readdirSync(saved.record.folder).filter((f) => /^Pair \d/.test(f));
   assert.deepStrictEqual(renders.sort(), pairs.map((p) => path.basename(p.default.render.file)).sort(), renders.join(', '));
+  // THE SAME FRAME ON ALL THREE: each drawn with its own text, saved as three picks, read back.
+  const one = [list[0], list[0], list[0]];
+  const sameTexts = [texts[0], texts[2], c.NO_TEXT];
+  const same = c.planSlots({ pairs, frames: one, texts: sameTexts, photos: [], own: {} });
+  let sv = window.view(job.jobId, itemId);
+  for (const s of same.filter(c.ready)) sv = await window.renderPair(job.jobId, itemId, c.drawChange(s, false));
+  assert.deepStrictEqual(sv.record.pairs.map((p) => p.default.frameId), one, 'one frame under all three');
+  const sameReq = c.pickRequests(c.planSlots({ pairs: sv.record.pairs, frames: one, texts: sameTexts, photos: [], own: {} }), sv.record.pairs, false);
+  const sameSaved = await window.savePicks(job.jobId, itemId, sameReq);
+  assert.deepStrictEqual(c.selectionFromPicks(sameSaved.picks, sameSaved.record.pairs).frames, one, 'reopening reads the same frame three times');
 }));
 
 check('the window\'s shape: frames (one flat list, no scene labels), text as a list, photos in one row with No photo and no percentages, then Generate thumbnails, then the results; nothing drawn on a click', () => {
@@ -1019,6 +1036,7 @@ check('the window\'s shape: frames (one flat list, no scene labels), text as a l
   assert.ok(/in time order: the sharpest of each shot/.test(html) && /Start from the suggested words/.test(html), 'the grid says what it is; the suggestion is the words only');
   assert.ok(!/percent\(|%<\/span>|\bpct\b/.test(html), 'no percentages');
   assert.ok(/No photo/.test(html) && /removeNoPhoto\(k\)/.test(html), 'No photo, taken out on its badge');
+  assert.ok(/\(click\)="addFrame\(id\)"/.test(html) && /removeFrame\(k, \$event\)/.test(html), 'a frame click adds it (again, if picked); its numbers take a place out');
   const scss = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.scss'), 'utf8');
   assert.ok(/\.texts \{ display: flex; flex-direction: column;/.test(scss), 'the text is a vertical list');
   const win = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.ts'), 'utf8');

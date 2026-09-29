@@ -67,7 +67,7 @@
     <section>
       <div class="sec-head">
         <h3><span class="step">1</span> Frames</h3>
-        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots.' : 'From the story, in time order: the sharpest of each shot.' }} Click in the order you want them: 1, 2, 3.</span>
+        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots.' : 'From the story, in time order: the sharpest of each shot.' }} Click in the order you want them: 1, 2, 3; a frame can be picked more than once. Click a number to take it out.</span>
         <span class="spacer"></span>
         <span class="count num">{{ frames().length }}/3</span>
         @if (frames().length + texts().length + photos().length > 0) {
@@ -76,9 +76,15 @@
       </div>
       <div class="frames">
         @for (id of frameIds(); track id) {
-          <button class="frame" [class.on]="frameNumber(id) !== null" (click)="toggleFrame(id)" [title]="frameInfo(id)">
+          <button class="frame" [class.on]="frameNumbers(id).length > 0" (click)="addFrame(id)" [title]="frameInfo(id)">
             @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
-            @if (frameNumber(id); as k) { <span class="badge">{{ k }}</span> }
+            @if (frameNumbers(id).length > 0) {
+              <span class="frame-badges">
+                @for (k of frameNumbers(id); track k) {
+                  <span class="badge" role="button" (click)="removeFrame(k, $event)" [title]="'Take this frame out of thumbnail ' + k">{{ k }}</span>
+                }
+              </span>
+            }
           </button>
         }
       </div>

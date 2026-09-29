@@ -102,6 +102,25 @@ export function togglePick<T>(list: readonly T[], item: T, key: (t: T) => string
   return { list: [...list, item], refused: null };
 }
 
+/**
+ * A frame clicked: always the next pick, even one already picked (Owen 2026-09-29: "make it so i can
+ * select the same frame for all three thumbnails if i want"); a fourth is refused. Each place is
+ * taken out on its own badge (`removeFrameAt`).
+ */
+export function addFrame(list: readonly string[], id: string): { list: string[]; refused: string | null } {
+  if (list.length >= MAX_PICKS) return { list: [...list], refused: `Up to ${MAX_PICKS} frames can be picked. Click a number on a picked frame to take that one out first.` };
+  return { list: [...list, id], refused: null };
+}
+
+export function removeFrameAt(list: readonly string[], index: number): string[] {
+  return list.filter((_, i) => i !== index);
+}
+
+/** The pick numbers (1-based) a frame holds. */
+export function frameNumbers(list: readonly string[], id: string): number[] {
+  return list.flatMap((f, i) => (f === id ? [i + 1] : []));
+}
+
 // ── photos ────────────────────────────────────────────────────────────────────
 
 /** One of Owen's photo picks: a reaction photo by name, or "No photo" (name null). */
