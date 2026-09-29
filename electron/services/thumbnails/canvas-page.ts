@@ -199,6 +199,13 @@ export function bytesOfDataUrl(url: string): Buffer {
 }
 
 /**
+ * How long one page call (a face search, a measure, a drawing) may take before it is refused. A
+ * drawing takes well under a second; Owen's Generate hung with no end (2026-09-29), so a call that
+ * never answers now fails by name and the page is thrown away (the next call makes a new one).
+ */
+export const CANVAS_CALL_SECONDS = 45;
+
+/**
  * One hidden page, made on first use and kept until `close()`. Calls are serialised by the page
  * itself (each is one executeJavaScript), so two renders never share a canvas.
  */
@@ -216,7 +223,8 @@ export class ThumbnailCanvas {
         show: false,
         width: 320,
         height: 180,
-        webPreferences: { offscreen: true, experimentalFeatures: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
+        // backgroundThrottling off: a hidden page's image decoding and timers may otherwise be held back.
+        webPreferences: { offscreen: true, experimentalFeatures: true, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
       });
       win.on('closed', () => {
         this.window = null;
@@ -230,8 +238,27 @@ export class ThumbnailCanvas {
   }
 
   private async call<A, R>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R> {
-    const win = await this.page();
-    return (await win.webContents.executeJavaScript(`(${fn.toString()})(${JSON.stringify(arg)})`, true)) as R;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const win = this.window;
+        this.window = null;
+        this.ready = null;
+        if (win !== null && !win.isDestroyed()) win.destroy();
+        reject(new Error(`The thumbnail drawing page did not answer within ${CANVAS_CALL_SECONDS} s (${fn.name}); it was closed, and the next try opens a new one.`));
+      }, CANVAS_CALL_SECONDS * 1000);
+    });
+    try {
+      return await Promise.race([
+        (async () => {
+          const win = await this.page();
+          return (await win.webContents.executeJavaScript(`(${fn.toString()})(${JSON.stringify(arg)})`, true)) as R;
+        })(),
+        limit,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** The faces Apple Vision finds in the image, in the image's own pixels. */
