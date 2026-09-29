@@ -32,34 +32,25 @@
     }
   </div>
 
-  <!-- ═════ STOPPED ═════ The run's thumbnail stages stopped: where, why, and the way on. -->
+  <!-- ═════ NOT READY ═════ The metadata job's preparation (frames on the CPU, text on the 27B)
+       did not finish, or an older version made it: the window prepares it on opening (busy line
+       above). Shown only when it cannot, or the attempt failed: why, and Try again. -->
   @if (view()?.finish; as fin) {
-    <div class="banner warn stopped">
-      <div class="stopped-lines">
-        @if (fin.retired) {
-          <strong>These thumbnails are not finished yet.</strong>
-        } @else {
-          <strong>The thumbnails stopped at the {{ fin.stage }} stage.</strong>
-        }
-        @if (fin.reason; as why) { <span>{{ why }}</span> }
-        <span class="hint">
-          @if (fin.keep.length > 0) { Kept as they are: {{ stageList(fin.keep) }}. }
-          “Finish making thumbnails” runs only {{ stageList(fin.run) }}.
-          @if (fin.run.includes('frames')) { The frames to pick from appear when it is done. }
-        </span>
-        @if (fin.blocked; as why) {
-          <span class="why">Cannot finish yet: {{ why }}</span>
-        }
+    @if (busy() === null) {
+      <div class="banner warn stopped">
+        <div class="stopped-lines">
+          <strong>This video's {{ missingOf(fin.run) }} are not ready yet.</strong>
+          @if (fin.blocked; as why) {
+            <span>They cannot be prepared now: {{ why }}</span>
+          } @else if (fin.reason; as why) {
+            <span>The last try stopped: {{ why }}</span>
+          }
+        </div>
+        <div class="stopped-acts">
+          <button mat-flat-button color="primary" (click)="tryAgain()">Try again</button>
+        </div>
       </div>
-      <div class="stopped-acts">
-        <button mat-flat-button color="primary" (click)="finish()" [disabled]="busy() !== null || fin.blocked !== null"
-                [title]="fin.blocked ?? (busy() !== null ? 'Wait for the running step' : 'Run the missing stages')">Finish making thumbnails</button>
-        @if (view()?.remake; as rm) {
-          <button mat-stroked-button (click)="remake()" [disabled]="busy() !== null || rm.blocked !== null"
-                  [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, words'">Make thumbnails again from scratch</button>
-        }
-      </div>
-    </div>
+    }
   } @else if (record(); as r) {
     @if (r.state === 'no-story') {
       <p class="line">{{ r.line }}</p>
@@ -93,7 +84,7 @@
       </div>
     </section>
   } @else if (record() && record()!.state === 'failed') {
-    <section><h3><span class="step">1</span> Frames</h3><p class="hint">No frames were kept before the thumbnails stopped; “Finish making thumbnails” finds them.</p></section>
+    <section><h3><span class="step">1</span> Frames</h3><p class="hint">{{ busy() !== null ? 'The frames appear here when they are picked.' : 'No frames yet.' }}</p></section>
   }
 
   <!-- ═════ 2. TEXT ═════ A list, one line each, picked 1, 2, 3. -->
@@ -109,7 +100,7 @@
         }
       </div>
       @if (options().length === 0) {
-        <p class="hint">No words were written before the thumbnails stopped; “Finish making thumbnails” writes them. You can still type your own.</p>
+        <p class="hint">{{ busy() !== null ? 'The suggested text appears here when it is written.' : 'No suggested text yet.' }} You can still type your own.</p>
       }
       <div class="texts">
         @for (o of options(); track o.key) {
@@ -284,15 +275,6 @@
     </section>
   }
 
-  @if (view()?.remake; as rm) {
-    @if (!view()?.finish) {
-      <section class="again">
-        <button mat-stroked-button (click)="remake()" [disabled]="busy() !== null || rm.blocked !== null"
-                [title]="rm.blocked ?? 'Every thumbnail stage again: story, frames, words'">Make thumbnails again from scratch</button>
-        @if (rm.blocked; as why) { <span class="why">{{ why }}</span> }
-      </section>
-    }
-  }
 </mat-dialog-content>
 <mat-dialog-actions align="end">
   <button mat-button mat-dialog-close>Close</button>

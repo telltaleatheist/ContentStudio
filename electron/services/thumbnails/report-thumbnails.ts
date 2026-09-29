@@ -857,7 +857,7 @@ export class ReportThumbnails {
       if (blocked !== null) throw new Error(blocked);
       const setup = this.setup();
       const input = this.itemInput(loc, jobId, record.story?.state === 'linked');
-      this.deps.progress({ jobId, itemId, line: `Finishing: ${plan.keep.length > 0 ? `keeping ${plan.keep.join(', ')}; ` : ''}running ${plan.run.join(', ')}...` });
+      this.deps.progress({ jobId, itemId, line: plan.run.includes('frames') ? 'Picking the frames, then writing the text...' : plan.run.includes('words') ? 'Writing the text...' : 'Drawing...' });
       const made = await this.stagesOnOneJob(jobId, itemId, 'Finish making thumbnails',
         (doors) => ItemThumbnailRun.resume(setup, input, doors, record, plan), this.fieldsOf(loc.item));
       await this.write(loc, jobId, itemId, made);

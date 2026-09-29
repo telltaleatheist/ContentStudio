@@ -840,7 +840,8 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   for (const l of calls) assert.ok(/this\.act\(|this\.runner\.run\(/.test(l) || /thumbnailsReleaseModel/.test(l), `a window call outside the runner: ${l.trim()}`);
   const html = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.html'), 'utf8');
   assert.ok(/@if \(failure\(\); as f\)/.test(html) && /class="status"/.test(html) && /elapsed\(\)/.test(html), 'the sticky status shows the failure, the running step and its clock');
-  assert.ok(/Finish making thumbnails/.test(html) && /fin\.blocked/.test(html) && /Make thumbnails again from scratch/.test(html), 'the stopped banner offers Finish (with why it cannot) and from scratch');
+  assert.ok(/fin\.blocked/.test(html) && /Try again/.test(html) && !/Finish making thumbnails/.test(html) && !/again from scratch/.test(html), 'the not-ready banner says why it cannot be prepared and offers Try again; no Finish, no from scratch');
+  assert.ok(/view\.finish !== null && view\.finish\.blocked === null\) await this\.prepare\(\)/.test(win), 'a video that is not ready is prepared on opening');
   assert.ok(/Pick frames, text and photos in the order 1, 2, 3, then press Generate thumbnails at the bottom\./.test(html), 'the one line saying what to do');
   const ipc = fs.readFileSync(path.join(REPO, 'electron/services/thumbnails/thumbnails-ipc.ts'), 'utf8');
   const handlers = ipc.split(/\n\s*ipcMain\.handle\(/).slice(1);

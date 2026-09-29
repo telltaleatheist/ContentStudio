@@ -119,9 +119,9 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   readonly pairs = computed<StoredPair[]>(() => this.record()?.pairs ?? []);
   readonly options = computed(() => textOptions(this.pairs()));
   /**
-   * The grid. Empty while Finish is going to pick the frames again (an old record's up-to-120
-   * scoring frames, Owen 2026-09-29: "doesnt look like anything changed at all"): the stored ones
-   * are about to be replaced, look-alikes dropped, so they are not offered.
+   * The grid. Empty while the frames are to be prepared again (an old record's up-to-120 scoring
+   * frames, Owen 2026-09-29: "doesnt look like anything changed at all"): the stored ones are about
+   * to be replaced, look-alikes dropped, so they are not offered.
    */
   readonly frameIds = computed(() => (this.view()?.finish?.run.includes('frames') ? [] : frameList(this.record())));
   readonly slots = computed<Slot[]>(() => planSlots({ pairs: this.pairs(), frames: this.frames(), texts: this.texts(), photos: this.photos(), own: this.own() }));
@@ -139,7 +139,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     const r = v.record;
     if (r === null) return 'This report was made before thumbnails were made with the metadata. Use the Thumbnail row\'s Choose… for your own image, or “Use my own image…” below.';
     if (r.state === 'off') return r.line;
-    if (r.state === 'failed') return 'The thumbnails are not finished yet, so they cannot be drawn. Press “Finish making thumbnails” above.';
+    if (r.state === 'failed') return 'The frames and text for this video are not ready yet.';
     if (r.state === 'no-story') return 'This report has no story to take frames from. Make thumbnails from your screenshots below.';
     return null;
   });
@@ -163,6 +163,11 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.view.set(view);
     this.publishedFrom = view.picks[0]?.pick.file ?? null;
     this.readSelection(view);
+    // Not ready (the metadata job's thumbnail preparation stopped, or an older version made it):
+    // prepared on opening, with no button to find (Owen 2026-09-29: "i havent even started making
+    // a thumbnail yet. why would i hit finish making thumbnails?"). A reason it cannot run now is
+    // shown instead, with Try again.
+    if (view.finish !== null && view.finish.blocked === null) await this.prepare();
   }
 
   ngOnDestroy(): void {
@@ -466,33 +471,34 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.changed();
   }
 
-  // ── a report whose thumbnail stages stopped ───────────────────────────────
+  // ── a video whose frames and text are not ready ───────────────────────────
 
-  async finish(): Promise<void> {
+  /** Prepares what is missing (frames on the CPU, the words on the 27B); on opening, and on Try again. */
+  async prepare(): Promise<void> {
     this.failure.set(null);
-    const ok = await this.act('Finishing the thumbnails', () => this.electron.thumbnailsFinish(this.data.jobId, this.data.itemId));
+    const ok = await this.act('Preparing the frames and text', () => this.electron.thumbnailsFinish(this.data.jobId, this.data.itemId));
     if (ok) this.changed();
   }
 
-  async remake(): Promise<void> {
-    if (!window.confirm('Make the thumbnails again from scratch? The story is found again, the frames sampled, and the words written (a few minutes; the words on the Crucible card). Your own images stay picked.')) return;
+  /** Reads the view again (a Crucible server may be there now) and prepares if it can. */
+  async tryAgain(): Promise<void> {
     this.failure.set(null);
-    const ok = await this.act('Making the thumbnails again', () => this.electron.thumbnailsRemake(this.data.jobId, this.data.itemId));
-    if (!ok) return;
-    const view = this.view();
-    if (view !== null) this.readSelection(view);
-    this.changed();
+    const view = await this.runner.run('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId));
+    if (view === null) return;
+    this.view.set(view);
+    if (view.finish !== null && view.finish.blocked === null) await this.prepare();
   }
 
-  stageList(stages: readonly string[]): string {
-    return stages.join(', ');
+  /** What is missing, in Owen's terms. */
+  missingOf(run: readonly string[]): string {
+    return run.includes('frames') ? 'the frames and text' : run.includes('words') ? 'the text' : 'the drawings';
   }
 
   // ── no story: screenshots ─────────────────────────────────────────────────
 
   readonly canScreenshots = computed(() => {
     const r = this.record();
-    return r !== null && (r.state === 'no-story' || r.state === 'failed' || (r.state === 'made' && r.source?.video === null));
+    return r !== null && (r.state === 'no-story' || (r.state === 'failed' && r.story?.state !== 'linked') || (r.state === 'made' && r.source?.video === null));
   });
 
   /** Every title the words can be written for: the chosen ones first, then the generated ones. */

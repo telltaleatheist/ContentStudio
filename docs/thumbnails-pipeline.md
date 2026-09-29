@@ -597,3 +597,18 @@ backend removed); the reports page (the window, the look dialog, the block, the 
 Thumbnail row, the tab and THUMBNAIL TEXT OPTIONS UI removed); the keeper; this doc and the ledger.
 Checks: build:all, check:thumbnail-lab (44 + 18 + 15 electron), check:thumbnail, check:pure,
 check:crucible, check:p4, tools/routing-publish-checks.js.
+
+## The window prepares what is missing on opening (2026-09-29)
+
+Owen, on the "not finished / Kept as they are / Finish making thumbnails" banner: "i just opened
+thumbnails for this video. i havent done anything at all... why would i hit finish making
+thumbnails? why dont we reanalyze the flow so it makes sense." The flow he sees is now two states:
+
+- **Ready**: pick frames, text and photos 1, 2, 3; Generate thumbnails.
+- **Not ready** (the metadata job's preparation stopped, or an older version made the record):
+  opening the window prepares it (`prepare()`, the same `thumbnails:finish` channel): the frames on
+  the CPU, then the words on the 27B, with the busy line ("Preparing the frames and text…" and the
+  stage progress). Only when it cannot (no Crucible server) or the attempt failed does a banner show:
+  "This video's frames and text are not ready yet." with the reason and **Try again**. No stage
+  names, no "Kept as they are", no Finish button. The "Make thumbnails again from scratch" button is
+  gone from the window (the `thumbnails:remake` channel stays, unused by it).
