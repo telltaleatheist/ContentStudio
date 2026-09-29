@@ -9,18 +9,23 @@
  *   story        CPU  which editor story the frames come from (story-match.ts: manual | name |
  *                     transcript, or "no story" with the reason, and the thumbnail stages stop).
  *   frames       CPU  the story's stretches of the session's screen recording (story-source.ts),
- *                     sampled ~1/s, repeats and blurry frames dropped, grouped into scenes, the
- *                     scoring budget shared across the scenes. The tab's own modules, unchanged.
- *   scoring      GPU  the `thumbnail_frames` row (the 9B with vision), ONE lease of the metadata
- *                     job: right after transcription and before the chapters, so the job loads it
- *                     once and the chapters' model replaces it (one swap).
+ *                     sampled ~1/s, repeats and blurry frames dropped, grouped into scenes, and at
+ *                     most two frames of each scene kept for the Thumbnails window's grid: the
+ *                     sharpest, spread across the scene's time on screen (frame-scenes.ts
+ *                     `gridFrames`). Right after transcription and before the chapters, as before.
  *   ...the chapters and the metadata fields run here (the titles now exist)...
  *   words        GPU  the `thumbnail_words` row: for each of the three titles, the words that go
  *                     beside it (claim, stakes, reaction; several each).
- *   render       CPU  three default thumbnails, one per pair, with NO reaction photo: Owen picks
- *                     the photos himself in the Thumbnails window (2026-09-29: "just let me pick the
- *                     image of myself that goes in the corner instead of letting the model pick it.
- *                     itll be faster"). The `tone-photos` stage and its `thumbnail_judge` row are gone.
+ *   render       CPU  the pairs that have a frame are drawn, with NO reaction photo. Only pairs made
+ *                     from Owen's screenshots have one (pair n on screenshot n); a story's pairs get
+ *                     none, so nothing is drawn until he picks frames 1, 2 and 3 in the Thumbnails
+ *                     window and presses Generate thumbnails.
+ *
+ * WHAT OWEN PICKS HIMSELF (2026-09-29). The photos: "just let me pick the image of myself that goes
+ * in the corner instead of letting the model pick it. itll be faster" (the `tone-photos` stage and
+ * its `thumbnail_judge` row are gone). The frames: he picks them from the grid, so the `scoring`
+ * stage (the vision model on the `thumbnail_frames` row, which ranked the frames and chose each
+ * pair's default frame) is gone too; no Crucible call is made for frames.
  *
  * THE 27B IS NOT LOADED AGAIN when routing names it for the fields and for the words: every call here runs on the metadata job's own leases (`JobLeases`: one hold per
  * server; the same model on the same server is the same hold; a different model replaces it).
@@ -30,8 +35,8 @@
  * stage failed and why, in plain words, with the run's warnings saying it too. A cancel, a park or a
  * stall is never recorded as a failure: it ends the job (the generator's one cancellation exit).
  *
- * WHERE THINGS GO. `<report folder>/thumbnails/<jobId>-<item number>/`: `frames/` (the scored
- * frames, 640 and 320 wide), `full/` (the default frames at full size) and the three renders. The
+ * WHERE THINGS GO. `<report folder>/thumbnails/<jobId>-<item number>/`: `frames/` (the grid's
+ * frames, 640 and 320 wide), `full/` (the frames drawn, at full size) and the renders. The
  * report folder is the job's, never the week's `thumbnails/` folder that the publish pass proposes
  * from (LEDGER #219; thumbnail-validate.ts looks only at `<week>/thumbnails/<export name>`), so no
  * render is attached to anything before Owen picks.
@@ -45,12 +50,9 @@ import type { ChannelData } from '../metadata/prompt-assets';
 import type { SRTSegment } from '../metadata/transcription.service';
 import { routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting } from '../metadata/metadata-routing';
 import type { JobLeases } from '../../crucible/lease';
-import { crucibleStepHooks } from '../../crucible/lanes';
-import { MAX_FRAMES_TO_SCORE, filterFrames } from './frame-metrics';
-import { rankFrames } from './frame-ranking';
-import { allocateScoring, framesToScore, groupScenes, sceneRows, type SceneRow } from './frame-scenes';
-import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel, type SampledFrame } from './frame-sampler';
-import { plainScoringError, scoreFramesOnCard, type ScorerDeps } from './frame-scorer';
+import { filterFrames } from './frame-metrics';
+import { GRID_PER_SCENE, gridFrames, groupScenes } from './frame-scenes';
+import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel } from './frame-sampler';
 import type { ThumbnailStyle } from './layout';
 import { libraryBorder, libraryLogo, libraryPhotos } from './photo-library';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
@@ -147,8 +149,6 @@ export interface ThumbnailRunSetup {
   styleSaved: boolean;
   /** Said in the record's lines when the saved look was read with a newer default (layout.ts readStoredStyle). */
   styleLine: string | null;
-  /** The doors a GPU stage calls: the lanes (its GPU step), the transport, a client for the engine width. */
-  doors: Pick<ScorerDeps, 'lanes' | 'transport' | 'clientFor'>;
 }
 
 /**
@@ -194,11 +194,14 @@ export interface GeneratedFields {
 /** Each default pair's line about its photo: none is drawn until Owen picks one. */
 export const NO_PHOTO_YET = 'No photo picked yet: pick one in the Thumbnails window.';
 
+/** A story pair's line about its frame: the run assigns none; Owen picks it in the Thumbnails window. */
+export const NO_FRAME_YET = 'No frame picked yet: pick one in the Thumbnails window.';
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function routed(routing: ResolvedMetadataRouting, task: 'thumbnail_frames' | 'thumbnail_words'): MetadataRoutingOption {
+function routed(routing: ResolvedMetadataRouting, task: 'thumbnail_words'): MetadataRoutingOption {
   return routingOption(task, routing[task]);
 }
 
@@ -224,18 +227,6 @@ export function pairSubjects(fields: GeneratedFields): { order: 'gate ranking' |
   return { order: 'as written', subjects: titles.slice(0, PAIR_COUNT) };
 }
 
-/**
- * Each pair's default frame: the best frame of a different scene for each pair, best scene first;
- * with fewer scenes than pairs, the scenes' second ("clearly different") frames next, in the same
- * order. Returns fewer than PAIR_COUNT only when the rows hold fewer frames in all.
- */
-export function defaultFrames(rows: readonly SceneRow[]): Array<{ id: string; scene: number; repeat: boolean }> {
-  const out: Array<{ id: string; scene: number; repeat: boolean }> = [];
-  for (const r of rows) if (out.length < PAIR_COUNT) out.push({ id: r.ids[0], scene: r.scene, repeat: false });
-  for (const r of rows) if (out.length < PAIR_COUNT && r.ids[1] !== undefined) out.push({ id: r.ids[1], scene: r.scene, repeat: true });
-  return out;
-}
-
 /** A pair's default words: the first option of its kind, or of the next kind that has one (said). */
 export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind): { kind: WordKind; phrase: string; line: string | null } | null {
   if (words[kind].length > 0) return { kind, phrase: words[kind][0], line: null };
@@ -244,25 +235,31 @@ export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind):
   return { kind: other, phrase: words[other][0], line: `The model wrote no ${kind} words, so this pair starts on its first ${other} option.` };
 }
 
+/** The backgrounds are Owen's screenshots (pair n on screenshot n), not a story's frames. */
+function fromScreenshots(r: Pick<ItemThumbnails, 'source' | 'frames'>): boolean {
+  return r.source !== null && r.source.video === null && r.frames.length > 0;
+}
+
 /**
  * WHAT "FINISH MAKING THUMBNAILS" KEEPS AND WHAT IT RUNS (2026-09-29, Owen's run stopped at the
- * since-removed tone-photos stage on an empty photo library; such a record keeps its words and is
- * only drawn): a stage is kept when what it stores is all there, and
- * every stage after the first one that is not kept runs again (each reads what the one before it
- * wrote). The frames and the scoring are kept or run TOGETHER: the scene rows are built from the
- * frames' colour signatures, which are not stored, so scoring again means sampling again. A record
- * whose backgrounds are screenshots keeps its story, frames and scoring (there is nothing to sample
- * or score). `exists` is fs.existsSync in the app (a render file that went missing is drawn again).
+ * since-removed tone-photos stage on an empty photo library; such a record keeps its words): a
+ * stage is kept when what it stores is all there, and every stage after the first one that is not
+ * kept runs again (each reads what the one before it wrote). The frames are kept when the record
+ * holds its source and its grid frames; a record made before 2026-09-29 keeps the frames it sent
+ * to the since-removed scoring as its grid (their scores are ignored), and one that stopped AT the
+ * scoring goes on from the words. A record whose backgrounds are screenshots keeps its story and
+ * frames (there is nothing to sample). The render is kept when every pair that has a frame is
+ * drawn and its file is there (a story's pairs have none until Owen picks). `exists` is
+ * fs.existsSync in the app (a render file that went missing is drawn again).
  */
 export function resumePlan(r: ItemThumbnails, exists: (file: string) => boolean): { keep: ThumbnailStage[]; run: ThumbnailStage[] } {
-  const fromShots = r.source !== null && r.source.video === null && r.frames.length > 0;
-  const kept: Record<ThumbnailStage, boolean> = { story: false, frames: false, scoring: false, words: false, render: false };
-  kept.story = fromShots || r.story?.state === 'linked';
-  kept.frames = kept.story && (fromShots || (r.source !== null && r.frames.length > 0 && r.scoring !== null && r.bestScenes.length > 0));
-  kept.scoring = kept.frames;
-  kept.words = kept.scoring && r.titles !== null && r.pairs.length > 0 &&
+  const shots = fromScreenshots(r);
+  const kept: Record<ThumbnailStage, boolean> = { story: false, frames: false, words: false, render: false };
+  kept.story = shots || r.story?.state === 'linked';
+  kept.frames = kept.story && (shots || (r.source !== null && r.frames.length > 0));
+  kept.words = kept.frames && r.titles !== null && r.pairs.length > 0 &&
     r.pairs.every((p) => p.words.claim.length + p.words.stakes.length + p.words.reaction.length > 0);
-  kept.render = kept.words && r.pairs.every((p) => p.default.render.ok && exists(p.default.render.file));
+  kept.render = kept.words && r.pairs.every((p) => p.default.frameId === null || (p.default.render.ok && exists(p.default.render.file)));
   const firstRun = THUMBNAIL_STAGES.findIndex((s) => !kept[s]);
   if (firstRun === -1) return { keep: [...THUMBNAIL_STAGES], run: [] };
   return { keep: THUMBNAIL_STAGES.slice(0, firstRun), run: THUMBNAIL_STAGES.slice(firstRun) };
@@ -276,13 +273,13 @@ function lookLines(setup: ThumbnailRunSetup): string[] {
 
 function offRecord(line: string, story: ItemThumbnails['story'] = null, state: 'off' | 'no-story' = 'off'): ItemThumbnails {
   return {
-    version: THUMBNAILS_RECORD_VERSION, state, line, failure: null, story, folder: null, source: null, scenes: [], frames: [], bestScenes: [],
-    scoring: null, titles: null, tone: null, pairs: [], seed: null, look: null, logo: null, lines: [], timings: [], picks: [],
+    version: THUMBNAILS_RECORD_VERSION, state, line, failure: null, story, folder: null, source: null, scenes: [], frames: [],
+    titles: null, tone: null, pairs: [], seed: null, look: null, logo: null, lines: [], timings: [], picks: [],
   };
 }
 
 /**
- * One item's thumbnails across the job: `beforeChapters()` (story, frames, scoring), then
+ * One item's thumbnails across the job: `beforeChapters()` (story, frames), then
  * `afterFields()` (words, render) once the item's fields are written; `record()` is
  * what the item stores. A stage after a failure, a skip or "off" does nothing.
  */
@@ -295,6 +292,11 @@ export class ItemThumbnailRun {
   private replacingLine: (folder: string) => string = (folder) => `An earlier attempt of this job left thumbnail files in ${folder}; they were replaced.`;
   private video: string | null = null;
   private frameFiles = new Map<string, { t: number; large: string }>();
+  /**
+   * The frame each pair is drawn on, pair n on entry n: Owen's screenshots, in the order he gave
+   * them. Null for a story: its pairs get no frame until he picks them in the Thumbnails window.
+   */
+  private pairFrames: Array<{ id: string; scene: number }> | null = null;
 
   private constructor(
     private readonly setup: ThumbnailRunSetup | null,
@@ -335,11 +337,13 @@ export class ItemThumbnailRun {
   /**
    * "FINISH MAKING THUMBNAILS" (the Thumbnails window, 2026-09-29): a record whose stages stopped
    * (state `failed`) goes on from what it stores. The stages `plan.keep` names are not run again
-   * (their frames, scores and words are used as stored); the rest run in order, on the doors given
+   * (their frames and words are used as stored); the rest run in order, on the doors given
    * (the window's one held job), exactly as in the metadata run. What each later stage writes is
    * cleared first, so nothing half-written from the stopped attempt survives. Own-image picks stay;
    * pair picks go (their pairs are drawn again). A record from before 2026-09-29 keeps its ranked
-   * photos and tone as stored (read by nothing now); every pair is drawn with no photo.
+   * photos, tone and frame scores as stored (read by nothing now); every pair is drawn with no
+   * photo, and a story's pairs lose the frames the ranking gave them (Owen picks the frames), so
+   * only screenshot pairs are drawn.
    */
   static resume(
     setup: ThumbnailRunSetup,
@@ -362,17 +366,22 @@ export class ItemThumbnailRun {
       rec.source = null;
       rec.scenes = [];
       rec.frames = [];
-      rec.bestScenes = [];
-      rec.scoring = null;
     }
     if (!keep.has('words')) {
       rec.titles = null;
       rec.pairs = [];
     }
+    const shots = fromScreenshots(rec);
     for (const p of rec.pairs) {
       p.default.photo = null;
       p.default.draw = null;
-      p.lines = [...p.lines.filter((l) => !l.startsWith('Photo: ') && l !== NO_PHOTO_YET), NO_PHOTO_YET];
+      p.lines = p.lines.filter((l) => !l.startsWith('Photo: ') && l !== NO_PHOTO_YET && l !== NO_FRAME_YET);
+      if (!shots) {
+        p.default.frameId = null;
+        p.default.scene = null;
+        p.lines.push(NO_FRAME_YET);
+      }
+      p.lines.push(NO_PHOTO_YET);
       p.default.render = { ok: false, reason: 'Not drawn yet.' };
     }
     rec.lines.push(
@@ -384,6 +393,7 @@ export class ItemThumbnailRun {
     for (const s of plan.keep) run.skip.add(s);
     run.video = rec.source?.video ?? null;
     for (const f of rec.frames) run.frameFiles.set(f.id, { t: f.t, large: f.large });
+    if (shots) run.pairFrames = rec.frames.map((f) => ({ id: f.id, scene: f.scene }));
     return run;
   }
 
@@ -391,7 +401,7 @@ export class ItemThumbnailRun {
    * THE NO-STORY PATH (phase 2, Owen 2026-09-28): the backgrounds are Owen's own screenshots, one
    * pair per screenshot (1 to 3), for the titles the Thumbnails window names. Each screenshot is
    * already a 16:9 PNG in `<folder>/full/<id>.png` (report-thumbnails.ts prepared it); the record's
-   * frames, scenes and rows are the screenshots, and `afterFields` then writes the words and draws
+   * frames and scenes are the screenshots, pair n is drawn on screenshot n, and `afterFields` then writes the words and draws
    * (no photo until Owen picks one), exactly as the metadata run does. `rec` is the record to replace (its story
    * is kept, so "no story" and why stay said).
    */
@@ -409,11 +419,11 @@ export class ItemThumbnailRun {
     rec.look = setup.style;
     rec.lines.push(...lookLines(setup));
     rec.source = { video: null, lines: [`Backgrounds: your ${shots.length} screenshot${shots.length === 1 ? '' : 's'}.`, ...shots.flatMap((s) => s.lines)] };
-    rec.scenes = shots.map((s, i) => ({ number: i + 1, seconds: 0, label: `Screenshot ${i + 1}`, kept: 1, scored: 0 }));
-    rec.frames = shots.map((s, i) => ({ id: s.id, t: 0, clock: '', scene: i + 1, large: s.full, small: s.full, score: null, reading: null, flag: null }));
-    rec.bestScenes = shots.map((s, i) => ({ scene: i + 1, ids: [s.id], more: [], best: 0 }));
+    rec.scenes = shots.map((s, i) => ({ number: i + 1, seconds: 0, label: `Screenshot ${i + 1}`, kept: 1, shown: 1 }));
+    rec.frames = shots.map((s, i) => ({ id: s.id, t: 0, clock: '', scene: i + 1, large: s.full, small: s.full }));
     const run = new ItemThumbnailRun(setup, item, doors, rec);
     for (const s of shots) run.frameFiles.set(s.id, { t: 0, large: s.full });
+    run.pairFrames = rec.frames.map((f) => ({ id: f.id, scene: f.scene }));
     return run;
   }
 
@@ -465,7 +475,7 @@ export class ItemThumbnailRun {
     log.info(`[Thumbnails] ${this.item.sourceLabel}: ${this.rec.line}`);
   }
 
-  /** Story, frames (CPU) and scoring (GPU): before the chapters. */
+  /** Story and frames (CPU; no model since 2026-09-29): before the chapters. */
   async beforeChapters(): Promise<void> {
     await this.stage('story', () => {
       const { item } = this;
@@ -481,7 +491,6 @@ export class ItemThumbnailRun {
       else log.info(`[Thumbnails] ${item.sourceLabel}: ${story.line}`);
     });
     await this.stage('frames', () => this.frames());
-    await this.stage('scoring', () => this.score());
   }
 
   private async frames(): Promise<void> {
@@ -516,12 +525,11 @@ export class ItemThumbnailRun {
     const keptIds = new Set(filtered.kept.map(frameId));
     const kept = sampled.frames.filter((f) => keptIds.has(frameId(f)));
     const scenes = groupScenes(kept, sampled.frames, sampled.every);
-    const allocation = allocateScoring(scenes.map((s) => ({ number: s.number, size: s.frames.length, seconds: s.seconds })), MAX_FRAMES_TO_SCORE);
-    const toScore = framesToScore(scenes, allocation.quota);
-    const scoreIds = new Set(toScore.map(frameId));
-    // Only the frames the model is asked about stay on disk: they are the candidates.
+    const grid = gridFrames(scenes);
+    const gridIds = new Set(grid.map(frameId));
+    // Only the grid's frames stay on disk: they are what Owen picks from.
     for (const f of sampled.frames) {
-      if (scoreIds.has(frameId(f))) continue;
+      if (gridIds.has(frameId(f))) continue;
       fs.rmSync(f.large, { force: true });
       fs.rmSync(f.small, { force: true });
     }
@@ -529,66 +537,18 @@ export class ItemThumbnailRun {
     this.rec.source = { video: source.screenFile, lines: source.lines };
     this.rec.scenes = scenes.map((s) => ({
       number: s.number, seconds: s.seconds, label: sceneLabel(s), kept: s.frames.length,
-      scored: s.frames.filter((f) => scoreIds.has(frameId(f))).length,
+      shown: s.frames.filter((f) => gridIds.has(frameId(f))).length,
     }));
-    this.rec.frames = toScore.sort((a, b) => a.t - b.t).map((f: SampledFrame) => ({
-      id: frameId(f), t: f.t, clock: clock(f.t), scene: sceneOf.get(frameId(f))!, large: f.large, small: f.small, score: null, reading: null, flag: null,
+    this.rec.frames = grid.map((f) => ({
+      id: frameId(f), t: f.t, clock: clock(f.t), scene: sceneOf.get(frameId(f))!, large: f.large, small: f.small,
     }));
-    this.signatures = new Map(kept.map((f) => [frameId(f), f.colour]));
-    this.sceneOf = sceneOf;
+    for (const f of this.rec.frames) this.frameFiles.set(f.id, { t: f.t, large: f.large });
     const blurry = filtered.dropped.filter((d) => d.reason === 'blurry').length;
     const repeats = filtered.dropped.filter((d) => d.reason === 'repeat').length;
     this.rec.lines.push(
       `Sampled ${sampled.frames.length} frames of the story's ${clock(sampled.seconds)} of screen recording; removed ${repeats} repeated and ${blurry} blurry; ` +
-        `${kept.length} kept in ${scenes.length} scene${scenes.length === 1 ? '' : 's'}; ${toScore.length} sent to be scored.`,
+        `${kept.length} kept in ${scenes.length} scene${scenes.length === 1 ? '' : 's'}; ${grid.length} to pick from (the sharpest, at most ${GRID_PER_SCENE} a scene).`,
     );
-  }
-
-  private signatures = new Map<string, Uint8Array>();
-  private sceneOf = new Map<string, number>();
-
-  private async score(): Promise<void> {
-    const setup = this.setup!;
-    const option = routed(this.doors.routing, 'thumbnail_frames');
-    const model = option.crucibleModel;
-    if (model === null) throw new Error(`The "Thumbnail frames" row names ${option.label}, which is not a Crucible model; frames are scored on a Crucible server.`);
-    const frames = this.rec.frames.map((f) => ({ id: f.id, t: f.t, image: f.large }));
-    this.doors.progress(`Thumbnails: scoring ${frames.length} frames on ${model}...`);
-    const outcome = await setup.doors.lanes.aiCall({ lane: 'gpu', model }, `Thumbnail frames (${this.item.jobId})`, () => {
-      const server = crucibleStepHooks().server;
-      if (server === null) throw new Error('The frame scoring step has no server to run on.');
-      return scoreFramesOnCard(setup.doors, {
-        job: this.doors.leases,
-        server,
-        model,
-        frames,
-        signal: this.doors.signal ?? new AbortController().signal,
-        beat: () => undefined,
-        onProgress: (done, total) => {
-          if (done % 10 === 0 || done === total) this.doors.progress(`Thumbnails: scored ${done} of ${total} frames...`);
-        },
-      });
-    }).catch((err) => {
-      throw plainScoringError(err, model);
-    });
-    const { ranked, screens } = rankFrames(outcome.scored);
-    const readings = new Map(outcome.scored.map((s) => [s.id, s.reading]));
-    const scores = new Map(ranked.map((r) => [r.id, r.score]));
-    const flags = new Map<string, 'screen' | 'unreadable'>([
-      ...screens.map((s) => [s.id, 'screen'] as const),
-      ...outcome.unreadable.map((u) => [u.id, 'unreadable'] as const),
-    ]);
-    this.rec.frames = this.rec.frames.map((f) => ({ ...f, score: scores.get(f.id) ?? null, reading: readings.get(f.id) ?? null, flag: flags.get(f.id) ?? null }));
-    const rows = sceneRows(ranked, this.sceneOf, this.rec.scenes.map((s) => s.number), this.signatures);
-    this.rec.bestScenes = rows.rows;
-    for (const f of this.rec.frames) this.frameFiles.set(f.id, { t: f.t, large: f.large });
-    this.rec.scoring = {
-      server: outcome.server,
-      model: outcome.model,
-      line: `Scored ${outcome.scored.length} frames on ${outcome.model} on "${outcome.server}" (${outcome.widthBasis}); ${screens.length} were computer screens` +
-        (outcome.unreadable.length > 0 ? `, ${outcome.unreadable.length} could not be read` : '') + '.',
-    };
-    if (rows.rows.length === 0) throw new Error('Every scored frame was a computer screen or could not be read, so there is no frame to put on a thumbnail.');
   }
 
   /** The words (GPU), then the three renders (CPU, no photo): after the item's fields are written. */
@@ -600,10 +560,10 @@ export class ItemThumbnailRun {
     });
     await this.stage('render', () => this.render());
     if (!this.stopped) {
-      const made = this.rec.pairs.filter((p) => p.default.render.ok).length;
-      this.rec.line = made === this.rec.pairs.length
-        ? `${made} title and thumbnail pair${made === 1 ? ' is' : 's are'} ready to pick from; no photo picked yet.`
-        : `${made} of ${this.rec.pairs.length} thumbnails were drawn; ${this.rec.pairs.filter((p) => !p.default.render.ok).map((p) => `pair ${p.pair}: ${(p.default.render as { reason: string }).reason}`).join('; ')}`;
+      const n = this.rec.pairs.length;
+      this.rec.line = this.pairFrames === null
+        ? `${n} title and thumbnail pair${n === 1 ? ' has its' : 's have their'} words; pick the frames and photos in the Thumbnails window.`
+        : `${n} title and thumbnail pair${n === 1 ? ' is' : 's are'} ready to pick from; no photo picked yet.`;
     }
   }
 
@@ -611,8 +571,10 @@ export class ItemThumbnailRun {
     const option = routed(this.doors.routing, 'thumbnail_words');
     const creator = creatorOf(this.item.channel);
     const transcript = transcriptLines(this.item.segments);
-    const frames = defaultFrames(this.rec.bestScenes);
-    if (frames.length === 0) throw new Error('There is no ranked frame to put on a thumbnail.');
+    const frames = this.pairFrames;
+    if (frames !== null && frames.length !== subjects.length) {
+      throw new Error(`${frames.length} screenshot${frames.length === 1 ? '' : 's'} and ${subjects.length} title${subjects.length === 1 ? '' : 's'}: each screenshot is drawn with its own title.`);
+    }
     for (const [i, title] of subjects.entries()) {
       this.doors.progress(`Thumbnails: writing the words for title ${i + 1} of ${subjects.length}...`);
       const result = await writeThumbnailWords({
@@ -629,18 +591,17 @@ export class ItemThumbnailRun {
       const kind = PAIR_KINDS[i];
       const chosen = defaultWords({ claim, stakes, reaction }, kind);
       if (chosen === null) throw new Error(`The words for "${title}" came back with no option of any kind.`);
-      const frame = frames[i % frames.length];
+      const frame = frames === null ? null : frames[i];
       const lines: string[] = [];
       if (chosen.line !== null) lines.push(chosen.line);
-      if (i >= frames.length) lines.push(`There are only ${frames.length} ranked frames, so this pair repeats pair ${(i % frames.length) + 1}'s frame.`);
-      else if (frame.repeat) lines.push(`There are fewer scenes than pairs, so this pair takes a second frame of scene ${frame.scene}.`);
+      if (frame === null) lines.push(NO_FRAME_YET);
       this.rec.pairs.push({
         pair: i + 1,
         title,
         words: { claim, stakes, reaction, warnings, model: result.model },
         photos: [],
         default: {
-          frameId: frame.id, scene: frame.scene, kind: chosen.kind, phrase: chosen.phrase, photo: null,
+          frameId: frame?.id ?? null, scene: frame?.scene ?? null, kind: chosen.kind, phrase: chosen.phrase, photo: null,
           draw: null, logo: false, render: { ok: false, reason: 'Not drawn yet.' },
         },
         lines: [...lines, NO_PHOTO_YET],
@@ -656,19 +617,22 @@ export class ItemThumbnailRun {
     if (logoFile === null) this.rec.lines.push('No logo is kept in the app, so none is drawn.');
     if (!setup.style.border) this.rec.lines.push('The border is switched off in Thumbnail look, so none is drawn.');
     else if (libraryBorder(setup.userDataPath) === null) this.rec.lines.push('No border is kept in the app, so none is drawn.');
-    this.doors.progress(`Thumbnails: drawing the ${this.rec.pairs.length} thumbnails...`);
+    // Only a pair with a frame is drawn: a story's pairs have none until Owen picks them.
+    const toDraw = this.rec.pairs.filter((p) => p.default.frameId !== null);
+    if (toDraw.length === 0) return;
+    this.doors.progress(`Thumbnails: drawing the ${toDraw.length} thumbnails...`);
     const renderer = setup.openRenderer();
     try {
-      for (const p of this.rec.pairs) {
+      for (const p of toDraw) {
         const d = p.default;
-        const frame = this.frameFiles.get(d.frameId);
-        if (frame === undefined) throw new Error(`Pair ${p.pair}'s frame ${d.frameId} is not among the scored frames.`);
+        const frame = this.frameFiles.get(d.frameId!);
+        if (frame === undefined) throw new Error(`Pair ${p.pair}'s frame ${d.frameId} is not among the candidate frames.`);
         d.render = await drawPair({
           renderer,
           ffmpeg: setup.ffmpeg,
           video: this.video,
           folder,
-          frame: { id: d.frameId, t: frame.t },
+          frame: { id: d.frameId!, t: frame.t },
           phrase: d.phrase,
           photo: d.photo,
           logo: logoFile !== null,

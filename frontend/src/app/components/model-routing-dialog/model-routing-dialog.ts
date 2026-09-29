@@ -350,8 +350,8 @@ export class ModelRoutingDialog implements OnInit {
 
   /**
    * The metadata run's rows, in the registry's order. The change-all menu covers these only: the
-   * thumbnail rows (#236, #240) are grouped apart, and the frame row takes vision models only,
-   * so including it would leave change-all with nothing every row offers.
+   * thumbnail row (#236, #240; the words, the one left since the frame and judge rows were
+   * retired 2026-09-29) is grouped apart, because it decides no field's words.
    */
   readonly modalTasks = computed(() => this.tasks().filter(task => task.modal && task.group !== 'thumbnails'));
   /** The thumbnail rows, shown under their own heading after the metadata rows. */

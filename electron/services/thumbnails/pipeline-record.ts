@@ -11,8 +11,6 @@
  */
 import * as path from 'path';
 import type { TranscriptRef } from '../publish/publish-types';
-import type { FrameReading } from './frame-ranking';
-import type { SceneRow } from './frame-scenes';
 import type { ThumbnailStyle } from './layout';
 import type { WordKind } from './prompts';
 import type { StoryLinkMethod, StoryMatchEvidence } from './story-match';
@@ -29,19 +27,24 @@ export const PAIR_COUNT = 3;
 export const PAIR_KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
 
 /**
- * The stages, in the order they run. `tone-photos` (the model's tone read and photo ranking on the
- * `thumbnail_judge` row) was removed 2026-09-29, Owen: "just let me pick the image of myself that goes
- * in the corner instead of letting the model pick it. itll be faster." He picks the photos in the
- * Thumbnails window; the run draws its defaults without one.
+ * The stages, in the order they run. Two were removed on 2026-09-29, both because Owen picks in the
+ * Thumbnails window what a model used to pick:
+ *   - `tone-photos` (the model's tone read and photo ranking on the `thumbnail_judge` row), Owen:
+ *     "just let me pick the image of myself that goes in the corner instead of letting the model
+ *     pick it. itll be faster."
+ *   - `scoring` (the vision model's frame scoring on the `thumbnail_frames` row): he picks frames
+ *     1, 2 and 3 from a flat grid, so the ranking was not needed; its last live run was refused
+ *     (the 9B with vision asked for 8192 of context on a host whose ceiling for it is 1700).
  */
-export const THUMBNAIL_STAGES = ['story', 'frames', 'scoring', 'words', 'render'] as const;
+export const THUMBNAIL_STAGES = ['story', 'frames', 'words', 'render'] as const;
 export type ThumbnailStage = (typeof THUMBNAIL_STAGES)[number];
 
 /**
- * A stage an older record can name that no longer runs. A record that stopped at `tone-photos` is
- * still read (Owen's first run stopped there), and "Finish making thumbnails" draws it.
+ * A stage an older record can name that no longer runs. A record that stopped at `tone-photos`
+ * (Owen's first run stopped there) or at `scoring` is still read, and "Finish making thumbnails"
+ * goes on from what it stores (pipeline.ts resumePlan).
  */
-export const RETIRED_STAGES = ['tone-photos'] as const;
+export const RETIRED_STAGES = ['tone-photos', 'scoring'] as const;
 export type RecordedStage = ThumbnailStage | (typeof RETIRED_STAGES)[number];
 
 /** A photo and the model's probability for it, in records made before 2026-09-29 (the ranking). */
@@ -60,8 +63,9 @@ export interface PhotoDraw {
 }
 
 /**
- * made        every stage ran; `pairs` holds the three defaults (a pair whose words did not fit
- *             says so on its own render).
+ * made        every stage ran; `pairs` holds the three pairs with their words. From a story, no pair
+ *             has a frame or a render until Owen picks the frames and presses Generate thumbnails
+ *             (since 2026-09-29); from his screenshots, each pair is drawn on its screenshot.
  * no-story    the item has no editor story to take frames from; `reason` says why. Not a failure.
  * off         the run did not make thumbnails: switched off for this run, a channel that makes none,
  *             a channel file that does not say, or a caller with no thumbnail setup. `reason` says which.
@@ -74,21 +78,22 @@ export type StoredStoryLink =
   | { state: 'linked'; method: StoryLinkMethod; ref: TranscriptRef; line: string; evidence: StoryMatchEvidence | null }
   | { state: 'none'; reason: string; evidence: StoryMatchEvidence | null };
 
-/** One candidate frame: a frame the vision model was asked about. Paths are absolute. */
+/**
+ * One candidate frame: a frame of the Thumbnails window's grid (at most two per scene, frame-scenes.ts
+ * `gridFrames`), or one of Owen's screenshots. Paths are absolute. Records made before 2026-09-29
+ * also carry the frame scoring's `score`, `reading` and `flag` on each frame; they are read and
+ * ignored (nothing reads them now).
+ */
 export interface StoredFrame {
   id: string;
   /** Seconds into the screen recording. */
   t: number;
   clock: string;
   scene: number;
-  /** 640x360 JPEG (what the model read). */
+  /** 640x360 JPEG (the larger view). */
   large: string;
-  /** 320x180 JPEG (for a grid). */
+  /** 320x180 JPEG (for the grid). */
   small: string;
-  /** Null when the frame was set aside (a computer screen, or an unreadable answer). */
-  score: number | null;
-  reading: FrameReading | null;
-  flag: 'screen' | 'unreadable' | null;
 }
 
 export interface StoredScene {
@@ -98,7 +103,11 @@ export interface StoredScene {
   /** "Scene 3 · 2:41 on screen". */
   label: string;
   kept: number;
-  scored: number;
+  /**
+   * How many of its frames are in the grid (at most two). Records made before 2026-09-29 carry
+   * `scored` (the frames sent to the vision model) instead; read and ignored.
+   */
+  shown?: number;
 }
 
 export interface StoredWords {
@@ -121,8 +130,14 @@ export type StoredRender =
 
 /** One title and thumbnail pair's current thumbnail: which pieces, and the file. */
 export interface StoredDefault {
-  frameId: string;
-  scene: number;
+  /**
+   * The frame this pair is drawn on: Owen's frame pick for its place, set when he presses Generate
+   * thumbnails; or screenshot n for a pair made from his screenshots. Null: no frame picked yet
+   * (the metadata run assigns none since 2026-09-29, when the frame ranking that chose them was
+   * removed), and the pair is not drawn.
+   */
+  frameId: string | null;
+  scene: number | null;
   /** The kind the words were taken from; null for "No text" or words Owen typed. */
   kind: WordKind | null;
   /** Null: Owen chose "No text" for this pair. */
@@ -215,11 +230,12 @@ export interface ItemThumbnails {
    */
   source: { video: string | null; lines: string[] } | null;
   scenes: StoredScene[];
-  /** The scored frames, in time order. */
+  /**
+   * The grid's candidate frames, in time order (the only frames kept on disk). Records made before
+   * 2026-09-29 also carry `bestScenes` (the ranked rows) and `scoring` (the vision model's line);
+   * both are read and ignored.
+   */
   frames: StoredFrame[];
-  /** One row per scene, best scene first (frame-scenes.ts sceneRows). */
-  bestScenes: SceneRow[];
-  scoring: { server: string; model: string; line: string } | null;
   /** The titles the pairs are written for, and where their order came from. */
   titles: { order: 'gate ranking' | 'as written'; subjects: string[] } | null;
   /** Records before 2026-09-29: the model's tone read. Always null now. */
@@ -252,7 +268,7 @@ export function readItemThumbnails(value: unknown, where: string): ItemThumbnail
   need(['made', 'no-story', 'off', 'failed'].includes(r.state), where, `has the state ${JSON.stringify(r.state)}`);
   need(typeof r.line === 'string' && r.line !== '', where, 'has no line');
   need(r.state !== 'failed' || (r.failure !== null && ([...THUMBNAIL_STAGES, ...RETIRED_STAGES] as readonly string[]).includes(r.failure.stage)), where, 'is failed and names no stage');
-  for (const key of ['scenes', 'frames', 'bestScenes', 'pairs', 'lines', 'timings', 'picks'] as const) {
+  for (const key of ['scenes', 'frames', 'pairs', 'lines', 'timings', 'picks'] as const) {
     need(Array.isArray(r[key]), where, `has no ${key} list`);
   }
   need(r.state !== 'made' || (r.pairs.length > 0 && r.folder !== null), where, 'is made and holds no pairs');

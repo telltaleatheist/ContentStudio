@@ -7,7 +7,9 @@
 > to `look.ts` and the Thumbnail look dialog (from the Thumbnails window, or Settings); the text
 > rules changed (the box left of the photo, one or two lines, shrink instead of refuse). This file is
 > kept as the record of how the modules were found and measured; where it and the pipeline doc
-> disagree, the pipeline doc is right.
+> disagree, the pipeline doc is right. The frame scoring and ranking below (frame-scorer.ts,
+> frame-ranking.ts, the `thumbnail_frames` row) and the tone/photo ranking were removed 2026-09-29
+> (LEDGER #243, #244): Owen picks the frames and the photos himself.
 
 Built 2026-09-28 (LEDGER #236). A testing tab for Owen to try an automated YouTube-thumbnail
 workflow on one processed video: find usable frames, pick three, add words, and render three

@@ -3,7 +3,7 @@
  *
  * About one frame a second across the chosen STRETCHES of the video (the whole video when none
  * are given; for a story, the pieces of the screen recording it is made of, story-source.ts),
- * written twice as JPEG (640x360 for the vision model and the large view, 320x180 for the grid)
+ * written twice as JPEG (640x360 for the large view, 320x180 for the grid)
  * and streamed once more as small grey frames straight into frame-metrics.ts, so the sharpness and
  * the repeat hash are measured without writing a third copy to disk. A fourth branch streams each
  * frame as 16x9 colour cells (the grid picture shrunk by area average) on a second pipe (fd 3):

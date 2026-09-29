@@ -18,7 +18,7 @@
  *     (`useScreenshots`): that many pairs are made from them, the words by the model as in the run
  *     (pipeline.ts ItemThumbnailRun.fromScreenshots);
  *   - for a report whose thumbnail stages STOPPED, "Finish making thumbnails" (`finish`, 2026-09-29):
- *     the stages it stores are kept (frames, scores, words) and only the missing ones run
+ *     the stages it stores are kept (frames, words) and only the missing ones run
  *     (pipeline.ts resumePlan / ItemThumbnailRun.resume); "Make thumbnails again from scratch"
  *     (`remake`) runs every thumbnail stage again for the item.
  *
@@ -56,6 +56,7 @@ import {
   ItemThumbnailRun,
   defaultWords,
   drawPair,
+  NO_FRAME_YET,
   NO_PHOTO_YET,
   resumePlan,
   type ThumbnailItemInput,
@@ -92,7 +93,7 @@ export interface ReportThumbnailsDeps {
   userDataPath: string;
   ffprobe: string;
   look: ThumbnailLook;
-  /** The run's setup read NOW (the saved look, notes, renderer, doors): pipeline-setup.ts thumbnailRunChoice. */
+  /** The run's setup read NOW (the saved look, the renderer): pipeline-setup.ts thumbnailRunChoice. */
   runChoice: () => ThumbnailRunChoice;
   /** A held Crucible job for the text steps (crucible.transport.job). */
   holdJob: (what: string) => JobLeases;
@@ -171,7 +172,7 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   record: ItemThumbnails | null;
   /** The item's generated titles (the words can be rewritten for any title). */
   titles: string[];
-  /** Pictures of the pairs' renders (keyed by file path) and of the frames the scene strip shows first (keyed by id). */
+  /** Pictures of the pairs' renders (keyed by file path) and of every candidate frame (keyed by id). */
   renders: Record<string, string>;
   frames: Record<string, string>;
   photos: Array<{ name: string; preview: string }>;
@@ -320,12 +321,10 @@ export class ReportThumbnails {
       for (const p of record.pairs) {
         if (p.default.render.ok && fs.existsSync(p.default.render.file)) renders[p.default.render.file] = this.deps.picture(p.default.render.file, 640);
       }
-      const byId = new Map(record.frames.map((f) => [f.id, f]));
-      for (const row of record.bestScenes) {
-        for (const id of row.ids) {
-          const f = byId.get(id);
-          if (f !== undefined && fs.existsSync(f.small)) frames[id] = this.deps.picture(f.small, 320);
-        }
+      // Every candidate: the grid shows them all (at most two per scene since 2026-09-29; a record
+      // made before keeps the frames it sent to the since-removed scoring, all of them on disk).
+      for (const f of record.frames) {
+        if (fs.existsSync(f.small)) frames[f.id] = this.deps.picture(f.small, 320);
       }
     }
     return {
@@ -346,11 +345,12 @@ export class ReportThumbnails {
   }
 
   /**
-   * Why a run of `stages` cannot start now: no Crucible server for a GPU stage. Null when it can.
-   * Checked again when the button is pressed.
+   * Why a run of `stages` cannot start now: no Crucible server for the words (the one stage that
+   * calls a model since the frame scoring was removed 2026-09-29). Null when it can. Checked again
+   * when the button is pressed.
    */
   private blockedFor(stages: readonly ThumbnailStage[]): string | null {
-    if (stages.includes('scoring') || stages.includes('words')) {
+    if (stages.includes('words')) {
       const venue = this.deps.gpuVenue();
       if (venue.server === null) return `No Crucible server to run the models on: ${venue.reason}`;
     }
@@ -360,11 +360,14 @@ export class ReportThumbnails {
   private finishView(record: ItemThumbnails | null): FinishView | null {
     if (record === null || record.state !== 'failed' || record.failure === null) return null;
     const plan = resumePlan(record, fs.existsSync);
-    // A record that stopped at the removed tone-photos stage (the model's photo ranking): its
-    // reason (usually the empty library) no longer stands in the way, and that is said.
+    // A record that stopped at a removed stage (the model's photo ranking, or its frame scoring):
+    // its reason (the empty library, a refused vision model) no longer stands in the way, and
+    // that is said.
     const reason = record.failure.stage === 'tone-photos'
-      ? `${record.failure.reason} That step is gone: you pick the photos yourself below, so Finish only draws the thumbnails.`
-      : record.failure.reason;
+      ? `${record.failure.reason} That step is gone: you pick the photos yourself below, so Finish only goes on from what is missing.`
+      : record.failure.stage === 'scoring'
+        ? `${record.failure.reason} That step is gone: you pick the frames yourself below, so Finish goes on from the words without it.`
+        : record.failure.reason;
     return { stage: record.failure.stage, reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
   }
 
@@ -372,20 +375,6 @@ export class ReportThumbnails {
     if (record === null || record.state === 'off') return null;
     if (record.state === 'made' && record.source !== null && record.source.video === null) return null;
     return { blocked: this.blockedFor(THUMBNAIL_STAGES) };
-  }
-
-  /** Pictures of more frames (the window's "Show more"), keyed by id. */
-  framePictures(jobId: string, itemId: string, ids: string[]): Record<string, string> {
-    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) throw new Error(`The frames to show must be a list of frame ids, got ${JSON.stringify(ids)}.`);
-    const { record } = this.locate(jobId, itemId);
-    if (record === null) throw new Error('This report has no thumbnails record.');
-    const out: Record<string, string> = {};
-    for (const id of ids) {
-      const f = record.frames.find((x) => x.id === id);
-      if (f === undefined) throw new Error(`Frame ${id} is not among this report's candidate frames.`);
-      out[id] = this.deps.picture(f.small, 320);
-    }
-    return out;
   }
 
   // ── writing ─────────────────────────────────────────────────────────────────
@@ -505,6 +494,8 @@ export class ReportThumbnails {
         if (typeof change.logo !== 'boolean') throw new Error(`The logo is on or off, got ${JSON.stringify(change.logo)}.`);
         d.logo = change.logo;
       }
+      // A story's pairs have no frame until Owen picks one (the window sends it with every draw).
+      if (d.frameId === null) throw new Error(`Thumbnail ${pair.pair} has no frame yet: pick its frame in the grid above, then press Generate thumbnails.`);
       const setup = this.setup();
       const frame = record.frames.find((f) => f.id === d.frameId);
       if (frame === undefined) throw new Error(`Pair ${pair.pair}'s frame ${d.frameId} is not among this report's candidate frames.`);
@@ -535,8 +526,8 @@ export class ReportThumbnails {
         pairs: record.pairs.map((p) => (p.pair === pair.pair ? {
           ...p,
           default: d,
-          // The run's "no photo picked yet" line goes once a photo is picked for this pair.
-          lines: d.photo === null ? p.lines : p.lines.filter((l) => l !== NO_PHOTO_YET),
+          // The run's "no frame / no photo picked yet" lines go once they are picked for this pair.
+          lines: p.lines.filter((l) => l !== NO_FRAME_YET && (d.photo === null || l !== NO_PHOTO_YET)),
         } : p)),
         picks: this.followPair(record.picks, pair.pair, drawn.file, d.wordsFor ?? pair.title),
       };
@@ -572,6 +563,8 @@ export class ReportThumbnails {
       const loc = this.locate(jobId, itemId);
       const record = this.actionable(loc, 'rewrite');
       const pair = this.pairOf(record, n);
+      // Offered only on a generated thumbnail, which has its frame; one without is refused before the model call.
+      if (pair.default.frameId === null) throw new Error(`Thumbnail ${n} has no frame yet: pick its frame and press Generate thumbnails first.`);
       const setup = this.setup();
       const ctx = this.itemContext(loc);
       const wordsOption = this.routed('thumbnail_words');
@@ -850,7 +843,7 @@ export class ReportThumbnails {
 
   /**
    * "FINISH MAKING THUMBNAILS": a record whose stages stopped goes on from what it stores. The
-   * stages whose output is all there are kept (frames, scores, words are never made again); the
+   * stages whose output is all there are kept (frames and words are never made again); the
    * missing ones run in order on the routing table's rows, on one held job. The new record is
    * written whatever happened: made, or stopped again with the new stage and reason.
    */
@@ -875,7 +868,7 @@ export class ReportThumbnails {
 
   /**
    * "MAKE THUMBNAILS AGAIN FROM SCRATCH": every thumbnail stage runs again for the item (the story
-   * link found again, frames sampled and scored, words, renders), into its folder,
+   * link found again, frames sampled, words; a story's pairs wait for Owen's frame picks), into its folder,
    * on one held job. Own-image picks stay; pair picks go (the pairs are new).
    */
   remake(jobId: string, itemId: string): Promise<ThumbnailsView> {

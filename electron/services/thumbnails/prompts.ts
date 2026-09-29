@@ -1,15 +1,11 @@
 /**
- * THE THUMBNAILS TAB'S TWO MODEL-FACING SHAPES, assembled from
+ * THE THUMBNAILS' ONE MODEL-FACING SHAPE, assembled from
  * electron/assets/prompts/shared/pipeline/thumbnails.yml (Law 2: code assembles, never authors).
  *
- *   1. THE WORDS: one plain-text call on the `thumbnail_words` routing row. The answer is plain
- *      text in three labelled blocks (Law 12), read by `parseThumbnailWords` below.
- *   2. THE FRAME QUESTIONS: five fixed-answer questions asked of ONE frame per decide call on the
- *      `thumbnail_frames` row (a vision model). One image per call on purpose (Owen, 2026-09-28):
- *      a question about a multi-image state is ambiguous about which image it means. Since Crucible
- *      1.0.55 the five go as ITEMS of one call (`decideItems`): the frame is read once and each item
- *      is answered exactly as if asked alone (never one prompt with numbered slots: measured and
- *      rejected, the model copies earlier answers).
+ * THE WORDS: one plain-text call on the `thumbnail_words` routing row. The answer is plain text in
+ * three labelled blocks (Law 12), read by `parseThumbnailWords` below. (The five frame questions a
+ * vision model answered per frame on the `thumbnail_frames` row were removed 2026-09-29 with the
+ * frame scoring: Owen picks the frames himself.)
  *
  * THE NEW TEXT RULES (Owen, 2026-09-28), replacing the old three-word logic for this tab only: 2-5
  * words, capitals, a complete thought to a stranger that opens a question; adds to the paired
@@ -17,9 +13,7 @@
  * or the host's reaction). Three kinds, one per A/B variant, so the test compares ideas: claim,
  * stakes/absurdity, reaction. The metadata pipeline's THUMBNAIL TEXT OPTIONS field is untouched.
  */
-import type { DecideChoiceAnswer, DecideItem, DecideQuestion } from '@crucible/client';
 import { promptAssets } from '../metadata/prompt-assets';
-import { FRAME_QUESTIONS, SCREEN_OPTIONS } from './frame-ranking';
 
 export const THUMBNAILS_PROMPT_FILE = 'thumbnails.yml';
 
@@ -146,84 +140,5 @@ export function parseThumbnailWords(text: string, what: string): WordOptions {
       if (n < MIN_WORDS || n > MAX_WORDS) out.warnings.push(`"${option}" is ${n} word${n === 1 ? '' : 's'}; the brief asks for ${MIN_WORDS} to ${MAX_WORDS}.`);
     }
   }
-  return out;
-}
-
-/** The decide call's state text for one frame; the image carries the rest. */
-export function frameState(): string {
-  return asset('frames.state');
-}
-
-/** The five frame questions, words from thumbnails.yml, shapes fixed here (frame-ranking.ts reads them). */
-export function frameQuestions(): Record<(typeof FRAME_QUESTIONS)[number], DecideQuestion> {
-  const levels = asset('frames.expression.levels').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-  if (levels.length !== 5) {
-    throw new Error(`thumbnails.yml "frames.expression.levels" lists ${levels.length} levels; the expression scale has 5 (blank to extreme).`);
-  }
-  return {
-    screen: {
-      type: 'choice',
-      instructions: asset('frames.screen.instructions'),
-      options: { [SCREEN_OPTIONS[0]]: asset('frames.screen.video'), [SCREEN_OPTIONS[1]]: asset('frames.screen.screen') },
-    },
-    face: { type: 'yesno', instructions: asset('frames.face') },
-    expression: { type: 'score', instructions: asset('frames.expression.instructions'), levels },
-    eyes: { type: 'yesno', instructions: asset('frames.eyes') },
-    strong: { type: 'yesno', instructions: asset('frames.strong') },
-  } as Record<(typeof FRAME_QUESTIONS)[number], DecideQuestion>;
-}
-
-/** The options of a statement item: the yes/no pair, words from thumbnails.yml. */
-export const YES_NO_KEYS = ['yes', 'no'] as const;
-
-/**
- * THE ONE PLACE a frame's decide request is packed: the five questions as ITEMS of one
- * `decideItems` call (Crucible 1.0.55), in FRAME_QUESTIONS order. The items form asks CHOICE
- * questions only, so the two other shapes are written as the choice the server's own `yesno` and
- * `score` would put to the model (crucible decide.py `question_block`): a statement becomes
- * "Statement: ... Is this statement true of the image?" with Yes/No, and the expression scale
- * becomes a choice over its five levels, keyed 1-5 (integer keys list in number order, which is the
- * scale's order). frameAnswersOfItems turns the list back into the per-question shapes
- * readFrameAnswers (frame-ranking.ts) has always read.
- */
-export function frameDecideItems(imageBase64: string): { state: string; images: string[]; items: DecideItem[]; missing: 'report' } {
-  const q = frameQuestions();
-  const yesNo = { [YES_NO_KEYS[0]]: asset('frames.yes'), [YES_NO_KEYS[1]]: asset('frames.no') };
-  const statement = (question: DecideQuestion) => ({ text: asset('frames.statement').replace('{statement}', question.instructions), options: yesNo });
-  const choice = q.screen as Extract<DecideQuestion, { type: 'choice' }>;
-  const score = q.expression as Extract<DecideQuestion, { type: 'score' }>;
-  const byName: Record<(typeof FRAME_QUESTIONS)[number], DecideItem> = {
-    screen: { text: choice.instructions, options: { ...choice.options } },
-    face: statement(q.face),
-    expression: { text: score.instructions, options: Object.fromEntries(score.levels.map((level, i) => [String(i + 1), level])) },
-    eyes: statement(q.eyes),
-    strong: statement(q.strong),
-  };
-  return { state: frameState(), images: [imageBase64], items: FRAME_QUESTIONS.map((name) => byName[name]), missing: 'report' };
-}
-
-/**
- * The items' answers (a list in FRAME_QUESTIONS order) as the per-question shapes readFrameAnswers
- * reads: `screen` as the choice it is; a statement as `p` = P(yes); the expression as `score` =
- * sum of (level x P(level)) over the levels, as the server's own score does. Missing labels ride
- * through untouched, so readFrameAnswers still sets such a frame aside by name.
- */
-export function frameAnswersOfItems(answers: readonly DecideChoiceAnswer[]): Record<string, unknown> {
-  if (answers.length !== FRAME_QUESTIONS.length) {
-    throw new Error(`A frame's decide answered ${answers.length} items; ${FRAME_QUESTIONS.length} were asked.`);
-  }
-  const out: Record<string, unknown> = {};
-  FRAME_QUESTIONS.forEach((name, i) => {
-    const a = answers[i];
-    const common = { missingLabels: a.missingLabels ?? [] };
-    if (name === 'screen') {
-      out[name] = { type: 'choice', probabilities: a.probabilities, ...common };
-    } else if (name === 'expression') {
-      const score = Object.entries(a.probabilities).reduce((sum, [level, p]) => sum + Number(level) * (p ?? 0), 0);
-      out[name] = { type: 'score', score, ...common };
-    } else {
-      out[name] = { type: 'yesno', p: a.probabilities[YES_NO_KEYS[0]], ...common };
-    }
-  });
   return out;
 }

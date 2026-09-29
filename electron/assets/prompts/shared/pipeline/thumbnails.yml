@@ -32,36 +32,3 @@ text: |-
   REACTION
   option
   option
-
-frames:
-  state: |-
-    The image is one frame taken from a video.
-  screen:
-    instructions: |-
-      What does this frame show?
-    video: |-
-      A picture from a video: a camera shot of a person or a scene, or two camera shots side by side.
-    screen: |-
-      A computer screen: a desktop, a web browser, an app window, a document, a menu or any other interface.
-  face: |-
-    A human face is clearly visible in this frame and large enough to read its expression.
-  expression:
-    instructions: |-
-      How strong is the expression on the largest face in this frame?
-    levels: |-
-      blank and neutral
-      mild
-      clear
-      strong
-      extreme
-  eyes: |-
-    The largest face in this frame has its eyes open.
-  strong: |-
-    This frame would make a strong YouTube thumbnail.
-  statement: |-
-    Statement: {statement}
-    Is this statement true of the image?
-  yes: |-
-    Yes
-  no: |-
-    No

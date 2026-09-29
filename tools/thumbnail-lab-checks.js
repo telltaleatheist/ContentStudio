@@ -3,7 +3,7 @@
  * (built for the Thumbnails test tab on 2026-09-28; the tab was retired in phase 2 the same day,
  * and its tab-only checks went with it). The Node half of `npm run check:thumbnail-lab`.
  *
- * What it pins, against the COMPILED main process and the fake Crucible (no live server, no card):
+ * What it pins, against the COMPILED main process (no Crucible, no card):
  *
  *   - FRAME FILTERING: the difference hash finds a held frame and keeps the sharper copy; a
  *     motion-blurred frame falls under the run's median rule; thinning spreads across the range.
@@ -18,11 +18,11 @@
  *   - SCENES (2026-09-28): kept frames group by how they look across the whole story (alternating
  *     clips rejoin their scene, a speaker moving inside a clip does not split it, a scene of two
  *     frames stays its own); the nearest-neighbour chain gives the same groups as merging the
- *     closest pair; every sampled frame counts toward a scene's time on screen; the scoring cap is
- *     shared with a floor per scene and the rest by screen time.
- *   - RANKING: the desktop answer is the one filter, everything else ranks; the best view is one
- *     row per scene with its top frames, scenes ordered by their best frame, screen-only scenes
- *     left out and named; a frame with a missing option letter is unreadable, not guessed.
+ *     closest pair; every sampled frame counts toward a scene's time on screen.
+ *   - THE GRID (2026-09-29, Owen picks frames 1, 2 and 3 himself; the vision model's frame scoring,
+ *     its ranking and its checks were removed): each scene offers at most two frames (one when on
+ *     screen under SHORT_SCENE_SECONDS), the sharpest of each half of its time on screen, all in
+ *     time order.
  *   - TEXT: the words prompt fills every slot from thumbnails.yml; the plain-text answer parses into
  *     the three kinds with decoration stripped and off-brief options warned about, never dropped.
  *   - THE TEXT ALWAYS FITS (phase 2, Owen 2026-09-28): the text box runs from the left margin to
@@ -39,14 +39,10 @@
  *     the reaction photos and logo are copied into the app's library (ThumbnailLook: add,
  *     duplicate refused then replaced, remove, the one-click copy offer from the old folder
  *     setting, originals untouched) on a CONTENTSTUDIO_USER_DATA scratch folder; the border overlay
- *     (2026-09-29) is kept the same way (one PNG, a refused file leaves the kept one); the best
- *     view shows 2 frames per scene with the rest behind "More", and small interleaved fragments of
- *     one moving shot fold into one scene. (The tone and photo ranking, its notes and the top-3 draw
- *     were removed 2026-09-29 with their checks: Owen picks his photos himself.)
- *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
- *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
- *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
- *     and a model that is not installed each surface with the model and the server named.
+ *     (2026-09-29) is kept the same way (one PNG, a refused file leaves the kept one); small
+ *     interleaved fragments of one moving shot fold into one scene. (The tone and photo ranking, its
+ *     notes and the top-3 draw were removed 2026-09-29 with their checks: Owen picks his photos
+ *     himself; the frame scoring went the same day: he picks the frames too.)
  *
  * The rendering half (Apple Vision faces, real fonts, file limits) is
  * tools/thumbnail-lab-render-smoke.js under the electron binary.
@@ -57,20 +53,16 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFileSync } = require('child_process');
-const { assert, fake, context, rejection, check, run, crucible, REPO } = require('./_crucible-keeper');
+const { assert, rejection, check, run, REPO } = require('./_crucible-keeper');
 
 const DIST = path.join(REPO, 'dist', 'main');
 const services = (name) => require(path.join(DIST, 'services', name));
 services('metadata/prompt-assets.js').initPromptAssets(path.join(REPO, 'electron', 'assets', 'prompts'));
 const metrics = services('thumbnails/frame-metrics.js');
-const ranking = services('thumbnails/frame-ranking.js');
 const scenes = services('thumbnails/frame-scenes.js');
 const layout = services('thumbnails/layout.js');
 const prompts = services('thumbnails/prompts.js');
 const sampler = services('thumbnails/frame-sampler.js');
-const scorer = services('thumbnails/frame-scorer.js');
-const { installCrucibleTransport } = crucible('transport');
-const { installLanes } = crucible('lanes');
 
 const FFMPEG = path.join(REPO, 'node_modules', '@ffmpeg-installer', `${process.platform}-${process.arch}`, 'ffmpeg');
 const FFPROBE = path.join(REPO, 'node_modules', '@ffprobe-installer', `${process.platform}-${process.arch}`, 'ffprobe');
@@ -104,9 +96,6 @@ function blur(g, r) {
 }
 function measure(index, g) {
   return { index, t: index, hash: metrics.differenceHash(g, W, H), sharpness: metrics.laplacianVariance(g, W, H) };
-}
-function reading(over = {}) {
-  return { pScreen: 0.05, pFace: 0.95, expression: 3, pEyesOpen: 0.9, pStrong: 0.6, ...over };
 }
 /** Impact-like metrics at REFERENCE_SIZE: 0.5 em per letter, a 0.25 em space, caps at 0.8 em. */
 function metricsFor(phrase) {
@@ -236,56 +225,32 @@ check('scenes: the nearest-neighbour chain gives the same groups as merging the 
   assert.throws(() => scenes.averageLinkageGroups([]), /no frames to group/);
 });
 
-check('scenes: a scene on screen under SHORT_SCENE_SECONDS offers one frame, not the full floor', () => {
-  const list = [
-    { number: 1, size: 200, seconds: 400 },
-    { number: 2, size: 20, seconds: scenes.SHORT_SCENE_SECONDS - 1 },
-    { number: 3, size: 20, seconds: scenes.SHORT_SCENE_SECONDS },
-  ];
-  const { quota } = scenes.allocateScoring(list, 10);
-  assert.strictEqual(quota.get(2), 1, `a ${scenes.SHORT_SCENE_SECONDS - 1} s scene gets one (${[...quota.values()]})`);
-  assert.ok(quota.get(3) >= scenes.SCENE_FLOOR, `a ${scenes.SHORT_SCENE_SECONDS} s scene keeps the floor (${[...quota.values()]})`);
-  assert.strictEqual([...quota.values()].reduce((a, b) => a + b, 0), 10);
+check('grid: each scene offers at most two frames, one when on screen under SHORT_SCENE_SECONDS, never more than it kept', () => {
+  assert.strictEqual(scenes.GRID_PER_SCENE, 2);
+  assert.strictEqual(scenes.gridQuota({ size: 200, seconds: 400 }), 2);
+  assert.strictEqual(scenes.gridQuota({ size: 20, seconds: scenes.SHORT_SCENE_SECONDS - 1 }), 1, 'a short scene offers one');
+  assert.strictEqual(scenes.gridQuota({ size: 20, seconds: scenes.SHORT_SCENE_SECONDS }), 2);
+  assert.strictEqual(scenes.gridQuota({ size: 1, seconds: 400 }), 1, 'a scene that kept one frame offers it');
+  assert.throws(() => scenes.gridQuota({ size: 0, seconds: 10 }), /offers nothing/);
 });
 
-check('scenes: the scoring cap is shared: a floor for every scene (all of a tiny one), the rest by screen time, the total unchanged', () => {
+check('grid: the sharpest of each half of a scene\'s time on screen (both visits of a scene the story returns to), in time order; no frame of another scene', () => {
+  const mk = (t, sharpness) => ({ t, sharpness });
+  // Scene 1: visited at 0-19 and again at 500-519; the sharpest of each visit is 7 and 511.
+  const one = [...Array.from({ length: 20 }, (_, i) => mk(i, i === 7 ? 90 : 10)), ...Array.from({ length: 20 }, (_, i) => mk(500 + i, i === 11 ? 80 : 20))];
+  // Scene 2: on screen 5 s, so one frame: its sharpest.
+  const two = [mk(100, 5), mk(101, 50), mk(102, 5), mk(103, 5), mk(104, 5)];
+  // Scene 3: 30 s in one stretch; the sharpest of each half.
+  const three = Array.from({ length: 30 }, (_, i) => mk(200 + i, i === 3 ? 70 : i === 25 ? 60 : i === 4 ? 65 : 1));
   const list = [
-    { number: 1, size: 200, seconds: 400 },
-    { number: 2, size: 80, seconds: 160 },
-    { number: 3, size: 2, seconds: 2 },
-    { number: 4, size: 30, seconds: 30 },
-    { number: 5, size: 1, seconds: 1 },
+    { number: 1, frames: one, sampled: 40, seconds: 40 },
+    { number: 2, frames: two, sampled: 5, seconds: 5 },
+    { number: 3, frames: three, sampled: 30, seconds: 30 },
   ];
-  const { quota, short } = scenes.allocateScoring(list, 60);
-  const q = list.map((s) => quota.get(s.number));
-  assert.strictEqual(short, false);
-  assert.strictEqual(q.reduce((a, b) => a + b, 0), 60, `the cap is used exactly (${q})`);
-  assert.deepStrictEqual([q[2], q[4]], [1, 1], 'a tiny scene, on screen a second or two, sends one frame');
-  assert.ok(q[0] > q[1] && q[1] > q[3] && q[3] >= scenes.SCENE_FLOOR, `longer on screen, more frames (${q})`);
-  const rest = [q[0] - 3, q[1] - 3, q[3] - 3];
-  assert.ok(Math.abs(rest[0] / rest[1] - 400 / 160) < 0.5, `the rest follows screen time (${rest})`);
-  // Under the cap, everything is scored.
-  const all = scenes.allocateScoring(list.slice(2), 60).quota;
-  assert.deepStrictEqual([...all.values()], [2, 30, 1]);
-  // More scenes than the floors allow: one each, longest on screen first, and the run says so.
-  const many = Array.from({ length: 30 }, (_, i) => ({ number: i + 1, size: 5, seconds: 100 - i }));
-  const tight = scenes.allocateScoring(many, 20);
-  assert.strictEqual(tight.short, true);
-  assert.deepStrictEqual([...tight.quota.values()], [...Array(20).fill(1), ...Array(10).fill(0)]);
-  assert.throws(() => scenes.allocateScoring(list, 0), /not a count/);
-});
-
-check('scenes: the frames scored are each scene\'s share, spread across that scene\'s own time on screen', () => {
-  const mk = (t, sharpness = 10) => ({ t, sharpness });
-  const sceneList = [
-    { number: 1, frames: Array.from({ length: 40 }, (_, i) => mk(i < 20 ? i : 500 + i)), sampled: 40, seconds: 40 },
-    { number: 2, frames: [mk(100), mk(101)], sampled: 2, seconds: 2 },
-  ];
-  const picked = scenes.framesToScore(sceneList, new Map([[1, 6], [2, 2]]));
-  assert.strictEqual(picked.length, 8);
-  const one = picked.filter((f) => f.t < 100 || f.t >= 500);
-  assert.ok(one.some((f) => f.t < 20) && one.some((f) => f.t >= 500), 'both of scene 1\'s visits are sampled');
-  for (let i = 1; i < picked.length; i++) assert.ok(picked[i].t > picked[i - 1].t, 'time order');
+  const grid = scenes.gridFrames(list);
+  assert.deepStrictEqual(grid.map((f) => f.t), [7, 101, 203, 225, 511], 'the sharpest of each half, spread apart; in time order');
+  assert.ok(!grid.some((f) => f.t === 204), 'the second sharpest of scene 3 sits in the same half as its sharpest, so it is not taken');
+  assert.throws(() => scenes.gridFrames([{ number: 9, frames: [], sampled: 0, seconds: 0 }]), /scene 9 has no kept frames/);
 });
 
 // ── sampling (real ffmpeg, synthetic video) ─────────────────────────────────
@@ -333,68 +298,6 @@ check('sampling: the rate is one a second up to the cap, and bad stretches are r
   assert.throws(() => sampler.resolveSpans([{ start: 10, end: 11 }], 1800), /too little to sample/);
 });
 
-// ── ranking ─────────────────────────────────────────────────────────────────
-
-check('ranking: the desktop answer is the one filter; face, expression, eyes and "strong" rank without thresholds', () => {
-  const frames = [
-    { id: 'desk', t: 10, reading: reading({ pScreen: 0.8, pStrong: 1, expression: 5 }) },
-    { id: 'blank', t: 20, reading: reading({ expression: 1, pStrong: 0.2 }) },
-    { id: 'wild', t: 30, reading: reading({ expression: 5, pStrong: 0.9 }) },
-    { id: 'noface', t: 40, reading: reading({ pFace: 0.05, expression: 5, pStrong: 0.9 }) },
-    { id: 'shut', t: 50, reading: reading({ expression: 5, pStrong: 0.9, pEyesOpen: 0.05 }) },
-  ];
-  const r = ranking.rankFrames(frames);
-  assert.deepStrictEqual(r.screens.map((f) => f.id), ['desk']);
-  assert.deepStrictEqual(r.ranked.map((f) => f.id), ['wild', 'shut', 'blank', 'noface']);
-  assert.ok(r.ranked.every((f) => f.score >= 0 && f.score <= 1));
-});
-
-check('ranking: the best view shows 2 frames per scene (the best, then the best clearly different one), the rest behind "More"; scenes ordered by their best frame; a screens-only scene is named', () => {
-  const frames = [];
-  const sceneOf = new Map();
-  const sigOf = new Map();
-  // Scene 1: a host who barely moves (frames 0-29), then walks across (30-39): the second shown frame
-  // is the best of the walk, not the near-twin of the best. Scene 2: one excellent frame. Scene 3:
-  // middling frames that all look alike and read alike (no clearly different frame: one shown).
-  // Scene 4: only screens.
-  for (let i = 0; i < 40; i++) {
-    frames.push({ id: `a${i}`, t: i * 5, reading: reading({ expression: 4, pStrong: 0.95 - i / 100 }) });
-    sceneOf.set(`a${i}`, 1);
-    sigOf.set(`a${i}`, sig(studio, { x: i < 30 ? 2 : 10, y: 2, colour: skin }, 10 + i));
-  }
-  frames.push({ id: 'b0', t: 1000, reading: reading({ expression: 5, pStrong: 0.99 }) }); sceneOf.set('b0', 2); sigOf.set('b0', sig(garden));
-  for (let i = 0; i < 6; i++) { frames.push({ id: `c${i}`, t: 2000 + i * 10, reading: reading({ expression: 2, pStrong: 0.3 }) }); sceneOf.set(`c${i}`, 3); sigOf.set(`c${i}`, sig(page, null, i + 1)); }
-  for (let i = 0; i < 3; i++) { frames.push({ id: `d${i}`, t: 3000 + i, reading: reading({ pScreen: 0.9 }) }); sceneOf.set(`d${i}`, 4); sigOf.set(`d${i}`, sig(page)); }
-  const { ranked, screens } = ranking.rankFrames(frames);
-  assert.strictEqual(screens.length, 3);
-  const { rows, empty } = scenes.sceneRows(ranked, sceneOf, [1, 2, 3, 4], sigOf);
-  assert.deepStrictEqual(rows.map((r) => r.scene), [2, 1, 3], 'scenes ordered by their best frame\'s score');
-  assert.deepStrictEqual(empty, [4], 'the scene of computer screens has no row, and is named');
-  assert.strictEqual(scenes.SCENE_ROW_SHOWN, 2);
-  const one = rows.find((r) => r.scene === 1);
-  assert.deepStrictEqual(one.ids, ['a0', 'a30'], 'the best, then the best frame that looks clearly different (the walk), not its near-twin a1');
-  assert.ok(scenes.signatureDistance(sigOf.get('a0'), sigOf.get('a1')) < scenes.CLEARLY_DIFFERENT_FRACTION, 'a1 is a near-twin');
-  assert.strictEqual(one.more.length, 38, 'every other frame of the scene is behind "More from this scene"');
-  assert.deepStrictEqual(rows.find((r) => r.scene === 3).ids, ['c0'], 'no clearly different frame: the best alone');
-  assert.strictEqual(rows.find((r) => r.scene === 3).more.length, 5);
-  // An expression apart counts as clearly different even where the picture barely moves.
-  const faces = [
-    { id: 'e0', t: 0, score: 0.9, reading: { expression: 4 } },
-    { id: 'e1', t: 10, score: 0.8, reading: { expression: 3.8 } },
-    { id: 'e2', t: 20, score: 0.7, reading: { expression: 2.5 } },
-  ];
-  const still = new Map(faces.map((f, i) => [f.id, sig(studio, { x: 2, y: 2, colour: skin }, i + 1)]));
-  const r2 = scenes.sceneRows(faces, new Map(faces.map((f) => [f.id, 1])), [1], still);
-  assert.deepStrictEqual(r2.rows[0].ids, ['e0', 'e2'], 'the expression reading 1.5 levels apart');
-  const byId = new Map(ranked.map((f) => [f.id, f]));
-  for (const row of rows) {
-    const got = [...row.ids, ...row.more].map((id) => byId.get(id));
-    for (const a of got) for (const b of got) if (a !== b) assert.ok(Math.abs(a.t - b.t) >= scenes.SCENE_MIN_GAP_SECONDS, `${a.id} and ${b.id} are the same moment`);
-  }
-  assert.ok(rows.every((r) => [...r.ids, ...r.more].every((id) => !id.startsWith('d'))), 'no rejected frame in any row');
-  assert.throws(() => scenes.sceneRows(ranked, new Map(), [1], sigOf), /belongs to no scene/);
-});
-
 check('scenes: small pieces of one moving shot that interleave in time fold into one scene; two short clips one after another, and big scenes, do not', () => {
   // Sky footage from a moving camera: three small groups whose frames alternate inside one stretch.
   const skyA = (x, y) => (y < 3 ? [150, 180, 220] : [40, 90, 40]);
@@ -419,21 +322,6 @@ check('scenes: small pieces of one moving shot that interleave in time fold into
   // The same pieces far apart in time stay apart.
   const apart = frames.map((f, i) => ({ ...f, t: i < 4 ? f.t : f.t + (i < 7 ? 500 : 900) }));
   assert.strictEqual(scenes.foldFragments(groups.slice(0, 3), apart, 1).length, 3, 'pieces far apart in time are not folded');
-});
-
-check('ranking: an answer with a missing option letter is unreadable and names the question; a full one reads', () => {
-  const full = {
-    screen: { type: 'choice', probabilities: { video: 0.9, screen: 0.1 }, missingLabels: [] },
-    face: { type: 'yesno', p: 0.8, missingLabels: [] },
-    expression: { type: 'score', score: 4.2, missingLabels: [] },
-    eyes: { type: 'yesno', p: 0.7 },
-    strong: { type: 'yesno', p: 0.6 },
-  };
-  assert.deepStrictEqual(ranking.readFrameAnswers(full), { pScreen: 0.1, pFace: 0.8, expression: 4.2, pEyesOpen: 0.7, pStrong: 0.6 });
-  const missing = { ...full, face: { type: 'yesno', p: 1, missingLabels: ['No'] } };
-  let err = null;
-  try { ranking.readFrameAnswers(missing); } catch (e) { err = e; }
-  assert.ok(err && err.code === 'frame_answer_unreadable' && err.question === 'face' && /did not include No/.test(err.message), err && err.message);
 });
 
 // ── text ────────────────────────────────────────────────────────────────────
@@ -469,35 +357,6 @@ check('words: the plain answer parses into three kinds; decoration stripped, off
   assert.ok(r.warnings.some((w) => /before the first kind/.test(w)), 'the preamble is named');
   assert.ok(r.warnings.some((w) => /is 7 words/.test(w)), 'a long option is warned about, and kept');
   assert.throws(() => prompts.parseThumbnailWords('I cannot help with that.', 'x'), /no options under CLAIM, STAKES or REACTION/);
-});
-
-check('frames: the five questions come from thumbnails.yml, packed as five ITEMS of one call with one frame, missing: report', () => {
-  const q = prompts.frameQuestions();
-  assert.deepStrictEqual(Object.keys(q), [...ranking.FRAME_QUESTIONS]);
-  assert.deepStrictEqual(Object.keys(q.screen.options), ['video', 'screen']);
-  assert.strictEqual(q.expression.levels.length, 5);
-  const body = prompts.frameDecideItems('QUJD');
-  assert.deepStrictEqual(body.images, ['QUJD']);
-  assert.strictEqual(body.missing, 'report');
-  assert.strictEqual(body.items.length, 5, 'one item per question, in FRAME_QUESTIONS order');
-  assert.deepStrictEqual(body.items[0], { text: q.screen.instructions, options: q.screen.options });
-  assert.strictEqual(body.items[1].text, `Statement: ${q.face.instructions}\nIs this statement true of the image?`, 'a yes/no question is the statement the server\'s own yesno puts');
-  assert.deepStrictEqual(body.items[1].options, { yes: 'Yes', no: 'No' });
-  assert.deepStrictEqual(Object.entries(body.items[2].options), q.expression.levels.map((l, i) => [String(i + 1), l]), 'the expression scale as its five levels, keyed 1-5 in order');
-  assert.ok(body.items.every((item) => !/\b1\.|\bQ\d/.test(item.text)), 'no numbered slots in one prompt');
-});
-
-check('frames: the items\' answers read back as the five readings (P(yes), the expression as the sum of level x p)', () => {
-  const choice = (probabilities, missingLabels = []) => ({ type: 'choice', choice: '', probabilities, logprobs: {}, confidence: 0, labelMass: 1, missingLabels });
-  const answers = [
-    choice({ video: 0.8, screen: 0.2 }), choice({ yes: 0.9, no: 0.1 }), choice({ 1: 0, 2: 0, 3: 0.5, 4: 0.5, 5: 0 }),
-    choice({ yes: 0.6, no: 0.4 }), choice({ yes: 0.3, no: 0.7 }),
-  ];
-  assert.deepStrictEqual(ranking.readFrameAnswers(prompts.frameAnswersOfItems(answers)), { pScreen: 0.2, pFace: 0.9, expression: 3.5, pEyesOpen: 0.6, pStrong: 0.3 });
-  const noYes = [...answers];
-  noYes[1] = choice({ yes: null, no: 1 }, ['yes']);
-  assert.throws(() => ranking.readFrameAnswers(prompts.frameAnswersOfItems(noYes)), /"face" answer did not include yes/);
-  assert.throws(() => prompts.frameAnswersOfItems(answers.slice(0, 4)), /answered 4 items; 5 were asked/);
 });
 
 // ── face-safe box and fitting ───────────────────────────────────────────────
@@ -660,101 +519,6 @@ check('photos: fitted into the reaction space, right side anchored, running off 
   assert.ok(!overlaps(withPhoto.plan.patch, narrow.avoid), 'the text clears the photo');
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionOutlinePx: 99 }), /photo outline/);
 });
-
-// ── scoring over the door ───────────────────────────────────────────────────
-
-const VISION = [
-  { id: 'qwen3.5-9b-vl', paramsB: 9, installed: true, contextDefault: 16384, modalities: ['text', 'image'], weightsOf: 'qwen3.5-9b' },
-  { id: 'qwen3.5-9b', paramsB: 9, installed: true, contextDefault: 16384, modalities: ['text'] },
-  { id: 'qwen3.5-2b', paramsB: 2, installed: false, contextDefault: 16384, modalities: ['text', 'image'] },
-  { id: 'qwen3.8-27b-8bit', paramsB: 27, installed: true, contextDefault: 16384, modalities: ['text'] },
-];
-
-function decideProbs(q) {
-  // The frame items (all choices since 1.0.55): the screen pair, a yes/no statement, the 1-5 scale.
-  if (q.labels.includes('video')) return { video: 0.9, screen: 0.1 };
-  if (q.labels[0] === 'yes') return { yes: 0.8, no: 0.2 };
-  if (q.labels[0] === '1') return Object.fromEntries(q.labels.map((l, i) => [l, i === 3 ? 0.7 : 0.075]));
-  if (q.type === 'choice') return { video: 0.9, screen: 0.1 };
-  if (q.type === 'score') return Object.fromEntries(q.labels.map((l, i) => [l, i === 3 ? 0.7 : 0.075]));
-  return { Yes: 0.8, No: 0.2 };
-}
-
-async function withFake(options, fn) {
-  const server = await fake.startFakeCrucible({ version: '1.0.54', models: VISION, decideProbs, ...options });
-  const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
-  made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
-  installCrucibleTransport(made.ctx.transport);
-  installLanes(made.ctx.lanes);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-score-'));
-  const frames = Array.from({ length: 5 }, (_, i) => {
-    const file = path.join(dir, `f${i}.jpg`);
-    fs.writeFileSync(file, Buffer.from(`fake jpeg ${i}`));
-    return { id: `f${i}`, t: 10 * i, image: file };
-  });
-  const deps = { lanes: made.ctx.lanes, transport: made.ctx.transport, clientFor: (s) => made.ctx.factory.clientFor(s) };
-  try {
-    await fn(server, deps, frames);
-  } finally {
-    installCrucibleTransport(null);
-    installLanes(null);
-    await server.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-check('scoring: one image per decide call, the five questions as its items, missing: report, at the engine\'s stated width', () => withFake({ chatMaxInFlight: 3 }, async (server, deps, frames) => {
-  const out = await scorer.scoreFrames({ deps, jobId: 'keeper-score', model: 'qwen3.5-9b-vl', frames });
-  assert.strictEqual(out.scored.length, 5);
-  assert.strictEqual(out.width, 3);
-  assert.ok(/admits 3 at once/.test(out.widthBasis), out.widthBasis);
-  const bodies = server.decideBodies();
-  assert.strictEqual(bodies.length, 5);
-  assert.ok(bodies.every((b) => b.model === 'qwen3.5-9b-vl' && b.images.length === 1 && b.missing === 'report'));
-  assert.ok(bodies.every((b) => b.questions === undefined && Array.isArray(b.items) && b.items.length === 5), 'the items form: one call per frame, five items');
-  assert.deepStrictEqual(bodies[0].items.map((i) => Object.keys(i.options)), [['video', 'screen'], ['yes', 'no'], ['1', '2', '3', '4', '5'], ['yes', 'no'], ['yes', 'no']]);
-  assert.deepStrictEqual(bodies.map((b) => Buffer.from(b.images[0], 'base64').toString()).sort(), frames.map((_, i) => `fake jpeg ${i}`));
-  const r = out.scored[0].reading;
-  assert.ok(r.pScreen < 0.2 && r.pFace > 0.7 && r.expression > 3 && r.expression < 5, JSON.stringify(r));
-  const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
-  assert.deepStrictEqual(loads.map((b) => [b.model, b.params.context]), [['qwen3.5-9b-vl', scorer.FRAME_LOAD_CONTEXT]]);
-}));
-
-check('scoring: an item whose answer lacks its yes label sets that frame aside, naming the question; the rest still score', () => withFake({
-  decideProbs: (q) => (q.labels[0] === 'yes' && /eyes open/.test(q.instructions) ? { no: 1 } : decideProbs(q)),
-}, async (server, deps, frames) => {
-  const out = await scorer.scoreFrames({ deps, jobId: 'keeper-missing', model: 'qwen3.5-9b-vl', frames: frames.slice(0, 2) });
-  assert.strictEqual(out.scored.length, 0);
-  assert.strictEqual(out.unreadable.length, 2);
-  assert.ok(out.unreadable.every((u) => /"eyes" answer did not include yes/.test(u.reason)), out.unreadable.map((u) => u.reason).join(' | '));
-}));
-
-check('scoring: an engine that states no admission limit gets one call at a time', () => withFake({}, async (server, deps, frames) => {
-  const out = await scorer.scoreFrames({ deps, jobId: 'keeper-one', model: 'qwen3.5-9b-vl', frames: frames.slice(0, 2) });
-  assert.strictEqual(out.width, 1);
-  assert.ok(/states no admission limit/.test(out.widthBasis));
-}));
-
-check('scoring: a text-only model is refused by Crucible, and the refusal names the model and the server', () => withFake({}, async (server, deps, frames) => {
-  const err = await rejection(scorer.scoreFrames({ deps, jobId: 'keeper-text', model: 'qwen3.5-9b', frames }));
-  assert.strictEqual(err.code, 'model_text_only');
-  assert.ok(/qwen3\.5-9b reads text only on "mac"/.test(err.message) && /Thumbnail frames/.test(err.message), err.message);
-  assert.ok(/"mac" can read pictures with: qwen3\.5-9b-vl, qwen3\.5-2b\./.test(err.message), 'the server\'s image_models are named');
-  assert.strictEqual(server.decideBodies().length, 1, 'the first refusal stops the run');
-}));
-
-check('scoring: a server whose engine does not serve images says so by name (refuse_images_not_served)', () => withFake({ imagesNotServed: 'mlx-vlm returns no logprobs' }, async (server, deps, frames) => {
-  const err = await rejection(scorer.scoreFrames({ deps, jobId: 'keeper-mac', model: 'qwen3.5-9b-vl', frames }));
-  assert.strictEqual(err.code, 'refuse_images_not_served');
-  assert.ok(/"mac" cannot show pictures to qwen3\.5-9b-vl yet/.test(err.message) && /mlx-vlm/.test(err.message), err.message);
-}));
-
-check('scoring: a model that is not installed is refused naming it and the server; nothing is substituted', () => withFake({}, async (server, deps, frames) => {
-  const err = await rejection(scorer.scoreFrames({ deps, jobId: 'keeper-absent', model: 'qwen3.5-2b', frames }));
-  assert.strictEqual(err.code, 'model_not_installed');
-  assert.ok(/qwen3\.5-2b is not downloaded on "mac"/.test(err.message) && /nothing was substituted/.test(err.message), err.message);
-  assert.strictEqual(server.decideBodies().length, 0);
-}));
 
 // ── the story source: regions minus cuts, the segment table, the alignment (2026-09-28) ──────────
 
@@ -1088,4 +852,4 @@ check('border: one PNG kept in <userData>/thumbnail-lab/border (CONTENTSTUDIO_US
   }
 });
 
-run('thumbnail modules: frame filters, sampling, the story source, ranking, words, the text always fits, text size, scoring, logo, library, border');
+run('thumbnail modules: frame filters, sampling, scenes and the grid, the story source, words, the text always fits, text size, logo, library, border');

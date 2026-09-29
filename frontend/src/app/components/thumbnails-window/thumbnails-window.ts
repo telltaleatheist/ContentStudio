@@ -12,6 +12,7 @@ import {
   addNoPhoto,
   clockOf,
   drawChange,
+  failureLine,
   frameList,
   generateBlocked,
   photoNumbers,
@@ -21,6 +22,7 @@ import {
   removePhotoAt,
   samePicks,
   selectionFromPicks,
+  suggestedTexts,
   textOptions,
   togglePhoto,
   togglePick,
@@ -40,8 +42,10 @@ export interface ThumbnailsWindowData {
 /**
  * THE THUMBNAILS WINDOW (2026-09-29, rebuilt twice that day with Owen). Top to bottom:
  *
- *   1. FRAMES: one flat list of the story's frames (two per scene, so no repeats), best first, the
- *      rest behind "Show more". Up to three, in click order (badges 1, 2, 3).
+ *   1. FRAMES: one flat list of the story's frames in time order (at most two per scene, the
+ *      sharpest, chosen on the CPU; nothing ranks them since the frame scoring was removed
+ *      2026-09-29). Up to three, in click order (badges 1, 2, 3). Frame n is thumbnail n's: the run
+ *      gives no pair a frame, so a thumbnail is drawn only once its frame is picked.
  *   2. TEXT: every line the model wrote, one per row, with its kind and the title it was written
  *      for in small text; typed words; "No text". Up to three, in click order.
  *   3. PHOTOS: one row of Owen's reaction photos and "No photo". Up to three, in click order: photo n
@@ -97,8 +101,6 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** The thumbnail being drawn now, for its card. */
   readonly drawing = signal<number | null>(null);
 
-  readonly more = signal<Record<string, string>>({});
-  readonly showMore = signal(false);
   readonly shots = signal<string[]>([]);
 
   private readonly runner = new ActionRunner({
@@ -144,7 +146,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return generateBlocked(this.slots(), this.drawBlocked());
   });
 
-  readonly canPickFrames = computed(() => this.frameIds().shown.length > 0);
+  readonly canPickFrames = computed(() => this.frameIds().length > 0);
 
   async ngOnInit(): Promise<void> {
     this.unsubscribe = this.electron.onThumbnailsProgress((event) => {
@@ -169,7 +171,13 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Owen's picks as the saved picks stand for them; the logo as the drawn thumbnails have it. */
   private readSelection(view: ThumbnailsView): void {
     const pairs = view.record?.pairs ?? [];
-    const sel = selectionFromPicks(view.picks, pairs);
+    let sel: ReturnType<typeof selectionFromPicks>;
+    try {
+      sel = selectionFromPicks(view.picks, pairs);
+    } catch (err) {
+      this.failure.set(failureLine('Reading your saved picks', err));
+      return;
+    }
     this.frames.set(sel.frames);
     this.texts.set(sel.texts);
     this.photos.set(sel.photos);
@@ -262,28 +270,11 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     const f = this.record()?.frames.find((x: StoredFrame) => x.id === id);
     if (f === undefined) return id;
     if (this.record()?.source?.video === null) return `Screenshot ${f.scene}`;
-    return `${f.clock} · ${f.score === null ? 'not scored' : `score ${Math.round(f.score * 100)}`}`;
+    return f.clock;
   }
 
   framePicture(id: string): string | null {
-    return this.view()?.frames[id] ?? this.more()[id] ?? null;
-  }
-
-  /** The frames shown: the list, and with "Show more" the rest after it. */
-  readonly shownFrames = computed(() => (this.showMore() ? [...this.frameIds().shown, ...this.frameIds().more] : this.frameIds().shown));
-
-  async toggleShowMore(): Promise<void> {
-    if (this.showMore()) {
-      this.showMore.set(false);
-      return;
-    }
-    const missing = this.frameIds().more.filter((id) => this.framePicture(id) === null);
-    if (missing.length > 0) {
-      const got = await this.runner.run('Loading more frames', () => this.electron.thumbnailsFrames(this.data.jobId, this.data.itemId, missing));
-      if (got === null) return;
-      this.more.set({ ...this.more(), ...got });
-    }
-    this.showMore.set(true);
+    return this.view()?.frames[id] ?? null;
   }
 
   // ── 2. text ───────────────────────────────────────────────────────────────
@@ -451,14 +442,14 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.changed();
   }
 
-  /** Start from the three the metadata run made: their frames and words (no photos: Owen picks those). */
+  /** Start from the words the metadata run chose for its three titles (the frames and photos are Owen's to pick). */
   suggested(): void {
-    const pairs = [...this.pairs()].sort((a, b) => a.pair - b.pair).slice(0, MAX_PICKS);
-    const sel = selectionFromPicks(pairs.map((p, i) => ({ n: i + 1, pick: { kind: 'made' as const, pair: p.pair, file: '', wordsFor: p.title }, copy: '', picture: '' })), this.pairs());
-    this.frames.set(sel.frames);
-    this.texts.set(sel.texts);
-    this.photos.set(sel.photos);
-    this.own.set({});
+    try {
+      this.texts.set(suggestedTexts(this.pairs()));
+    } catch (err) {
+      this.failure.set(failureLine('Taking the suggested words', err));
+      return;
+    }
     this.changed();
   }
 
@@ -479,7 +470,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   }
 
   async remake(): Promise<void> {
-    if (!window.confirm('Make the thumbnails again from scratch? The story is found again, the frames sampled and scored, and the words written (several minutes on the Crucible card). Your own images stay picked.')) return;
+    if (!window.confirm('Make the thumbnails again from scratch? The story is found again, the frames sampled, and the words written (a few minutes; the words on the Crucible card). Your own images stay picked.')) return;
     this.failure.set(null);
     const ok = await this.act('Making the thumbnails again', () => this.electron.thumbnailsRemake(this.data.jobId, this.data.itemId));
     if (!ok) return;
@@ -523,6 +514,11 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     const ok = await this.act(what, () => this.electron.thumbnailsScreenshots(this.data.jobId, this.data.itemId, files, titles));
     if (!ok) return;
     this.shots.set([]);
+    // Each screenshot is its own pair's frame (screenshot n, thumbnail n), with the words the run chose.
+    const pairs = [...this.pairs()].sort((a, b) => a.pair - b.pair).slice(0, MAX_PICKS);
+    this.frames.set(pairs.flatMap((p) => (p.default.frameId === null ? [] : [p.default.frameId])));
+    this.photos.set([]);
+    this.own.set({});
     this.suggested();
   }
 

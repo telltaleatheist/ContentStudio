@@ -314,44 +314,52 @@ check('thumbnail_judge retired: a stored selection is dropped with a notice and 
 });
 
 /**
- * THE THUMBNAILS TAB'S ROWS (#236, 2026-09-28): their own group, so a metadata run never reads
- * them. The frame row offers ONLY image-reading local models (decide needs a distribution; no
- * upstream gives one), defaults to the 9B with vision (Owen), and judges a server that lists a
- * model as text-only "not here". The words row offers the thumbnail_text field's rungs.
+ * THE FRAME ROW RETIRED (2026-09-29, Owen picks frames 1, 2 and 3 himself from the grid): a store
+ * that still names `thumbnail_frames` is migrated LOUDLY like the judge row, and so is a selection
+ * naming one of the vision rungs that were offered on that row only; nothing is thrown or kept.
  */
-check('the Thumbnails rows: their own group, vision-only frames on the 9B with vision, words on the 8-bit 27B; the tone/photo row is retired', () => {
-  const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
-  eq(rows.join(','), 'thumbnail_frames,thumbnail_words');
-  eq(routing.METADATA_ROUTING_TASKS.some((t) => t.id === 'thumbnail_judge'), false, 'no thumbnail_judge row (2026-09-29)');
-  const frames = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_frames');
-  eq(frames.defaultOptionId, 'qwen35-9b-vl');
-  for (const id of frames.options) {
-    const option = routing.METADATA_ROUTING_OPTIONS[id];
-    if (option.vision !== true || option.kind !== 'local') throw new Error(id + ' is offered for frames but is not a local vision model');
+check('thumbnail_frames retired: a stored selection is dropped with a notice and a write-back; the vision rungs are gone and recorded as removed', () => {
+  eq(typeof routing.REMOVED_ROUTING_TASKS.thumbnail_frames, 'string');
+  const out = routing.migrateStoredRouting({ thumbnail_frames: 'qwen35-9b-vl', thumbnail_words: 'qwen35-9b' });
+  eq(out.changed, true, 'the drop is written back');
+  eq('thumbnail_frames' in out.selections, false, 'the retired row is gone from the selections');
+  eq(out.selections.thumbnail_words, 'qwen35-9b', 'the other rows are kept');
+  eq(out.notices.some((n) => /dropped metadataRouting\.thumbnail_frames .*retired 2026-09-29/.test(n)), true, 'the notice names the row and why');
+  let threw = null;
+  try { routing.validateRoutingSelection('thumbnail_frames', 'qwen35-9b-vl'); } catch (e) { threw = e.message; }
+  eq(threw !== null, true, 'the modal can no longer set it');
+  for (const id of ['qwen35-9b-vl', 'qwen35-2b', 'qwen35-08b', 'qwen38-27b-vl']) {
+    eq(id in routing.METADATA_ROUTING_OPTIONS, false, `${id} is no longer an option`);
+    eq(typeof routing.REMOVED_ROUTING_OPTIONS[id], 'string', `${id} is recorded as removed`);
   }
-  eq(frames.options.includes('qwen35-4b') && frames.options.includes('qwen35-2b'), true, 'the small vision models are selectable');
+  eq(Object.values(routing.METADATA_ROUTING_OPTIONS).some((o) => 'vision' in o), false, 'no option carries a vision flag');
+  eq('visionAvailability' in routing, false, 'the frame row\'s availability judge is gone');
+});
+
+/**
+ * THE THUMBNAILS ROW (#236, 2026-09-28): its own group, so a metadata run never reads it. One row is
+ * left, the words, offering the thumbnail_text field's rungs; the frame and tone/photo rows are
+ * retired (2026-09-29).
+ */
+check('the Thumbnails row: its own group, words on the 8-bit 27B; the frame and tone/photo rows are retired', () => {
+  const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
+  eq(rows.join(','), 'thumbnail_words');
+  eq(routing.METADATA_ROUTING_TASKS.some((t) => t.id === 'thumbnail_judge' || t.id === 'thumbnail_frames'), false, 'no thumbnail_judge or thumbnail_frames row (2026-09-29)');
   const words = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words');
   const text = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_text');
   eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs (the 8-bit 27B first)');
   eq(words.defaultOptionId, 'qwen38-27b-8bit');
-  // A metadata run's log line and ceiling never name them.
+  // A metadata run's log line and ceiling never name it.
   const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
   eq(/thumbnail_frames|thumbnail_words|thumbnail_judge/.test(line), false, 'the metadata log line leaves them out');
-  // Judged against the server's own modalities: text-only is "not here", with the server named.
   const inventory = {
     server: 'mac', reachable: true, anthropicConfigured: false,
-    models: { 'qwen3.5-9b-vl': { offer: 'pullable', reason: null }, 'qwen3.5-4b': { offer: 'installed', reason: null } },
-    modalities: { 'qwen3.5-9b-vl': ['text', 'image'], 'qwen3.5-4b': ['text'] },
+    models: { 'qwen3.8-27b-8bit': { offer: 'installed', reason: null } },
+    modalities: { 'qwen3.8-27b-8bit': ['text'] },
   };
   const view = routing.buildRoutingView(undefined, inventory, { routingServer: null, selectedServer: 'mac' });
-  const row = view.tasks.find((t) => t.id === 'thumbnail_frames');
-  eq(row.group, 'thumbnails');
-  eq(row.options.find((o) => o.id === 'qwen35-9b-vl').availability, 'pullable', 'the default is listed, not downloaded yet');
-  eq(row.options.some((o) => o.id === 'qwen35-4b'), false, 'a text-only reading is not offered');
-  const judged = routing.visionAvailability(routing.METADATA_ROUTING_OPTIONS['qwen35-4b'], inventory);
-  eq(judged.availability, 'not-here');
-  eq(/"mac" lists qwen3.5-4b as reading text only/.test(judged.note), true, judged.note);
-  eq(routing.visionAvailability(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'], inventory).availability, 'not-here', 'a text model is never a frame scorer');
+  eq(view.tasks.filter((t) => t.group === 'thumbnails').map((t) => t.id).join(','), 'thumbnail_words', 'the dialog shows the one thumbnails row');
+  eq(view.tasks.find((t) => t.id === 'thumbnail_words').options.find((o) => o.id === 'qwen38-27b-8bit').availability, 'installed');
 });
 
 check('chapter resolution reads the chapters entry, and the view carries the modal flags', () => {

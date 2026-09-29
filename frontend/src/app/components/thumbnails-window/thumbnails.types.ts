@@ -29,8 +29,9 @@ export type StoredRender =
   | { ok: false; reason: string };
 
 export interface StoredDefault {
-  frameId: string;
-  scene: number;
+  /** Owen's frame pick for this place (or screenshot n); null: no frame picked yet, not drawn. */
+  frameId: string | null;
+  scene: number | null;
   kind: WordKind | null;
   phrase: string | null;
   /** The title the words were written for; null for typed words or no text; absent in older records. */
@@ -53,6 +54,7 @@ export interface StoredPair {
   lines: string[];
 }
 
+/** A grid frame. Records made before 2026-09-29 also carry the frame scoring's score/reading/flag (ignored). */
 export interface StoredFrame {
   id: string;
   t: number;
@@ -60,15 +62,6 @@ export interface StoredFrame {
   scene: number;
   large: string;
   small: string;
-  score: number | null;
-  flag: 'screen' | 'unreadable' | null;
-}
-
-export interface SceneRow {
-  scene: number;
-  ids: string[];
-  more: string[];
-  best: number;
 }
 
 export type ThumbnailPick =
@@ -88,10 +81,9 @@ export interface ItemThumbnails {
     | null;
   folder: string | null;
   source: { video: string | null; lines: string[] } | null;
-  scenes: Array<{ number: number; seconds: number; label: string; kept: number; scored: number }>;
+  scenes: Array<{ number: number; seconds: number; label: string; kept: number; shown?: number }>;
+  /** The grid's frames, in time order. Older records' `bestScenes` and `scoring` are ignored. */
   frames: StoredFrame[];
-  bestScenes: SceneRow[];
-  scoring: { server: string; model: string; line: string } | null;
   titles: { order: string; subjects: string[] } | null;
   tone: { ranking: Ranked[]; model: string; server: string } | null;
   pairs: StoredPair[];
@@ -117,9 +109,12 @@ export interface ThumbnailsSummary {
   publishFile: string | null;
 }
 
-export type ThumbnailStage = 'story' | 'frames' | 'scoring' | 'words' | 'render';
-/** A stage an older record can name: `tone-photos` (the model's photo ranking) was removed 2026-09-29. */
-export type RecordedStage = ThumbnailStage | 'tone-photos';
+export type ThumbnailStage = 'story' | 'frames' | 'words' | 'render';
+/**
+ * A stage an older record can name: `tone-photos` (the model's photo ranking) and `scoring` (the
+ * vision model's frame ranking) were removed 2026-09-29.
+ */
+export type RecordedStage = ThumbnailStage | 'tone-photos' | 'scoring';
 
 export interface FinishView {
   stage: RecordedStage;

@@ -1,7 +1,8 @@
 /**
  * The metadata run's thumbnail setup, read AT JOB TIME (like the routing table): the saved look,
- * the app's paths, the editor's manifest builder, the Crucible doors, and the
- * renderer. Built by ipc-handlers for 'generate-metadata' and 'send-held-prompt'.
+ * the app's paths, the editor's manifest builder and the renderer. Built by ipc-handlers for
+ * 'generate-metadata' and 'send-held-prompt'. (It carried the Crucible doors for the frame scoring
+ * until 2026-09-29; the words run on the job's own doors, pipeline.ts ThumbnailJobDoors.)
  *
  * The per-run switch: a request with `thumbnails: false` makes none, and every item's record says it
  * was switched off for this run. Anything else (absent included) is on: thumbnails are made by
@@ -12,7 +13,6 @@
  * and every item's record says why and what to fix (the metadata is Owen's main deliverable).
  */
 import * as log from 'electron-log';
-import type { CrucibleContext } from '../../crucible/context';
 import { PythonService } from '../editor/python-service';
 import { DEFAULT_STYLE, readStoredStyle } from './layout';
 import { STYLE_STORE_KEY } from './look';
@@ -25,7 +25,6 @@ export function thumbnailRunChoice(input: {
   /** The request's per-run switch: false turns thumbnails off for this run. */
   requested: unknown;
   store: { get(key: string): unknown };
-  crucible: Pick<CrucibleContext, 'lanes' | 'transport' | 'factory'>;
   userDataPath: string;
   appRoot: string;
   ffmpeg: string;
@@ -53,7 +52,6 @@ export function thumbnailRunChoice(input: {
     log.warn(`[Thumbnails] ${reason}`);
     return { mode: 'off', reason };
   }
-  const { crucible } = input;
   return {
     mode: 'on',
     setup: {
@@ -66,7 +64,6 @@ export function thumbnailRunChoice(input: {
       style,
       styleSaved,
       styleLine,
-      doors: { lanes: crucible.lanes, transport: crucible.transport, clientFor: (server) => crucible.factory.clientFor(server) },
     },
   };
 }

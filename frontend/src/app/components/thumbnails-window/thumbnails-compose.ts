@@ -10,7 +10,9 @@
  *
  *   - FRAMES, TEXTS and PHOTOS are each picked in click order, up to three; clicking a picked one
  *     takes it out and the rest close up (the titles' rule, publish-state.ts toggleTitle). The
- *     frames are ONE flat list, best score first (`frameList`), the rest behind "Show more".
+ *     frames are ONE flat list in time order (`frameList`): at most two per scene, the sharpest,
+ *     chosen on the CPU. Nothing ranks them (the vision model's frame scoring was removed
+ *     2026-09-29: Owen picks the frames, so the run gives no pair a frame of its own).
  *   - "No photo" can be picked more than once (thumbnail 1 and 3 without a photo, 2 with one); a
  *     thumbnail beyond the photos picked has none. There is no ranking and no percentage any more.
  *   - THUMBNAIL n is frame n + text n + photo n + the logo, drawn into pair n of the record. Nothing
@@ -34,25 +36,14 @@ const KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
 // ── frames ────────────────────────────────────────────────────────────────────
 
 /**
- * The frames as ONE list (no scenes): the frames the run chose to show, two per scene (the best and
- * the best clearly different one, frame-scenes.ts sceneRows, so the list is still deduplicated),
- * ordered best score first; `more` is the rest of the candidates, in the same order, for "Show
- * more". Screenshots keep their own order (screenshot 1, 2, 3).
+ * The frames as ONE list (no scenes), in time order: every candidate the record keeps (the run
+ * keeps at most two per scene, frame-scenes.ts gridFrames; a record made before 2026-09-29 keeps
+ * the frames it sent to the since-removed scoring, and their scores are ignored). Screenshots keep
+ * their own order (screenshot 1, 2, 3: all at t 0, and the sort is stable).
  */
-export function frameList(record: Pick<ItemThumbnails, 'bestScenes' | 'frames' | 'source'> | null): { shown: string[]; more: string[] } {
-  if (record === null) return { shown: [], more: [] };
-  const shown = record.bestScenes.flatMap((r) => r.ids);
-  const more = record.bestScenes.flatMap((r) => r.more);
-  if (record.source !== null && record.source.video === null) return { shown, more };
-  const score = new Map(record.frames.map((f) => [f.id, f.score]));
-  const time = new Map(record.frames.map((f) => [f.id, f.t]));
-  const best = (a: string, b: string) => {
-    const sa = score.get(a) ?? null;
-    const sb = score.get(b) ?? null;
-    if (sa === null || sb === null) return sa === sb ? (time.get(a) ?? 0) - (time.get(b) ?? 0) : sa === null ? 1 : -1;
-    return sb - sa || (time.get(a) ?? 0) - (time.get(b) ?? 0);
-  };
-  return { shown: [...shown].sort(best), more: [...more].sort(best) };
+export function frameList(record: Pick<ItemThumbnails, 'frames'> | null): string[] {
+  if (record === null) return [];
+  return [...record.frames].sort((a, b) => a.t - b.t).map((f) => f.id);
 }
 
 // ── text ──────────────────────────────────────────────────────────────────────
@@ -298,9 +289,9 @@ export function samePicks(requests: readonly PickRequest[], saved: readonly Pick
 }
 
 /**
- * The frames, texts, photos and own images the saved picks stand for (the window reopened, or
- * "Start from the suggested three"). A trailing run of "No photo" is left out: a place beyond the
- * photos picked has none anyway.
+ * The frames, texts, photos and own images the saved picks stand for (the window reopened). A
+ * trailing run of "No photo" is left out: a place beyond the photos picked has none anyway. A pick
+ * is a drawn pair, so it has its frame; one without is refused (the record and the picks disagree).
  */
 export function selectionFromPicks(picks: readonly PickView[], pairs: readonly StoredPair[]): {
   frames: string[]; texts: TextOption[]; photos: PhotoOption[]; own: Record<number, string>;
@@ -320,6 +311,7 @@ export function selectionFromPicks(picks: readonly PickView[], pairs: readonly S
     const pair = pairs.find((p) => p.pair === pick.pair);
     if (pair === undefined) return;
     const d = pair.default;
+    if (d.frameId === null) throw new Error(`Pick ${n} is thumbnail ${pair.pair}, which has no frame: the saved picks and the record disagree.`);
     frames.push(d.frameId);
     const wordsFor = currentWordsFor(pair);
     if (d.phrase === null) texts.push(NO_TEXT);
@@ -332,6 +324,24 @@ export function selectionFromPicks(picks: readonly PickView[], pairs: readonly S
   });
   while (photos.length > 0 && photos[photos.length - 1].name === null) photos = photos.slice(0, -1);
   return { frames, texts, photos, own };
+}
+
+/**
+ * "Start from the suggested words": each pair's words as the run chose them (pair 1 its first
+ * claim, pair 2 its first stakes, pair 3 its first reaction), in pair order. The frames and photos
+ * are Owen's to pick; the run suggests neither.
+ */
+export function suggestedTexts(pairs: readonly StoredPair[]): TextOption[] {
+  const options = textOptions(pairs);
+  return [...pairs].sort((a, b) => a.pair - b.pair).slice(0, MAX_PICKS).map((pair) => {
+    const d = pair.default;
+    const wordsFor = currentWordsFor(pair);
+    if (d.phrase === null) return NO_TEXT;
+    if (d.kind === null || wordsFor === null) return typedText(d.phrase);
+    const option = options.find((o) => o.key === generatedKey(wordsFor, d.phrase!));
+    if (option === undefined) throw new Error(`Pair ${pair.pair}'s words “${d.phrase}” are not among the words written for “${wordsFor}”.`);
+    return option;
+  });
 }
 
 // ── the runner ────────────────────────────────────────────────────────────────
