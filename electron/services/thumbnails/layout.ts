@@ -20,6 +20,8 @@
  *   - otherwise the words go in the whole box, no bigger than that 7%, shrunk further until they
  *     fit, at the top or the bottom of the box, whichever covers less of a face, and the plan's
  *     note says so. There is no smallest size: a phrase always fits.
+ *   - the size chosen is then drawn at `textScale` of itself (85% by default since 2026-09-29,
+ *     Owen: "make the text slightly smaller"); the choice of place is made at the full size.
  *   (Until phase 2 a phrase that could not keep the 7% floor clear of the faces was refused, and
  *   the text could sit anywhere on the picture, on up to three lines.)
  *
@@ -63,10 +65,12 @@ export interface ThumbnailStyle {
   patch: boolean;
   /** How dark the patch is: 0 leaves the picture's brightness, 1 is black. */
   patchDarken: number;
-  /** The dark border around the picture (Owen's current style has one). */
-  vignette: boolean;
-  /** How dark the vignette's edge gets, 0-1. */
-  vignetteStrength: number;
+  /**
+   * Owen's border overlay (the PNG kept in the app, border.ts) drawn over the whole picture before
+   * the words, the photo and the logo. On by default; with no border file kept nothing is drawn
+   * (said in the record's lines). It replaced the procedural "dark edges" vignette (2026-09-29).
+   */
+  border: boolean;
   /**
    * Owen's reaction cut-out's space. With a photo chosen, the trimmed photo is fitted into it,
    * right side and bottom anchored, and the text avoids the photo's real drawn bounds; with none,
@@ -91,6 +95,13 @@ export interface ThumbnailStyle {
   minCapFraction: number;
   /** The largest capital-letter height used, as a fraction of the frame height. */
   maxCapFraction: number;
+  /**
+   * How big the words are drawn, as a fraction of the largest size that fits their space (and
+   * `maxCapFraction`): 1 fills the space, 0.85 (the default since 2026-09-29, Owen: "make the text
+   * slightly smaller") draws them 15% smaller wherever they sit. Whether the words are kept off the
+   * faces is decided before this scale, so a smaller size never moves them onto a face.
+   */
+  textScale: number;
 }
 
 export const DEFAULT_STYLE: ThumbnailStyle = {
@@ -100,8 +111,7 @@ export const DEFAULT_STYLE: ThumbnailStyle = {
   strokeRatio: 0.09,
   patch: true,
   patchDarken: 0.45,
-  vignette: true,
-  vignetteStrength: 0.6,
+  border: true,
   // Measured off Owen's layout mock (roof.png, 1920x1080): the box at 1330-1880 x 600-1060.
   reactionSlot: { x: 0.69, y: 0.55, w: 0.29, h: 0.43 },
   // Owen's hand-made thumbnails: a white outline about 10 px at 1080p (f2 - the rapture.png), and
@@ -114,6 +124,9 @@ export const DEFAULT_STYLE: ThumbnailStyle = {
   // 7% since 2026-09-28 (was 12%): text shrinks to fit rather than being refused (Owen).
   minCapFraction: 0.07,
   maxCapFraction: 0.2,
+  // 85% since 2026-09-29 (Owen: "make the text slightly smaller"): the largest letters come out
+  // at 17% of the height instead of 20%, and every fitted size is 15% smaller.
+  textScale: 0.85,
 };
 
 /** The most lines a phrase is broken into (Owen, 2026-09-28 phase 2: one or two; it was three for a day). */
@@ -213,7 +226,7 @@ export function validateStyle(value: unknown): ThumbnailStyle {
     throw new Error(`The thumbnail style's font is ${JSON.stringify(v.font)}; it must be a font family name.`);
   }
   if (typeof v.patch !== 'boolean') throw new Error(`The thumbnail style's patch setting must be on or off, got ${JSON.stringify(v.patch)}.`);
-  if (typeof v.vignette !== 'boolean') throw new Error(`The thumbnail style's vignette setting must be on or off, got ${JSON.stringify(v.vignette)}.`);
+  if (typeof v.border !== 'boolean') throw new Error(`The thumbnail style's border setting must be on or off, got ${JSON.stringify(v.border)}.`);
   const style: ThumbnailStyle = {
     font: v.font.trim(),
     fill: colour(v.fill, 'letter colour'),
@@ -221,19 +234,50 @@ export function validateStyle(value: unknown): ThumbnailStyle {
     strokeRatio: num(v.strokeRatio, 'outline thickness', 0, 0.3),
     patch: v.patch,
     patchDarken: num(v.patchDarken, 'patch darkness', 0, 1),
-    vignette: v.vignette,
-    vignetteStrength: num(v.vignetteStrength, 'vignette strength', 0, 1),
+    border: v.border,
     reactionSlot: slot(v.reactionSlot, 'reaction slot'),
     reactionOutlinePx: num(v.reactionOutlinePx, 'photo outline (px at 1080p)', 0, 40),
     reactionBleed: num(v.reactionBleed, 'photo bleed off the bottom', 0, 0.5),
     logoSlot: slot(v.logoSlot, 'logo slot'),
     minCapFraction: num(v.minCapFraction, 'smallest letter height', 0.05, 0.4),
     maxCapFraction: num(v.maxCapFraction, 'largest letter height', 0.05, 0.5),
+    textScale: num(v.textScale, 'text size (of the largest that fits)', 0.5, 1),
   };
   if (style.maxCapFraction < style.minCapFraction) {
     throw new Error(`The thumbnail style's largest letter height (${style.maxCapFraction}) is below its smallest (${style.minCapFraction}).`);
   }
   return style;
+}
+
+/**
+ * A look as the app's settings hold it. A look saved before 2026-09-29 has no `textScale` and no
+ * `border`, and has the retired `vignette` ("dark edges", replaced by the border overlay): it is
+ * read with the new defaults (text at 85% of the largest that fits, the border on), and `line`
+ * says so wherever the look is used (a declared upgrade, Law 8), so Owen's saved look gets the
+ * smaller text and his border too. Nothing is written back; "Save look" in Thumbnail look stores
+ * the values.
+ */
+export function readStoredStyle(stored: unknown): { style: ThumbnailStyle; line: string | null } {
+  const v = stored as (Partial<ThumbnailStyle> & { vignette?: unknown; vignetteStrength?: unknown }) | null;
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return { style: validateStyle(stored), line: null };
+  const said: string[] = [];
+  const read: Record<string, unknown> = { ...v };
+  if (v.textScale === undefined) {
+    read.textScale = DEFAULT_STYLE.textScale;
+    said.push(`its text is drawn at the default ${Math.round(DEFAULT_STYLE.textScale * 100)}% of the largest that fits`);
+  }
+  if (v.border === undefined) {
+    read.border = DEFAULT_STYLE.border;
+    said.push('your border is drawn over the picture');
+  }
+  if ('vignette' in read || 'vignetteStrength' in read) {
+    delete read.vignette;
+    delete read.vignetteStrength;
+    said.push('its "dark edges" setting is gone (the border replaced it)');
+  }
+  const style = validateStyle(read);
+  if (said.length === 0) return { style, line: null };
+  return { style, line: `The saved thumbnail look is from before 2026-09-29, so ${said.join('; ')}. Change or save it in Thumbnail look.` };
 }
 
 export function slotRect(fractions: SlotFractions, width: number, height: number): Rect {
@@ -393,6 +437,11 @@ function fitPhrase(metrics: PhraseMetrics, style: ThumbnailStyle, innerW: number
   return best;
 }
 
+/** A fit drawn at `scale` of its size (the look's text size): the same lines, smaller. */
+function scaled(fit: Fit, scale: number): Fit {
+  return { size: fit.size * scale, lines: fit.lines, lineWidths: fit.lineWidths.map((w) => w * scale) };
+}
+
 function evenness(fit: Fit): number {
   return Math.max(...fit.lineWidths) - Math.min(...fit.lineWidths);
 }
@@ -485,12 +534,13 @@ export function planText(
     }
   }
   if (best !== null && best.fit.size * capPerSize >= minCap - 1e-6) {
-    return { plan: placeFit(metrics, style, best.fit, best.space, box, 'edge', 'clear'), note: null };
+    return { plan: placeFit(metrics, style, scaled(best.fit, style.textScale), best.space, box, 'edge', 'clear'), note: null };
   }
   // No face-free space holds the words at the floor: the whole box, no bigger than the floor, shrunk
   // until the phrase fits, at the top or the bottom, whichever covers less of a face.
-  const fit = fitPhrase(metrics, style, box.w, box.h, Math.min(maxSize, minCap / capPerSize));
-  if (fit === null) throw new Error(`planText: "${metrics.words.join(' ')}" has no size at which it fits a ${Math.round(box.w)}x${Math.round(box.h)} px box.`);
+  const largest = fitPhrase(metrics, style, box.w, box.h, Math.min(maxSize, minCap / capPerSize));
+  if (largest === null) throw new Error(`planText: "${metrics.words.join(' ')}" has no size at which it fits a ${Math.round(box.w)}x${Math.round(box.h)} px box.`);
+  const fit = scaled(largest, style.textScale);
   const covered = (plan: TextPlan) => obstacles.reduce((sum, o) => sum + plan.linePatches.reduce((t, p) => t + overlapArea(o, p), 0), 0);
   const bottom = placeFit(metrics, style, fit, box, box, 'bottom', 'over-faces');
   const top = placeFit(metrics, style, fit, box, box, 'top', 'over-faces');

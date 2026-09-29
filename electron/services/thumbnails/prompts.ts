@@ -55,7 +55,7 @@ export function srtSeconds(value: string, what: string): number {
 }
 
 /**
- * A transcript's captions as the words prompt and the tone state show them, one `[m:ss] text` line
+ * A transcript's captions as the words prompt shows them, one `[m:ss] text` line
  * each. Shared by the Thumbnails tab (the saved transcript) and the metadata run's thumbnails stage
  * (the item's own captions, thumbnails/pipeline.ts).
  */

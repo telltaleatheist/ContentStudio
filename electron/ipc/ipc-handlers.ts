@@ -1618,8 +1618,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         rerollGate: resolveRerollGateSettings({ rerollGate: settings.rerollGate, rerollGateTuning: settings.rerollGateTuning }),
         inputNotes: params.inputNotes || {},
         // The three A/B thumbnails (thumbnails/pipeline.ts), on by default; `thumbnails: false` on
-        // the request switches them off for this run, said on every item's record. The look, the
-        // photo notes and the doors are read AT JOB TIME, like the routing above.
+        // the request switches them off for this run, said on every item's record. The look and
+        // the doors are read AT JOB TIME, like the routing above.
         thumbnails: thumbnailRunChoice({
           requested: params.thumbnails,
           store: { get: (key) => store.get(key) },
@@ -1628,7 +1628,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           appRoot: app.getAppPath(),
           ffmpeg: getRuntimePaths().ffmpeg,
           ffprobe: getRuntimePaths().ffprobe,
-          newSeed: () => crypto.randomInt(1, 0x7fffffff),
         }),
         insights: insights || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).

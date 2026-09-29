@@ -17,12 +17,12 @@
  *   ...the chapters and the metadata fields run here (the titles now exist)...
  *   words        GPU  the `thumbnail_words` row: for each of the three titles, the words that go
  *                     beside it (claim, stakes, reaction; several each).
- *   tone-photos  GPU  the `thumbnail_judge` row: the tone, and every reaction photo ranked for each
- *                     pair's default words.
- *   render       CPU  three default thumbnails, one per pair.
+ *   render       CPU  three default thumbnails, one per pair, with NO reaction photo: Owen picks
+ *                     the photos himself in the Thumbnails window (2026-09-29: "just let me pick the
+ *                     image of myself that goes in the corner instead of letting the model pick it.
+ *                     itll be faster"). The `tone-photos` stage and its `thumbnail_judge` row are gone.
  *
- * THE 27B IS NOT LOADED AGAIN when routing names it for the fields and for the words and the
- * tone/photo: every call here runs on the metadata job's own leases (`JobLeases`: one hold per
+ * THE 27B IS NOT LOADED AGAIN when routing names it for the fields and for the words: every call here runs on the metadata job's own leases (`JobLeases`: one hold per
  * server; the same model on the same server is the same hold; a different model replaces it).
  *
  * FAILURES follow the job's conventions for a stage that is not the item (the chapters' and the
@@ -51,10 +51,8 @@ import { rankFrames } from './frame-ranking';
 import { allocateScoring, framesToScore, groupScenes, sceneRows, type SceneRow } from './frame-scenes';
 import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel, type SampledFrame } from './frame-sampler';
 import { plainScoringError, scoreFramesOnCard, type ScorerDeps } from './frame-scorer';
-import { draftNotes, judgeThumbnails } from './judge';
 import type { ThumbnailStyle } from './layout';
-import { drawLine, drawPhotos } from './photo-draw';
-import { libraryLogo, libraryPhotos, needPhotosToRank } from './photo-library';
+import { libraryBorder, libraryLogo, libraryPhotos } from './photo-library';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName, type RenderResult } from './renderer';
 import type { StoredRender } from './pipeline-record';
@@ -79,9 +77,11 @@ export interface ThumbnailRenderer {
     /** Null: no words on this one (Owen's "No text"). */
     phrase: string | null;
     style: ThumbnailStyle;
-    /** Null: no reaction photo (Owen's "No photo"). */
+    /** Null: no reaction photo (none picked). */
     photo: { name: string; file: string } | null;
     logoFile: string | null;
+    /** Owen's border overlay (the app's border file), or null: none kept, or switched off in the look. */
+    borderFile: string | null;
     outStem: string;
   }): Promise<RenderResult>;
   close(): void;
@@ -92,8 +92,9 @@ export type DrawnRender = Extract<StoredRender, { ok: true }>;
 
 /**
  * Draw one pair's thumbnail: the frame at full size (extracted from the screen recording into
- * `<folder>/full/` the first time; a screenshot is already there), the words, the photo from the
- * app's library and the app's logo when `logo` is on. Used by the render stage and by the reports
+ * `<folder>/full/` the first time; a screenshot is already there), the app's border overlay when
+ * the look has it on and one is kept, the words, the photo from the app's library and the app's
+ * logo when `logo` is on. Used by the render stage and by the reports
  * page's Thumbnails window (report-thumbnails.ts), so both draw the same way.
  */
 export async function drawPair(input: {
@@ -127,7 +128,8 @@ export async function drawPair(input: {
     logoFile = libraryLogo(input.userDataPath);
     if (logoFile === null) throw new Error('The logo is switched on for this thumbnail, and the app keeps no logo. Add one in Thumbnail look, or switch the logo off.');
   }
-  const r = await input.renderer.render({ frame: full, phrase: input.phrase, style: input.style, photo, logoFile, outStem: input.outStem });
+  const borderFile = input.style.border ? libraryBorder(input.userDataPath) : null;
+  const r = await input.renderer.render({ frame: full, phrase: input.phrase, style: input.style, photo, logoFile, borderFile, outStem: input.outStem });
   return { ok: true, file: r.path, format: r.format, bytes: r.bytes, notes: r.notes };
 }
 
@@ -143,10 +145,8 @@ export interface ThumbnailRunSetup {
   /** The one look for every channel (the store's `thumbnailLab.style`, look.ts), and whether it was saved. */
   style: ThumbnailStyle;
   styleSaved: boolean;
-  /** Owen's photo notes (`thumbnailLab.reactionNotes`); a photo without one uses its draft. */
-  photoNotes: Record<string, string>;
-  /** A seed for the photo draw (crypto.randomInt in the IPC layer); stored with the record. */
-  newSeed: () => number;
+  /** Said in the record's lines when the saved look was read with a newer default (layout.ts readStoredStyle). */
+  styleLine: string | null;
   /** The doors a GPU stage calls: the lanes (its GPU step), the transport, a client for the engine width. */
   doors: Pick<ScorerDeps, 'lanes' | 'transport' | 'clientFor'>;
 }
@@ -185,22 +185,20 @@ export interface ThumbnailJobDoors {
   progress: (message: string) => void;
 }
 
-/** What the words and tone/photo stages read off the generated item. */
+/** What the words stage reads off the generated item. */
 export interface GeneratedFields {
   titles: unknown;
   reroll_gate?: { ranking?: { order?: Array<{ title: string }> } | null } | null;
-  description_hook?: unknown;
-  description?: unknown;
 }
 
-/** The pair letters the photo ranking and draw key on (the tab's A/B/C). */
-const LETTERS = ['A', 'B', 'C'] as const;
+/** Each default pair's line about its photo: none is drawn until Owen picks one. */
+export const NO_PHOTO_YET = 'No photo picked yet: pick one in the Thumbnails window.';
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function routed(routing: ResolvedMetadataRouting, task: 'thumbnail_frames' | 'thumbnail_words' | 'thumbnail_judge'): MetadataRoutingOption {
+function routed(routing: ResolvedMetadataRouting, task: 'thumbnail_frames' | 'thumbnail_words'): MetadataRoutingOption {
   return routingOption(task, routing[task]);
 }
 
@@ -247,8 +245,9 @@ export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind):
 }
 
 /**
- * WHAT "FINISH MAKING THUMBNAILS" KEEPS AND WHAT IT RUNS (2026-09-29, Owen's run stopped at
- * tone-photos on an empty photo library): a stage is kept when what it stores is all there, and
+ * WHAT "FINISH MAKING THUMBNAILS" KEEPS AND WHAT IT RUNS (2026-09-29, Owen's run stopped at the
+ * since-removed tone-photos stage on an empty photo library; such a record keeps its words and is
+ * only drawn): a stage is kept when what it stores is all there, and
  * every stage after the first one that is not kept runs again (each reads what the one before it
  * wrote). The frames and the scoring are kept or run TOGETHER: the scene rows are built from the
  * frames' colour signatures, which are not stored, so scoring again means sampling again. A record
@@ -257,17 +256,22 @@ export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind):
  */
 export function resumePlan(r: ItemThumbnails, exists: (file: string) => boolean): { keep: ThumbnailStage[]; run: ThumbnailStage[] } {
   const fromShots = r.source !== null && r.source.video === null && r.frames.length > 0;
-  const kept: Record<ThumbnailStage, boolean> = { story: false, frames: false, scoring: false, words: false, 'tone-photos': false, render: false };
+  const kept: Record<ThumbnailStage, boolean> = { story: false, frames: false, scoring: false, words: false, render: false };
   kept.story = fromShots || r.story?.state === 'linked';
   kept.frames = kept.story && (fromShots || (r.source !== null && r.frames.length > 0 && r.scoring !== null && r.bestScenes.length > 0));
   kept.scoring = kept.frames;
   kept.words = kept.scoring && r.titles !== null && r.pairs.length > 0 &&
     r.pairs.every((p) => p.words.claim.length + p.words.stakes.length + p.words.reaction.length > 0);
-  kept['tone-photos'] = kept.words && r.tone !== null && r.pairs.every((p) => p.photos.length > 0);
-  kept.render = kept['tone-photos'] && r.pairs.every((p) => p.default.render.ok && exists(p.default.render.file));
+  kept.render = kept.words && r.pairs.every((p) => p.default.render.ok && exists(p.default.render.file));
   const firstRun = THUMBNAIL_STAGES.findIndex((s) => !kept[s]);
   if (firstRun === -1) return { keep: [...THUMBNAIL_STAGES], run: [] };
   return { keep: THUMBNAIL_STAGES.slice(0, firstRun), run: THUMBNAIL_STAGES.slice(firstRun) };
+}
+
+/** What the record says about the look it was drawn with. */
+function lookLines(setup: ThumbnailRunSetup): string[] {
+  if (!setup.styleSaved) return ['No thumbnail look is saved, so the default look is used.'];
+  return setup.styleLine === null ? [] : [setup.styleLine];
 }
 
 function offRecord(line: string, story: ItemThumbnails['story'] = null, state: 'off' | 'no-story' = 'off'): ItemThumbnails {
@@ -279,7 +283,7 @@ function offRecord(line: string, story: ItemThumbnails['story'] = null, state: '
 
 /**
  * One item's thumbnails across the job: `beforeChapters()` (story, frames, scoring), then
- * `afterFields()` (words, tone-photos, render) once the item's fields are written; `record()` is
+ * `afterFields()` (words, render) once the item's fields are written; `record()` is
  * what the item stores. A stage after a failure, a skip or "off" does nothing.
  */
 export class ItemThumbnailRun {
@@ -319,7 +323,7 @@ export class ItemThumbnailRun {
     rec.state = 'made';
     rec.folder = again?.folder ?? path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);
     rec.look = choice.setup.style;
-    if (!choice.setup.styleSaved) rec.lines.push('No thumbnail look is saved, so the default look is used.');
+    rec.lines.push(...lookLines(choice.setup));
     const run = new ItemThumbnailRun(choice.setup, item, doors, rec);
     if (again !== undefined) {
       rec.lines.push('Made again from scratch in the Thumbnails window.');
@@ -334,7 +338,8 @@ export class ItemThumbnailRun {
    * (their frames, scores and words are used as stored); the rest run in order, on the doors given
    * (the window's one held job), exactly as in the metadata run. What each later stage writes is
    * cleared first, so nothing half-written from the stopped attempt survives. Own-image picks stay;
-   * pair picks go (their pairs are drawn again).
+   * pair picks go (their pairs are drawn again). A record from before 2026-09-29 keeps its ranked
+   * photos and tone as stored (read by nothing now); every pair is drawn with no photo.
    */
   static resume(
     setup: ThumbnailRunSetup,
@@ -364,18 +369,12 @@ export class ItemThumbnailRun {
       rec.titles = null;
       rec.pairs = [];
     }
-    if (!keep.has('tone-photos')) {
-      rec.tone = null;
-      rec.seed = null;
-      for (const p of rec.pairs) {
-        p.photos = [];
-        delete p.rankedFor;
-        p.default.photo = null;
-        p.default.draw = null;
-        p.lines = p.lines.filter((l) => !l.startsWith('Photo: '));
-      }
+    for (const p of rec.pairs) {
+      p.default.photo = null;
+      p.default.draw = null;
+      p.lines = [...p.lines.filter((l) => !l.startsWith('Photo: ') && l !== NO_PHOTO_YET), NO_PHOTO_YET];
+      p.default.render = { ok: false, reason: 'Not drawn yet.' };
     }
-    for (const p of rec.pairs) p.default.render = { ok: false, reason: 'Not drawn yet.' };
     rec.lines.push(
       `Finished in the Thumbnails window${stoppedAt === null ? '' : ` after stopping at the ${stoppedAt} stage`}: ` +
         (plan.keep.length > 0 ? `${plan.keep.join(', ')} kept as stored; ` : '') + `${plan.run.join(', ')} run.`,
@@ -392,8 +391,8 @@ export class ItemThumbnailRun {
    * THE NO-STORY PATH (phase 2, Owen 2026-09-28): the backgrounds are Owen's own screenshots, one
    * pair per screenshot (1 to 3), for the titles the Thumbnails window names. Each screenshot is
    * already a 16:9 PNG in `<folder>/full/<id>.png` (report-thumbnails.ts prepared it); the record's
-   * frames, scenes and rows are the screenshots, and `afterFields` then writes the words, ranks the
-   * photos and draws, exactly as the metadata run does. `rec` is the record to replace (its story
+   * frames, scenes and rows are the screenshots, and `afterFields` then writes the words and draws
+   * (no photo until Owen picks one), exactly as the metadata run does. `rec` is the record to replace (its story
    * is kept, so "no story" and why stay said).
    */
   static fromScreenshots(
@@ -408,7 +407,7 @@ export class ItemThumbnailRun {
     rec.state = 'made';
     rec.folder = base.folder;
     rec.look = setup.style;
-    if (!setup.styleSaved) rec.lines.push('No thumbnail look is saved, so the default look is used.');
+    rec.lines.push(...lookLines(setup));
     rec.source = { video: null, lines: [`Backgrounds: your ${shots.length} screenshot${shots.length === 1 ? '' : 's'}.`, ...shots.flatMap((s) => s.lines)] };
     rec.scenes = shots.map((s, i) => ({ number: i + 1, seconds: 0, label: `Screenshot ${i + 1}`, kept: 1, scored: 0 }));
     rec.frames = shots.map((s, i) => ({ id: s.id, t: 0, clock: '', scene: i + 1, large: s.full, small: s.full, score: null, reading: null, flag: null }));
@@ -592,21 +591,18 @@ export class ItemThumbnailRun {
     if (rows.rows.length === 0) throw new Error('Every scored frame was a computer screen or could not be read, so there is no frame to put on a thumbnail.');
   }
 
-  /** Words, tone and photos (GPU), then the three renders (CPU): after the item's fields are written. */
+  /** The words (GPU), then the three renders (CPU, no photo): after the item's fields are written. */
   async afterFields(fields: GeneratedFields): Promise<void> {
-    let subjects: string[] = [];
     await this.stage('words', async () => {
       const titles = pairSubjects(fields);
       this.rec.titles = titles;
-      subjects = titles.subjects;
-      await this.words(subjects);
+      await this.words(titles.subjects);
     });
-    await this.stage('tone-photos', () => this.tonePhotos(fields));
     await this.stage('render', () => this.render());
     if (!this.stopped) {
       const made = this.rec.pairs.filter((p) => p.default.render.ok).length;
       this.rec.line = made === this.rec.pairs.length
-        ? `${made} title and thumbnail pair${made === 1 ? ' is' : 's are'} ready to pick from.`
+        ? `${made} title and thumbnail pair${made === 1 ? ' is' : 's are'} ready to pick from; no photo picked yet.`
         : `${made} of ${this.rec.pairs.length} thumbnails were drawn; ${this.rec.pairs.filter((p) => !p.default.render.ok).map((p) => `pair ${p.pair}: ${(p.default.render as { reason: string }).reason}`).join('; ')}`;
     }
   }
@@ -647,56 +643,9 @@ export class ItemThumbnailRun {
           frameId: frame.id, scene: frame.scene, kind: chosen.kind, phrase: chosen.phrase, photo: null,
           draw: null, logo: false, render: { ok: false, reason: 'Not drawn yet.' },
         },
-        lines,
+        lines: [...lines, NO_PHOTO_YET],
       });
     }
-  }
-
-  private async tonePhotos(fields: GeneratedFields): Promise<void> {
-    const setup = this.setup!;
-    const option = routed(this.doors.routing, 'thumbnail_judge');
-    const model = option.crucibleModel;
-    if (model === null) throw new Error(`The "Thumbnail tone and photo" row names ${option.label}, which is not a Crucible model.`);
-    // Said before the model is called, naming where photos are added (Owen's run stopped here on
-    // an empty library and the window said nothing, 2026-09-29).
-    needPhotosToRank(setup.userDataPath);
-    const drafts = draftNotes();
-    const photos = libraryPhotos(setup.userDataPath).map((p) => ({
-      name: p.name,
-      note: setup.photoNotes[p.name] !== undefined ? setup.photoNotes[p.name] : drafts[p.name] ?? null,
-    }));
-    this.doors.progress('Thumbnails: reading the tone and ranking the reaction photos...');
-    const out = await judgeThumbnails({
-      deps: setup.doors,
-      jobId: `${this.item.jobId}-thumbnails-${this.item.itemIndex + 1}`,
-      model,
-      job: this.doors.leases,
-      ...(this.doors.signal === undefined ? {} : { signal: this.doors.signal }),
-      tone: {
-        channel: this.item.channel.name,
-        creator: creatorOf(this.item.channel),
-        hook: typeof fields.description_hook === 'string' ? fields.description_hook : '',
-        description: typeof fields.description === 'string' ? fields.description : '',
-        transcript: transcriptLines(this.item.segments),
-      },
-      photos,
-      variants: this.rec.pairs.map((p) => ({ letter: LETTERS[p.pair - 1], text: p.default.phrase })),
-    });
-    this.rec.tone = { ranking: out.tone, model: out.model, server: out.server };
-    const seed = setup.newSeed();
-    const letters = this.rec.pairs.map((p) => LETTERS[p.pair - 1]);
-    const draws = drawPhotos(out.photos, letters, [], seed);
-    this.rec.seed = seed;
-    for (const p of this.rec.pairs) {
-      const letter = LETTERS[p.pair - 1];
-      p.photos = out.photos[letter];
-      p.rankedFor = p.default.phrase;
-      p.default.photo = draws[letter].name;
-      p.default.draw = draws[letter];
-      p.lines.push(`Photo: ${drawLine(draws[letter])}.`);
-    }
-    const top = out.tone[0];
-    this.rec.lines.push(`The tone reads as ${top.name} (${Math.round((top.p ?? 0) * 100)}%), on ${out.model}; photos drawn with seed ${seed}.`);
   }
 
   private async render(): Promise<void> {
@@ -705,6 +654,8 @@ export class ItemThumbnailRun {
     const logoFile = libraryLogo(setup.userDataPath);
     this.rec.logo = logoFile;
     if (logoFile === null) this.rec.lines.push('No logo is kept in the app, so none is drawn.');
+    if (!setup.style.border) this.rec.lines.push('The border is switched off in Thumbnail look, so none is drawn.');
+    else if (libraryBorder(setup.userDataPath) === null) this.rec.lines.push('No border is kept in the app, so none is drawn.');
     this.doors.progress(`Thumbnails: drawing the ${this.rec.pairs.length} thumbnails...`);
     const renderer = setup.openRenderer();
     try {

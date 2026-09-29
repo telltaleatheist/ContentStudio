@@ -3,35 +3,35 @@
  * docs/thumbnails-pipeline.md). The metadata run already made the title and thumbnail pairs and
  * stored them on the item (`thumbnails`, pipeline-record.ts). Here Owen:
  *
- *   - swaps any piece of a pair (frame, words, photo, logo) and it is drawn again at once, on the
- *     CPU (`renderPair`): a NEW file beside the old one, so a file a pick or the publish record
- *     points at is never overwritten under it;
- *   - has a pair's words written again for another title (`pairTitle`, the 27B on demand: the words
- *     row, then the tone/photo row for that pair's new words, then a draw and a render), when he
- *     reorders his titles so thumbnail n now goes with a different title n;
+ *   - swaps any piece of a pair (frame, words, photo, logo) and it is drawn again, on the CPU
+ *     (`renderPair`; the window asks for it when he presses Generate thumbnails): a NEW file beside
+ *     the old one, so a file a pick or the publish record points at is never overwritten under it;
+ *   - has a pair's words written again for another title (`pairTitle`, the words row on demand,
+ *     then a render with the photo he picked), when he reorders his titles so thumbnail n now goes
+ *     with a different title n;
  *   - saves his ORDERED picks (`savePicks`): up to three, a pair's render or his own image file,
  *     index 0 first. Pick n goes with chosen title n (Test & Compare's "title and thumbnail"). The
  *     picks are copied into `<folder>/picks/Pick 1.png` ...: pick 1's copy is what the reports page
  *     sets as the video's thumbnail through the publish record's one thumbnail door; picks 2 and 3
  *     sit beside it for his manual Test & Compare upload in Studio (YouTube has no API for them);
  *   - for a report with NO STORY (or whose stages failed), gives 1 to 3 of his own screenshots
- *     (`useScreenshots`): that many pairs are made from them, words and photos by the models as in
- *     the run (pipeline.ts ItemThumbnailRun.fromScreenshots);
+ *     (`useScreenshots`): that many pairs are made from them, the words by the model as in the run
+ *     (pipeline.ts ItemThumbnailRun.fromScreenshots);
  *   - for a report whose thumbnail stages STOPPED, "Finish making thumbnails" (`finish`, 2026-09-29):
  *     the stages it stores are kept (frames, scores, words) and only the missing ones run
  *     (pipeline.ts resumePlan / ItemThumbnailRun.resume); "Make thumbnails again from scratch"
  *     (`remake`) runs every thumbnail stage again for the item.
  *
  * THE WINDOW COMPOSES (2026-09-29, Owen: "i pick three [frames]. the text it generated. i pick
- * three. it overlays them"): thumbnail n is drawn into pair n from the frame, the words (written for
- * ANY of the titles: `wordsFor`), the photo (a direct pick, or a draw from the ranking made for
- * those words' pair: `rankingOf`) and the logo it names. A redrawn pair's old file is removed once
- * no pick points at it (the picks' copies in `picks/` are what is published), so clicking through
- * does not pile files up.
+ * three. it overlays them"): thumbnail n is drawn into pair n from frame n, text n (written for ANY
+ * of the titles: `wordsFor`), photo n (Owen's pick, or none: the model's photo ranking was removed
+ * the same day, "just let me pick the image of myself ... itll be faster") and the logo. A redrawn
+ * pair's old file is removed once no pick points at it (the picks' copies in `picks/` are what is
+ * published), so generating again does not pile files up.
  *
- * THE MODEL IS HELD between the words and the tone/photo steps (the tab's pattern, which Owen
- * asked for: "if we're using the 27b anyway we might as well keep it loaded"): one held job per
- * local model, given back when another model is needed, when the window closes, on quit, or after
+ * THE MODEL IS HELD across the window's words steps (the tab's pattern, which Owen asked for: "if
+ * we're using the 27b anyway we might as well keep it loaded"): one held job per local model,
+ * given back when another model is needed, when the window closes, on quit, or after
  * TEXT_HOLD_IDLE_MS with no step.
  *
  * ONE ACTION PER ITEM AT A TIME: a model step reads the record, waits a minute for the model and
@@ -50,15 +50,13 @@ import { promptAssets } from '../metadata/prompt-assets';
 import { loadSavedTranscript } from '../metadata/saved-transcript.service';
 import { validateThumbnailFile } from '../publish/thumbnail-validate';
 import { prepareStill } from './frame-sampler';
-import { judgeThumbnails } from './judge';
 import { phraseWords } from './layout';
 import type { ThumbnailLook } from './look';
-import { checkSeed, drawLine, drawPhotos } from './photo-draw';
-import { MIN_PHOTOS_TO_RANK, needPhotosToRank, photosMissingReason } from './photo-library';
 import {
   ItemThumbnailRun,
   defaultWords,
   drawPair,
+  NO_PHOTO_YET,
   resumePlan,
   type ThumbnailItemInput,
   type ThumbnailRunChoice,
@@ -71,9 +69,11 @@ import {
   THUMBNAIL_STAGES,
   THUMBNAILS_FOLDER,
   checkPicks,
+  pickCopies,
   readItemThumbnails,
   type ItemThumbnails,
   type StoredPair,
+  type RecordedStage,
   type ThumbnailPick,
   type ThumbnailStage,
 } from './pipeline-record';
@@ -81,7 +81,7 @@ import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName } from './renderer';
 import { writeThumbnailWords } from './words-writer';
 
-/** How long the window keeps its text model held after its last words or tone/photo step. */
+/** How long the window keeps its text model held after its last words step. */
 export const TEXT_HOLD_IDLE_MS = 5 * 60_000;
 
 /** The file types Owen can give as his own thumbnail or as a screenshot. */
@@ -100,8 +100,7 @@ export interface ReportThumbnailsDeps {
   /** A picture of a file as a data URL, at most `width` pixels wide (Electron nativeImage in the app). */
   picture: (file: string, width: number) => string;
   /** The library's photos with a small picture each (look.ts photos(): trimming needs Electron). */
-  photoList: () => Array<{ name: string; preview: string; note: string | null }>;
-  newSeed: () => number;
+  photoList: () => Array<{ name: string; preview: string }>;
   /** A progress line for the window that asked. */
   progress: (event: { jobId: string; itemId: string; line: string }) => void;
   /** The Crucible server a GPU step started now would run on, or why there is none (lanes.gpuVenue). */
@@ -122,10 +121,8 @@ export interface PairChange {
    * typed words or no text.
    */
   wordsFor?: string | null;
-  /** A photo name, null for "No photo", or 'draw' for a new draw from a ranking's top 3. */
-  photo?: string | null | 'draw';
-  /** With `photo: 'draw'`: the pair whose ranking to draw from (the pair the words came from). Left out: this pair's. */
-  rankingOf?: number;
+  /** A photo name from the library, or null for no photo. */
+  photo?: string | null;
   logo?: boolean;
 }
 
@@ -159,7 +156,7 @@ export interface ThumbnailsSummary {
  * it cannot run now (null when it can).
  */
 export interface FinishView {
-  stage: ThumbnailStage;
+  stage: RecordedStage;
   reason: string;
   keep: ThumbnailStage[];
   run: ThumbnailStage[];
@@ -177,9 +174,9 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   /** Pictures of the pairs' renders (keyed by file path) and of the frames the scene strip shows first (keyed by id). */
   renders: Record<string, string>;
   frames: Record<string, string>;
-  photos: Array<{ name: string; preview: string; note: string | null }>;
+  photos: Array<{ name: string; preview: string }>;
   hasLogo: boolean;
-  /** The text model held for the next words or tone/photo step, or null. */
+  /** The text model held for the next words step, or null. */
   heldModel: string | null;
   /** Set when the record's stages stopped (state `failed`): "Finish making thumbnails". */
   finish: FinishView | null;
@@ -249,7 +246,7 @@ export class ReportThumbnails {
     return resolveMetadataRouting(migrateStoredRouting(this.deps.store.get('metadataRouting')).selections);
   }
 
-  private routed(task: 'thumbnail_words' | 'thumbnail_judge'): MetadataRoutingOption {
+  private routed(task: 'thumbnail_words'): MetadataRoutingOption {
     return routingOption(task, this.routing()[task]);
   }
 
@@ -262,12 +259,12 @@ export class ReportThumbnails {
     const model = option.crucibleModel;
     if (this.textHold !== null && this.textHold.model !== model) await this.releaseHold(`the next step runs on ${model}`);
     if (this.textHold === null) {
-      this.textHold = { job: this.deps.holdJob('the Thumbnails window (words, tone and photos)'), model, timer: null };
-      log.info(`[Thumbnails] holding ${model} across the words and the tone/photo steps`);
+      this.textHold = { job: this.deps.holdJob('the Thumbnails window (words)'), model, timer: null };
+      log.info(`[Thumbnails] holding ${model} across the window's words steps`);
     }
     const hold = this.textHold;
     if (hold.timer !== null) clearTimeout(hold.timer);
-    hold.timer = setTimeout(() => void this.releaseHold(`no words or tone/photo step for ${TEXT_HOLD_IDLE_MS / 60_000} minutes`), TEXT_HOLD_IDLE_MS);
+    hold.timer = setTimeout(() => void this.releaseHold(`no words step for ${TEXT_HOLD_IDLE_MS / 60_000} minutes`), TEXT_HOLD_IDLE_MS);
     hold.timer.unref?.();
     return hold.job;
   }
@@ -294,19 +291,11 @@ export class ReportThumbnails {
     return record.folder === null ? null : path.join(record.folder, PICKS_FOLDER);
   }
 
-  private copyOf(record: ItemThumbnails, n: number, pick: ThumbnailPick): string {
-    const folder = this.picksFolder(record);
-    if (folder === null) throw new Error('The thumbnails record holds picks and no folder.');
-    const ext = path.extname(pick.file).toLowerCase() === '.png' ? '.png' : '.jpg';
-    return path.join(folder, `Pick ${n}${ext}`);
-  }
-
   private summaryOf(record: ItemThumbnails | null, pictureWidth: number): ThumbnailsSummary {
     if (record === null) return { state: null, line: null, canOpen: false, picks: [], picksFolder: null, publishFile: null };
-    const picks = record.picks.map((pick, i) => {
-      const copy = this.copyOf(record, i + 1, pick);
-      return { n: i + 1, pick, copy, picture: fs.existsSync(copy) ? this.deps.picture(copy, pictureWidth) : '' };
-    });
+    const picks = pickCopies(record).map(({ n, pick, file }) => (
+      { n, pick, copy: file, picture: fs.existsSync(file) ? this.deps.picture(file, pictureWidth) : '' }
+    ));
     return {
       state: record.state,
       line: record.line,
@@ -357,15 +346,11 @@ export class ReportThumbnails {
   }
 
   /**
-   * Why a run of `stages` cannot start now: too few reaction photos for the tone/photo stage, or no
-   * Crucible server for a GPU stage. Null when it can. Checked again when the button is pressed.
+   * Why a run of `stages` cannot start now: no Crucible server for a GPU stage. Null when it can.
+   * Checked again when the button is pressed.
    */
   private blockedFor(stages: readonly ThumbnailStage[]): string | null {
-    if (stages.includes('tone-photos')) {
-      const count = this.deps.look.photoNames().length;
-      if (count < MIN_PHOTOS_TO_RANK) return photosMissingReason(count);
-    }
-    if (stages.includes('scoring') || stages.includes('words') || stages.includes('tone-photos')) {
+    if (stages.includes('scoring') || stages.includes('words')) {
       const venue = this.deps.gpuVenue();
       if (venue.server === null) return `No Crucible server to run the models on: ${venue.reason}`;
     }
@@ -375,7 +360,12 @@ export class ReportThumbnails {
   private finishView(record: ItemThumbnails | null): FinishView | null {
     if (record === null || record.state !== 'failed' || record.failure === null) return null;
     const plan = resumePlan(record, fs.existsSync);
-    return { stage: record.failure.stage, reason: record.failure.reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
+    // A record that stopped at the removed tone-photos stage (the model's photo ranking): its
+    // reason (usually the empty library) no longer stands in the way, and that is said.
+    const reason = record.failure.stage === 'tone-photos'
+      ? `${record.failure.reason} That step is gone: you pick the photos yourself below, so Finish only draws the thumbnails.`
+      : record.failure.reason;
+    return { stage: record.failure.stage, reason, keep: plan.keep, run: plan.run, blocked: this.blockedFor(plan.run) };
   }
 
   private remakeView(record: ItemThumbnails | null): { blocked: string | null } | null {
@@ -384,7 +374,7 @@ export class ReportThumbnails {
     return { blocked: this.blockedFor(THUMBNAIL_STAGES) };
   }
 
-  /** Pictures of more frames ("More from this scene"), keyed by id. */
+  /** Pictures of more frames (the window's "Show more"), keyed by id. */
   framePictures(jobId: string, itemId: string, ids: string[]): Record<string, string> {
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) throw new Error(`The frames to show must be a list of frame ids, got ${JSON.stringify(ids)}.`);
     const { record } = this.locate(jobId, itemId);
@@ -434,10 +424,10 @@ export class ReportThumbnails {
     if (fs.existsSync(folder)) fs.rmSync(folder, { recursive: true, force: true });
     if (record.picks.length === 0) return;
     fs.mkdirSync(folder, { recursive: true });
-    record.picks.forEach((pick, i) => {
-      if (!fs.existsSync(pick.file)) throw new Error(`Pick ${i + 1}'s file is not on disk any more: ${pick.file}`);
-      fs.copyFileSync(pick.file, this.copyOf(record, i + 1, pick));
-    });
+    for (const { n, pick, file } of pickCopies(record)) {
+      if (!fs.existsSync(pick.file)) throw new Error(`Pick ${n}'s file is not on disk any more: ${pick.file}`);
+      fs.copyFileSync(pick.file, file);
+    }
   }
 
   /** The record, for a window action: refused, in plain words, when there is nothing to act on. */
@@ -504,22 +494,12 @@ export class ReportThumbnails {
         d.wordsFor = change.wordsFor !== undefined ? change.wordsFor : d.kind !== null ? pair.title : null;
       }
       if (change.photo !== undefined) {
-        if (change.photo === null) {
-          d.photo = null;
-          d.draw = null;
-        } else if (change.photo === 'draw') {
-          const from = change.rankingOf === undefined ? pair : this.pairOf(record, change.rankingOf);
-          if (from.photos.length === 0) throw new Error(`Pair ${from.pair} has no photo ranking to draw from; the photos were never ranked for its words.`);
-          const taken = record.pairs.filter((p) => p.pair !== pair.pair).flatMap((p) => (p.default.photo === null ? [] : [p.default.photo]));
-          const seed = checkSeed(this.deps.newSeed());
-          const draw = drawPhotos({ X: from.photos }, ['X'], taken, seed).X;
-          d.photo = draw.name;
-          d.draw = draw;
-        } else {
+        if (change.photo !== null) {
+          if (typeof change.photo !== 'string') throw new Error(`The photo is a name from your reaction photos or none, got ${JSON.stringify(change.photo)}.`);
           if (!this.deps.look.photoNames().includes(change.photo)) throw new Error(`There is no reaction photo "${change.photo}" in the app's library.`);
-          d.photo = change.photo;
-          d.draw = null;
         }
+        d.photo = change.photo;
+        d.draw = null;
       }
       if (change.logo !== undefined) {
         if (typeof change.logo !== 'boolean') throw new Error(`The logo is on or off, got ${JSON.stringify(change.logo)}.`);
@@ -554,9 +534,9 @@ export class ReportThumbnails {
         look: setup.style,
         pairs: record.pairs.map((p) => (p.pair === pair.pair ? {
           ...p,
-          // A pre-phase-2 record's ranking was made for the first default's words: said before they change.
-          rankedFor: p.rankedFor === undefined ? p.default.phrase : p.rankedFor,
           default: d,
+          // The run's "no photo picked yet" line goes once a photo is picked for this pair.
+          lines: d.photo === null ? p.lines : p.lines.filter((l) => l !== NO_PHOTO_YET),
         } : p)),
         picks: this.followPair(record.picks, pair.pair, drawn.file, d.wordsFor ?? pair.title),
       };
@@ -567,7 +547,7 @@ export class ReportThumbnails {
     });
   }
 
-  /** The item's transcript lines, channel and creator: what the words and the tone read. */
+  /** The item's transcript lines, channel and creator: what the words read. */
   private itemContext(loc: Located): { transcript: string[]; channel: ReturnType<ReturnType<typeof promptAssets>['channel']>; creator: string; segments: any[] } {
     const sourcePath = loc.item.source_path;
     if (typeof sourcePath !== 'string' || sourcePath === '') throw new Error('This report has lost track of the video it was made from, so there is no transcript to write words from.');
@@ -582,8 +562,8 @@ export class ReportThumbnails {
 
   /**
    * Write pair `n`'s words again for `title` (Owen reordered his titles, so thumbnail n now goes
-   * with another title n), rank the photos for the new words, draw a photo and draw the pair.
-   * The model steps are the routing table's rows (`thumbnail_words`, `thumbnail_judge`).
+   * with another title n) on the `thumbnail_words` row, and draw the pair with its frame, the photo
+   * he picked (or none) and the logo as they are.
    */
   pairTitle(jobId: string, itemId: string, n: number, title: string): Promise<ThumbnailsView> {
     return this.exclusive(jobId, itemId, 'writing words', async () => {
@@ -592,13 +572,9 @@ export class ReportThumbnails {
       const loc = this.locate(jobId, itemId);
       const record = this.actionable(loc, 'rewrite');
       const pair = this.pairOf(record, n);
-      needPhotosToRank(this.deps.userDataPath);
       const setup = this.setup();
       const ctx = this.itemContext(loc);
       const wordsOption = this.routed('thumbnail_words');
-      const judgeOption = this.routed('thumbnail_judge');
-      const judgeModel = judgeOption.crucibleModel;
-      if (judgeModel === null) throw new Error(`The "Thumbnail tone and photo" row names ${judgeOption.label}, which is not a Crucible model.`);
       this.deps.progress({ jobId, itemId, line: `Writing the words for “${wanted}”...` });
       const ai = this.deps.aiManager();
       let words;
@@ -623,29 +599,6 @@ export class ReportThumbnails {
       const kind = pair.default.kind ?? PAIR_KINDS[(n - 1) % PAIR_KINDS.length];
       const chosen = defaultWords({ claim, stakes, reaction }, kind);
       if (chosen === null) throw new Error(`The words for “${wanted}” came back with no option of any kind.`);
-      this.deps.progress({ jobId, itemId, line: 'Ranking the reaction photos for the new words...' });
-      const names = this.deps.look.photoNames();
-      const judged = await judgeThumbnails({
-        deps: setup.doors,
-        jobId: `${jobId}-thumbnails-pair-${n}-${Date.now()}`,
-        model: judgeModel,
-        job: await this.textJob(judgeOption),
-        tone: {
-          channel: ctx.channel.name,
-          creator: ctx.creator,
-          hook: typeof loc.item.description_hook === 'string' ? loc.item.description_hook : '',
-          description: typeof loc.item.description === 'string' ? loc.item.description : '',
-          transcript: ctx.transcript,
-        },
-        photos: this.deps.look.notesFor(names).map((p) => ({ name: p.name, note: p.note })),
-        variants: [{ letter: 'A', text: chosen.phrase }],
-      }).catch(async (err) => {
-        await this.releaseHold('the tone/photo step failed');
-        throw err;
-      });
-      const taken = record.pairs.filter((p) => p.pair !== n).flatMap((p) => (p.default.photo === null ? [] : [p.default.photo]));
-      const seed = checkSeed(this.deps.newSeed());
-      const draw = drawPhotos({ A: judged.photos.A }, ['A'], taken, seed).A;
       const frame = record.frames.find((f) => f.id === pair.default.frameId);
       if (frame === undefined) throw new Error(`Pair ${n}'s frame ${pair.default.frameId} is not among this report's candidate frames.`);
       this.deps.progress({ jobId, itemId, line: `Drawing thumbnail ${n}...` });
@@ -653,23 +606,22 @@ export class ReportThumbnails {
         pair: n,
         title: wanted,
         words: { claim, stakes, reaction, warnings, model: words.model },
-        photos: judged.photos.A,
-        rankedFor: chosen.phrase,
+        photos: [],
         default: {
           frameId: pair.default.frameId,
           scene: pair.default.scene,
           kind: chosen.kind,
           phrase: chosen.phrase,
           wordsFor: wanted,
-          photo: draw.name,
-          draw,
+          photo: pair.default.photo,
+          draw: null,
           logo: pair.default.logo,
           render: { ok: false, reason: 'Not drawn yet.' },
         },
         lines: [
           ...(chosen.line === null ? [] : [chosen.line]),
-          `Words written for this title on ${words.model}; photos ranked on ${judged.model} (seed ${seed}).`,
-          `Photo: ${drawLine(draw)}.`,
+          `Words written for this title on ${words.model}.`,
+          ...(pair.default.photo === null ? [NO_PHOTO_YET] : []),
         ],
       };
       const renderer = setup.openRenderer();
@@ -752,8 +704,8 @@ export class ReportThumbnails {
   /**
    * NO STORY: 1 to 3 of Owen's screenshots become that many pairs, for `titles` (the page sends his
    * chosen titles first, then the generated ones, one per screenshot). His files are only read; each
-   * is cut to 16:9 around its centre if it is another shape (said) and written into `full/`. Words,
-   * tone and photos run on the routing table's rows, as in the metadata run; the record's story
+   * is cut to 16:9 around its centre if it is another shape (said) and written into `full/`. The
+   * words run on the routing table's row, as in the metadata run (no photo until he picks); the record's story
    * (and why there was none) is kept. His own-image picks stay; pair picks are cleared (new pairs).
    */
   useScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
@@ -776,7 +728,6 @@ export class ReportThumbnails {
       const parent = path.join(txtFolder, THUMBNAILS_FOLDER);
       const folder = record.folder ?? path.join(parent, `${jobId}-${itemId}`);
       if (path.dirname(path.resolve(folder)) !== path.resolve(parent)) throw new Error(`The record's folder ${folder} is not in this report's ${THUMBNAILS_FOLDER} folder, so it is not replaced.`);
-      needPhotosToRank(this.deps.userDataPath);
       const setup = this.setup();
       const ctx = this.itemContext(loc);
       // A failed run's frames, or earlier screenshots, are replaced; the picks folder is rewritten.
@@ -788,10 +739,11 @@ export class ReportThumbnails {
         const still = await prepareStill(setup.ffmpeg, this.deps.ffprobe, file, full);
         shots.push({ id, full, lines: [`Screenshot ${i + 1}: ${still.line}`] });
       }
-      const judgeOption = this.routed('thumbnail_judge');
-      if (judgeOption.crucibleModel === null) throw new Error(`The "Thumbnail tone and photo" row names ${judgeOption.label}, which is not a Crucible model.`);
-      const leases = await this.textJob(judgeOption);
-      if (leases === undefined) throw new Error(`The "Thumbnail tone and photo" row names ${judgeOption.label}, which runs on no Crucible card to hold.`);
+      // The words on the window's held model when the row is local; a cloud or `claude -p` row
+      // holds no card, and its run gets a job of its own (nothing is leased on it), given back after.
+      const held = await this.textJob(this.routed('thumbnail_words'));
+      const own = held === undefined ? this.deps.holdJob('Thumbnails from your screenshots') : null;
+      const leases = held ?? own!;
       const ai = this.deps.aiManager();
       try {
         const run = ItemThumbnailRun.fromScreenshots(
@@ -817,12 +769,7 @@ export class ReportThumbnails {
           { story: record.story, folder },
           shots,
         );
-        await run.afterFields({
-          titles: titles.map((t) => t.trim()),
-          reroll_gate: null,
-          description_hook: loc.item.description_hook,
-          description: loc.item.description,
-        });
+        await run.afterFields({ titles: titles.map((t) => t.trim()), reroll_gate: null });
         const made = run.record();
         if (made.state === 'failed') await this.releaseHold('a screenshots step failed');
         const own = record.picks.filter((p) => p.kind === 'own');
@@ -831,6 +778,10 @@ export class ReportThumbnails {
         log.info(`[Thumbnails] ${loc.where}: ${files.length} screenshot(s): ${made.line}`);
       } finally {
         ai.cleanup?.();
+        if (own !== null) {
+          const lost = await own.releaseAll();
+          for (const line of lost) log.error(`[Thumbnails] the screenshots run lost its lease on ${line} before it was given back`);
+        }
       }
       return this.view(jobId, itemId);
     });
@@ -865,9 +816,9 @@ export class ReportThumbnails {
     };
   }
 
-  /** The item's fields the words and the tone/photo read (as the metadata run hands them over). */
-  private fieldsOf(item: any): { titles: unknown; reroll_gate: any; description_hook: unknown; description: unknown } {
-    return { titles: item.titles, reroll_gate: item.reroll_gate ?? null, description_hook: item.description_hook, description: item.description };
+  /** The item's fields the words read (as the metadata run hands them over). */
+  private fieldsOf(item: any): { titles: unknown; reroll_gate: any } {
+    return { titles: item.titles, reroll_gate: item.reroll_gate ?? null };
   }
 
   /**
@@ -924,7 +875,7 @@ export class ReportThumbnails {
 
   /**
    * "MAKE THUMBNAILS AGAIN FROM SCRATCH": every thumbnail stage runs again for the item (the story
-   * link found again, frames sampled and scored, words, tone and photos, renders), into its folder,
+   * link found again, frames sampled and scored, words, renders), into its folder,
    * on one held job. Own-image picks stay; pair picks go (the pairs are new).
    */
   remake(jobId: string, itemId: string): Promise<ThumbnailsView> {
