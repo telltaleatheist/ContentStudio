@@ -8,6 +8,7 @@ import * as path from 'path';
 import { MetadataResult } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
 import { METADATA_FIELDS } from './metadata-fields';
+import { readItemThumbnails, type ItemThumbnails } from '../thumbnails/pipeline-record';
 import type { ScrubFailure, ScrubRecord } from './scrub';
 import {
   putBackPrevious,
@@ -537,6 +538,36 @@ export class OutputHandlerService {
     );
 
     return { changed, unchanged, earlierScrubs, failed };
+  }
+
+  /**
+   * THE ONE WRITE DOOR for an item's `thumbnails` record after the run (thumbnails pipeline,
+   * docs/thumbnails-pipeline.md): phase 2's re-render with swapped pieces, words re-written for
+   * another title, and the ordered picks all go through here. On the write queue, like every item
+   * write. `update` gets the record as it is on disk NOW (checked, thumbnails/pipeline-record.ts) and
+   * returns the record to store, which is checked again before anything is written; an item with no
+   * record, or an update that returns a record that does not read, writes nothing.
+   */
+  updateItemThumbnails(jobId: string, itemId: string, update: (record: ItemThumbnails) => ItemThumbnails): Promise<ItemThumbnails> {
+    const run = this.writeQueue.then(() => {
+      if (typeof jobId !== 'string' || !jobId.trim()) throw new Error('updateItemThumbnails requires a non-empty jobId');
+      if (!isItemId(itemId)) throw new Error(`updateItemThumbnails requires a valid item id; got ${JSON.stringify(itemId)}`);
+      const job = this.getJobMetadata(jobId);
+      if (!job) throw new Error(`Job not found: ${jobId}`);
+      if (!Array.isArray(job.items)) throw new Error(`Job ${jobId} has no items array — the report file is corrupt.`);
+      const item = job.items.find((entry) => entry && (entry as StoredItem).item_id === itemId) as any;
+      if (!item) throw new Error(`Item ${itemId} is not in job ${jobId}`);
+      const where = `item ${itemId} of job ${jobId}`;
+      const current = readItemThumbnails(item.thumbnails, where);
+      if (current === null) throw new Error(`${where} was generated before thumbnails were made in the metadata run, so it has no thumbnails record.`);
+      const next = readItemThumbnails(update(current), where);
+      item.thumbnails = next;
+      this.saveJson(job, path.join(this.metadataDir, `${jobId}.json`));
+      console.log(`[OutputHandler] Wrote the thumbnails record of ${where} (${next!.state}, ${next!.picks.length} pick(s))`);
+      return next!;
+    });
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   /**

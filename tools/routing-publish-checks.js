@@ -658,9 +658,9 @@ check('the grounding corpus is everything the model was actually given', () => {
 // under test is which calls get planned for which kind of item, in what order, and that is pure
 // decision-making over the routing table and the channel's field list.
 
-function stubManager(channelId) {
+function stubManager(channelId, extraFields) {
   const channel = assets.channel(channelId);
-  const sections = channel.fields.map((f) => tasks.METADATA_FIELD_SECTIONS[f].section);
+  const sections = [...channel.fields, ...(extraFields || [])].map((f) => tasks.METADATA_FIELD_SECTIONS[f].section);
   return { promptSetSectionKeys: () => new Set(sections) };
 }
 
@@ -668,7 +668,7 @@ function plan(channelId, options) {
   const o = options || {};
   return tasks.planMetadataUnits({
     routing: routing.resolveMetadataRouting(o.routing),
-    aiManager: stubManager(channelId),
+    aiManager: stubManager(channelId, o.extraFields),
     hasInsights: Boolean(o.hasInsights),
     hasChapters: Boolean(o.hasChapters),
     alsoLoads: o.alsoLoads || [],
@@ -682,10 +682,13 @@ check('an item WITHOUT chapters plans the same routed units, not a legacy single
   const written = new Set();
   for (const unit of p.units) for (const f of unit.fields) written.add(f);
 
-  for (const field of ['titles', 'thumbnail_text', 'pinned_comment',
+  for (const field of ['titles', 'pinned_comment',
                        'description', 'description_hook', 'tags']) {
     if (!written.has(field)) throw new Error(field + ' is not written by any unit on a chapterless item');
   }
+  // THUMBNAIL TEXT OPTIONS retired 2026-09-28 (thumbnails pipeline): no shipped channel declares
+  // it, so no unit writes it; the three pairs' words come from the thumbnails stages instead.
+  if (written.has('thumbnail_text')) throw new Error('thumbnail_text is still planned on a shipped channel');
   // clip_suggestions was retired 2026-08-25: no channel declares it, no field file defines
   // it, and no unit may plan one. Planned anyway would be the legacy absorb-everything
   // behaviour coming back on a field that no longer exists at all.
@@ -832,11 +835,12 @@ check('every field gets its OWN call, and each call names exactly one key', () =
     }
     eq(unit.fields.length, 1, 'unit "' + unit.label + '" carries more than one field');
   }
-  // One separate call per DECLARED packaging field — telltale declares all three that remain
-  // since clips were retired, and a channel's fields list is a statement (LEDGER II-A #133).
+  // One separate call per DECLARED packaging field — telltale declares the two that remain
+  // since clips (2026-08-25) and thumbnail text (2026-09-28) were retired, and a channel's
+  // fields list is a statement (LEDGER II-A #133).
   const packaging = p.units.filter((u) =>
     ['titles', 'thumbnail_text', 'pinned_comment'].some((f) => u.fields.includes(f)));
-  eq(packaging.length, 3, 'each declared packaging field is its own call');
+  eq(packaging.length, 2, 'each declared packaging field is its own call');
 });
 
 /**
@@ -845,7 +849,9 @@ check('every field gets its OWN call, and each call names exactly one key', () =
  * consecutively, because Ollama reloads a model that has been evicted in between.
  */
 check('titles run first, and the thumbnail call declares them as its input', () => {
-  const p = plan('youtube-telltale', { hasChapters: true });
+  // No shipped channel declares thumbnail_text since 2026-09-28; a channel file that still does
+  // (an installed copy with local edits) plans it exactly as before, reading the titles.
+  const p = plan('youtube-telltale', { hasChapters: true, extraFields: ['thumbnail_text'] });
   eq(p.units[0].fields[0], 'titles', 'the first unit is the titles call');
 
   const thumb = p.units.find((u) => u.fields.includes('thumbnail_text'));

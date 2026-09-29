@@ -11,13 +11,13 @@ fields:
   - titles
   - description
   - tags
-  - thumbnail_text
   - hashtags
   - pinned_comment
 
+thumbnails: true
+
 counts:
   titles: 10
-  thumbnail_text: 10
   pinned_comment: 3
 
 title_format: |-

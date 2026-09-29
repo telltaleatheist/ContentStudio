@@ -62,6 +62,8 @@ import type { TranscriptRef } from '../publish/publish-types';
 import { gpuCall, queueAITask } from '../queue-manager.service';
 import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
 import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
+import { ItemThumbnailRun, type ThumbnailJobDoors, type ThumbnailRunChoice } from '../thumbnails/pipeline';
+import { promptAssets } from './prompt-assets';
 import { ChapterPick, chapterPickOf } from './chaptering/granularity';
 
 /** The queue's pick as the whole-transcript engine's grain (LEDGER #213). */
@@ -189,6 +191,14 @@ export interface GenerationParams {
    */
   speakerEnrollmentAudio?: string;
   inputNotes?: { [key: string]: string };
+  /**
+   * Whether this run makes the three A/B thumbnails (thumbnails/pipeline.ts, docs/thumbnails-
+   * pipeline.md): 'on' with the app's setup read at job time by the IPC layer, or 'off' with the
+   * reason (the per-run switch). ABSENT is a caller that has no thumbnail setup (the test CLI, a
+   * caller from before the pipeline), and every item's record says exactly that; it is never
+   * read as on or off by itself.
+   */
+  thumbnails?: ThumbnailRunChoice;
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
   showPrompt?: boolean; // "Show prompt" flow: assemble the prompt(s) and STOP — no metadata AI call, job, or output
@@ -360,14 +370,25 @@ export class MetadataGeneratorService {
       log.info('[MetadataGenerator] Initializing AI manager...');
       const initialized = await aiManager.initialize();
 
-      if (initialized && params.insights) {
-        // The channel's evidence becomes the compact block every insight-carrying call
-        // rides: cached lessons on the common path, the placeholder on a dry run, or the
-        // ONE distillation call — on the titles field's routed transport, because titles
-        // are what the lessons serve.
-        //
-        // Said on screen first (LEDGER #225): when the evidence moved, the distillation is a
-        // ~20 s model call before chapters, and a row with nothing to say for it looks dead.
+      /**
+       * The channel's evidence becomes the compact block every insight-carrying call rides:
+       * cached lessons on the common path, the placeholder on a dry run, or the ONE distillation
+       * call — on the titles field's routed transport, because titles are what the lessons serve.
+       *
+       * Said on screen first (LEDGER #225): when the evidence moved, the distillation is a ~20 s
+       * model call before chapters, and a row with nothing to say for it looks dead.
+       *
+       * RESOLVED LATE, just before the first call that reads it (the show-prompt assembly, the
+       * compilation summaries, the first item's chapters), since the thumbnails pipeline
+       * (2026-09-28): the frame scoring runs on its vision model before the chapters, and a local
+       * distillation run before it would load the text model, then the vision model, then the
+       * text model again. Resolved at most once per run, exactly as before.
+       */
+      let lessonsResolved = false;
+      const ensureLessons = async (): Promise<void> => {
+        if (lessonsResolved) return;
+        lessonsResolved = true;
+        if (!params.insights) return;
         params.progressCallback?.('lessons', 'Preparing channel lessons...');
         aiManager.setInsightsBlock(
           await resolveGuidelinesBlock(params.insights, {
@@ -375,7 +396,7 @@ export class MetadataGeneratorService {
             ...this.guidelinesTransport(aiManager, params),
           })
         );
-      }
+      };
 
       if (!initialized) {
         log.error('[MetadataGenerator] AI manager initialization failed');
@@ -488,6 +509,7 @@ export class MetadataGeneratorService {
       // that gets sent — which is the one thing this flow exists to rule out. The
       // chapters come back with the prompts and are reused on send.
       if (params.showPrompt) {
+        await ensureLessons();
         const mode = params.mode || 'individual';
         console.log(`[MetadataGenerator] Show-prompt mode: assembling prompt(s) only (${mode})`);
         const prompts: string[] = [];
@@ -608,6 +630,19 @@ export class MetadataGeneratorService {
         // their words came from cannot be recorded as one item, and finding that out
         // after N summarizations and a metadata call would cost the operator the run.
         const compilationProvenance = this.compilationProvenanceOf(contentItems);
+        await ensureLessons();
+        // A compilation is one item made of several videos, so it has no one editor story to take
+        // thumbnail frames from; the record says so rather than leaving the key absent.
+        const compilationThumbnails = ItemThumbnailRun.start(
+          params.thumbnails === undefined || params.thumbnails.mode === 'off'
+            ? params.thumbnails
+            : { mode: 'off', reason: 'A compilation joins several videos, so there is no one editor story to take thumbnail frames from.' },
+          {
+            jobId: jobInfo.jobId, itemIndex: 0, sourceLabel: jobName, contentType: 'subject', videoPath: null, operatorRef: undefined,
+            segments: [], reportFolder: jobInfo.txtFolder, channel: promptAssets().channel(params.promptSet),
+          },
+          this.thumbnailDoors(params, lifecycle, aiManager, 0),
+        );
 
         // Summarize each item SEPARATELY to preserve distinct subjects
         // (Combining first then summarizing loses the ITEM structure during chunking)
@@ -658,6 +693,7 @@ export class MetadataGeneratorService {
         (metadata as any)._source_count = contentItems.length;
         // A compilation is one item, so the whole run's trace is its trace.
         (metadata as any)._prompt_trace = aiManager.promptTrace.slice();
+        (metadata as any).thumbnails = compilationThumbnails.record();
 
         // Save compilation result. A compilation has no single source, so its source_key
         // is an explicit null rather than the first input's: the key exists to answer
@@ -674,6 +710,30 @@ export class MetadataGeneratorService {
       } else {
         // INDIVIDUAL MODE: Process each item separately
         console.log('[MetadataGenerator] Individual mode: processing items separately');
+
+        // THE THUMBNAILS' FIRST HALF, for every item, before any chapter (thumbnails/pipeline.ts):
+        // the story, the frames (CPU) and the frame scoring on the vision model (GPU). Right after
+        // transcription and before the chapters and the lessons, so the vision model is loaded once
+        // and the text model that follows replaces it: one swap for the whole job. A stage failure is
+        // recorded on the item's record (never thrown); only a stop ends the job here.
+        const channel = promptAssets().channel(params.promptSet);
+        const thumbnailRuns = contentItems.map((item, i) => ItemThumbnailRun.start(params.thumbnails, {
+          jobId: jobInfo.jobId,
+          itemIndex: i,
+          sourceLabel: (item.source || `item_${i + 1}`).split('/').pop() || `item_${i + 1}`,
+          contentType: item.contentType,
+          videoPath: item.contentType === 'video' && item.source ? item.source : null,
+          operatorRef: item.transcriptRef,
+          segments: item.srtSegments ?? [],
+          reportFolder: jobInfo.txtFolder,
+          channel,
+        }, this.thumbnailDoors(params, lifecycle, aiManager, i)));
+        if (thumbnailRuns.some((r) => r.record().state === 'made')) setJobStage('chapters');
+        for (const run of thumbnailRuns) {
+          this.throwIfCancelled(params, 'before the thumbnail frames');
+          await run.beforeChapters();
+        }
+        await ensureLessons();
 
         for (let i = 0; i < contentItems.length; i++) {
         // Checked before each item. This is NOT the whole story: a real job has exactly
@@ -831,6 +891,17 @@ export class MetadataGeneratorService {
           (metadata as any)._context_stats = assertion.stats;
           log.info(`[MetadataGenerator] ${sourceLabel}: ${assertion.line}`);
 
+          // THE THUMBNAILS' SECOND HALF (thumbnails/pipeline.ts): the titles are settled (after the
+          // scrub and the gate, which may re-roll and rank them), so each of the three pairs gets its
+          // words, the tone and the photo ranking run, and the three defaults are drawn. On the job's
+          // own leases, so a 27B the fields left loaded is not loaded again. A stage failure is on the
+          // record and in the run's warnings; the item is saved either way.
+          const thumbnails = thumbnailRuns[i];
+          await thumbnails.afterFields(metadata as any);
+          (metadata as any).thumbnails = thumbnails.record();
+          const thumbnailWarning = thumbnails.warning();
+          if (thumbnailWarning !== null) warnings.push(thumbnailWarning);
+
           const saveResult = await outputHandler.addItemToJob(
             jobInfo.jobId, metadata, this.itemSourceOf(item), this.itemProvenanceOf(item));
           console.log(`[MetadataGenerator] Saved metadata to: ${saveResult.txtPath}`);
@@ -855,6 +926,9 @@ export class MetadataGeneratorService {
           // filename — the message itself already carries the full path.
           const shortLabel = sourceLabel.split('/').pop() || sourceLabel;
           warnings.push(`${shortLabel}: ${errMsg}`);
+          // The item is not saved, so nothing will ever point at its thumbnail files: they go, said.
+          const removed = thumbnailRuns[i].removeFiles();
+          if (removed !== null) log.info(`[MetadataGenerator] ${shortLabel} was not saved, so its thumbnail files were removed: ${removed}`);
           // Continue with other items
         }
       }
@@ -1221,6 +1295,29 @@ export class MetadataGeneratorService {
    */
   private static routing(params: GenerationParams): ResolvedMetadataRouting {
     return resolveMetadataRouting(params.metadataRouting);
+  }
+
+  /**
+   * The thumbnails stages' doors for one item: THIS JOB's leases (so the vision model and the text
+   * model are holds of the one job, and a model the fields left loaded is not loaded again), the
+   * run's AI manager for the words, the routing table, the run's stop, and a progress line that is
+   * also the job's sign of life (sampling and scene grouping are minutes of CPU with no model call).
+   * `leases` is read only when a stage calls a model, so a run that makes no thumbnails needs no server.
+   */
+  private static thumbnailDoors(params: GenerationParams, lifecycle: JobModelLifecycle, aiManager: AIManagerService, itemIndex: number): ThumbnailJobDoors {
+    return {
+      get leases() {
+        return lifecycle.leases;
+      },
+      aiManager,
+      routing: this.routing(params),
+      ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+      cancelled: () => this.cancelRequested(params),
+      progress: (message) => {
+        params.progressCallback?.('thumbnails', message, undefined, undefined, itemIndex);
+        beatJob();
+      },
+    };
   }
 
   /**
