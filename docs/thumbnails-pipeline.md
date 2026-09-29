@@ -36,8 +36,7 @@ same model is the same hold; a different model replaces it). In `metadata-genera
 | - | channel lessons | GPU/cloud | titles row | moved here: after the scoring, before the first chapter (only when the evidence moved) |
 | - | chapters, fields, scrub, re-roll gate | GPU/cloud | as routed | per item, as before |
 | 4 | `words` | GPU/cloud | `thumbnail_words` (default the 8-bit 27B) | per item, after the gate (the titles are settled and, with the gate on, ranked) |
-| 5 | `tone-photos` | GPU | `thumbnail_judge` (default the 8-bit 27B) | " |
-| 6 | `render` | CPU | none | " |
+| 5 | `render` | CPU | none | " (no photo: Owen picks them; `tone-photos` and `thumbnail_judge` were removed 2026-09-29, see the last section) |
 | - | save | | | the record rides on the item |
 
 **One swap.** The vision model is loaded once, before the chapters; the chapters' model replaces it
@@ -45,7 +44,7 @@ on the card (the job's lease on the vision model is given back first). The chann
 moved from the top of the run to just before the first chapter for this: a local distillation
 before the scoring would have loaded the text model, then the vision model, then the text model
 again. **No reload of the 27B**: when routing names the same model for the fields and for the words
-and the tone/photo, they run on the hold the fields left. The exception is stated, not hidden: with
+(and, until 2026-09-29, the tone/photo), they run on the hold the fields left. The exception is stated, not hidden: with
 the re-roll gate ON (it ships off, LEDGER #210) its fixed 9B scorer runs after the fields, so the
 27B is loaded again for the words. A words prompt larger than the window the fields loaded grows the
 window once (lease.ts: growth is legitimate within a job).
@@ -57,7 +56,7 @@ window once (lease.ts: growth is legitimate within a job).
 - scoring: at most 120 frames, one `decideItems` call each; about 1.9 s a frame on the Mac, so
   about 4 minutes (Owen accepted this).
 - words: three calls (one per title) on the 27B; unmeasured.
-- tone-photos: one tone decide and three photo decides, text only; seconds.
+- tone-photos: removed 2026-09-29 (it was one tone decide and three photo decides).
 - render: three renders on the hidden canvas page, about a second each.
 
 Each record carries its own `timings` (seconds per stage). The queue row shows the stages as
@@ -97,7 +96,8 @@ record's `transcriptRef` is not written, so no manual link is ever overwritten.
   on the next kind that has one, said in the pair's `lines`.
 - **Frames.** The best frame of a different scene per pair, best scene first; with fewer scenes
   than pairs, the scenes' second (clearly different) frames next; a repeat is said.
-- **Tone and photos.** One tone decide, then every reaction photo ranked for each pair's default
+- **Tone and photos** (removed 2026-09-29: the defaults are drawn with no photo and Owen picks them;
+  kept here as the phase-1 record). One tone decide, then every reaction photo ranked for each pair's default
   words. Each pair's photo is drawn from its top 3 (photo-draw.ts), a photo already on another pair
   left out while another remains, with ONE seed per item stored as `seed`.
 - **Render.** 1280x720 on the saved look (`thumbnailLab.style`, look.ts; the default look when none
@@ -246,8 +246,9 @@ is pick 1, clicking a picked one removes it and the rest close the gap, a fourth
 **Pairing is by position and read live**: pick n goes with the report's chosen title n (the publish
 record's `chosenTitles`). When pick n's words were written for another title (Owen reordered his
 titles), the window and the report say so and offer **Rewrite words for this title**
-(`thumbnails:pair-title`: the words row for that title, the tone/photo row for the new words, a new
-draw and a new render, on ONE held lease of the 27B; the pair and its pick follow).
+(`thumbnails:pair-title`: the words row for that title and a new render with the pair's photo kept,
+on ONE held lease of the 27B; the pair and its pick follow. Until 2026-09-29 it also ran the
+tone/photo row and a new draw).
 
 **Copies and publishing.** Every save writes `<folder>/picks/Pick 1.png`, `Pick 2.png`, `Pick 3.png`
 (`.jpg` for a JPEG), exactly the picks, in order (the folder is emptied first; no picks, no
@@ -393,6 +394,100 @@ synthetic session, the fake Crucible standalone; no live Crucible call): the sto
 empty-library reason and Finish disabled, Finish enabled once photos are in, Finish running (clock,
 progress) and finishing on the fake, three hand-picked overlays, reopening with the picks read back,
 a photo choice, and a draw failure as a banner.
+
+## Photos picked by Owen, Generate at the bottom, the border (2026-09-29, LEDGER #243)
+
+Owen, after the one-flow window: "make the text slightly smaller"; "just let me pick the image of
+myself that goes in the corner instead of letting the model pick it. itll be faster"; "for my images,
+let me click 1->2->3, same as everything else"; "the thumbnail text should be a list i pick. 1, 2,
+3"; "we dont need to separate by scene. just show a list of possible images to use"; "the 'generate
+thumbnails' button should be at the bottom"; and his border ("this goes over the thumbnail. it's a
+border i always use").
+
+**The model's tone and photo ranking is gone.** The `tone-photos` stage, `judge.ts`, `photo-draw.ts`
+(the top-3 draw), the `thumbnail_judge` routing row, thumbnails.yml `tone.*` / `photo.*` and the photo
+notes (they only fed the ranking) are removed. A stored `thumbnail_judge` selection is dropped with a
+logged notice and written back (`REMOVED_ROUTING_TASKS`, the routing file's retirement pattern); Owen's
+saved notes stay in the settings under `thumbnailLab.reactionNotes`, unread. The stages are now story,
+frames, scoring, words, render; after the frame scoring the run asks no decide at all.
+
+**What the run draws now (the simpler of the two options):** the three defaults are still drawn, with
+**no reaction photo**, and each pair's `lines` says "No photo picked yet: pick one in the Thumbnails
+window." (the record's line ends "; no photo picked yet."). Keeping the render stage kept the record,
+`resumePlan` and Finish as they were; not drawing would have changed what `made` means. The window
+opens with nothing picked; "Start from the suggested three" fills the run's frames and words (no
+photos).
+
+**Older records.** `failure.stage` may still name `tone-photos` (`RETIRED_STAGES`; Owen's first run
+stopped there). Such a record keeps story, frames, scoring and words; the view adds "That step is
+gone: you pick the photos yourself below, so Finish only draws the thumbnails." and Finish draws with
+no model call and no lease. `tone`, `seed`, `photos`, `rankedFor` and `draw` stay readable and are no
+longer written (null / empty).
+
+**The window** (`thumbnails-window.{ts,html,scss}`, rules pure in `thumbnails-compose.ts`):
+
+1. **Frames**: ONE flat grid (`frameList`): the run's two-per-scene frames (still deduplicated) ordered
+   best score first, no scene labels; the other candidates behind "Show more (n)". Click order 1/2/3.
+2. **Text**: a vertical list, one line each: the words, then "kind · for “title”" small. Typed words
+   and "No text". Click order 1/2/3.
+3. **Photos**: one row of the library's photos plus "No photo". Click order 1/2/3; photo n goes on
+   thumbnail n; a thumbnail beyond the photos picked has none. "No photo" can be picked more than once
+   (its badges show every place it holds; clicking a badge takes that one out). No percentages. The
+   Logo switch sits in this row's header.
+4. **Generate thumbnails** at the bottom of the picks. Nothing is drawn on a click. Disabled, with the
+   reason written beside it, until at least one frame and one text (or "No text") are picked (or one
+   of his own images is set); beside it, what it will draw ("1: frame 1 + text 1 + photo “horrified” ·
+   ..."). Pressing it draws every ready place fresh (`drawChange`, so a look changed since applies),
+   checks each now shows its picks, then saves the places as the ordered picks (pick 1 the video's
+   thumbnail, as before).
+5. **Your thumbnails**: shown once generated. A card whose picks changed since is dimmed and says
+   "Your picks for it changed: press Generate thumbnails."; its line says "No photo picked yet" when
+   no photo pick stands for it.
+
+**Text size.** The look gains `textScale` ("Text size (% of the largest that fits)", 50-100%, default
+85%): the size layout.ts chooses is drawn at that fraction, so the largest letters are 17% of the
+height instead of 20% and a width-limited phrase is 15% smaller; where the words go (off the faces or
+not) is decided at the full size, still one or two lines, never refused. `maxCapFraction` stays 20%.
+
+**The border.** One PNG kept in `<userData>/thumbnail-lab/border/` (photo-library.ts `libraryBorder` /
+`setLibraryBorder`, checked by border.ts `readBorder`: a missing file, one that is not a picture, not
+16:9, fully transparent or fully opaque is refused naming the file; a refused file leaves the kept
+one). Thumbnail look: "Border", its picture, "Choose file…"/"Replace…", and "Draw the border" (the
+look's `border`, saved with Save look). Drawn over the whole frame scaled to the output with a normal
+alpha composite, before the patch and words, the photo and the logo (canvas-page.ts). It REPLACES the
+procedural vignette: `vignette`/`vignetteStrength` are removed from the look. On by default; with no
+border kept nothing is drawn and the record says "No border is kept in the app, so none is drawn."
+(or that it is switched off).
+
+**A look saved before 2026-09-29** has no `textScale` and no `border` and has the retired vignette:
+`readStoredStyle` reads it with the new defaults (85%, border on, vignette dropped) and a line saying
+so, in the record's lines and in Thumbnail look. Nothing is written back until Save look. So Owen's
+saved look (if any) gets the smaller text and his border without him doing anything.
+
+### The saved picks, for the A/B fill (the browser extension, later)
+
+The extension's A/B fill (Studio's "Title and thumbnail" Test & Compare) was deferred to a session with
+a live Studio window. What it will read, all written already:
+
+- The record: the item's `thumbnails` key in `<outputDir>/.contentstudio/metadata/<jobId>.json`, read
+  with `readItemThumbnails`. `picks` is ordered, at most 3.
+- The files: `pickCopies(record)` (pipeline-record.ts) gives `{ n, pick, file }` per pick, where `file`
+  is `<record.folder>/picks/Pick n.png` (`.jpg` when the picked file is not a PNG). The copies are
+  rewritten on every save, exactly the picks in order; no picks, no `picks/` folder.
+- The pairing: pick n goes with the report's chosen title n (the publish record's
+  `chosenTitles[n - 1]`), read live, because Owen can reorder titles after picking. Each made pick also
+  stores `wordsFor` (the title its words were written for), which is not the pairing.
+- The transport the extension already uses for the single thumbnail (`GET /publish/thumbnail`,
+  publish-bridge `getThumbnail`: fitted, base64 in JSON through the service worker) is the model for a
+  per-pick route; the extension would set each file on the variant's file input with a DataTransfer,
+  and never press Set test.
+
+**Screenshots** (scratch userData, a fixture from the keeper's synthetic session, the fake Crucible
+standalone, Owen's photos, logo and border COPIED into the scratch folder; no live Crucible; session
+scratchpad `shots2/shots/`): the window open with nothing picked; frames and text picked; photos
+picked 1, No photo 2, laugh 3 with Generate enabled and its plan; the three generated thumbnails; the
+cards after a photo pick changed; Thumbnail look's border and text size; a record stopped at
+tone-photos and Finish.
 
 ## Open questions
 
