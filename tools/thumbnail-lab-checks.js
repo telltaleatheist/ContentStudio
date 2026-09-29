@@ -30,13 +30,19 @@
  *     lines, shrunk to fit, never refused and never cut; off the padded faces and the logo when a
  *     face-free space holds the words at the 7% floor, else in the whole box at the floor or smaller
  *     where they cover the least of a face, said in the note.
+ *   - TEXT SIZE (2026-09-29, Owen: "make the text slightly smaller"): the words are drawn at the
+ *     look's `textScale` (85% by default) of the size chosen, so the largest letters are 17% of the
+ *     height instead of 20% and every fitted size is 15% smaller; the off-the-faces decision is
+ *     made at the full size. A look saved before (no textScale, no border, the retired vignette)
+ *     is read with the new defaults and a line saying so.
  *   - the logo is fitted in its space with its aspect kept and the words avoid its drawn bounds;
  *     the reaction photos and logo are copied into the app's library (ThumbnailLook: add,
  *     duplicate refused then replaced, remove, the one-click copy offer from the old folder
- *     setting, originals untouched) on a CONTENTSTUDIO_USER_DATA scratch folder; a "top-ranked"
- *     photo is drawn from the top 3 with a stated seed, reproducibly, avoiding repeats; the best
+ *     setting, originals untouched) on a CONTENTSTUDIO_USER_DATA scratch folder; the border overlay
+ *     (2026-09-29) is kept the same way (one PNG, a refused file leaves the kept one); the best
  *     view shows 2 frames per scene with the rest behind "More", and small interleaved fragments of
- *     one moving shot fold into one scene.
+ *     one moving shot fold into one scene. (The tone and photo ranking, its notes and the top-3 draw
+ *     were removed 2026-09-29 with their checks: Owen picks his photos himself.)
  *   - SCORING over the real transport and lanes: one image per decide call, the five questions as
  *     ITEMS of that call (Crucible 1.0.55 decideItems; the yes/no and 1-5 shapes read back),
  *     `missing: report`, the engine's stated width; `model_text_only`, `refuse_images_not_served`
@@ -516,7 +522,7 @@ check('layout: the text box runs from the left margin to where the reaction phot
   assert.ok(insideBox(p.patch), `inside the text box (${JSON.stringify(p.patch)})`);
   assert.ok(!overlaps(p.patch, layout.paddedFace(face, FW, FH)), 'patch clear of the face');
   assert.ok(!overlaps(p.patch, layout.slotRect(STYLE.reactionSlot, FW, FH)), 'patch clear of the reaction space');
-  assert.ok(p.capPx >= STYLE.minCapFraction * FH - 1e-6 && p.capPx <= STYLE.maxCapFraction * FH + 1e-6, `cap ${p.capPx}`);
+  assert.ok(p.capPx >= STYLE.minCapFraction * STYLE.textScale * FH - 1e-6 && p.capPx <= STYLE.maxCapFraction * STYLE.textScale * FH + 1e-6, `cap ${p.capPx}`);
   assert.ok(p.lines.length >= 1 && p.lines.length <= 2);
   assert.ok(p.lines.every((l) => Math.abs(l.x - p.lines[0].x) < 1e-9), 'left-aligned');
   assert.ok(Math.abs(p.patch.y + p.patch.h - (FH - m)) < 0.5 && p.patch.x - m < 1, `bottom-left (patch at ${JSON.stringify(p.patch)})`);
@@ -530,12 +536,43 @@ check('layout: two faces side by side (a split screen) are both avoided', () => 
   assert.ok(insideBox(r.plan.patch));
 });
 
-check('layout: a short phrase is fitted large (up to the ceiling), and shrinks as the space shrinks', () => {
+check('layout: a short phrase is fitted large (up to the ceiling, at the text size), and shrinks as the space shrinks', () => {
   const open = layout.planText(metricsFor('MAYBE TOMORROW'), [], STYLE, FW, FH);
-  assert.ok(Math.abs(open.plan.capPx - STYLE.maxCapFraction * FH) < 1e-6, `with room, the ceiling (${open.plan.capPx})`);
+  assert.ok(Math.abs(open.plan.capPx - STYLE.maxCapFraction * STYLE.textScale * FH) < 1e-6, `with room, the ceiling at the text size (${open.plan.capPx})`);
   const tight = layout.planText(metricsFor('MAYBE TOMORROW'), [{ x: 420, y: 80, w: 300, h: 300 }], STYLE, FW, FH);
-  assert.ok(tight.plan.capPx < open.plan.capPx && tight.plan.capPx >= STYLE.minCapFraction * FH - 1e-6);
+  assert.ok(tight.plan.capPx < open.plan.capPx && tight.plan.capPx >= STYLE.minCapFraction * STYLE.textScale * FH - 1e-6);
   assert.strictEqual(tight.plan.placement, 'clear');
+});
+
+check('text size: 15% smaller by default (the largest letters 17% of the height, a width-limited phrase 85% of its fit), 100% gives the old size, the place chosen at full size; adjustable 50-100%', () => {
+  assert.strictEqual(layout.DEFAULT_STYLE.textScale, 0.85);
+  assert.strictEqual(layout.DEFAULT_STYLE.maxCapFraction, 0.2);
+  const full = { ...STYLE, textScale: 1 };
+  const short = metricsFor('MAYBE TOMORROW');
+  const now = layout.planText(short, [], STYLE, FW, FH).plan;
+  const before = layout.planText(short, [], full, FW, FH).plan;
+  assert.ok(Math.abs(before.capPx - 0.2 * FH) < 1e-6 && Math.abs(now.capPx - 0.17 * FH) < 1e-6, `ceiling 20% -> 17% (${before.capPx} -> ${now.capPx})`);
+  const long = metricsFor('THE RAPTURE IS HERE AND SHE MEANS IT');
+  const a = layout.planText(long, [], STYLE, FW, FH).plan;
+  const b = layout.planText(long, [], full, FW, FH).plan;
+  assert.ok(b.capPx < 0.2 * FH - 1, 'the long phrase is limited by the width, not the ceiling');
+  assert.ok(Math.abs(a.capPx / b.capPx - 0.85) < 1e-6, `the typical size is 85% of the fit (${a.capPx} vs ${b.capPx})`);
+  assert.deepStrictEqual(a.lines.map((l) => l.text), b.lines.map((l) => l.text), 'the same lines, smaller');
+  assert.deepStrictEqual([a.space, a.placement], [b.space, b.placement], 'the same place, chosen at full size');
+  assert.ok(a.lines.length <= 2 && insideBox(a.patch), 'one or two lines, inside the box');
+  assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, textScale: 1.2 }), /text size/);
+  assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, textScale: undefined }), /text size/);
+});
+
+check('the saved look: one saved before 2026-09-29 (no text size, no border, the retired dark edges) is read with the new defaults and a line saying so; a current one says nothing', () => {
+  const old = { ...layout.DEFAULT_STYLE, vignette: true, vignetteStrength: 0.6, maxCapFraction: 0.2 };
+  delete old.textScale;
+  delete old.border;
+  const read = layout.readStoredStyle(old);
+  assert.deepStrictEqual([read.style.textScale, read.style.border, 'vignette' in read.style], [0.85, true, false]);
+  assert.ok(/85% of the largest that fits/.test(read.line) && /border is drawn/.test(read.line) && /"dark edges" setting is gone/.test(read.line), read.line);
+  assert.deepStrictEqual(layout.readStoredStyle(layout.DEFAULT_STYLE), { style: layout.DEFAULT_STYLE, line: null });
+  assert.throws(() => layout.readStoredStyle({ ...old, fill: 'orange' }), /letter colour/, 'anything else wrong is still refused');
 });
 
 check('layout: words no face-free space holds at the 7% floor are still drawn: in the whole box, no bigger than the floor, shrunk until they fit, covering the least of a face, said; never refused, never cut, never three lines', () => {
@@ -571,7 +608,7 @@ check('layout: "TAKE YOUR CLOTHES OFF" between two faces is drawn whole on one o
   if (r.plan.placement === 'clear') for (const f of faces) assert.ok(!overlaps(r.plan.patch, layout.paddedFace(f, FW, FH)), 'clear of each face');
   else assert.ok(r.note !== null, 'over a face only with the note');
   const open = layout.planText(metricsFor('MAYBE TOMORROW'), [], STYLE, FW, FH);
-  assert.ok(open.plan.lines.length <= 2 && Math.abs(open.plan.capPx - STYLE.maxCapFraction * FH) < 1e-6, JSON.stringify(open.plan.lines));
+  assert.ok(open.plan.lines.length <= 2 && Math.abs(open.plan.capPx - STYLE.maxCapFraction * STYLE.textScale * FH) < 1e-6, JSON.stringify(open.plan.lines));
 });
 
 // ── reaction photos: trim and placement ─────────────────────────────────────
@@ -717,65 +754,6 @@ check('scoring: a model that is not installed is refused naming it and the serve
   assert.strictEqual(err.code, 'model_not_installed');
   assert.ok(/qwen3\.5-2b is not downloaded on "mac"/.test(err.message) && /nothing was substituted/.test(err.message), err.message);
   assert.strictEqual(server.decideBodies().length, 0);
-}));
-
-// ── tone and photo suggestion ───────────────────────────────────────────────
-
-const judge = services('thumbnails/judge.js');
-
-const PHOTOS = [
-  { name: 'laugh', note: 'laughing; light topics only, never for deaths or real victims' },
-  { name: 'horrified', note: 'horrified; serious topics' },
-  { name: 'oh please', note: 'dismissive; for a claim that is not worth believing' },
-  { name: 'ooh', note: null },
-];
-
-check('tone and photo: the lists and drafts come from thumbnails.yml; the states fill every slot', () => {
-  const tones = judge.toneOptions();
-  assert.deepStrictEqual(tones.slice(0, 3), ['mocking', 'absurd', 'outraged']);
-  assert.strictEqual(tones.length, 10);
-  const drafts = judge.draftNotes();
-  assert.ok(/never for deaths or real victims/.test(drafts['uh oh laughing']) && /serious/.test(drafts['this is wrong']) && /facepalm/.test(drafts['head slap']));
-  assert.deepStrictEqual(judge.legendLines(PHOTOS.slice(2)), ['oh please: dismissive; for a claim that is not worth believing', 'ooh']);
-  const tone = judge.toneState({ channel: 'Fireside', creator: 'owen morgan', hook: 'A hook.', description: 'The body.\n\n🔥 Support the Show: https://x', transcript: ['[0:01] a', '[0:02] b'] });
-  assert.ok(!/\{[a-z_]+\}/.test(tone) && tone.includes('The body.') && !tone.includes('Support the Show'), 'the links under the description are left out');
-  const photo = judge.photoState({ channel: 'Fireside', creator: 'owen morgan', summary: 'S', tone: 'mocking', text: null, photos: PHOTOS });
-  assert.ok(!/\{[a-z_]+\}/.test(photo) && /picture only/.test(photo) && photo.includes('ooh\n') === false && photo.endsWith('ooh'));
-});
-
-check('tone and photo: a ranking is most probable first, an unrated option last, nothing dropped', () => {
-  const r = judge.rankingOf({ probabilities: { a: 0.2, b: null, c: 0.7, d: 0.1 } }, ['a', 'b', 'c', 'd'], 'x');
-  assert.deepStrictEqual(r.map((x) => x.name), ['c', 'a', 'd', 'b']);
-  assert.strictEqual(r[3].p, null);
-  assert.throws(() => judge.rankingOf({ probabilities: { a: null, b: null } }, ['a', 'b'], 'The answer'), /rated none/);
-});
-
-function judgeProbs(q, state) {
-  if (q.labels.includes('mocking')) return Object.fromEntries(q.labels.map((l) => [l, l === 'absurd' ? 0.55 : l === 'mocking' ? 0.3 : 0.15 / 8]));
-  const serious = /DON'T STAND UNDER A ROOF/.test(state);
-  const top = serious ? 'horrified' : /MAYBE TOMORROW/.test(state) ? 'oh please' : 'laugh';
-  return Object.fromEntries(q.labels.map((l) => [l, l === top ? 0.6 : l === 'ooh' ? 0.25 : 0.05]));
-}
-
-check('tone and photo over the door: one job, text-only decides on the judge model, tone first, a ranking per variant', () => withFake({ decideProbs: judgeProbs }, async (server, deps) => {
-  const out = await judge.judgeThumbnails({
-    deps, jobId: 'keeper-judge', model: 'qwen3.5-9b',
-    tone: { channel: 'Fireside', creator: 'owen morgan', hook: 'She says the rapture is here.', description: 'A rapture claim.\n\nLinks', transcript: ['[0:01] hello'] },
-    photos: PHOTOS,
-    variants: [{ letter: 'A', text: "DON'T STAND UNDER A ROOF" }, { letter: 'B', text: 'MAYBE TOMORROW' }, { letter: 'C', text: null }],
-  });
-  assert.strictEqual(out.tone[0].name, 'absurd');
-  assert.ok(Math.abs(out.tone[0].p - 0.55) < 1e-6);
-  assert.deepStrictEqual([out.photos.A[0].name, out.photos.B[0].name, out.photos.C[0].name], ['horrified', 'oh please', 'laugh']);
-  assert.deepStrictEqual(out.photos.A.map((r) => r.name).sort(), PHOTOS.map((p) => p.name).sort(), 'every photo is ranked, none hidden');
-  assert.strictEqual(out.photos.A[1].name, 'ooh');
-  const bodies = server.decideBodies();
-  assert.strictEqual(bodies.length, 4);
-  assert.ok(bodies.every((b) => b.model === 'qwen3.5-9b' && !b.images && b.missing === 'report'));
-  assert.ok(bodies.slice(1).every((b) => /The tone of the video: absurd/.test(b.state)), 'the photo states carry the tone just read');
-  assert.ok(/ooh$/m.test(bodies[1].state) && /oh please: dismissive/.test(bodies[1].state), 'the legend lists every photo with its note');
-  const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
-  assert.deepStrictEqual(loads.map((b) => b.model), ['qwen3.5-9b'], 'one load, one lease');
 }));
 
 // ── the story source: regions minus cuts, the segment table, the alignment (2026-09-28) ──────────
@@ -956,7 +934,6 @@ check('story source, real fixture: "f1 - the rapture" of 2026-09-24 maps to 126 
 // ── the logo and the library (2026-09-28) ──
 
 const library = services('thumbnails/photo-library.js');
-const draw = services('thumbnails/photo-draw.js');
 const { resolveUserDataPath } = require(path.join(DIST, 'user-data-path.js'));
 /** A PNG file's first bytes (the library checks the signature, not the pixels). */
 const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('a keeper photo')]);
@@ -992,7 +969,7 @@ check('logo: fitted inside its space with its aspect kept, against the top and r
   assert.ok(withLogo.plan.size >= withSlot.plan.size, 'the words may use the space the logo does not cover');
 });
 
-// ── the library (ThumbnailLook) and the draw (2026-09-28) ────────────────────
+// ── the library (ThumbnailLook) and the border (2026-09-28, 2026-09-29) ─────────
 
 check('library: photos are copied into <userData>/thumbnail-lab/reaction-photos (CONTENTSTUDIO_USER_DATA); a name already there is refused, then replaced on request; remove; the originals untouched', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-library-'));
@@ -1029,12 +1006,11 @@ check('library: photos are copied into <userData>/thumbnail-lab/reaction-photos 
     const fake = path.join(root, 'fake.png');
     fs.writeFileSync(fake, 'not a picture');
     assert.throws(() => lab.addPhotos([fake], false), /not a PNG picture/);
-    // Notes stay per name; remove takes only the app's copy.
-    lab.setPhotoNote('eww', 'disgust');
+    // Remove takes only the app's copy. (Photo notes went 2026-09-29 with the ranking that read them.)
+    assert.strictEqual(typeof lab.setPhotoNote, 'undefined', 'no photo notes any more');
     lab.removePhoto('eww');
     assert.ok(!fs.existsSync(path.join(library.photosDir(userData), 'eww.png')) && fs.existsSync(extra), 'the app copy goes, the original stays');
     assert.throws(() => lab.removePhoto('eww'), /no reaction photo "eww"/);
-    assert.throws(() => lab.setPhotoNote('eww', 'x'), /no reaction photo "eww"/);
     assert.deepStrictEqual(fs.readdirSync(src).map((n) => [n, fs.statSync(path.join(src, n)).mtimeMs]), before, 'the originals are only read');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1081,33 +1057,35 @@ check('library: an old folder or logo setting is OFFERED for copying (never copi
   }
 });
 
-check('draw: a "top-ranked" photo is drawn from the top 3 by probability, reproducible from its seed, a repeat avoided while another remains; direct picks untouched', () => {
-  const rank = (...pairs) => pairs.map(([name, p]) => ({ name, p }));
-  // Owen's case: one photo tops every ranking.
-  const same = rank(['are you kidding me', 0.32], ['oh please', 0.21], ['horrified', 0.15], ['laugh', 0.1]);
-  const rankings = { A: same, B: same, C: same };
-  const one = draw.drawPhotos(rankings, ['A', 'B', 'C'], [], 12345);
-  assert.deepStrictEqual(draw.drawPhotos(rankings, ['A', 'B', 'C'], [], 12345), one, 'the same seed, the same draw');
-  assert.strictEqual(new Set(Object.values(one).map((d) => d.name)).size, 3, `A, B and C differ (${Object.values(one).map((d) => d.name)})`);
-  for (const d of Object.values(one)) {
-    assert.ok(['are you kidding me', 'oh please', 'horrified'].includes(d.name), 'only the top 3');
-    assert.deepStrictEqual(d.pool.map((r) => r.name), ['are you kidding me', 'oh please', 'horrified']);
+check('border: one PNG kept in <userData>/thumbnail-lab/border (CONTENTSTUDIO_USER_DATA), replacing the one kept; a missing, non-PNG or unreadable file is refused naming it and the kept border stays; the original only read', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-border-'));
+  try {
+    const userData = scratchUserData(root);
+    assert.strictEqual(library.libraryBorder(userData), null, 'none kept: none drawn');
+    const src = path.join(root, 'Downloads', 'thumbnail-border.png');
+    fs.mkdirSync(path.dirname(src), { recursive: true });
+    fs.writeFileSync(src, PNG_BYTES);
+    const before = fs.statSync(src).mtimeMs;
+    const kept = library.setLibraryBorder(userData, src, () => {});
+    assert.strictEqual(kept, path.join(userData, 'thumbnail-lab', 'border', 'thumbnail-border.png'));
+    assert.strictEqual(library.libraryBorder(userData), kept);
+    assert.strictEqual(fs.statSync(src).mtimeMs, before, 'the original only read');
+    assert.throws(() => library.setLibraryBorder(userData, path.join(root, 'nope.png'), () => {}), /The border file is not there: .*nope\.png/);
+    const jpeg = path.join(root, 'border.jpg');
+    fs.writeFileSync(jpeg, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+    assert.throws(() => library.setLibraryBorder(userData, jpeg, () => {}), /must be a PNG picture with a transparent middle: .*border\.jpg/);
+    assert.throws(() => library.setLibraryBorder(userData, src, () => { throw new Error('The border file is 1000x1000, not 16:9'); }), /not 16:9/);
+    assert.strictEqual(library.libraryBorder(userData), kept, 'a refused border leaves the kept one');
+    const second = path.join(root, 'border two.png');
+    fs.writeFileSync(second, PNG_BYTES);
+    library.setLibraryBorder(userData, second, () => {});
+    assert.deepStrictEqual(fs.readdirSync(library.borderDir(userData)), ['border two.png'], 'the one kept is replaced');
+    // The default look draws it; the look's switch turns it off.
+    assert.strictEqual(layout.DEFAULT_STYLE.border, true);
+    assert.strictEqual('vignette' in layout.DEFAULT_STYLE, false, 'the procedural vignette is gone');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
-  // Over many seeds the first draw follows the renormalised probabilities.
-  const counts = {};
-  for (let s = 1; s <= 3000; s++) { const n = draw.drawPhotos({ A: same }, ['A'], [], s).A.name; counts[n] = (counts[n] ?? 0) + 1; }
-  assert.ok(Math.abs(counts['are you kidding me'] / 3000 - 0.32 / 0.68) < 0.04, JSON.stringify(counts));
-  assert.ok(Math.abs(counts['horrified'] / 3000 - 0.15 / 0.68) < 0.04, JSON.stringify(counts));
-  assert.strictEqual(counts['laugh'], undefined, 'the 4th never');
-  // A directly picked photo is avoided by the draw; with the whole top 3 taken, the repeat is said.
-  const avoid = draw.drawPhotos({ A: same }, ['A'], ['are you kidding me', 'oh please'], 9);
-  assert.deepStrictEqual([avoid.A.name, avoid.A.repeatForced, avoid.A.chance], ['horrified', false, 1]);
-  const forced = draw.drawPhotos({ A: same }, ['A'], ['are you kidding me', 'oh please', 'horrified'], 9);
-  assert.strictEqual(forced.A.repeatForced, true);
-  assert.ok(/already on another thumbnail/.test(draw.drawLine(forced.A)));
-  assert.ok(/^\S.* \(\d+%\), drawn from the top 3: are you kidding me 32%, oh please 21%, horrified 15%$/.test(draw.drawLine(one.A)), draw.drawLine(one.A));
-  assert.throws(() => draw.drawPhotos(rankings, ['A'], [], 0), /whole number from 1/);
-  assert.throws(() => draw.drawPhotos({ A: rank(['x', null], ['y', null]) }, ['A'], [], 3), /no probability/);
 });
 
-run('thumbnail modules: frame filters, sampling, the story source, ranking, words, the text always fits, scoring, tone and photos, logo, library, draw');
+run('thumbnail modules: frame filters, sampling, the story source, ranking, words, the text always fits, text size, scoring, logo, library, border');
