@@ -91,11 +91,8 @@ check('every routing option that runs through Crucible names a Crucible id; clau
     'qwen38-27b-8bit': 'qwen3.8-27b-8bit',
     'qwen35-9b': 'qwen3.5-9b',
     'qwen35-4b': 'qwen3.5-4b',
-    // The Thumbnails tab's vision rungs (#236): each a Crucible manifest that declares `image`.
-    'qwen35-9b-vl': 'qwen3.5-9b-vl',
-    'qwen35-2b': 'qwen3.5-2b',
-    'qwen35-08b': 'qwen3.5-0.8b',
-    'qwen38-27b-vl': 'qwen3.8-27b-4bit-vl',
+    // The vision rungs (qwen35-9b-vl, qwen35-2b, qwen35-08b, qwen38-27b-vl) went with the thumbnail
+    // frame row on 2026-09-29 (REMOVED_ROUTING_OPTIONS).
     sonnet5: 'anthropic/claude-sonnet-5',
     opus5: 'anthropic/claude-opus-5',
     haiku45: 'anthropic/claude-haiku-4-5-20251001',
