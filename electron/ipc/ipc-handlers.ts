@@ -3199,6 +3199,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
                 txtFilesMissing: cleanup.missing,
                 txtFilesLeft: cleanup.left,
                 txtFolderRemoved: cleanup.folderRemoved,
+                thumbnailFoldersRemoved: cleanup.thumbnailFolders,
                 ...(notes.length > 0 ? { warning: notes.join(' ') } : {}),
               };
             }

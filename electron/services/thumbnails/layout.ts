@@ -2,27 +2,33 @@
  * WHERE THE THUMBNAIL TEXT GOES AND HOW BIG IT IS. Deterministic arithmetic, no model.
  *
  * The inputs are the frame size, the face boxes a deterministic detector found (Apple Vision,
- * through canvas-page.ts; never the vision model's boxes, which are imprecise), the reserved slots
- * (Owen's reaction cut-out, bottom right, and the logo, top right: each avoided as its real drawn
- * bounds when drawn, or as its whole space when not), the style, and the phrase's measurements at a reference size. The output is either a
- * placement the renderer draws exactly, or a plain refusal saying the phrase is too long.
+ * through canvas-page.ts; never the vision model's boxes, which are imprecise), the reserved
+ * spaces (Owen's reaction cut-out, bottom right, and the logo, top right: each its real drawn
+ * bounds when drawn, or its whole space when not), the style, and the phrase's measurements at a
+ * reference size. The output is always a placement the renderer draws exactly.
  *
- * THE RULES (Owen, 2026-09-28):
- *   - the text never covers a face or a reserved slot;
- *   - left-aligned, at most MAX_LINES (3) lines, fitted by shrinking from large;
- *   - the capital letters are never shorter than `minCapFraction` of the frame height (7% by
- *     default since 2026-09-28; it was 12% and at most two lines until Owen hit "TAKE YOUR CLOTHES
- *     OFF" refused at 68 px against an 87 px floor: "i think it would be fine to make the text
- *     smaller to fit it all"). A phrase that cannot fit even at that size is TOO LONG: this says so
- *     and places nothing. It never shrinks below the floor, never truncates and never covers a
- *     face; the operator picks another option.
+ * THE RULES (Owen, 2026-09-28, phase 2: "text will never be way too long ... if it does I'll
+ * change the prompt"). When Owen picks words they are drawn; nothing is refused:
+ *   - THE TEXT BOX runs from the left margin to where the reaction photo begins (its drawn bounds,
+ *     outline included; its whole space when no photo is drawn), and from the top margin to the
+ *     bottom margin. The text never leaves it.
+ *   - one or two lines (MAX_LINES), left-aligned, fitted by shrinking from large (the largest
+ *     letters are `maxCapFraction` of the height);
+ *   - faces (and the logo, if its space reaches into the box) are kept clear WHERE POSSIBLE: the
+ *     largest placement in the box that avoids them all is used when its capitals are at least
+ *     `minCapFraction` of the height (7%);
+ *   - otherwise the words go in the whole box, no bigger than that 7%, shrunk further until they
+ *     fit, at the top or the bottom of the box, whichever covers less of a face, and the plan's
+ *     note says so. There is no smallest size: a phrase always fits.
+ *   (Until phase 2 a phrase that could not keep the 7% floor clear of the faces was refused, and
+ *   the text could sit anywhere on the picture, on up to three lines.)
  *
- * HOW. The clear space is searched exhaustively: every rectangle whose edges lie on the frame's
- * margins or on an obstacle's edges, and which no obstacle cuts into, is a candidate (a handful of
- * obstacles gives a few thousand rectangles, all cheap). The phrase is fitted into each (every
- * split into one to MAX_LINES lines, largest size that fits both ways), and the candidate giving the
- * LARGEST letters wins; equal sizes prefer the lower, then the more left-hand, space — Owen's
- * usual bottom-left placement. The text sits against the frame edge its space touches.
+ * HOW. The clear space is searched exhaustively: every rectangle in the box whose edges lie on the
+ * box's edges or on an obstacle's edges, and which no obstacle cuts into, is a candidate (a handful
+ * of obstacles gives a few thousand rectangles, all cheap). The phrase is fitted into each (every
+ * split into one or two lines, largest size that fits both ways), and the candidate giving the
+ * LARGEST letters wins; equal sizes prefer the lower, then the more left-hand, space: Owen's usual
+ * bottom-left placement. The text sits against the box edge its space touches.
  *
  * Measurements are taken ONCE by the page at REFERENCE_SIZE (canvas `measureText`) and scaled
  * linearly, so this module needs no canvas and tools/thumbnail-lab-checks.js runs it in plain Node.
@@ -77,7 +83,11 @@ export interface ThumbnailStyle {
    * stays clear.
    */
   logoSlot: SlotFractions;
-  /** The smallest capital-letter height allowed, as a fraction of the frame height. */
+  /**
+   * The smallest capital-letter height the text is kept OFF THE FACES at, as a fraction of the frame
+   * height. Below it the words go over the faces rather than shrinking further (planText). Not a
+   * refusal: a phrase that does not fit the box at this size is drawn smaller.
+   */
   minCapFraction: number;
   /** The largest capital-letter height used, as a fraction of the frame height. */
   maxCapFraction: number;
@@ -106,8 +116,8 @@ export const DEFAULT_STYLE: ThumbnailStyle = {
   maxCapFraction: 0.2,
 };
 
-/** The most lines a phrase is broken into (2 until 2026-09-28). */
-export const MAX_LINES = 3;
+/** The most lines a phrase is broken into (Owen, 2026-09-28 phase 2: one or two; it was three for a day). */
+export const MAX_LINES = 2;
 
 /** The size the page measures the phrase at; everything else is scaled from it. */
 export const REFERENCE_SIZE = 100;
@@ -159,11 +169,19 @@ export interface TextPlan {
   patch: Rect;
   /** The patch as drawn: one padded box per line, so a short line leaves the picture beside it clear. */
   linePatches: Rect[];
-  /** The clear space the text was placed in. */
+  /** The space the text was placed in (a face-free space in the box, or the whole box). */
   space: Rect;
+  /** The text box: left margin to the reaction photo, top margin to bottom margin. */
+  box: Rect;
+  /** 'clear' kept off every face; 'over-faces': no face-free space held the words at the floor. */
+  placement: 'clear' | 'over-faces';
 }
 
-export type PlanResult = { ok: true; plan: TextPlan } | { ok: false; reason: string };
+/** A placement, and a plain note when the words could not be kept off the faces. */
+export interface PlanResult {
+  plan: TextPlan;
+  note: string | null;
+}
 
 function num(value: unknown, what: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
@@ -285,12 +303,25 @@ function overlaps(a: Rect, b: Rect): boolean {
 }
 
 /**
- * Every rectangle inside the margins whose edges lie on the margins or on obstacle edges and that
- * no obstacle cuts into. Degenerate and duplicate rectangles are left out.
+ * THE TEXT BOX: from the left margin to where the reaction photo begins (`reactionAvoid`, its drawn
+ * bounds with the outline; its whole space when no photo is drawn), from the top margin to the
+ * bottom margin. A reaction space that leaves no room is a setting to fix, said by name.
  */
-export function clearSpaces(width: number, height: number, obstacles: readonly Rect[]): Rect[] {
+export function textBox(style: ThumbnailStyle, width: number, height: number, reactionAvoid: Rect | null): Rect {
   const m = MARGIN_FRACTION * height;
-  const inner = { x0: m, y0: m, x1: width - m, y1: height - m };
+  const right = Math.min(width - m, (reactionAvoid ?? slotRect(style.reactionSlot, width, height)).x);
+  if (!(right - m > 0)) {
+    throw new Error(`The reaction photo starts ${Math.round(right)} px from the left edge, which leaves no room for words beside it. Move its space to the right in Thumbnail look.`);
+  }
+  return { x: m, y: m, w: right - m, h: height - 2 * m };
+}
+
+/**
+ * Every rectangle inside `box` whose edges lie on the box's edges or on obstacle edges and that no
+ * obstacle cuts into. Degenerate and duplicate rectangles are left out.
+ */
+export function clearSpaces(box: Rect, obstacles: readonly Rect[]): Rect[] {
+  const inner = { x0: box.x, y0: box.y, x1: box.x + box.w, y1: box.y + box.h };
   const xs = new Set<number>([inner.x0, inner.x1]);
   const ys = new Set<number>([inner.y0, inner.y1]);
   for (const o of obstacles) {
@@ -366,60 +397,15 @@ function evenness(fit: Fit): number {
   return Math.max(...fit.lineWidths) - Math.min(...fit.lineWidths);
 }
 
-/**
- * Place a phrase, or refuse it as too long. `faces` are the detector's boxes (unpadded).
- */
-export function planText(
-  metrics: PhraseMetrics,
-  faces: readonly Rect[],
-  style: ThumbnailStyle,
-  width: number,
-  height: number,
-  /** The chosen photo's drawn bounds (placeReaction `avoid`); null keeps the whole reaction space clear. */
-  reactionAvoid: Rect | null = null,
-  /** The logo's drawn bounds (placeLogo); null keeps the whole logo space clear. */
-  logoAvoid: Rect | null = null,
-): PlanResult {
-  if (metrics.words.length === 0) throw new Error('planText: the phrase has no words.');
-  if (metrics.wordWidths.length !== metrics.words.length) throw new Error('planText: the page measured a different number of words than the phrase has.');
-  if (!(metrics.capHeight > 0)) throw new Error(`planText: the font's capital height measured ${metrics.capHeight}; the font did not load.`);
+function overlapArea(a: Rect, b: Rect): number {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/** The plan for a fit in a space: against the box edge the space touches (bottom first, then top, else centred), or as told. */
+function placeFit(metrics: PhraseMetrics, style: ThumbnailStyle, fit: Fit, space: Rect, box: Rect, anchor: 'edge' | 'top' | 'bottom', placement: TextPlan['placement']): TextPlan {
   const capPerSize = metrics.capHeight / REFERENCE_SIZE;
-  const minCap = style.minCapFraction * height;
-  const maxSize = (style.maxCapFraction * height) / capPerSize;
-  const obstacles = [
-    ...faces.map((f) => paddedFace(f, width, height)),
-    reactionAvoid ?? slotRect(style.reactionSlot, width, height),
-    logoAvoid ?? slotRect(style.logoSlot, width, height),
-  ];
-  const spaces = clearSpaces(width, height, obstacles);
-  let best: { fit: Fit; space: Rect } | null = null;
-  let widest: Rect | null = null;
-  for (const space of spaces) {
-    if (widest === null || space.w * space.h > widest.w * widest.h) widest = space;
-    const fit = fitPhrase(metrics, style, space.w, space.h, maxSize);
-    if (fit === null) continue;
-    if (
-      best === null ||
-      fit.size > best.fit.size + 0.25 ||
-      (Math.abs(fit.size - best.fit.size) <= 0.25 &&
-        (space.y + space.h > best.space.y + best.space.h + 0.5 ||
-          (Math.abs(space.y + space.h - (best.space.y + best.space.h)) <= 0.5 && space.x < best.space.x - 0.5)))
-    ) {
-      best = { fit, space };
-    }
-  }
-  const phrase = metrics.words.join(' ');
-  if (best === null || best.fit.size * capPerSize < minCap - 1e-6) {
-    const biggest = best === null ? 0 : Math.floor(best.fit.size * capPerSize);
-    return {
-      ok: false,
-      reason:
-        `"${phrase}" is too long for the space beside the faces: the letters would be ${biggest} px tall, and the ` +
-        `smallest allowed is ${Math.ceil(minCap)} px (${Math.round(style.minCapFraction * 100)}% of the picture's height). ` +
-        `Pick a shorter option, lower “Smallest letters” in Look, or no text.`,
-    };
-  }
-  const { fit, space } = best;
   const size = fit.size;
   const capPx = size * capPerSize;
   const strokePx = size * style.strokeRatio;
@@ -427,12 +413,9 @@ export function planText(
   const blockW = Math.max(...fit.lineWidths) + strokePx;
   const n = fit.lines.length;
   const blockH = capPx * (n + (n - 1) * LINE_GAP_OF_CAP) + strokePx;
-  const m = MARGIN_FRACTION * height;
-  // Against the frame edge the space touches: bottom first (Owen's usual), then top, else centred.
-  let top: number;
-  if (Math.abs(space.y + space.h - (height - m)) < 0.5) top = space.y + space.h - pad - blockH;
-  else if (Math.abs(space.y - m) < 0.5) top = space.y + pad;
-  else top = space.y + (space.h - blockH) / 2;
+  const atBottom = anchor === 'bottom' || (anchor === 'edge' && Math.abs(space.y + space.h - (box.y + box.h)) < 0.5);
+  const atTop = anchor === 'top' || (anchor === 'edge' && !atBottom && Math.abs(space.y - box.y) < 0.5);
+  const top = atBottom ? space.y + space.h - pad - blockH : atTop ? space.y + pad : space.y + (space.h - blockH) / 2;
   const left = space.x + pad;
   const lines: PlacedLine[] = fit.lines.map((words, i) => ({
     text: words.join(' '),
@@ -447,18 +430,78 @@ export function planText(
     h: capPx + strokePx + 2 * pad,
   }));
   return {
-    ok: true,
-    plan: {
-      size,
-      capPx,
-      strokePx,
-      lines,
-      block,
-      patch: { x: block.x - pad, y: block.y - pad, w: block.w + 2 * pad, h: block.h + 2 * pad },
-      linePatches,
-      space,
-    },
+    size,
+    capPx,
+    strokePx,
+    lines,
+    block,
+    patch: { x: block.x - pad, y: block.y - pad, w: block.w + 2 * pad, h: block.h + 2 * pad },
+    linePatches,
+    space,
+    box,
+    placement,
   };
+}
+
+/**
+ * Place a phrase in the text box. Always places it (see the header): off the faces when a
+ * face-free space holds it at the floor, else in the whole box at the floor or smaller, where it
+ * covers the least of a face, with a note. `faces` are the detector's boxes (unpadded).
+ */
+export function planText(
+  metrics: PhraseMetrics,
+  faces: readonly Rect[],
+  style: ThumbnailStyle,
+  width: number,
+  height: number,
+  /** The chosen photo's drawn bounds (placeReaction `avoid`); null: the box ends at the reaction space. */
+  reactionAvoid: Rect | null = null,
+  /** The logo's drawn bounds (placeLogo); null keeps the whole logo space clear where it reaches the box. */
+  logoAvoid: Rect | null = null,
+): PlanResult {
+  if (metrics.words.length === 0) throw new Error('planText: the phrase has no words.');
+  if (metrics.wordWidths.length !== metrics.words.length) throw new Error('planText: the page measured a different number of words than the phrase has.');
+  if (!(metrics.capHeight > 0)) throw new Error(`planText: the font's capital height measured ${metrics.capHeight}; the font did not load.`);
+  const capPerSize = metrics.capHeight / REFERENCE_SIZE;
+  const minCap = style.minCapFraction * height;
+  const maxSize = (style.maxCapFraction * height) / capPerSize;
+  const box = textBox(style, width, height, reactionAvoid);
+  const obstacles = [
+    ...faces.map((f) => paddedFace(f, width, height)),
+    logoAvoid ?? slotRect(style.logoSlot, width, height),
+  ].filter((o) => overlaps(o, box));
+  let best: { fit: Fit; space: Rect } | null = null;
+  for (const space of clearSpaces(box, obstacles)) {
+    const fit = fitPhrase(metrics, style, space.w, space.h, maxSize);
+    if (fit === null) continue;
+    if (
+      best === null ||
+      fit.size > best.fit.size + 0.25 ||
+      (Math.abs(fit.size - best.fit.size) <= 0.25 &&
+        (space.y + space.h > best.space.y + best.space.h + 0.5 ||
+          (Math.abs(space.y + space.h - (best.space.y + best.space.h)) <= 0.5 && space.x < best.space.x - 0.5)))
+    ) {
+      best = { fit, space };
+    }
+  }
+  if (best !== null && best.fit.size * capPerSize >= minCap - 1e-6) {
+    return { plan: placeFit(metrics, style, best.fit, best.space, box, 'edge', 'clear'), note: null };
+  }
+  // No face-free space holds the words at the floor: the whole box, no bigger than the floor, shrunk
+  // until the phrase fits, at the top or the bottom, whichever covers less of a face.
+  const fit = fitPhrase(metrics, style, box.w, box.h, Math.min(maxSize, minCap / capPerSize));
+  if (fit === null) throw new Error(`planText: "${metrics.words.join(' ')}" has no size at which it fits a ${Math.round(box.w)}x${Math.round(box.h)} px box.`);
+  const covered = (plan: TextPlan) => obstacles.reduce((sum, o) => sum + plan.linePatches.reduce((t, p) => t + overlapArea(o, p), 0), 0);
+  const bottom = placeFit(metrics, style, fit, box, box, 'bottom', 'over-faces');
+  const top = placeFit(metrics, style, fit, box, box, 'top', 'over-faces');
+  const plan = covered(top) < covered(bottom) - 0.5 ? top : bottom;
+  const clear = best === null ? 0 : Math.floor(best.fit.size * capPerSize);
+  const note =
+    `No space in the text box clear of the faces holds these words at ${Math.ceil(minCap)} px` +
+    (best === null ? '' : ` (the largest clear space held them at ${clear} px)`) +
+    `, so they were drawn ${Math.round(plan.capPx)} px tall at the ${plan === top ? 'top' : 'bottom'} of the box` +
+    (covered(plan) > 0.5 ? ', where they cover the least of a face.' : '.');
+  return { plan, note };
 }
 
 /** The words of a phrase as they are drawn: capitals, single spaces. */

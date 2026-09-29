@@ -57,6 +57,7 @@ import { drawLine, drawPhotos } from './photo-draw';
 import { libraryLogo, libraryPhotos } from './photo-library';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName, type RenderResult } from './renderer';
+import type { StoredRender } from './pipeline-record';
 import { resolveStorySource } from './story-source';
 import { resolveThumbnailStory } from './story-match';
 import { writeThumbnailWords } from './words-writer';
@@ -74,13 +75,59 @@ import {
 export interface ThumbnailRenderer {
   render(input: {
     frame: string;
-    phrase: string;
+    /** Null: no words on this one (Owen's "No text"). */
+    phrase: string | null;
     style: ThumbnailStyle;
-    photo: { name: string; file: string };
+    /** Null: no reaction photo (Owen's "No photo"). */
+    photo: { name: string; file: string } | null;
     logoFile: string | null;
     outStem: string;
   }): Promise<RenderResult>;
   close(): void;
+}
+
+/** A drawn pair, as the record stores it. */
+export type DrawnRender = Extract<StoredRender, { ok: true }>;
+
+/**
+ * Draw one pair's thumbnail: the frame at full size (extracted from the screen recording into
+ * `<folder>/full/` the first time; a screenshot is already there), the words, the photo from the
+ * app's library and the app's logo when `logo` is on. Used by the render stage and by the reports
+ * page's Thumbnails window (report-thumbnails.ts), so both draw the same way.
+ */
+export async function drawPair(input: {
+  renderer: ThumbnailRenderer;
+  ffmpeg: string;
+  /** The screen recording, or null when the backgrounds are screenshots (already in `full/`). */
+  video: string | null;
+  folder: string;
+  frame: { id: string; t: number };
+  phrase: string | null;
+  photo: string | null;
+  logo: boolean;
+  style: ThumbnailStyle;
+  userDataPath: string;
+  outStem: string;
+  signal?: AbortSignal;
+}): Promise<DrawnRender> {
+  const full = path.join(input.folder, 'full', `${input.frame.id}.png`);
+  if (!fs.existsSync(full)) {
+    if (input.video === null) throw new Error(`The background ${input.frame.id} is not in ${path.dirname(full)} any more, and there is no screen recording to take it from again.`);
+    await extractFullFrame(input.ffmpeg, input.video, input.frame.t, full, input.signal);
+  }
+  let photo: { name: string; file: string } | null = null;
+  if (input.photo !== null) {
+    const file = libraryPhotos(input.userDataPath).find((p) => p.name === input.photo)?.file;
+    if (file === undefined) throw new Error(`The reaction photo "${input.photo}" is not in the app's library any more.`);
+    photo = { name: input.photo, file };
+  }
+  let logoFile: string | null = null;
+  if (input.logo) {
+    logoFile = libraryLogo(input.userDataPath);
+    if (logoFile === null) throw new Error('The logo is switched on for this thumbnail, and the app keeps no logo. Add one in Thumbnail look, or switch the logo off.');
+  }
+  const r = await input.renderer.render({ frame: full, phrase: input.phrase, style: input.style, photo, logoFile, outStem: input.outStem });
+  return { ok: true, file: r.path, format: r.format, bytes: r.bytes, notes: r.notes };
 }
 
 /** What the run needs from the app, read AT JOB TIME by the IPC layer (ipc-handlers.ts). */
@@ -92,7 +139,7 @@ export interface ThumbnailRunSetup {
   manifest: (zipPath: string) => Promise<unknown>;
   /** Opened for the render stage, closed after it. */
   openRenderer: () => ThumbnailRenderer;
-  /** The one look for every channel (the store's `thumbnailLab.style`), and whether it was saved. */
+  /** The one look for every channel (the store's `thumbnailLab.style`, look.ts), and whether it was saved. */
   style: ThumbnailStyle;
   styleSaved: boolean;
   /** Owen's photo notes (`thumbnailLab.reactionNotes`); a photo without one uses its draft. */
@@ -239,8 +286,38 @@ export class ItemThumbnailRun {
     rec.state = 'made';
     rec.folder = path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);
     rec.look = choice.setup.style;
-    if (!choice.setup.styleSaved) rec.lines.push('No look is saved on the Thumbnails tab, so the default look is used.');
+    if (!choice.setup.styleSaved) rec.lines.push('No thumbnail look is saved, so the default look is used.');
     return new ItemThumbnailRun(choice.setup, item, doors, rec);
+  }
+
+  /**
+   * THE NO-STORY PATH (phase 2, Owen 2026-09-28): the backgrounds are Owen's own screenshots, one
+   * pair per screenshot (1 to 3), for the titles the Thumbnails window names. Each screenshot is
+   * already a 16:9 PNG in `<folder>/full/<id>.png` (report-thumbnails.ts prepared it); the record's
+   * frames, scenes and rows are the screenshots, and `afterFields` then writes the words, ranks the
+   * photos and draws, exactly as the metadata run does. `rec` is the record to replace (its story
+   * is kept, so "no story" and why stay said).
+   */
+  static fromScreenshots(
+    setup: ThumbnailRunSetup,
+    item: ThumbnailItemInput,
+    doors: ThumbnailJobDoors,
+    base: { story: ItemThumbnails['story']; folder: string },
+    shots: ReadonlyArray<{ id: string; full: string; lines: string[] }>,
+  ): ItemThumbnailRun {
+    if (shots.length < 1 || shots.length > PAIR_COUNT) throw new Error(`Screenshots make 1 to ${PAIR_COUNT} thumbnails; ${shots.length} were given.`);
+    const rec = offRecord('Thumbnails are being made from your screenshots.', base.story);
+    rec.state = 'made';
+    rec.folder = base.folder;
+    rec.look = setup.style;
+    if (!setup.styleSaved) rec.lines.push('No thumbnail look is saved, so the default look is used.');
+    rec.source = { video: null, lines: [`Backgrounds: your ${shots.length} screenshot${shots.length === 1 ? '' : 's'}.`, ...shots.flatMap((s) => s.lines)] };
+    rec.scenes = shots.map((s, i) => ({ number: i + 1, seconds: 0, label: `Screenshot ${i + 1}`, kept: 1, scored: 0 }));
+    rec.frames = shots.map((s, i) => ({ id: s.id, t: 0, clock: '', scene: i + 1, large: s.full, small: s.full, score: null, reading: null, flag: null }));
+    rec.bestScenes = shots.map((s, i) => ({ scene: i + 1, ids: [s.id], more: [], best: 0 }));
+    const run = new ItemThumbnailRun(setup, item, doors, rec);
+    for (const s of shots) run.frameFiles.set(s.id, { t: 0, large: s.full });
+    return run;
   }
 
   record(): ItemThumbnails {
@@ -431,7 +508,7 @@ export class ItemThumbnailRun {
     if (!this.stopped) {
       const made = this.rec.pairs.filter((p) => p.default.render.ok).length;
       this.rec.line = made === this.rec.pairs.length
-        ? `${made} title and thumbnail pairs are ready to pick from.`
+        ? `${made} title and thumbnail pair${made === 1 ? ' is' : 's are'} ready to pick from.`
         : `${made} of ${this.rec.pairs.length} thumbnails were drawn; ${this.rec.pairs.filter((p) => !p.default.render.ok).map((p) => `pair ${p.pair}: ${(p.default.render as { reason: string }).reason}`).join('; ')}`;
     }
   }
@@ -469,8 +546,8 @@ export class ItemThumbnailRun {
         words: { claim, stakes, reaction, warnings, model: result.model },
         photos: [],
         default: {
-          frameId: frame.id, scene: frame.scene, kind: chosen.kind, phrase: chosen.phrase, photo: '',
-          draw: { name: '', p: 0, chance: 0, pool: [], repeatForced: false }, logo: false, render: { ok: false, reason: 'Not drawn yet.' },
+          frameId: frame.id, scene: frame.scene, kind: chosen.kind, phrase: chosen.phrase, photo: null,
+          draw: null, logo: false, render: { ok: false, reason: 'Not drawn yet.' },
         },
         lines,
       });
@@ -512,6 +589,7 @@ export class ItemThumbnailRun {
     for (const p of this.rec.pairs) {
       const letter = LETTERS[p.pair - 1];
       p.photos = out.photos[letter];
+      p.rankedFor = p.default.phrase;
       p.default.photo = draws[letter].name;
       p.default.draw = draws[letter];
       p.lines.push(`Photo: ${drawLine(draws[letter])}.`);
@@ -523,33 +601,31 @@ export class ItemThumbnailRun {
   private async render(): Promise<void> {
     const setup = this.setup!;
     const folder = this.rec.folder!;
-    const video = this.video;
-    if (video === null) throw new Error('The render stage ran without a screen recording.');
     const logoFile = libraryLogo(setup.userDataPath);
     this.rec.logo = logoFile;
     if (logoFile === null) this.rec.lines.push('No logo is kept in the app, so none is drawn.');
-    const photoFiles = new Map(libraryPhotos(setup.userDataPath).map((p) => [p.name, p.file]));
-    this.doors.progress('Thumbnails: drawing the three thumbnails...');
+    this.doors.progress(`Thumbnails: drawing the ${this.rec.pairs.length} thumbnails...`);
     const renderer = setup.openRenderer();
     try {
       for (const p of this.rec.pairs) {
         const d = p.default;
         const frame = this.frameFiles.get(d.frameId);
         if (frame === undefined) throw new Error(`Pair ${p.pair}'s frame ${d.frameId} is not among the scored frames.`);
-        const photoFile = photoFiles.get(d.photo);
-        if (photoFile === undefined) throw new Error(`The reaction photo "${d.photo}" is not in the app's library any more.`);
-        const full = path.join(folder, 'full', `${d.frameId}.png`);
-        if (!fs.existsSync(full)) await extractFullFrame(setup.ffmpeg, video, frame.t, full, this.doors.signal);
-        const r = await renderer.render({
-          frame: full,
+        d.render = await drawPair({
+          renderer,
+          ffmpeg: setup.ffmpeg,
+          video: this.video,
+          folder,
+          frame: { id: d.frameId, t: frame.t },
           phrase: d.phrase,
+          photo: d.photo,
+          logo: logoFile !== null,
           style: setup.style,
-          photo: { name: d.photo, file: photoFile },
-          logoFile,
+          userDataPath: setup.userDataPath,
           outStem: path.join(folder, `Pair ${p.pair} - ${safeFileName(p.title)}`),
+          ...(this.doors.signal === undefined ? {} : { signal: this.doors.signal }),
         });
-        d.logo = r.ok && r.logo !== null;
-        d.render = r.ok ? { ok: true, file: r.path, format: r.format, bytes: r.bytes, notes: r.notes } : { ok: false, reason: r.reason };
+        d.logo = logoFile !== null;
       }
     } finally {
       renderer.close();

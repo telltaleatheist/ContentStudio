@@ -1,8 +1,9 @@
 /**
  * WHAT THE METADATA RUN STORES ABOUT AN ITEM'S THUMBNAILS: the `thumbnails` key on the item in its
  * job file (`<outputDir>/.contentstudio/metadata/<jobId>.json`), beside every other field of the
- * report. The contract phase 2 (the reports page's thumbnail pop-up, the ordered picks, publishing)
- * is written against; docs/thumbnails-pipeline.md describes it field by field.
+ * report. The reports page's Thumbnails window (phase 2: swaps, re-renders, the ordered picks,
+ * screenshots, publishing) reads and writes it through OutputHandlerService.updateItemThumbnails;
+ * docs/thumbnails-pipeline.md describes it field by field.
  *
  * One version number, checked on read: a record of another version is refused by name rather than
  * read as if it were this one (Law 10: a cross-layer contract is a type, and its version is part of
@@ -84,19 +85,26 @@ export interface StoredWords {
   model: string;
 }
 
+/**
+ * `ok: false` only in records written before phase 2, when a phrase too long for the space was
+ * refused; the words are always drawn now (layout.ts).
+ */
 export type StoredRender =
   | { ok: true; file: string; format: 'png' | 'jpeg'; bytes: number; notes: string[] }
   | { ok: false; reason: string };
 
-/** One title and thumbnail pair's default thumbnail: which pieces, and the file. */
+/** One title and thumbnail pair's current thumbnail: which pieces, and the file. */
 export interface StoredDefault {
   frameId: string;
   scene: number;
-  kind: WordKind;
-  phrase: string;
-  photo: string;
-  /** The top-3 draw that chose the photo (its seed is the record's `seed`). */
-  draw: PhotoDraw;
+  /** The kind the words were taken from; null for "No text" or words Owen typed. */
+  kind: WordKind | null;
+  /** Null: Owen chose "No text" for this pair. */
+  phrase: string | null;
+  /** Null: Owen chose "No photo" for this pair. */
+  photo: string | null;
+  /** The top-3 draw that chose the photo, or null when Owen chose the photo (or none) himself. */
+  draw: PhotoDraw | null;
   logo: boolean;
   render: StoredRender;
 }
@@ -106,19 +114,43 @@ export interface StoredPair {
   pair: number;
   title: string;
   words: StoredWords;
-  /** Every reaction photo ranked for the default's words (most fitting first, none left out). */
+  /** Every reaction photo ranked for the words in `rankedFor` (most fitting first, none left out). */
   photos: Ranked[];
+  /**
+   * The words the photo ranking was made for. Absent in records from before phase 2: there the
+   * ranking was made for the first default's words, and the window records them here before the
+   * first swap changes the phrase.
+   */
+  rankedFor?: string | null;
   default: StoredDefault;
   /** One plain line about this pair (a kind with no options, a repeated scene). */
   lines: string[];
 }
 
-/** The ordered picks phase 2 saves: index 0 is the first A/B arm. Empty until then. */
-export interface ThumbnailPick {
-  title: string;
-  /** An absolute path to a rendered thumbnail. */
-  file: string;
-}
+/**
+ * One of Owen's ordered picks (index 0 is the first A/B arm and the video's thumbnail): a pair's
+ * current render, or his own image file. Pick n goes with the report's chosen title n (YouTube
+ * Test & Compare, "title and thumbnail": pair n = title n + thumbnail n); the pairing is by
+ * position and read live, so a reordered title changes whom a pick goes with.
+ */
+export type ThumbnailPick =
+  | {
+      kind: 'made';
+      /** The pair whose current render this is; the pick follows the pair when it is re-rendered. */
+      pair: number;
+      /** An absolute path to the render. */
+      file: string;
+      /** The title the words were written for (the pair's title when it was picked or rewritten). */
+      wordsFor: string;
+    }
+  | {
+      kind: 'own';
+      /** Owen's own image file, absolute, read in place (never moved or changed). */
+      file: string;
+    };
+
+/** Where the picks are copied for publishing and the A/B test: `<folder>/picks/Pick 1.png` ... */
+export const PICKS_FOLDER = 'picks';
 
 export interface ItemThumbnails {
   version: typeof THUMBNAILS_RECORD_VERSION;
@@ -130,8 +162,11 @@ export interface ItemThumbnails {
   story: StoredStoryLink | null;
   /** `<report folder>/thumbnails/<jobId>-<item number>/`: frames/, full/ and the renders. Null when nothing was written. */
   folder: string | null;
-  /** The screen recording the frames come from, and the source lines (story, stretches, alignment, drift). */
-  source: { video: string; lines: string[] } | null;
+  /**
+   * The screen recording the frames come from, and the source lines (story, stretches, alignment,
+   * drift). `video` is null when the backgrounds are Owen's own screenshots (a report with no story).
+   */
+  source: { video: string | null; lines: string[] } | null;
   scenes: StoredScene[];
   /** The scored frames, in time order. */
   frames: StoredFrame[];
@@ -177,12 +212,21 @@ export function readItemThumbnails(value: unknown, where: string): ItemThumbnail
   return r;
 }
 
-/** The picks, checked: at most PAIR_COUNT, each a title and a file, no title twice. */
+/**
+ * The picks, checked: at most PAIR_COUNT; each a pair's render (pair number, file, the title its
+ * words were written for) or Owen's own image (a file); no file twice, no pair twice.
+ */
 export function checkPicks(picks: unknown, where: string): ThumbnailPick[] {
   need(Array.isArray(picks), where, 'picks is not a list');
   const list = picks as ThumbnailPick[];
   need(list.length <= PAIR_COUNT, where, `holds ${list.length} picks; Test & Compare takes at most ${PAIR_COUNT}`);
-  for (const p of list) need(p !== null && typeof p === 'object' && typeof p.title === 'string' && p.title !== '' && typeof p.file === 'string' && p.file !== '', where, 'holds a pick that is not a title and a file');
-  need(new Set(list.map((p) => p.title)).size === list.length, where, 'picks one title twice');
+  for (const p of list) {
+    need(p !== null && typeof p === 'object' && typeof p.file === 'string' && p.file !== '', where, 'holds a pick with no file');
+    need(p.kind === 'own' || (p.kind === 'made' && Number.isInteger(p.pair) && p.pair >= 1 && typeof p.wordsFor === 'string' && p.wordsFor !== ''), where,
+      `holds a pick that is neither a pair's render nor your own image (${JSON.stringify(p).slice(0, 120)})`);
+  }
+  need(new Set(list.map((p) => p.file)).size === list.length, where, 'picks one file twice');
+  const pairs = list.flatMap((p) => (p.kind === 'made' ? [p.pair] : []));
+  need(new Set(pairs).size === pairs.length, where, 'picks one pair twice');
   return list;
 }

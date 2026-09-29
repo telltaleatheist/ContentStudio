@@ -126,7 +126,7 @@ export async function scoreFrames(input: {
   });
   if (outcome.kind === 'parked') {
     // The tab does not queue: it says who holds the card and the operator presses Score again.
-    await deps.lanes.stopJob(input.jobId, 'the Thumbnails tab does not wait for a busy server');
+    await deps.lanes.stopJob(input.jobId, 'thumbnails do not wait for a busy server');
     const server = outcome.result.server ?? 'no server';
     const where = outcome.result.server === null ? 'No Crucible server can take the job' : `"${server}" cannot take the job now`;
     throw new ThumbnailJobWaiting(server, `${where}: ${outcome.result.holderLine}. Press Score again when it is free.`);

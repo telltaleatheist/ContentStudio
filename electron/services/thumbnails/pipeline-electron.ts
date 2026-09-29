@@ -1,7 +1,7 @@
 /**
- * The metadata run's thumbnail renderer in the app: the Thumbnails tab's own drawing (renderer.ts
+ * The thumbnail renderer in the app, for the metadata run and the Thumbnails window: the drawing (renderer.ts
  * on the hidden canvas page, faces from Apple Vision through Chromium's FaceDetector), the reaction
- * photo trimmed as the tab trims it (reaction-photos.ts) and the logo cut to its visible pixels
+ * photo trimmed (reaction-photos.ts) and the logo cut to its visible pixels
  * (logo.ts). Kept apart from pipeline.ts because all three need Electron (a BrowserWindow and
  * nativeImage); the checks hand the pipeline a stand-in renderer under plain Node.
  */
@@ -17,7 +17,7 @@ export function electronThumbnailRenderer(appRoot: string): ThumbnailRenderer {
   return {
     async render(input) {
       canvas ??= new ThumbnailCanvas(canvasPagePath(appRoot));
-      const photo = trimmedPhoto(input.photo);
+      const photo = input.photo === null ? null : trimmedPhoto(input.photo);
       const logo = input.logoFile === null ? null : readLogo(input.logoFile);
       return renderThumbnail({
         canvas,

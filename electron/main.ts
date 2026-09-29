@@ -24,7 +24,7 @@ import { retireOnce } from './retired-components';
 import { getSharedDir } from './services/editor/shared-paths';
 import { StreamMarksService } from './services/stream-marks/stream-marks.service';
 import { setupStreamMarksIpc } from './services/stream-marks/stream-marks-ipc';
-import { setupThumbnailLabIpc } from './services/thumbnails/thumbnail-lab-ipc';
+import { setupThumbnailsIpc } from './services/thumbnails/thumbnails-ipc';
 
 /**
  * ContentStudio - Main Electron Process
@@ -333,9 +333,10 @@ app.whenReady().then(async () => {
     const streamMarks = new StreamMarksService(path.join(userDataPath, 'stream-marks'));
     setupStreamMarksIpc(store, streamMarks);
 
-    // The Thumbnails tab (testing, 2026-09-28): frames, words and renders for one item. Its model
-    // calls go through the same Crucible context as everything else (lanes, transport, routing).
-    setupThumbnailLabIpc(store, crucible, userDataPath, publishStore);
+    // The reports page's Thumbnails window and the one Thumbnail look (phase 2, 2026-09-28; the
+    // test tab is retired). Its model calls go through the same Crucible context as everything
+    // else (lanes, transport, routing).
+    setupThumbnailsIpc(store, crucible, userDataPath);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

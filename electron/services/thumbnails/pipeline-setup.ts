@@ -15,7 +15,7 @@ import * as log from 'electron-log';
 import type { CrucibleContext } from '../../crucible/context';
 import { PythonService } from '../editor/python-service';
 import { DEFAULT_STYLE, validateStyle } from './layout';
-import { PHOTO_NOTES_STORE_KEY, STYLE_STORE_KEY } from './lab-service';
+import { PHOTO_NOTES_STORE_KEY, STYLE_STORE_KEY } from './look';
 import type { ThumbnailRunChoice } from './pipeline';
 import { electronThumbnailRenderer } from './pipeline-electron';
 
@@ -53,7 +53,7 @@ export function thumbnailRunChoice(input: {
     style = styleSaved ? validateStyle(stored) : DEFAULT_STYLE;
     photoNotes = notesOf(input.store.get(PHOTO_NOTES_STORE_KEY));
   } catch (err) {
-    const reason = `The Thumbnails tab's saved settings cannot be read (${err instanceof Error ? err.message : String(err)}), so no thumbnails were made. Fix the look or the photo notes on the Thumbnails tab.`;
+    const reason = `The saved thumbnail look cannot be read (${err instanceof Error ? err.message : String(err)}), so no thumbnails were made. Fix the look or the photo notes in Thumbnail look (the Thumbnails window on the reports page, or Settings).`;
     log.warn(`[Thumbnails] ${reason}`);
     return { mode: 'off', reason };
   }
