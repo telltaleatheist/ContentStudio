@@ -133,10 +133,13 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.busy.set(what);
     this.progress.set(null);
     this.error.set(null);
+    const before = this.view()?.picks[0]?.pick.file ?? null;
     try {
       const view = await fn();
       this.view.set(view);
-      if (sync) await this.syncPublish(view);
+      // Only when pick 1 changed (a new first pick, its pair drawn again, or no picks left): a
+      // thumbnail Owen chose on the Thumbnail row is not replaced by a swap on another pair.
+      if (sync && (view.picks[0]?.pick.file ?? null) !== before) await this.syncPublish(view);
     } catch (err) {
       this.error.set((err as Error).message);
     } finally {
@@ -147,9 +150,9 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   /**
    * Pick 1's copy is the video's thumbnail, through the publish record's one door (the same one a
-   * file chosen on the Thumbnail row goes through). Set again after every change, so a redrawn pick
-   * 1 is re-read. With no picks, a thumbnail that was pick 1's copy is cleared; one Owen chose on the
-   * Thumbnail row himself is left alone.
+   * file chosen on the Thumbnail row goes through), set whenever pick 1 changes, so a redrawn pick 1
+   * is re-read. With no picks left, a thumbnail that was pick 1's copy is cleared; one Owen chose on
+   * the Thumbnail row himself is left alone.
    */
   private async syncPublish(view: ThumbnailsView): Promise<void> {
     if (this.publish.itemId() !== this.data.itemId) return;
