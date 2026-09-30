@@ -34,6 +34,8 @@ export const LAB_DIR = 'thumbnail-lab';
 export const PHOTOS_DIR = 'reaction-photos';
 export const LOGO_DIR = 'logo';
 export const BORDER_DIR = 'border';
+/** Beside the photos: each photo's trim, kept so it is not redone on every start (reaction-photos.ts). */
+export const TRIMMED_DIR = '.trimmed';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
@@ -142,6 +144,11 @@ export function removePhoto(userData: string, name: string): void {
   const photo = libraryPhotos(userData).find((p) => p.name === name);
   if (photo === undefined) throw new Error(`There is no reaction photo "${name}" in the app's library.`);
   fs.rmSync(photo.file);
+  const kept = path.join(path.dirname(photo.file), TRIMMED_DIR);
+  if (fs.existsSync(kept)) {
+    const prefix = `${path.basename(photo.file)}.`;
+    for (const f of fs.readdirSync(kept)) if (f.startsWith(prefix)) fs.rmSync(path.join(kept, f), { force: true });
+  }
 }
 
 /**
