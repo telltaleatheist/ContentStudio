@@ -81,14 +81,19 @@ function assertCloudBody(body, what) {
 
 // ── the bodies, per plan 6.3 row, from the real call sites ──────────────────
 
-check('6.3 rows, local: each call site states thinking, its budget and the act, and nothing samples but stage 1', () => withDoor({}, async (server, ctx_) => {
+/** The server's catalog as its models say: what a job's routed options are resolved against. */
+const catalogOf = (models) => models.map((m) => ({ kind: 'model', id: m.id, name: m.id, jobType: 'llm', installed: m.installed !== false, expectedBytes: null }));
+
+check('6.3 rows, local: each call site states thinking, its budget and the act, and nothing samples but stage 1', () => withDoor({ catalog: catalogOf(MODELS) }, async (server, ctx_) => {
   const moreTitles = services('metadata/more-titles.js');
   const rewrite = services('metadata/rewrite-pass.js');
   const tasks = services('metadata/metadata-tasks.js');
   const { JobModelLifecycle } = services('metadata/model-lifecycle.js');
   const { WholeTranscriptChapterService } = services('metadata/chapter-whole-transcript.service.js');
-  const routing = services('metadata/metadata-routing.js');
-  const local = routing.METADATA_ROUTING_OPTIONS['qwen38-27b'];
+  // The 27B row bound as a job binds it: read from this server's own catalog (the 4-bit build).
+  const { readRoutingModels } = services('metadata/routing-models.js');
+  const local = (await readRoutingModels('the keeper job', ['qwen38-27b'])).bind('titles', 'qwen38-27b');
+  assert.strictEqual(local.model, 'qwen3.8-27b-4bit');
   const ai = manager();
 
   const lifecycle = new JobModelLifecycle('the keeper job');
@@ -111,6 +116,7 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
   await rewrite.askToRewrite(pass, plan, local, { aiManager: ai }, 'keeper.mp4', 'Rewrite this.');
 
   const bodies = chats(server).map((r) => ({ body: r.body, act: actOf(r) }));
+  assert.ok(bodies.every((b) => b.body.model === 'qwen3.8-27b-4bit'), 'every call sends the resolved build, on the wire');
   assert.ok(bodies.every((b) => b.body.stream === true), 'every chat is streamed, so the stall clock hears it (P3)');
   const thinking = bodies.map((b) => b.body.chat_template_kwargs?.enable_thinking);
   assert.deepStrictEqual(thinking, [false, true, false, false, true], 'titles, detail, stage 1, more titles, soften');
@@ -132,7 +138,7 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
 check('6.3 rows, cloud: no sampling to Anthropic, max_tokens 16000, thinking stated, the plain/JSON system turn', () => withDoor({}, async (server) => {
   const routing = services('metadata/metadata-routing.js');
   const tasks = services('metadata/metadata-tasks.js');
-  const sonnet = routing.METADATA_ROUTING_OPTIONS.sonnet5;
+  const sonnet = routing.RoutingModels.withoutCatalog('the keeper routes no local model').bind('titles', 'sonnet5');
   const ai = manager({ promptSet: 'youtube-telltale' });
   ai.loadPrompts();
   ai.buildMetadataFieldPrompt = () => 'Write ten titles.';

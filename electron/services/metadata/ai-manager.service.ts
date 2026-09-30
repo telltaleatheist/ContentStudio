@@ -94,7 +94,7 @@ export interface AIConfig {
    * derived from is gone (P2), and a ceiling guessed from nothing is Law 1's fallback.
    */
   transcriptCeiling?: 'local' | 'cloud';
-  /** The compilation summarizer's model (metadata-routing SUMMARIZATION_MODEL, or the chapters row). */
+  /** The compilation summarizer's model (metadata-routing SUMMARIZATION_OPTION bound on the job's server, or the chapters row). */
   summarizationModel?: string;
   /**
    * The model a caller that routes one whole-service call names up front: the episode
@@ -483,7 +483,7 @@ export class AIManagerService {
    * The reason it kept is `forceCondense`: compilation items, whose per-item outputs are joined
    * into ONE combined prompt and so must each be short by construction, whatever their length.
    * That mode runs no chapter pipeline, so the digest is not available to it — see
-   * SUMMARIZATION_MODEL in metadata-routing.ts. The over-ceiling branch below is therefore only
+   * SUMMARIZATION_OPTION in metadata-routing.ts. The over-ceiling branch below is therefore only
    * reachable through a caller that supplies no ceiling of its own (episode splitting,
    * compilation packaging) and it is left standing rather than deleted for exactly those.
    */

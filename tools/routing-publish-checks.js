@@ -87,6 +87,28 @@ const eq = (a, b, m) => {
   if (A !== B) throw new Error(`${m || ''} expected ${B}, got ${A}`);
 };
 
+// ---------------------------------------------------------------- the job's server (2026-09-29)
+/**
+ * Inventories in catalog.ts's shape, as the two servers answer: the Mac holds the 8-bit 27B (its
+ * 4-bit is pullable there: the mlx build exists), WSL holds the 4-bit and cannot run the 8-bit at
+ * all (its manifest has no cuda-linux block; /v1/models says so). The routing names the MODEL.
+ */
+const offer = (o, reason = null) => ({ offer: o, reason });
+const MAC_INVENTORY = {
+  server: 'mac', reachable: true, anthropicConfigured: true,
+  models: { 'qwen3.8-27b-8bit': offer('installed'), 'qwen3.8-27b-4bit': offer('pullable'), 'qwen3.5-9b': offer('installed'), 'qwen3.5-4b': offer('installed') },
+};
+const WSL_INVENTORY = {
+  server: 'wsl', reachable: true, anthropicConfigured: false,
+  models: {
+    'qwen3.8-27b-4bit': offer('installed'), 'qwen3.5-9b': offer('installed'), 'qwen3.5-4b': offer('pullable'),
+    'qwen3.8-27b-8bit': offer('not-here', "qwen3.8-27b-8bit.toml has no cuda-linux block; it declares ['mlx-darwin']"),
+  },
+};
+const said = [];
+const onMac = () => routing.RoutingModels.on(MAC_INVENTORY, (line) => said.push(line));
+const onWsl = () => routing.RoutingModels.on(WSL_INVENTORY, (line) => said.push(line));
+
 // ---------------------------------------------------------------- migration
 check('a real pre-upgrade store migrates instead of throwing', () => {
   const stored = {
@@ -106,13 +128,13 @@ check('a real pre-upgrade store migrates instead of throwing', () => {
   eq(m.notices.length, 4, 'notice count');
   eq(m.selections, { thumbnail_text: 'opus5' }, 'survivors');
   const resolved = routing.resolveMetadataRouting(m.selections);
-  eq(resolved.description, 'qwen38-27b-8bit', 'the 27B default as of 2026-08-23 (the 9B shipped misattributed claims), the 8-bit build since 2026-09-28');
+  eq(resolved.description, 'qwen38-27b', 'the 27B default as of 2026-08-23 (the 9B shipped misattributed claims); one option for the model since 2026-09-29');
   eq(resolved.tags, 'qwen35-9b');
-  eq(resolved.titles, 'qwen38-27b-8bit', 'the shipped default, which is local as of the consolidation build (8-bit since 2026-09-28)');
+  eq(resolved.titles, 'qwen38-27b', 'the shipped default, which is local as of the consolidation build');
   eq(resolved.thumbnail_text, 'opus5', 'the one legal choice is KEPT');
   // chapters is a routed task AGAIN (per-field build, 2026-08-24); the stored cogito-14b
   // was dropped as a removed option, so it resolves to the shipped default.
-  eq(resolved.chapters, 'qwen38-27b-8bit', 'chapters resolve to the shipped default after the drop');
+  eq(resolved.chapters, 'qwen38-27b', 'chapters resolve to the shipped default after the drop');
 });
 
 check('an embedding-chapters store migrates too', () => {
@@ -243,9 +265,10 @@ check('the routing view carries the Runs on choice beside the fields', () => {
  */
 check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
+  // Option ids: which build runs is the job's server's to say (RoutingModels logs it at the job's start).
   eq(routing.describeRouting(resolved, null),
-    'titles=qwen3.8-27b-8bit, description=qwen3.8-27b-8bit, chapters=qwen3.8-27b-8bit, tags=qwen3.5-9b, ' +
-    'thumbnail_text=qwen3.8-27b-8bit, pinned_comment=qwen3.8-27b-8bit, server=(the selected server)');
+    'titles=qwen38-27b, description=qwen38-27b, chapters=qwen38-27b, tags=qwen35-9b, ' +
+    'thumbnail_text=qwen38-27b, pinned_comment=qwen38-27b, server=(the selected server)');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
@@ -278,22 +301,20 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
   const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
   eq(tags.modal, true, 'tags is a visible row (#204)');
   for (const task of routing.metadataRunTasks().filter((t) => t.modal && t.id !== 'tags')) {
-    for (const rung of ['qwen38-27b-8bit', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
+    for (const rung of ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
       if (!task.options.includes(rung)) {
         throw new Error(task.id + ' does not offer ' + rung + '; every big field offers every big rung');
       }
     }
   }
   const chapters = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters');
-  eq(chapters.options.join(','), 'qwen38-27b-8bit,qwen38-27b,sonnet5,opus5,haiku45,claude-cli,claude-cli-sonnet', 'chapters offer the capable rungs plus the subscription rungs');
-  // 2026-09-28 (Owen is removing the 4-bit 27B from the Mac): every 27B row defaults to the 8-bit
-  // and offers it first; the 4-bit stays offered for the PC, labelled so.
-  for (const id of ['titles', 'description', 'chapters', 'thumbnail_text', 'pinned_comment']) {
+  eq(chapters.options.join(','), 'qwen38-27b,sonnet5,opus5,haiku45,claude-cli,claude-cli-sonnet', 'chapters offer the capable rungs plus the subscription rungs');
+  // 2026-09-29 (Owen: "crucible's job is to select the model quant"): one 27B option, the default
+  // of every 27B row and offered first; no row offers a quant.
+  for (const id of ['titles', 'description', 'chapters', 'thumbnail_text', 'pinned_comment', 'thumbnail_words']) {
     const row = routing.METADATA_ROUTING_TASKS.find((t) => t.id === id);
-    eq([row.defaultOptionId, row.options[0], row.options.includes('qwen38-27b')], ['qwen38-27b-8bit', 'qwen38-27b-8bit', true], id + ':');
+    eq([row.defaultOptionId, row.options[0], row.options.includes('qwen38-27b-8bit')], ['qwen38-27b', 'qwen38-27b', false], id + ':');
   }
-  eq(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'].label, 'Qwen 27B (4-bit, PC)');
-  eq(routing.resolveMetadataRouting({ titles: 'qwen38-27b' }).titles, 'qwen38-27b', 'a stored 4-bit selection is kept as stored');
 });
 
 /**
@@ -303,13 +324,13 @@ check('the modal is per-field: five big rows plus tags, cloud rungs on every big
  */
 check('thumbnail_judge retired: a stored selection is dropped with a notice and a write-back, the rest kept', () => {
   eq(typeof routing.REMOVED_ROUTING_TASKS.thumbnail_judge, 'string');
-  const out = routing.migrateStoredRouting({ thumbnail_judge: 'qwen38-27b-8bit', thumbnail_words: 'qwen35-9b' });
+  const out = routing.migrateStoredRouting({ thumbnail_judge: 'qwen38-27b', thumbnail_words: 'qwen35-9b' });
   eq(out.changed, true, 'the drop is written back');
   eq('thumbnail_judge' in out.selections, false, 'the retired row is gone from the selections');
   eq(out.selections.thumbnail_words, 'qwen35-9b', 'the other rows are kept');
   eq(out.notices.some((n) => /dropped metadataRouting\.thumbnail_judge .*retired 2026-09-29/.test(n)), true, 'the notice names the row and why');
   let threw = null;
-  try { routing.validateRoutingSelection('thumbnail_judge', 'qwen38-27b-8bit'); } catch (e) { threw = e.message; }
+  try { routing.validateRoutingSelection('thumbnail_judge', 'qwen38-27b'); } catch (e) { threw = e.message; }
   eq(threw !== null, true, 'the modal can no longer set it');
 });
 
@@ -341,14 +362,14 @@ check('thumbnail_frames retired: a stored selection is dropped with a notice and
  * left, the words, offering the thumbnail_text field's rungs; the frame and tone/photo rows are
  * retired (2026-09-29).
  */
-check('the Thumbnails row: its own group, words on the 8-bit 27B; the frame and tone/photo rows are retired', () => {
+check('the Thumbnails row: its own group, words on the 27B; the frame and tone/photo rows are retired', () => {
   const rows = routing.METADATA_ROUTING_TASKS.filter((t) => t.group === 'thumbnails').map((t) => t.id);
   eq(rows.join(','), 'thumbnail_words');
   eq(routing.METADATA_ROUTING_TASKS.some((t) => t.id === 'thumbnail_judge' || t.id === 'thumbnail_frames'), false, 'no thumbnail_judge or thumbnail_frames row (2026-09-29)');
   const words = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_words');
   const text = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'thumbnail_text');
-  eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs (the 8-bit 27B first)');
-  eq(words.defaultOptionId, 'qwen38-27b-8bit');
+  eq(words.options.join(','), text.options.join(','), 'the words row offers the thumbnail_text rungs (the 27B first)');
+  eq(words.defaultOptionId, 'qwen38-27b');
   // A metadata run's log line and ceiling never name it.
   const line = routing.describeRouting(routing.resolveMetadataRouting(undefined), null);
   eq(/thumbnail_frames|thumbnail_words|thumbnail_judge/.test(line), false, 'the metadata log line leaves them out');
@@ -359,7 +380,8 @@ check('the Thumbnails row: its own group, words on the 8-bit 27B; the frame and 
   };
   const view = routing.buildRoutingView(undefined, inventory, { routingServer: null, selectedServer: 'mac' });
   eq(view.tasks.filter((t) => t.group === 'thumbnails').map((t) => t.id).join(','), 'thumbnail_words', 'the dialog shows the one thumbnails row');
-  eq(view.tasks.find((t) => t.id === 'thumbnail_words').options.find((o) => o.id === 'qwen38-27b-8bit').availability, 'installed');
+  const wordsRow = view.tasks.find((t) => t.id === 'thumbnail_words').options.find((o) => o.id === 'qwen38-27b');
+  eq([wordsRow.availability, wordsRow.model], ['installed', 'qwen3.8-27b-8bit']);
 });
 
 check('chapter resolution reads the chapters entry, and the view carries the modal flags', () => {
@@ -367,9 +389,10 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   // summarizer) all go through resolveChapterModelOption; it is now a plain table read.
   const cloud = routing.resolveMetadataRouting({ chapters: 'haiku45' });
   // The dated id the old mapClaudeModelName sent, as a Crucible upstream id (plan 6.2).
-  eq(routing.resolveChapterModelOption(cloud).model, 'anthropic/claude-haiku-4-5-20251001');
+  eq(routing.resolveChapterModelOption(cloud, onWsl()).model, 'anthropic/claude-haiku-4-5-20251001');
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8-27b-8bit');
+  eq(routing.resolveChapterModelOption(stock, onMac()).model, 'qwen3.8-27b-8bit', 'the Mac\'s build:');
+  eq(routing.resolveChapterModelOption(stock, onWsl()).model, 'qwen3.8-27b-4bit', 'WSL\'s build:');
 
   const inventory = { server: 'mac', reachable: false, error: 'not answering', models: {}, anthropicConfigured: null };
   const view = routing.buildRoutingView({ titles: 'opus5' }, inventory, { routingServer: null, selectedServer: 'mac' });
@@ -391,18 +414,117 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
  */
 check('compilation packaging follows the titles selection, on the Crucible id', () => {
   const cli = routing.resolveMetadataRouting({ titles: 'claude-cli' });
-  eq(routing.resolveCompilationPackagingOption(cli).model, 'claude-cli:opus');
-  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(cli)), 'claude-cli:opus',
+  eq(routing.resolveCompilationPackagingOption(cli, onMac()).model, 'claude-cli:opus');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(cli, onMac())), 'claude-cli:opus',
     'a cloud option is already the string makeRequest routes on');
 
-  // The default titles rung is LOCAL, and since P2 its model IS the Crucible id the door
-  // sends (plan 6.2): no prefix to add, and never renamed.
+  // The default titles rung is LOCAL, and its model is the Crucible id the door sends: the build
+  // the job's server holds (2026-09-29), never renamed downstream.
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8-27b-8bit');
-  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'qwen3.8-27b-8bit',
-    'a local option is the Crucible id, never renamed');
-  eq(routing.resolveCompilationPackagingOption(stock).crucibleModel, 'qwen3.8-27b-8bit');
-  eq(routing.resolveCompilationPackagingOption(cli).crucibleModel, null, 'claude -p is outside Crucible (#193)');
+  eq(routing.resolveCompilationPackagingOption(stock, onMac()).model, 'qwen3.8-27b-8bit');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock, onWsl())), 'qwen3.8-27b-4bit',
+    'a local option is the resolved Crucible id, never renamed');
+  eq(routing.resolveCompilationPackagingOption(stock, onMac()).crucibleModel, 'qwen3.8-27b-8bit');
+  eq(routing.resolveCompilationPackagingOption(cli, onMac()).crucibleModel, null, 'claude -p is outside Crucible (#193)');
+});
+
+/**
+ * ROUTING NAMES A MODEL, NOT A QUANT (Owen, 2026-09-29: "crucible's job is to select the model
+ * quant that works for the system we're using. wsl uses 4 bit, mac uses 8 bit. it doenst need to
+ * tell the user that"; "content studio shouldnt request a model that isnt available on a crucible
+ * server"). One option per model, its candidates a fixed list; the job's server's catalog picks
+ * the one it can run; none or two are refused by name, nothing substituted.
+ */
+check('one 27B option, its candidates declared; labels never name a quant', () => {
+  eq(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'].crucibleIds, ['qwen3.8-27b-8bit', 'qwen3.8-27b-4bit']);
+  eq(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'].label, 'Qwen 3.8 · 27B');
+  eq('qwen38-27b-8bit' in routing.METADATA_ROUTING_OPTIONS, false, 'the 8-bit option is merged, not offered');
+  for (const [id, option] of Object.entries(routing.METADATA_ROUTING_OPTIONS)) {
+    if (/\bbit\b|-bit|quant|\bq[48]\b|awq|int4/i.test(option.label)) throw new Error(`${id}'s label names a quant: ${option.label}`);
+  }
+  eq(routing.SUMMARIZATION_OPTION, 'qwen38-27b', 'the compilation summarizer is the model option, bound per server');
+});
+
+check('resolution: the Mac runs the 8-bit, WSL the 4-bit, and the job logs which', () => {
+  said.length = 0;
+  const mac = onMac();
+  const wsl = onWsl();
+  eq(mac.bind('titles', 'qwen38-27b').model, 'qwen3.8-27b-8bit', 'Mac:');
+  eq(wsl.bind('titles', 'qwen38-27b').model, 'qwen3.8-27b-4bit', 'WSL:');
+  eq(wsl.bind('thumbnail_words', 'qwen38-27b').crucibleModel, 'qwen3.8-27b-4bit', 'the thumbnail words on WSL:');
+  eq(said, ['Qwen 3.8 · 27B → qwen3.8-27b-8bit on "mac"', 'Qwen 3.8 · 27B → qwen3.8-27b-4bit on "wsl"'], 'logged once per job per option:');
+  eq(wsl.bind('tags', 'qwen35-9b').model, 'qwen3.5-9b', 'a one-id model resolves to itself where it is installed:');
+  eq(mac.describe(['qwen38-27b', 'sonnet5', 'qwen38-27b']), ['Qwen 3.8 · 27B → qwen3.8-27b-8bit on "mac"'], 'the job-start lines (local options, once):');
+  eq(wsl.bind('titles', 'sonnet5').model, 'anthropic/claude-sonnet-5', 'an upstream option binds to its one id:');
+  eq(wsl.bind('titles', 'claude-cli').model, 'claude-cli:opus', 'claude -p binds to its CLI string:');
+  const cloudOnly = routing.RoutingModels.withoutCatalog('the keeper routes no local model');
+  eq(cloudOnly.bind('titles', 'opus5').model, 'anthropic/claude-opus-5', 'a cloud-only job reads no catalog and still binds:');
+  eq(routing.routesLocal(['sonnet5', 'claude-cli']), false);
+  eq(routing.routesLocal(['sonnet5', 'qwen38-27b']), true);
+  eq(routing.jobOptionIds(routing.resolveMetadataRouting({ chapters: 'opus5' })).includes('qwen38-27b'), true, 'the job binds its 27B rows');
+});
+
+check('resolution: none runnable is refused by name (dialog and run), before anything is sent', () => {
+  const bare = { server: 'wsl', reachable: true, anthropicConfigured: false, models: { 'qwen3.5-9b': offer('installed') } };
+  const models = routing.RoutingModels.on(bare, () => undefined);
+  const err = (() => { try { models.bind('thumbnail_words', 'qwen38-27b'); } catch (e) { return e; } })();
+  eq(err && err.name, 'RoutedModelUnavailableError', 'the run refuses:');
+  eq(err.code, 'routed_model_not_here');
+  eq(/Thumbnail words row is set to Qwen 3\.8 · 27B/.test(err.message) && /Qwen 3\.8 · 27B is not on "wsl"\./.test(err.message) && /Nothing was substituted/.test(err.message), true, err.message);
+  eq(/bit|cuda|block/.test(err.message), false, 'no quant talk: ' + err.message);
+  const view = routing.buildRoutingView({ thumbnail_words: 'qwen38-27b' }, bare, { routingServer: 'wsl', selectedServer: 'mac' });
+  const row = view.tasks.find((t) => t.id === 'thumbnail_words');
+  const chosen = row.options.find((o) => o.id === 'qwen38-27b');
+  eq([chosen.availability, chosen.availabilityNote], ['not-here', 'Qwen 3.8 · 27B is not on "wsl".'], 'the dialog says so plainly:');
+  eq(view.tasks.find((t) => t.id === 'tags').options.some((o) => o.id === 'qwen38-27b'), false, 'a row that has not chosen it does not list it:');
+  // Could be downloaded: listed as pullable, still refused at run time (nothing is installed).
+  const pull = { server: 'mac', reachable: true, anthropicConfigured: true, models: { 'qwen3.8-27b-4bit': offer('pullable'), 'qwen3.8-27b-8bit': offer('pullable') } };
+  const pv = routing.optionAvailability(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'], pull);
+  eq([pv.availability, pv.note], ['pullable', 'Qwen 3.8 · 27B is not on "mac" (qwen3.8-27b-8bit or qwen3.8-27b-4bit could be downloaded there).']);
+  eq((() => { try { routing.RoutingModels.on(pull, () => undefined).bind('titles', 'qwen38-27b'); } catch (e) { return e.code; } })(), 'routed_model_not_here');
+  // A catalog that could not be read is "unknown", never "not here".
+  const down = { server: 'wsl', reachable: false, error: 'not answering', models: {}, anthropicConfigured: null };
+  eq(routing.optionAvailability(routing.METADATA_ROUTING_OPTIONS['qwen38-27b'], down).availability, 'unknown');
+  eq((() => { try { routing.RoutingModels.on(down, () => undefined).bind('titles', 'qwen38-27b'); } catch (e) { return e.code; } })(), 'routed_model_unknown');
+  // A cloud-only job's resolution refuses a local bind by name (its option list was wrong).
+  eq(/read no Crucible catalog/.test((() => { try { routing.RoutingModels.withoutCatalog('x').bind('titles', 'qwen38-27b'); } catch (e) { return e.message; } })()), true);
+});
+
+check('resolution: two runnable builds are refused by name; nothing is picked', () => {
+  const both = { server: 'mac', reachable: true, anthropicConfigured: true, models: { 'qwen3.8-27b-8bit': offer('installed'), 'qwen3.8-27b-4bit': offer('installed') } };
+  const err = (() => { try { routing.RoutingModels.on(both, () => undefined).bind('titles', 'qwen38-27b'); } catch (e) { return e; } })();
+  eq(err && err.code, 'routed_model_ambiguous');
+  eq(/"mac" holds more than one build of Qwen 3\.8 · 27B \(qwen3\.8-27b-8bit, qwen3\.8-27b-4bit\)/.test(err.message), true, err.message);
+  const view = routing.buildRoutingView({ titles: 'qwen38-27b' }, both, { routingServer: null, selectedServer: 'mac' });
+  eq(view.tasks.find((t) => t.id === 'titles').options.find((o) => o.id === 'qwen38-27b').availability, 'ambiguous', 'the dialog:');
+});
+
+check('the dialog: the chosen server decides, and a resolved 27B carries no quant sentence', () => {
+  const stored = { thumbnail_words: 'qwen38-27b', server: 'wsl' };
+  const view = routing.buildRoutingView(stored, WSL_INVENTORY, { routingServer: 'wsl', selectedServer: 'mac' });
+  const words = view.tasks.find((t) => t.id === 'thumbnail_words').options.find((o) => o.id === 'qwen38-27b');
+  eq([words.availability, words.model, words.availabilityNote], ['installed', 'qwen3.8-27b-4bit', undefined], 'WSL runs the 4-bit, nothing to say:');
+  eq(JSON.stringify(view).includes('cuda-linux'), false, 'the "no cuda-linux block" sentence is never shown');
+  const mac = routing.buildRoutingView(stored, MAC_INVENTORY, { routingServer: 'mac', selectedServer: 'mac' });
+  eq(mac.tasks.find((t) => t.id === 'thumbnail_words').options.find((o) => o.id === 'qwen38-27b').model, 'qwen3.8-27b-8bit', 'the Mac runs the 8-bit:');
+  eq([mac.chapters.generationModel, mac.chapters.generationAvailability], ['qwen3.8-27b-8bit', 'installed'], 'the chapters line:');
+});
+
+check('migration: a stored 8-bit option is rewritten to the model option, logged once', () => {
+  const m = routing.migrateStoredRouting({ titles: 'qwen38-27b-8bit', thumbnail_words: 'qwen38-27b-8bit', tags: 'qwen35-9b', server: 'wsl' }, ['mac', 'wsl']);
+  eq(m.changed, true, 'written back, so the notice is said once');
+  eq(m.selections, { server: 'wsl', titles: 'qwen38-27b', thumbnail_words: 'qwen38-27b', tags: 'qwen35-9b' });
+  eq(m.notices.length, 2, 'one notice per rewritten entry');
+  eq(m.notices.every((n) => /rewrote metadataRouting\.\w+ = "qwen38-27b-8bit" as "qwen38-27b": the routing names models, not quants/.test(n)), true, m.notices.join('\n'));
+  const again = routing.migrateStoredRouting(m.selections, ['mac', 'wsl']);
+  eq([again.changed, again.notices.length], [false, 0], 'the rewritten store reads clean');
+  eq(routing.MERGED_ROUTING_OPTIONS['qwen38-27b-8bit'].into, 'qwen38-27b');
+  // A stored `qwen38-27b` (the old 4-bit option's id) keeps its row and now resolves per server.
+  const kept = routing.migrateStoredRouting({ chapters: 'qwen38-27b' });
+  eq([kept.changed, kept.selections.chapters], [false, 'qwen38-27b']);
+  eq(onMac().bind('chapters', 'qwen38-27b').model, 'qwen3.8-27b-8bit', 'the old 4-bit id on the Mac now runs the Mac\'s build:');
+  // The modal's strict save still refuses the merged id: only a stored one is migrated.
+  eq((() => { try { routing.validateRoutingSelections({ titles: 'qwen38-27b-8bit' }, []); } catch (e) { return /not a known model option/.test(e.message); } })(), true);
 });
 
 /**
@@ -691,6 +813,8 @@ function plan(channelId, options) {
   const o = options || {};
   return tasks.planMetadataUnits({
     routing: routing.resolveMetadataRouting(o.routing),
+    // The job's server: the Mac, which holds the 8-bit 27B (the build the plan's roster names).
+    models: onMac(),
     aiManager: stubManager(channelId, o.extraFields),
     hasInsights: Boolean(o.hasInsights),
     hasChapters: Boolean(o.hasChapters),
@@ -986,7 +1110,7 @@ check('no metadata unit can release a model — the job does that, once', () => 
 check('the shipped defaults stay inside the two-model budget, chapters included', () => {
   const p = plan('youtube-telltale', {
     hasChapters: true,
-    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined)).model, what: 'chapters' }],
+    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined), onMac()).model, what: 'chapters' }],
   });
   if (p.roster.models.length > 2) throw new Error('the shipped run loads ' + p.roster.summary);
   eq(p.roster.overBudget, false, 'the shipped defaults are over their own budget');
@@ -1077,7 +1201,7 @@ check('a third model is a DECLARED warning naming the fields, and never a refusa
   const p = plan('youtube-telltale', {
     hasChapters: true,
     routing: { description: 'qwen35-4b', pinned_comment: 'qwen35-9b' },
-    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined)).model, what: 'chapters' }],
+    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined), onMac()).model, what: 'chapters' }],
   });
   eq(p.roster.models.length, 3, 'expected three models, got ' + p.roster.summary);
   eq(p.roster.overBudget, true, 'three models did not register as over budget');
@@ -1126,7 +1250,7 @@ check('the cloud ceiling is the raised one', () => {
 check('an all-local routing earns the local ceiling whatever the Settings provider says', () => {
   const routed = routing.resolveMetadataRouting({});
   const allLocal = Object.entries(routed)
-    .every(([taskId, optionId]) => routing.routingOption(taskId, optionId).kind === 'local');
+    .every(([, optionId]) => routing.routingOptionDef(optionId).kind === 'local');
   eq(allLocal, true, 'the shipped defaults are the all-local roster');
   eq(aiManager.directPassesRaw({ chars: 62299, ceiling: allLocal ? 'local' : 'cloud' }), true,
     'the podcast 1.mov transcript reaches the model raw');
@@ -1135,7 +1259,7 @@ check('an all-local routing earns the local ceiling whatever the Settings provid
 check('one cloud field lifts the whole run to the cloud ceiling', () => {
   const routed = routing.resolveMetadataRouting({ titles: 'sonnet5' });
   const allLocal = Object.entries(routed)
-    .every(([taskId, optionId]) => routing.routingOption(taskId, optionId).kind === 'local');
+    .every(([, optionId]) => routing.routingOptionDef(optionId).kind === 'local');
   eq(allLocal, false, 'sonnet5 titles make the run partly cloud');
   // The direction reversed with the 400k raise: routing one field to the cloud used to DROP the
   // run to a 60k cost guard, and now lifts it to a 400k window. Same rule, opposite consequence.
@@ -1744,7 +1868,8 @@ const userDataModule = require(path.join(ROOT, 'user-data-path.js'));
 
 /** Where a GPU step would run: 'mac', or none (the refusal case). */
 let venue = { server: 'mac' };
-lanesModule.installLanes({ aiCall: (route, name, fn) => fn(), gpuVenue: () => venue });
+// The venue's catalog is the Mac's (the 8-bit 27B installed): what a job resolves its options against.
+lanesModule.installLanes({ aiCall: (route, name, fn) => fn(), gpuVenue: () => venue, inventoryFor: async (server) => ({ ...MAC_INVENTORY, server }) });
 
 /** Register the story handlers against a store holding `settings`; returns the channels. */
 function storyHandlersFor(settings) {
@@ -1864,7 +1989,8 @@ async function rejects(promise) {
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
     const res = await ch['story:chapter-story'](fakeEvent, { segments: storySegments });
     eq(door.chats.filter((c) => c.model === 'qwen3.5-9b').length, 1, 'the chapters grain writes its outline:');
-    const titles = door.chats.filter((c) => c.model === 'qwen3.8-27b-4bit');
+    // The chapters row names the model; the venue's catalog (the Mac's) names the 8-bit build.
+    const titles = door.chats.filter((c) => c.model === 'qwen3.8-27b-8bit');
     eq(titles.map((c) => [c.thinking, c.maxTokens, c.loadContext]), [[true, 16384, 24576], [true, 16384, 24576]], 'the title calls:');
     eq(storyCalls.length, 0, 'nothing went to the cloud door:');
     eq(res.chapters.map((c) => c.label), ['The council budget vote', 'The council budget vote'], 'the labels are the titles:');
@@ -1928,15 +2054,15 @@ async function rejects(promise) {
     const local = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
     await local['story:suggest-title'](null, { name: 'Story 1', chapters: parts });
     await local['story:suggest-title'](null, { name: 'Story 2', chapters: parts });
-    eq(door.chats.map((c) => [c.model, c.thinking, c.maxTokens]), [['qwen3.8-27b-4bit', true, 16384], ['qwen3.8-27b-4bit', true, 16384]], 'the local title calls:');
+    eq(door.chats.map((c) => [c.model, c.thinking, c.maxTokens]), [['qwen3.8-27b-8bit', true, 16384], ['qwen3.8-27b-8bit', true, 16384]], 'the local title calls:');
     eq(door.jobs.length, 1, 'ONE lease across the titling loop:');
-    eq(await local['story:unload-model'](), { ok: true, released: 'qwen3.8-27b-4bit' }, 'the lease is what is released:');
+    eq(await local['story:unload-model'](), { ok: true, released: 'qwen3.8-27b-8bit' }, 'the lease is what is released:');
     eq(door.jobs[0].released, 1, 'released once:');
   });
 
   await checkAsync('an absent routing store runs Stories on the shipped chapters default, as every run does', async () => {
     const ch = storyHandlersFor({ ollamaHost: NO_OLLAMA });
-    const shipped = routing.routingOption('chapters', routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters').defaultOptionId);
+    const shipped = routing.routingOption('chapters', routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters').defaultOptionId, onMac());
     eq((await ch['story:routed-model']()).model, routing.routedModelString(shipped), 'the default:');
   });
 
@@ -1956,15 +2082,17 @@ async function rejects(promise) {
     eq(routing.CHAPTER_SCORER_MODEL, 'qwen3.5-9b', 'the scorer:');
     eq(routing.METADATA_ROUTING_TASKS.some((t) => /outline|scorer|snap/.test(t.id)), false, 'no routing row for it:');
     const resolved = routing.resolveMetadataRouting({ chapters: 'sonnet5' });
-    const models = routing.resolveSnapChapterModels(resolved, { server: 'owens-pc' });
+    const models = routing.resolveSnapChapterModels(resolved, { server: 'owens-pc' }, onWsl());
     eq([models.scorer, models.titles.model], [{ model: 'qwen3.5-9b', server: 'owens-pc' }, 'anthropic/claude-sonnet-5'], 'resolved:');
-    const err = (() => { try { routing.resolveSnapChapterModels(resolved, { server: null, reason: 'the registry is empty' }); } catch (e) { return e; } })();
+    const err = (() => { try { routing.resolveSnapChapterModels(resolved, { server: null, reason: 'the registry is empty' }, onWsl()); } catch (e) { return e; } })();
     eq([err && err.code, /the registry is empty/.test(err.message), /whole-transcript/.test(err.message)], ['snap_scorer_unavailable', true, true], 'the refusal:');
   });
 
   await checkAsync('the in-queue split is the stories grain: a candidate menu tiling the stream, boundaries only, no title call', async () => {
     resetDoor();
-    const models = routing.resolveSnapChapterModels(routing.resolveMetadataRouting({ chapters: 'claude-cli' }), { server: 'mac' });
+    // Boundaries only: the chapters row is not bound at all (a model its server lacks cannot refuse it).
+    const models = routing.resolveSnapBoundaryModels(routing.resolveMetadataRouting({ chapters: 'qwen38-27b' }), { server: 'mac' });
+    eq(models.titles, null, 'no titles bound:');
     const job = transportModule.crucibleTransport().job('transcript split');
     const t = snapWiring.snapTransports({ models, job, trace: null, laneName: 'split' });
     const srt = storySegments.map((s, i) => ({ index: i + 1, start: s.startSeconds - 1000, end: s.endSeconds - 1000, text: s.text, speaker: s.speaker === 'host' ? 'mic' : 'screen' }));
@@ -1983,7 +2111,11 @@ async function rejects(promise) {
     const item = { source: '/x/keeper.mp4', title: 'keeper', srtSegments: [{ index: 1, start: '00:00:00,000', end: '00:00:10,000', text: 'Hello there, this is a test.' }] };
     const manager = { promptTrace: [], promotedItems: () => [], runPlainRequest: async () => null };
     const lifecycle = { leases: {} };
-    const base = { metadataRouting: routing.resolveMetadataRouting({ chapters: 'claude-cli' }), promptSet: 'youtube-telltale' };
+    const base = {
+      metadataRouting: routing.resolveMetadataRouting({ chapters: 'claude-cli' }), promptSet: 'youtube-telltale',
+      // What generate() sets at the job's start; a claude -p chapters row reads no catalog.
+      routingModels: routing.RoutingModels.withoutCatalog('the keeper routes no local model'),
+    };
     const bogus = await rejects(Gen.generateChapters(item, manager, { ...base, chapterEngine: 'rolling-window' }, 0, 1, lifecycle));
     eq(/unknown chapter engine "rolling-window"/.test(bogus.message), true, 'an unknown engine:');
     venue = { server: null, reason: 'nothing selected' };

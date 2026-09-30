@@ -54,9 +54,11 @@ function manager(extra = {}) {
   return new AIManagerService({ promptSetsDir: ASSETS_DIR, transcriptCeiling: 'local', ...extra });
 }
 
+/** The 27B bound on a server whose catalog holds MODEL (the 4-bit build), as a job binds it. */
 function localOption() {
   const routing = services('metadata/metadata-routing.js');
-  return routing.METADATA_ROUTING_OPTIONS['qwen38-27b'];
+  return routing.RoutingModels.on({ server: 'mac', reachable: true, anthropicConfigured: false, models: { [MODEL]: { offer: 'installed', reason: null } } }, () => undefined)
+    .bind('titles', 'qwen38-27b');
 }
 
 // ── the call sites ───────────────────────────────────────────────────────────

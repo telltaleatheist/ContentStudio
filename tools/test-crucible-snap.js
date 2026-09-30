@@ -12,7 +12,10 @@
  *   - a title that runs out its budget (`finish_reason: length`) ships its outline label with a
  *     warning, never a failed run (Law 3);
  *   - one job's leases carry the whole run: the 9B, then the 27B, both released at the end;
- *   - a server with no decide door refuses the run by name (decide_not_served).
+ *   - a server with no decide door refuses the run by name (decide_not_served);
+ *   - the chapters row names a MODEL: the job's server's catalog names the build that is loaded
+ *     and sent (the Mac's 8-bit, WSL's 4-bit), and a server holding no build refuses by name
+ *     before anything is loaded (2026-09-29).
  *
  * Run it against the COMPILED main process: `npm run build:electron && node tools/test-crucible-snap.js`.
  */
@@ -28,6 +31,7 @@ const { installLanes } = crucible('lanes');
 const snap = services('metadata/snap-chapters.js');
 const routing = services('metadata/metadata-routing.js');
 const service = services('metadata/chaptering/chaptering.service.js');
+const { readRoutingModels } = services('metadata/routing-models.js');
 
 const MODELS = [
   { id: 'qwen3.8-27b-4bit', paramsB: 27, installed: true, contextDefault: 98304 },
@@ -54,8 +58,12 @@ function chatReply(body) {
   return { content: 'The council budget vote\nThe council voted on the budget.', finishReason: 'stop' };
 }
 
+/** The server's catalog as its models say (catalog.ts reads installed/pullable from it). */
+const catalogOf = (models) => models.map((m) => ({ kind: 'model', id: m.id, name: m.id, jobType: 'llm', installed: m.installed !== false, expectedBytes: null }));
+
 async function withSnap(options, fn) {
-  const server = await fake.startFakeCrucible({ version: '1.0.34', models: MODELS, decideProbs, chatReplies: { '*': chatReply }, ...options });
+  const models = options.models ?? MODELS;
+  const server = await fake.startFakeCrucible({ version: '1.0.34', models, catalog: options.catalog ?? catalogOf(models), decideProbs, chatReplies: { '*': chatReply }, ...options });
   const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   installCrucibleTransport(made.ctx.transport);
@@ -69,16 +77,17 @@ async function withSnap(options, fn) {
   }
 }
 
-function transportsOn(ctx, chaptersOption) {
+/** As a job binds it: the routed options resolved against the venue's catalog, read once. */
+async function transportsOn(ctx, chaptersOption) {
   const resolved = routing.resolveMetadataRouting({ chapters: chaptersOption });
-  const models = routing.resolveSnapChapterModels(resolved, ctx.lanes.gpuVenue());
+  const models = routing.resolveSnapChapterModels(resolved, ctx.lanes.gpuVenue(), await readRoutingModels('the keeper snap run', [resolved.chapters]));
   const job = ctx.transport.job('the keeper snap run');
   const warned = [];
   return { models, job, warned, t: snap.snapTransports({ models, job, trace: [], laneName: 'keeper', warn: (w) => warned.push(w) }) };
 }
 
 check('the outline and decide run on the 9B at 8,192 (all a short video needs); the titles on the chapters row at 24,576, thinking on, taken as sent', () => withSnap({}, async (server, ctx) => {
-  const { models, job, t } = transportsOn(ctx, 'qwen38-27b');
+  const { models, job, t } = await transportsOn(ctx, 'qwen38-27b');
   assert.deepStrictEqual(models.scorer, { model: 'qwen3.5-9b', server: 'mac' });
   const r = await service.chapter(CAPTIONS, { granularity: 'chapters', chat: t.chat, decide: t.decide });
   await job.releaseAll();
@@ -123,12 +132,39 @@ check('X-Crucible-Sampling is read off every chat: thinking and max_tokens came 
 }));
 
 check('a server that serves no decide door refuses the snap run by name; nothing is chaptered another way', () => withSnap({ disabledClasses: { decide: 'mlx-lm caps top_logprobs at 11' } }, async (server, ctx) => {
-  const { job, t } = transportsOn(ctx, 'qwen38-27b');
+  const { job, t } = await transportsOn(ctx, 'qwen38-27b');
   const err = await rejection(service.chapter(CAPTIONS, { granularity: 'chapters', chat: t.chat, decide: t.decide }));
   await job.releaseAll();
   assert.strictEqual(err.code, 'decide_not_served');
   assert.ok(/"mac"/.test(err.message) && /nothing falls back/.test(err.message), err.message);
   assert.strictEqual(server.decideBodies().length, 0);
+}));
+
+check('the chapters row names the model: the Mac-like server\'s catalog sends its 8-bit build, on the wire and in the load', () => withSnap({
+  models: [
+    { id: 'qwen3.8-27b-8bit', paramsB: 27, installed: true, contextDefault: 98304 },
+    { id: 'qwen3.8-27b-4bit', paramsB: 27, installed: false, contextDefault: 98304 },
+    { id: 'qwen3.5-9b', paramsB: 9, installed: true, contextDefault: 16384 },
+  ],
+}, async (server, ctx) => {
+  const { models, job, t } = await transportsOn(ctx, 'qwen38-27b');
+  assert.strictEqual(models.titles.model, 'qwen3.8-27b-8bit');
+  await service.chapter(CAPTIONS, { granularity: 'chapters', chat: t.chat, decide: t.decide });
+  await job.releaseAll();
+  const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model').map((b) => b.model);
+  assert.deepStrictEqual(loads, ['qwen3.5-9b', 'qwen3.8-27b-8bit']);
+  const sent = server.requestsTo('/v1/openai/chat/completions', 'POST').map((q) => q.body.model);
+  assert.ok(sent.includes('qwen3.8-27b-8bit') && !sent.includes('qwen3.8-27b-4bit'), sent.join(', '));
+}));
+
+check('a server that holds no build of the chapters row\'s model refuses it by name, before anything is loaded', () => withSnap({
+  models: [{ id: 'qwen3.5-9b', paramsB: 9, installed: true, contextDefault: 16384 }],
+}, async (server, ctx) => {
+  const err = await rejection(transportsOn(ctx, 'qwen38-27b'));
+  assert.strictEqual(err.code, 'routed_model_not_here');
+  assert.ok(/The Chapters row is set to Qwen 3\.8 · 27B/.test(err.message) && /is not on "mac"/.test(err.message), err.message);
+  assert.strictEqual(server.requestsTo('/v1/jobs', 'POST').length, 0);
+  assert.strictEqual(server.requestsTo('/v1/openai/chat/completions', 'POST').length, 0);
 }));
 
 run('crucible: snap chaptering over the door (the 9B scorer, the titles row, thinking and its budget)');

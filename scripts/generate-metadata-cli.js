@@ -57,8 +57,9 @@
  * PREREQ:
  *   npm run build:electron
  *   a Crucible server registered and selected in the app (Settings › Crucible Servers), with
- *   the routed local models on it (qwen3.8-27b-4bit, qwen3.5-9b) and, for a cloud route, its
- *   own Anthropic key
+ *   the routed local models on it (one build of the 27B, e.g. qwen3.8-27b-8bit on the Mac or
+ *   qwen3.8-27b-4bit on the PC, and qwen3.5-9b; the job resolves which from that server's catalog)
+ *   and, for a cloud route, its own Anthropic key
  *
  * USAGE:
  *   node scripts/generate-metadata-cli.js --input "/path/video.mov" --channel youtube-telltale
@@ -639,7 +640,8 @@ async function main() {
   console.error(`  transcriber: crucible:${asrVenue.server}:qwen3-asr-1.7b`);
   console.error(`  routing:     ${Object.entries(resolvedRouting).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   // Chapters route per-field since 2026-08-24 (the `chapters` entry above); the summarizer
-  // follows the chapters selection, falling to SUMMARIZATION_MODEL only when chapters are local.
+  // follows the chapters selection, falling to SUMMARIZATION_OPTION (bound on the run's server) only
+  // when chapters are local; the generator resolves it at the job's start.
   console.error(`  summarizer:  follows chapters=${resolvedRouting.chapters}`);
   console.error(`  packaging:   follows titles=${resolvedRouting.titles} (compilation only)`);
   console.error(
@@ -745,7 +747,6 @@ async function main() {
   const baseParams = {
     inputs: [args.input],
     mode: settings.defaultMode || 'individual',
-    summarizationModel: routing.SUMMARIZATION_MODEL,
     outputPath: outputDir,
     promptSet: channel,
     promptSetsDir,

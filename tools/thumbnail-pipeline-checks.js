@@ -256,11 +256,15 @@ const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a
  * `fn(leases)` inside one lane job holding one JobLeases, as the metadata job does.
  */
 async function withWorld(options, fn) {
-  const server = await fake.startFakeCrucible({ version: '1.0.55', models: MODELS, decideProbs, chatReplies: { 'qwen3.8-27b-8bit': () => ({ content: WORDS_REPLY, finishReason: 'stop' }) }, ...(options.fake ?? {}) });
+  // The catalog says what /v1/models says: the 8-bit 27B installed (the Mac's build), the 9B not downloaded.
+  const catalog = MODELS.map((m) => ({ kind: 'model', id: m.id, name: m.id, jobType: 'llm', installed: m.installed !== false, expectedBytes: null }));
+  const server = await fake.startFakeCrucible({ version: '1.0.55', models: MODELS, catalog, decideProbs, chatReplies: { 'qwen3.8-27b-8bit': () => ({ content: WORDS_REPLY, finishReason: 'stop' }) }, ...(options.fake ?? {}) });
   const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   installCrucibleTransport(made.ctx.transport);
   installLanes(made.ctx.lanes);
+  // The job's routed options resolved against this server's catalog, as the metadata job does at its start.
+  const models = await services('metadata/routing-models.js').readRoutingModels('the keeper\'s metadata job', ['qwen38-27b', 'qwen35-9b']);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-pipe-world-'));
   const w = syntheticWeek(root, options.week ?? {});
   const userData = path.join(root, 'userData');
@@ -318,11 +322,11 @@ async function withWorld(options, fn) {
     videoPath: w.exportOf(over.name ?? 'f2 - the rapture'), operatorRef: undefined, segments: captions(STORY_TEXT[over.story ?? 2]),
     reportFolder: over.reportFolder ?? path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
   }, {
-    leases, aiManager, routing: routing.resolveMetadataRouting(over.routing ?? {}), signal: controller.signal,
+    leases, aiManager, routing: routing.resolveMetadataRouting(over.routing ?? {}), models, signal: controller.signal,
     cancelled: () => controller.signal.aborted, progress: () => undefined,
   });
   try {
-    await fn({ failing, server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, transport: made.ctx.transport, lanes: made.ctx.lanes });
+    await fn({ failing, server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, models, transport: made.ctx.transport, lanes: made.ctx.lanes });
   } finally {
     installCrucibleTransport(null);
     installLanes(null);
@@ -408,7 +412,7 @@ check('stages: an item with no story stops with the reason on the record; no mod
     const run = pipeline.ItemThumbnailRun.start({ mode: 'on', setup: {} }, {
       jobId: 'keeper-job', itemIndex: 1, sourceLabel: 'u9.mov', contentType: 'video', videoPath: path.join(root, '2026-01-04', 'complete', 'u9 - unrelated.mov'),
       operatorRef: undefined, segments: captions(words(77, 400)), reportFolder: path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
-    }, { leases, aiManager: { runPlainRequest: async () => { throw new Error('no model'); } }, routing: routing.resolveMetadataRouting({}), cancelled: () => false, progress: () => undefined });
+    }, { leases, aiManager: { runPlainRequest: async () => { throw new Error('no model'); } }, routing: routing.resolveMetadataRouting({}), models: routing.RoutingModels.withoutCatalog('no model is called'), cancelled: () => false, progress: () => undefined });
     await run.beforeChapters();
     await run.afterFields(FIELDS);
     return run.record();
@@ -429,7 +433,8 @@ check('stages: a failed stage is on the record and in the warning, in plain word
     const run = itemRun(leases, controller, { routing: { thumbnail_words: 'qwen35-9b' } });
     await run.beforeChapters();
     await run.afterFields(FIELDS);
-    assert.ok(/^f2 - the rapture\.mov: The thumbnails stopped at the words stage: .*qwen3\.5-9b is not downloaded on "mac"/.test(run.warning()), run.warning());
+    // Refused by the job's resolution, before anything is loaded: the row names a model the server does not hold.
+    assert.ok(/^f2 - the rapture\.mov: The thumbnails stopped at the words stage: The Thumbnail words row is set to Qwen 3\.5 · 9B, and nothing was sent: Qwen 3\.5 · 9B is not on "mac"/.test(run.warning()), run.warning());
     return run.record();
   });
   assert.deepStrictEqual([rec.state, rec.failure.stage], ['failed', 'words']);
@@ -621,7 +626,7 @@ async function windowOver(world, { record: given = null, noStory = false, gpuVen
       const r = pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
         jobId: job.jobId, itemIndex: 0, sourceLabel: 'u9.mov', contentType: 'video', videoPath: video, operatorRef: undefined,
         segments, reportFolder: job.txtFolder, channel: assets.promptAssets().channel('youtube-fireside'),
-      }, { leases, aiManager, routing: routing.resolveMetadataRouting({}), cancelled: () => false, progress: () => undefined });
+      }, { leases, aiManager, routing: routing.resolveMetadataRouting({}), models: world.models, cancelled: () => false, progress: () => undefined });
       await r.beforeChapters();
       return r.record();
     }

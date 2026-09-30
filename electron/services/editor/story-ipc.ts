@@ -3,12 +3,13 @@ import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import Store from 'electron-store';
 import * as log from 'electron-log';
 
-import { StoryModel, resolveStoryModel } from './story-routing';
+import { StoryModel, resolveStoryModel, storyRouting } from './story-routing';
+import { readRoutingModels } from '../metadata/routing-models';
 import { AIManagerService, AIConfig } from '../metadata/ai-manager.service';
 import { crucibleTransport } from '../../crucible/transport';
 import { installedLanes } from '../../crucible/lanes';
 import type { JobLeases } from '../../crucible/lease';
-import { migrateStoredRouting, resolveMetadataRouting, resolveSnapChapterModels } from '../metadata/metadata-routing';
+import { resolveSnapChapterModels } from '../metadata/metadata-routing';
 import { chapter } from '../metadata/chaptering/chaptering.service';
 import { TITLE_MAX_TOKENS, titleFromParts } from '../metadata/chaptering/summarize';
 import { ChapteringError } from '../metadata/chaptering/types';
@@ -109,8 +110,13 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
   // reload the model every time); a cloud selection has nothing to hold.
   let titleJob: { job: JobLeases; model: string } | null = null;
 
-  const routedModel = (): StoryModel => resolveStoryModel((store as any).get('metadataRouting'));
   const venue = deps.venue ?? (() => installedLanes().gpuVenue());
+  // The chapters row bound on the server the call runs on (one catalog read per call): the row
+  // names the model, that server's catalog names the build, refused by name when it has none.
+  const routedModel = async (what: string): Promise<StoryModel> => {
+    const stored = (store as any).get('metadataRouting');
+    return resolveStoryModel(stored, await readRoutingModels(what, [storyRouting(stored).chapters], venue));
+  };
 
   /**
    * A manager for the cloud title door only (runPlainRequest: the plain system turn, <think>
@@ -129,7 +135,7 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
 
   // What the routing table currently names for the titles, for the editor's read-only line.
   ipcMain.handle('story:routed-model', async () => {
-    const routed = routedModel();
+    const routed = await routedModel('the editor\'s stories line');
     return { model: routed.model, label: routed.label, kind: routed.kind };
   });
 
@@ -161,9 +167,11 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
     analyze(event, segmentsOf('story:chapter-story', payload), 'chapters'));
 
   async function analyze(event: IpcMainInvokeEvent, segments: Segment[], grain: Granularity) {
+    const routing = storyRouting((store as any).get('metadataRouting'));
     const models = resolveSnapChapterModels(
-      resolveMetadataRouting(migrateStoredRouting((store as any).get('metadataRouting')).selections),
+      routing,
       venue(),
+      await readRoutingModels(`story ${grain} analysis`, [routing.chapters], venue),
     );
     log.info(
       `[Story] ${grain} analysis on snap: outline and decide on ${models.scorer.model} on "${models.scorer.server}", ` +
@@ -221,7 +229,7 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
     async (_event, payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) => {
       const parts = (payload?.chapters || []).filter((c) => c && typeof c.label === 'string' && c.label.trim().length > 0);
       if (parts.length === 0) throw new Error('This story has nothing to title — no chapters with a label.');
-      const routed = routedModel();
+      const routed = await routedModel('story title suggestions');
       const controller = new AbortController();
       activeRun = controller;
       if (routed.kind === 'local' && titleJob?.model !== routed.model) {

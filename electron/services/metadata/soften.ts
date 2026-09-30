@@ -52,7 +52,7 @@
 import log from 'electron-log';
 
 import { Chapter } from './chapter-generator.service';
-import { MetadataRoutingOption, resolveOperatorOption } from './metadata-routing';
+import { MetadataRoutingOption, resolveOperatorOption, RoutingModels } from './metadata-routing';
 import {
   askToRewrite,
   buildRewritePrompt,
@@ -85,8 +85,8 @@ export const SOFTEN_PROMPT_FILE = 'soften.yml';
 export const SOFTEN_ROUTING_TASK = 'description' as const;
 
 /** One option id from the operator's dropdown, checked against what that task offers. */
-export function resolveSoftenOption(optionId: unknown): MetadataRoutingOption {
-  return resolveOperatorOption(SOFTEN_ROUTING_TASK, optionId);
+export function resolveSoftenOption(optionId: unknown, models: RoutingModels): MetadataRoutingOption {
+  return resolveOperatorOption(SOFTEN_ROUTING_TASK, optionId, models);
 }
 
 /**

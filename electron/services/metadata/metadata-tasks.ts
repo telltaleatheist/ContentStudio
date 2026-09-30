@@ -74,7 +74,7 @@ import { parseLines } from './plain-call';
 import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
-  METADATA_ROUTING_OPTIONS,
+  RoutingModels,
   MetadataRoutingOption,
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
@@ -778,6 +778,8 @@ export interface MetadataRunPlan {
  */
 export interface MetadataPlanRequest {
   routing: ResolvedMetadataRouting;
+  /** The job's routed options bound to its server (metadata-routing.ts RoutingModels): every unit's model comes from it. */
+  models: RoutingModels;
   aiManager: AIManagerService;
   hasInsights: boolean;
   /**
@@ -845,7 +847,7 @@ export interface MetadataPlanRequest {
  * written by the model the routing names. Both are logged per item.
  */
 export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan {
-  const { routing, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle } = request;
+  const { routing, models, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle } = request;
 
   // A field the PROMPT SET does not define is not generated at all, whatever the routing
   // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
@@ -873,12 +875,8 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       skipped.push(field);
       continue;
     }
-    const optionId = routing[task];
-    const option = METADATA_ROUTING_OPTIONS[optionId];
-    if (!option) {
-      throw new Error(`Metadata task "${task}" is routed to unknown option "${optionId}"`);
-    }
-    planned.push({ field, option });
+    // Bound on the job's server: the build that server holds, or a refusal by name (nothing sent).
+    planned.push({ field, option: models.bind(task, routing[task]) });
   }
 
   const titlesPlan = planned.find((p) => p.field === 'titles');
@@ -928,11 +926,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
   const describes = available.has(METADATA_FIELD_SECTIONS.description.section);
   let descriptionOption: MetadataRoutingOption | undefined;
   if (describes) {
-    const optionId = routing.description;
-    descriptionOption = METADATA_ROUTING_OPTIONS[optionId];
-    if (!descriptionOption) {
-      throw new Error(`Metadata task "description" is routed to unknown option "${optionId}"`);
-    }
+    descriptionOption = models.bind('description', routing.description);
   } else {
     skipped.push('description');
   }

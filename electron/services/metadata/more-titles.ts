@@ -30,7 +30,7 @@ import { AIManagerService } from './ai-manager.service';
 import { parseLines } from './plain-call';
 import { loadContextFor } from './context-sizing';
 import { LOCAL_FIELD_NUM_PREDICT, LOCAL_FIELD_TIMEOUT_MS } from './metadata-tasks';
-import { MetadataRoutingOption, resolveOperatorOption, taskOptionIds } from './metadata-routing';
+import { MetadataRoutingOption, resolveOperatorOption, RoutingModels, taskOptionIds } from './metadata-routing';
 
 /** How many titles one operator request asks for. Stated once; it is in the prompt too. */
 export const MORE_TITLES_COUNT = 10;
@@ -122,8 +122,8 @@ export function titlesOptionIds(): string[] {
  * pass needed the same three checks against a different task. The name stays because the IPC
  * handler reads by it and it says which dropdown is being refused on behalf of.
  */
-export function resolveTitlesOption(optionId: unknown): MetadataRoutingOption {
-  return resolveOperatorOption('titles', optionId);
+export function resolveTitlesOption(optionId: unknown, models: RoutingModels): MetadataRoutingOption {
+  return resolveOperatorOption('titles', optionId, models);
 }
 
 export interface MoreTitlesResult {

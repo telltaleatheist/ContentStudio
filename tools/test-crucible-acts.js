@@ -84,27 +84,29 @@ check('the acts the door can put on the wire are exactly the declared list', () 
   for (const literal of literals) assert.ok(CONTENTSTUDIO_ACTS.includes(literal), `transport.ts names act '${literal}'`);
 });
 
-check('every routing option that runs through Crucible names a Crucible id; claude -p names none', () => {
+check('every routing option that runs through Crucible names its Crucible ids; claude -p names none', () => {
   const routing = require(path.join(REPO, 'dist', 'main', 'services', 'metadata', 'metadata-routing.js'));
+  // An option names a MODEL (2026-09-29): a local one lists the quant builds some server may hold,
+  // and the job's server's catalog picks the one it runs (metadata-routing.ts resolveLocalOption).
   const expected = {
-    'qwen38-27b': 'qwen3.8-27b-4bit',
-    'qwen38-27b-8bit': 'qwen3.8-27b-8bit',
-    'qwen35-9b': 'qwen3.5-9b',
-    'qwen35-4b': 'qwen3.5-4b',
+    'qwen38-27b': ['qwen3.8-27b-8bit', 'qwen3.8-27b-4bit'],
+    'qwen35-9b': ['qwen3.5-9b'],
+    'qwen35-4b': ['qwen3.5-4b'],
     // The vision rungs (qwen35-9b-vl, qwen35-2b, qwen35-08b, qwen38-27b-vl) went with the thumbnail
     // frame row on 2026-09-29 (REMOVED_ROUTING_OPTIONS).
-    sonnet5: 'anthropic/claude-sonnet-5',
-    opus5: 'anthropic/claude-opus-5',
-    haiku45: 'anthropic/claude-haiku-4-5-20251001',
+    sonnet5: ['anthropic/claude-sonnet-5'],
+    opus5: ['anthropic/claude-opus-5'],
+    haiku45: ['anthropic/claude-haiku-4-5-20251001'],
     'claude-cli': null,
     'claude-cli-sonnet': null,
   };
   for (const [id, option] of Object.entries(routing.METADATA_ROUTING_OPTIONS)) {
     assert.ok(id in expected, `an option this check does not know: ${id}`);
-    assert.strictEqual(option.crucibleModel, expected[id], id);
-    if (option.crucibleModel !== null) assert.strictEqual(option.model, option.crucibleModel, `${id} routes on its Crucible id`);
+    assert.deepStrictEqual(option.crucibleIds, expected[id], id);
+    assert.strictEqual(option.cliModel === null, option.crucibleIds !== null, `${id} names exactly one transport`);
+    if (option.kind === 'cloud' && option.crucibleIds !== null) assert.strictEqual(option.crucibleIds.length, 1, `${id} names one upstream id`);
   }
-  assert.strictEqual(routing.SUMMARIZATION_MODEL, 'qwen3.8-27b-8bit');
+  assert.strictEqual(routing.SUMMARIZATION_OPTION, 'qwen38-27b');
 });
 
 run('crucible: every act sent is one the pinned release knows');

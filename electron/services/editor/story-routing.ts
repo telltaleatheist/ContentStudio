@@ -4,7 +4,9 @@ import {
   migrateStoredRouting,
   resolveChapterModelOption,
   resolveMetadataRouting,
+  ResolvedMetadataRouting,
   routedModelString,
+  RoutingModels,
 } from '../metadata/metadata-routing';
 
 /**
@@ -24,7 +26,9 @@ import {
  * same order, so the editor cannot name one model while a generation run uses another.
  *
  * PURE — no electron, no store access. The caller hands in whatever the store holds under
- * `metadataRouting`, so the pure checks (tools/) can assert every outcome without a window.
+ * `metadataRouting`, and the call's routed models bound on its server (RoutingModels, read by the
+ * caller from that server's catalog), so the pure checks (tools/) can assert every outcome without
+ * a window. The chapters row names a MODEL; the server's catalog names the build (2026-09-29).
  * A stored selection this build cannot honour THROWS from `resolveMetadataRouting`, naming
  * the entry (Law 1): the analyzer refuses rather than running on a default the operator
  * never saw. An ABSENT store is not that case — it resolves to the table's shipped default,
@@ -40,9 +44,12 @@ export interface StoryModel {
   kind: MetadataRoutingOption['kind'];
 }
 
-export function resolveStoryModel(storedRouting: unknown): StoryModel {
-  const option = resolveChapterModelOption(
-    resolveMetadataRouting(migrateStoredRouting(storedRouting).selections)
-  );
+/** The stored routing, migrated and resolved against the table: what the story calls read. */
+export function storyRouting(storedRouting: unknown): ResolvedMetadataRouting {
+  return resolveMetadataRouting(migrateStoredRouting(storedRouting).selections);
+}
+
+export function resolveStoryModel(storedRouting: unknown, models: RoutingModels): StoryModel {
+  const option = resolveChapterModelOption(storyRouting(storedRouting), models);
   return { option, model: routedModelString(option), label: option.label, kind: option.kind };
 }

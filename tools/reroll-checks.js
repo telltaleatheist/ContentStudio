@@ -331,6 +331,11 @@ check('rotations cancel a position bias: the preferred title ranks first whereve
 // ------------------------------------------------------------------- the binding on an item
 
 const ROUTING = { titles: 'qwen38-27b', chapters: 'qwen38-27b', description: 'qwen38-27b', thumbnail_text: 'qwen38-27b', pinned_comment: 'qwen38-27b', tags: 'qwen35-9b' };
+// The job's server's catalog (WSL's: the 4-bit 27B installed): the rows name the model, this names the build.
+const MODELS = require(path.join(ROOT, 'services/metadata/metadata-routing.js')).RoutingModels.on({
+  server: 'wsl', reachable: true, anthropicConfigured: false,
+  models: { 'qwen3.8-27b-4bit': { offer: 'installed', reason: null }, 'qwen3.5-9b': { offer: 'installed', reason: null } },
+}, () => undefined);
 const LINKS = '🔥 Support the Show:\nhttps://example.com/patreon';
 function realishItem() {
   return {
@@ -365,7 +370,7 @@ check('on an item: answers go back by position, the link block never reaches a m
   const seen = [];
   const warnings = [];
   await service.rerollGateItem(item, {
-    settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING, lifecycle: null, warnings, sourceLabel: 'u1 - test',
+    settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING, models: MODELS, lifecycle: null, warnings, sourceLabel: 'u1 - test',
     bind: {
       decide: fakeDecide(judgeItem, seen),
       revise: async (r) => r.units.map((u) => FIX.get(u) ?? u),
@@ -389,7 +394,7 @@ check('on an item: every decide, re-roll and the ranking are in _prompt_trace wi
   const item = realishItem();
   const warnings = [];
   await service.rerollGateItem(item, {
-    settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING,
+    settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING, models: MODELS,
     lifecycle: null, warnings, sourceLabel: 'u1 - test',
     bind: { decide: fakeDecide((rule, text, pos) => (rule === 'rank' ? 1 : judgeItem(rule, text))), revise: async (r) => r.units.map((u) => FIX.get(u) ?? u) },
   });
@@ -418,7 +423,7 @@ check('on an item: a unit that still fails is a run warning and a reroll_gate wa
   const item = realishItem();
   const warnings = [];
   await service.rerollGateItem(item, {
-    settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING,
+    settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING, models: MODELS,
     lifecycle: null, warnings, sourceLabel: 'u1 - test',
     bind: { decide: fakeDecide((rule, text) => (rule === 'rank' ? 1 : judgeItem(rule, text))), revise: async (r) => r.units },
   });

@@ -87,7 +87,7 @@ import log from 'electron-log';
 import { JobCancelledError, isAbortError } from './cancellation';
 import { Chapter } from './chapter-generator.service';
 import { linkBlockIndex } from './description-composer';
-import { MetadataRoutingOption, resolveOperatorOption } from './metadata-routing';
+import { MetadataRoutingOption, resolveOperatorOption, RoutingModels } from './metadata-routing';
 import {
   askToRewrite,
   buildRewritePrompt,
@@ -153,8 +153,8 @@ function scrubPass(origin: ScrubOrigin): RewritePassIdentity {
  * description task offers before anything is read. Soften's `resolveSoftenOption` with a
  * different task constant — the shared validator is metadata-routing.ts's.
  */
-export function resolveScrubOption(optionId: unknown): MetadataRoutingOption {
-  return resolveOperatorOption(SCRUB_ROUTING_TASK, optionId);
+export function resolveScrubOption(optionId: unknown, models: RoutingModels): MetadataRoutingOption {
+  return resolveOperatorOption(SCRUB_ROUTING_TASK, optionId, models);
 }
 
 /**

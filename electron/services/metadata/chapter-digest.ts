@@ -34,7 +34,7 @@
  * has no answer.
  *
  * WHAT STILL SUMMARIZES. Compilation mode, and only compilation mode — see
- * `AIManagerService.summarizeTranscript` and metadata-routing.ts SUMMARIZATION_MODEL.
+ * `AIManagerService.summarizeTranscript` and metadata-routing.ts SUMMARIZATION_OPTION.
  *
  * THE INPUT POLICY (P4, CRUCIBLE-MIGRATION-PLAN.md 7.2, LEDGER #196). Which of the two modes an
  * item lands in is decided by a declared policy, stated per run:

@@ -93,13 +93,12 @@ import {
 } from '../services/metadata/saved-transcript.service';
 import { composeChapterBlock, composeDescription, composeDescriptionSections, composeTags } from '../services/metadata/description-composer';
 import {
-  SUMMARIZATION_MODEL,
   buildRoutingView,
   describeRouting,
   migrateStoredRouting,
   resolveChapterModelOption,
   resolveMetadataRouting,
-  resolveSnapChapterModels,
+  resolveSnapBoundaryModels,
   routedModelString,
   routingOption,
   validateRoutingSelections,
@@ -123,6 +122,7 @@ import { setupCrucibleIpc } from '../crucible/crucible-ipc';
 import { crucibleVoiceIsolation } from '../crucible/denoise';
 import type { CrucibleContext } from '../crucible/context';
 import { catalogInventory } from '../crucible/catalog';
+import { readRoutingModels } from '../services/metadata/routing-models';
 import type { LaneRun } from '../crucible/lanes';
 import type { ResumeStage } from '../crucible/wire';
 
@@ -1528,31 +1528,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // call on the titles transport) — insights-guidelines.ts has the whole design.
       const insights = prepareChannelInsights(analytics.analyticsStore, activePromptSet);
 
-      // The summarizer follows the CHAPTERS field's routing (resolveChapterModelOption —
-      // per-field as of 2026-08-24): condensation rewrites the words every content field
-      // reads, so the model trusted to write the chapter labels is the model trusted to
-      // condense — and a cloud-routed run must not fire up a 17GB local model to do it
-      // (measured 2026-08-23: a 60,695-char podcast spent ~7 minutes in local
-      // summarization before its first cloud call). A local chapters routing summarizes on
-      // the declared local constant, never on the Settings provider (that path was the
-      // measured defect the constant replaced).
-      //
-      // IT IS RESOLVED FOR COMPILATION MODE ONLY, as of the same day. The per-item path stopped
-      // summarizing entirely: over the direct-pass ceiling its field calls read the chapter
-      // digest (chapter-digest.ts), so on an individual run this value is carried and never
-      // used. Compilation joins every item into one prompt and has no chapter list to digest,
-      // which is why the resolution stays here rather than moving into that branch.
-      const resolvedRouting = resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections);
-      const summarizerOption = resolveChapterModelOption(resolvedRouting);
-      const summarizationModel =
-        summarizerOption.kind === 'cloud' ? summarizerOption.model : SUMMARIZATION_MODEL;
-      log.info(`[IPC] compilation summarization (compilation mode only) runs on ${summarizationModel}`);
+      // The compilation summarizer is resolved INSIDE the job now (metadata-generator.service.ts
+      // `summarizationModel`): it follows the chapters row, and a local one is the declared
+      // SUMMARIZATION_OPTION bound on the job's own server, which is only known once the job runs.
 
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
         mode: params.mode || settings.defaultMode,
-        summarizationModel,
         outputPath: params.outputPath || settings.outputDirectory,
         promptSet: activePromptSet,
         promptSetsDir: getPromptSetsDirectory(),
@@ -2436,7 +2419,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         }
         // Checked BEFORE anything is read: an option the titles task does not offer is the
         // caller being wrong about the dropdown, and it must not reach a transport.
-        const option = resolveTitlesOption(optionId);
+        // Bound on the server this call runs on (the routing's, else the selected one): the pick
+        // names a model, that server's catalog names the build, refused by name when it has none.
+        const option = resolveTitlesOption(optionId, await readRoutingModels('10 more titles', [optionId]));
 
         const outputDirectory = (store as any).store?.outputDirectory;
         if (!outputDirectory) {
@@ -2565,7 +2550,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // Checked BEFORE anything is read, exactly as the titles picker is: an option the task
         // does not offer is the caller being wrong about the dropdown, and it must not reach a
         // transport.
-        const option = resolveSoftenOption(optionId);
+        // Bound on the server this call runs on (the routing's, else the selected one): the pick
+        // names a model, that server's catalog names the build, refused by name when it has none.
+        const option = resolveSoftenOption(optionId, await readRoutingModels('softening', [optionId]));
 
         const outputDirectory = (store as any).store?.outputDirectory;
         if (!outputDirectory) {
@@ -2769,7 +2756,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // Checked BEFORE anything is read, exactly as the titles and softening pickers are: an
         // option the task does not offer is the caller being wrong about the dropdown, and it
         // must not reach a transport.
-        const option = resolveScrubOption(optionId);
+        // Bound on the server this call runs on (the routing's, else the selected one): the pick
+        // names a model, that server's catalog names the build, refused by name when it has none.
+        const option = resolveScrubOption(optionId, await readRoutingModels('the cleanup', [optionId]));
 
         // "Clean up again" beside one section names just that section's keys (LEDGER #223). An
         // absent list is the whole pass; a list with anything else in it is the page being wrong.
@@ -2949,7 +2938,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // THE ROUTING TABLE picks the model (LEDGER #204), read as a job reads it.
       const routing = resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections);
       const task = REROLL_ROUTING_TASK[field];
-      const option = routingOption(task, routing[task]);
+      // Bound on the server this call runs on (the routing's, else the selected one), from one
+      // catalog read: the row names the model, that server's catalog names the build.
+      const models = await readRoutingModels(`the ${name} re-roll`, [routing[task], routing[SCRUB_ROUTING_TASK]]);
+      const option = routingOption(task, routing[task], models);
       const systemTurn = SYSTEM_PROMPTS.PLAIN_SYSTEM;
 
       // A copy goes through the calls, as the scrub button's does; the record is written once, at
@@ -3000,7 +2992,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         if (scrubOnly.length > 0) {
           working._prompt_trace = [];
           const pass = await scrubGeneratedItem(working, {
-            option: routingOption(SCRUB_ROUTING_TASK, routing[SCRUB_ROUTING_TASK]),
+            option: routingOption(SCRUB_ROUTING_TASK, routing[SCRUB_ROUTING_TASK], models),
             transport: { aiManager },
             origin: 'operator request',
             only: scrubOnly,
@@ -3380,7 +3372,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const totalDurationSeconds = parsed.data.summary.durationSeconds;
 
       const settings = (store as any).store;
-      const models = resolveSnapChapterModels(
+      // Boundaries only: no title is written, so the chapters row is not bound (null) and a
+      // chapters model the server lacks does not refuse a split that never calls it.
+      const models = resolveSnapBoundaryModels(
         resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
         analytics.crucible.lanes.gpuVenue()
       );

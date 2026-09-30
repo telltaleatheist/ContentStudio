@@ -44,7 +44,8 @@ import * as path from 'path';
 import * as log from 'electron-log';
 import type { JobLeases } from '../../crucible/lease';
 import type { AIManagerService } from '../metadata/ai-manager.service';
-import { migrateStoredRouting, resolveMetadataRouting, routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting } from '../metadata/metadata-routing';
+import { migrateStoredRouting, resolveMetadataRouting, routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting, type RoutingModels } from '../metadata/metadata-routing';
+import { readRoutingModels } from '../metadata/routing-models';
 import { OutputHandlerService } from '../metadata/output-handler.service';
 import { promptAssets } from '../metadata/prompt-assets';
 import { loadSavedTranscript } from '../metadata/saved-transcript.service';
@@ -310,8 +311,14 @@ export class ReportThumbnails {
     return resolveMetadataRouting(migrateStoredRouting(this.deps.store.get('metadataRouting')).selections);
   }
 
-  private routed(task: 'thumbnail_words'): MetadataRoutingOption {
-    return routingOption(task, this.routing()[task]);
+  /**
+   * The row read now and bound on the server this step runs on (`gpuVenue`), from one catalog read:
+   * the row names a model, that server's catalog names the build, refused by name when it has none.
+   */
+  private async routed(task: 'thumbnail_words', what: string): Promise<{ routing: ResolvedMetadataRouting; models: RoutingModels; option: MetadataRoutingOption }> {
+    const routing = this.routing();
+    const models = await readRoutingModels(what, [routing[task]], this.deps.gpuVenue);
+    return { routing, models, option: routingOption(task, routing[task], models) };
   }
 
   /**
@@ -761,7 +768,7 @@ export class ReportThumbnails {
       const record = this.actionable(loc, 'rewrite');
       const pair = this.pairOf(record, n);
       const ctx = this.itemContext(loc);
-      const wordsOption = this.routed('thumbnail_words');
+      const wordsOption = (await this.routed('thumbnail_words', 'the Thumbnails window\'s words')).option;
       this.deps.progress({ jobId, itemId, line: `Writing the words for “${wanted}”...` });
       const ai = this.deps.aiManager();
       let words;
@@ -843,7 +850,8 @@ export class ReportThumbnails {
       }
       // The words on the window's held model when the row is local; a cloud or `claude -p` row
       // holds no card, and its run gets a job of its own (nothing is leased on it), given back after.
-      const held = await this.textJob(this.routed('thumbnail_words'));
+      const words = await this.routed('thumbnail_words', 'Thumbnails from your screenshots');
+      const held = await this.textJob(words.option);
       const own = held === undefined ? this.deps.holdJob('Thumbnails from your screenshots') : null;
       const leases = held ?? own!;
       const ai = this.deps.aiManager();
@@ -864,7 +872,8 @@ export class ReportThumbnails {
           {
             leases,
             aiManager: ai,
-            routing: this.routing(),
+            routing: words.routing,
+            models: words.models,
             cancelled: () => false,
             progress: (line) => this.deps.progress({ jobId, itemId, line }),
           },
@@ -933,10 +942,13 @@ export class ReportThumbnails {
     const leases = this.deps.holdJob(what);
     const ai = this.deps.aiManager();
     try {
+      const routing = this.routing();
       const run = make({
         leases,
         aiManager: ai,
-        routing: this.routing(),
+        routing,
+        // Bound on the server these stages run on, from one catalog read, before anything is loaded.
+        models: await readRoutingModels(what, [routing.thumbnail_words], this.deps.gpuVenue),
         cancelled: () => false,
         progress: (line) => this.deps.progress({ jobId, itemId, line }),
       });

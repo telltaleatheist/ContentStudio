@@ -34,7 +34,7 @@ import { crucibleTransport } from '../../../crucible/transport';
 import { loadContextFor } from '../context-sizing';
 import { DECIDE_QUESTION_TOKENS } from '../../../crucible/context-check';
 import { LOCAL_FIELD_TIMEOUT_MS } from '../metadata-tasks';
-import { MetadataRoutingTaskId, REROLL_SCORER_MODEL, ResolvedMetadataRouting, routingOption } from '../metadata-routing';
+import { MetadataRoutingTaskId, REROLL_SCORER_MODEL, ResolvedMetadataRouting, RoutingModels, routingOption } from '../metadata-routing';
 import type { JobModelLifecycle } from '../model-lifecycle';
 import { parseLines } from '../plain-call';
 import { promptAssets } from '../prompt-assets';
@@ -68,6 +68,8 @@ export interface RerollGateRun {
   /** Read for the prompt set's link block, and (unless `bind` is given) to send the re-roll calls. */
   aiManager: Pick<AIManagerService, 'descriptionLinks' | 'runPlainRequest'>;
   routing: ResolvedMetadataRouting;
+  /** The job's routed options bound to its server: each re-roll runs on the build its row resolved to. */
+  models: RoutingModels;
   lifecycle: JobModelLifecycle;
   /** The run's warnings; the gate's are pushed here, prefixed with the item's label. */
   warnings: string[];
@@ -216,7 +218,7 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
     }));
 
   const revise: ReviseFn = run.bind?.revise ?? (async (request) => {
-    const option = routingOption(FIELD_TASK[request.field], run.routing[FIELD_TASK[request.field]]);
+    const option = routingOption(FIELD_TASK[request.field], run.routing[FIELD_TASK[request.field]], run.models);
     const what = `re-roll gate: ${request.field} re-roll ${request.attempt} (${request.rule}) for ${run.sourceLabel}`;
     const text = await run.aiManager.runPlainRequest(
       request.prompt,
@@ -259,7 +261,7 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
     trace.push({ what: call.what, model: REROLL_SCORER_MODEL, chars: prompt.length, at: call.at, prompt, answers: call.answers, maxTokens: 0, act: 'decide' });
   }
   for (const call of record.rerollCalls) {
-    const option = routingOption(FIELD_TASK[call.field], run.routing[FIELD_TASK[call.field]]);
+    const option = routingOption(FIELD_TASK[call.field], run.routing[FIELD_TASK[call.field]], run.models);
     trace.push({
       what: `re-roll gate: ${call.field} re-roll ${call.attempt} (${call.rule})`, model: option.model, chars: call.prompt.length, at: call.at,
       prompt: call.prompt, answers: call.answers, ...(option.kind === 'local' ? { maxTokens: REVISE_NUM_PREDICT, act: 'generate' } : {}),

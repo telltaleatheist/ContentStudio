@@ -35,7 +35,7 @@ same model is the same hold; a different model replaces it). In `metadata-genera
 | 2 | `frames` | CPU | none | " (the grid: at most two frames a scene, the sharpest, look-alikes dropped) |
 | - | channel lessons | GPU/cloud | titles row | just before the first chapter (only when the evidence moved) |
 | - | chapters, fields, scrub, re-roll gate | GPU/cloud | as routed | per item, as before |
-| 3 | `words` | GPU/cloud | `thumbnail_words` (default the 8-bit 27B) | per item, after the gate (the titles are settled and, with the gate on, ranked) |
+| 3 | `words` | GPU/cloud | `thumbnail_words` (default the 27B: the build the job's server holds) | per item, after the gate (the titles are settled and, with the gate on, ranked) |
 | 4 | `render` | CPU | none | " (only pairs that have a frame: screenshot pairs; a story's pairs wait for Owen's frame picks. No photo: Owen picks them) |
 | - | save | | | the record rides on the item |
 

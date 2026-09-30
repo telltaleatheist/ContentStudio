@@ -130,6 +130,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
                   @if (option.availability === 'not-here') {
                     <span class="option-flag missing">— not on {{ server().name }}</span>
                   }
+                  @if (option.availability === 'ambiguous') {
+                    <span class="option-flag missing">— more than one build on {{ server().name }}</span>
+                  }
                   @if (option.availability === 'unknown') {
                     <span class="option-flag unknown">— unknown</span>
                   }
@@ -164,6 +167,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
                     @if (option.availability === 'not-here') {
                       <span class="option-flag missing">— not on {{ server().name }}</span>
                     }
+                    @if (option.availability === 'ambiguous') {
+                      <span class="option-flag missing">— more than one build on {{ server().name }}</span>
+                    }
                     @if (option.availability === 'unknown') {
                       <span class="option-flag unknown">— unknown</span>
                     }
@@ -173,11 +179,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
             </mat-form-field>
           </div>
           @if (chosenOption(task); as chosen) {
-            @if (chosen.availability === 'not-here' || chosen.availability === 'pullable') {
+            @if (chosen.availability === 'not-here' || chosen.availability === 'pullable' || chosen.availability === 'ambiguous') {
               <p class="row-note missing">
-                {{ chosen.availabilityNote || (chosen.model + ' cannot run on ' + server().name + '.') }}
-                {{ task.label }} is refused by name when it runs — nothing is substituted. Pick a
-                model this server offers{{ chosen.availability === 'pullable' ? ', or pull it there' : '' }}.
+                {{ chosen.availabilityNote || (chosen.label + ' is not on ' + server().name + '.') }}
+                {{ task.label }} won't run until you pick a model this server
+                offers{{ chosen.availability === 'pullable' ? ', or pull it there' : '' }}.
               </p>
             }
           }

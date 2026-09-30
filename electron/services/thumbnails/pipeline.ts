@@ -48,7 +48,7 @@ import type { TranscriptRef } from '../publish/publish-types';
 import type { AIManagerService } from '../metadata/ai-manager.service';
 import type { ChannelData } from '../metadata/prompt-assets';
 import type { SRTSegment } from '../metadata/transcription.service';
-import { routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting } from '../metadata/metadata-routing';
+import { routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting, type RoutingModels } from '../metadata/metadata-routing';
 import type { JobLeases } from '../../crucible/lease';
 import { filterFrames } from './frame-metrics';
 import { GRID_PER_SCENE, distinctFrames, gridFrames, groupScenes } from './frame-scenes';
@@ -191,6 +191,8 @@ export interface ThumbnailJobDoors {
   leases: JobLeases;
   aiManager: Pick<AIManagerService, 'runPlainRequest'>;
   routing: ResolvedMetadataRouting;
+  /** The job's routed options bound to its server (metadata-routing.ts RoutingModels): the words' model comes from it. */
+  models: RoutingModels;
   signal?: AbortSignal;
   /** True once the run is being stopped (cancel, park, stall): a failure then is the stop, rethrown. */
   cancelled: () => boolean;
@@ -214,8 +216,8 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function routed(routing: ResolvedMetadataRouting, task: 'thumbnail_words'): MetadataRoutingOption {
-  return routingOption(task, routing[task]);
+function routed(routing: ResolvedMetadataRouting, models: RoutingModels, task: 'thumbnail_words'): MetadataRoutingOption {
+  return routingOption(task, routing[task], models);
 }
 
 /** The creator's names for the prompts, from the channel's brand terms (refused when it has none). */
@@ -572,7 +574,7 @@ export class ItemThumbnailRun {
   }
 
   private async words(subjects: readonly string[]): Promise<void> {
-    const option = routed(this.doors.routing, 'thumbnail_words');
+    const option = routed(this.doors.routing, this.doors.models, 'thumbnail_words');
     const creator = creatorOf(this.item.channel);
     const transcript = transcriptLines(this.item.segments);
     const frames = this.pairFrames;

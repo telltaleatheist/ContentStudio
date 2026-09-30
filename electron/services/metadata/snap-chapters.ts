@@ -163,6 +163,9 @@ export function snapTransports(deps: SnapTransportDeps): { chat: ChatFn; decide:
   let titles: ChatFn | null = null;
   const chat: ChatFn = (prompt, o) => {
     if (o.role === 'outline') return localChat(deps, models.scorer.model, prompt, o, () => undefined);
+    if (models.titles === null) {
+      throw new Error(`snap asked for a ${o.role} call (${o.what}) on a boundaries-only run, which bound no chapters model`);
+    }
     titles ??= titleChat({ ...deps, titles: models.titles });
     return titles(prompt, o);
   };

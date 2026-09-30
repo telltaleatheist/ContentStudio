@@ -26,8 +26,8 @@ import {
 import {
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
+  jobOptionIds,
   metadataRunTasks,
-  METADATA_ROUTING_OPTIONS,
   ResolvedMetadataRouting,
   resolveChapterModelOption,
   resolveCompilationPackagingOption,
@@ -35,7 +35,11 @@ import {
   resolveSnapChapterModels,
   routedModelString,
   routingOption,
+  routingOptionDef,
+  RoutingModels,
+  SUMMARIZATION_OPTION,
 } from './metadata-routing';
+import { readRoutingModels } from './routing-models';
 import type { ModelRosterEntry } from './metadata-tasks';
 import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
@@ -84,12 +88,13 @@ export interface GenerationParams {
   inputs: string[];
   mode?: 'individual' | 'compilation';
   /**
-   * The compilation summarizer's model: the chapters row when it is cloud, else the declared
-   * SUMMARIZATION_MODEL (ipc-handlers). No provider, host, key or legacy model rides here any
-   * more (P2): the routing table picks every model (LEDGER #204), the selected Crucible server
-   * runs it, and the key is that server's (#194).
+   * THIS JOB's routed options bound to its server (metadata-routing.ts RoutingModels): set by
+   * `generate` at its start from the job's server's catalog, never by a caller (a caller's value is
+   * replaced). Every routed model this job sends is bound through it, so a routed option names a
+   * MODEL and the server's catalog names the build (Owen, 2026-09-29). A method reached without
+   * `generate` (a keeper) passes its own.
    */
-  summarizationModel?: string;
+  routingModels?: RoutingModels;
   outputPath?: string;
   promptSet?: string;
   promptSetsDir?: string;
@@ -289,6 +294,16 @@ export class MetadataGeneratorService {
     console.log('[MetadataGenerator] Prompt Set:', params.promptSet || 'default');
 
     try {
+      // THE JOB'S MODELS, resolved once against the job's server (the routing's server, or the fast
+      // pin's) and cached for the job: every routed option below binds from this one catalog read,
+      // and each local one is logged with the build it runs as ("Qwen 3.8 · 27B → qwen3.8-27b-4bit
+      // on "wsl""). An option that server cannot run is refused by name when the job uses it,
+      // before anything is loaded or sent.
+      params = {
+        ...params,
+        routingModels: await readRoutingModels(`the metadata job ${params.jobId}`, jobOptionIds(this.routing(params))),
+      };
+
       // Initialize services
       log.info('[MetadataGenerator] Initializing services...');
       log.info('[MetadataGenerator] Creating TranscriptionService...');
@@ -340,7 +355,7 @@ export class MetadataGeneratorService {
         // The metadata rows only: the Thumbnails tab's rows are not part of this run (#236).
         (Object.entries(this.routing(params)) as [MetadataRoutingTaskId, string][])
           .filter(([taskId]) => metadataRunTasks().some((task) => task.id === taskId))
-          .every(([taskId, optionId]) => routingOption(taskId, optionId).kind === 'local')
+          .every(([, optionId]) => routingOptionDef(optionId).kind === 'local')
           ? 'local'
           : 'cloud';
 
@@ -352,7 +367,10 @@ export class MetadataGeneratorService {
       // Initialize AI Manager
       const aiConfig: AIConfig = {
         transcriptCeiling,
-        summarizationModel: params.summarizationModel,
+        // The compilation summarizer (compilation mode only): the chapters row when it is cloud,
+        // else the declared SUMMARIZATION_OPTION bound on this job's server. Bound only when the
+        // run IS a compilation, so an individual run is never refused over a model it never calls.
+        summarizationModel: (params.mode || 'individual') === 'compilation' ? this.summarizationModel(params) : undefined,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
         // insightsBlock is NOT set here: it is resolved right after construction, below,
@@ -676,7 +694,8 @@ export class MetadataGeneratorService {
         // rather than inside AIManagerService for the same reason every other model is: the
         // manager routes on a model string, it does not read the routing table.
         const packagingOption = resolveCompilationPackagingOption(
-          resolveMetadataRouting(params.metadataRouting)
+          resolveMetadataRouting(params.metadataRouting),
+          this.models(params)
         );
         const metadata = await aiManager.generateCompilationMetadata(
           summary,
@@ -849,7 +868,7 @@ export class MetadataGeneratorService {
           // are applied, and the item carries `scrubbed.failed` — each one also a run warning
           // here, so the job's report says it as well as the item. Only a cancel stops it.
           const scrub = await scrubGeneratedItem(metadata, {
-            option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK]),
+            option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK], this.models(params)),
             transport: { aiManager },
             // The run's own scrub. The reports page's button passes 'operator request' through
             // the same function, and the trace entries say which of the two wrote them.
@@ -872,6 +891,7 @@ export class MetadataGeneratorService {
             settings: rerollGate,
             aiManager,
             routing: this.routing(params),
+            models: this.models(params),
             lifecycle,
             warnings,
             sourceLabel,
@@ -1149,8 +1169,9 @@ export class MetadataGeneratorService {
     const alsoLoads: ModelRosterEntry[] = [];
     // The chapter model counts against the local two-model budget only when it IS local —
     // chapters routed to a cloud option make nothing resident.
-    const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
-    if (hasChapters && chapterOption.kind === 'local') {
+    // Bound only when it loads: a chapterless item never calls the chapter model.
+    if (hasChapters && routingOptionDef(this.routing(params).chapters).kind === 'local') {
+      const chapterOption = resolveChapterModelOption(this.routing(params), this.models(params));
       alsoLoads.push({ model: chapterOption.model, what: 'chapters' });
     }
     // THE SUMMARIZER USED TO BE A THIRD ENTRY HERE, held resident for the length of the job on
@@ -1161,6 +1182,7 @@ export class MetadataGeneratorService {
 
     const plan = planMetadataUnits({
       routing: this.routing(params),
+      models: this.models(params),
       aiManager,
       hasInsights: aiManager.hasInsightsBlock(),
       hasChapters,
@@ -1298,6 +1320,32 @@ export class MetadataGeneratorService {
     return resolveMetadataRouting(params.metadataRouting);
   }
 
+  /** This job's bound models (set by `generate`). Refused by name when a path skipped it. */
+  private static models(params: GenerationParams): RoutingModels {
+    if (params.routingModels === undefined) {
+      throw new Error(
+        'This metadata step was reached without its job\'s routed models (MetadataGeneratorService.generate resolves ' +
+          'them against the job\'s server at its start), so no model id can be sent.'
+      );
+    }
+    return params.routingModels;
+  }
+
+  /**
+   * The compilation summarizer's model: the chapters row when it is cloud (condensation rewrites
+   * the words every content field reads, so the model trusted with the chapter labels is trusted to
+   * condense, and a cloud run must not load a local model for it), else the declared
+   * SUMMARIZATION_OPTION bound on this job's server. Logged by name.
+   */
+  private static summarizationModel(params: GenerationParams): string {
+    const routing = this.routing(params);
+    const model = routingOptionDef(routing.chapters).kind === 'cloud'
+      ? resolveChapterModelOption(routing, this.models(params)).model
+      : this.models(params).bindRole(SUMMARIZATION_OPTION, 'The compilation summarizer').model;
+    log.info(`[MetadataGenerator] compilation summarization runs on ${model}`);
+    return model;
+  }
+
   /**
    * The thumbnails stages' doors for one item: THIS JOB's leases (so the words' model is a hold of
    * the one job, and a model the fields left loaded is not loaded again), the
@@ -1312,6 +1360,7 @@ export class MetadataGeneratorService {
       },
       aiManager,
       routing: this.routing(params),
+      models: this.models(params),
       ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
       cancelled: () => this.cancelRequested(params),
       progress: (message) => {
@@ -1336,11 +1385,7 @@ export class MetadataGeneratorService {
     aiManager: AIManagerService,
     params: GenerationParams
   ): { model: string; distill: (prompt: string, what: string) => Promise<string | null> } {
-    const optionId = this.routing(params).titles;
-    const option = METADATA_ROUTING_OPTIONS[optionId];
-    if (!option) {
-      throw new Error(`The titles routing names unknown option "${optionId}", so the guidelines distiller has no transport`);
-    }
+    const option = routingOption('titles', this.routing(params).titles, this.models(params));
     // Thinking OFF on both kinds (plan 6.3's distiller row). With it on, the local 27B reasons
     // past the whole 2048-token budget and returns a truncated fragment (hit live on both
     // channels on 2026-08-30); the lesson list is exactly the plain line output the campaign
@@ -1583,7 +1628,7 @@ export class MetadataGeneratorService {
     if (!item.srtSegments || item.srtSegments.length === 0) {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
-    const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue());
+    const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue(), this.models(params));
     const pick = this.resolveChapterPick(params);
     const titleThinking = params.chapterTitleThinking ?? true;
     const label = item.source || `item_${itemIndex + 1}`;
@@ -1725,7 +1770,7 @@ export class MetadataGeneratorService {
     // `chapters` entry (resolveChapterModelOption), set per-field in the modal. The labels
     // this pipeline writes are the inputs the description conditions on, so the row
     // defaults to the same capable local model the old slot projection defaulted to.
-    const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
+    const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting), this.models(params));
     const model = chapterOption.model;
     const label = item.source || `item_${itemIndex + 1}`;
 

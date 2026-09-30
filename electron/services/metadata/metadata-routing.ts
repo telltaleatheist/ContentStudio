@@ -23,7 +23,13 @@
  * something legitimate and an upgrade took it away, and throwing there fails the very modal
  * they would fix it in. Those ids are listed in REMOVED_ROUTING_TASKS /
  * REMOVED_ROUTING_OPTIONS and dropped by `migrateStoredRouting` with a logged notice and a
- * write-back — a recorded migration, not a silent substitution. Anything else still throws.
+ * write-back — a recorded migration, not a silent substitution. An id MERGED into another
+ * option (MERGED_ROUTING_OPTIONS: the 8-bit 27B into the one 27B option, 2026-09-29) is
+ * rewritten to it the same way. Anything else still throws.
+ *
+ * AN OPTION NAMES A MODEL, NOT A QUANT (2026-09-29). Which Crucible id a local option sends is
+ * decided by the server the job runs on, from its catalog (resolveLocalOption, RoutingModels);
+ * callers only ever hold an option bound that way.
  */
 
 import * as log from 'electron-log';
@@ -52,37 +58,63 @@ export type MetadataRoutingTaskId =
  */
 export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
 
-export interface MetadataRoutingOption {
+/**
+ * One row of the option TABLE: a MODEL, never a quant (Owen, 2026-09-29: "crucible's job is to
+ * select the model quant that works for the system we're using. wsl uses 4 bit, mac uses 8 bit.
+ * it doenst need to tell the user that"; "we can retrieve the quant by listing the available
+ * model on each crucible server. content studio shouldnt request a model that isnt available on
+ * a crucible server").
+ *
+ * A table row is not something a caller can send: a local option stands for one or more Crucible
+ * ids (the quant builds of one model), and WHICH one a run sends is decided against the server
+ * the run is on, by {@link resolveLocalOption}. Callers get a {@link MetadataRoutingOption} (the
+ * bound form, with the id to send) only through {@link RoutingModels}.
+ */
+export interface MetadataRoutingOptionDef {
   /**
    * 'local' is a model a Crucible server holds on its card: loaded, leased, and checked
    * against its loaded context (electron/crucible/transport.ts). 'cloud' is everything else:
    * an Anthropic upstream the server forwards, or `claude -p` outside Crucible.
    */
   kind: 'cloud' | 'local';
-  /** What the modal shows. */
+  /** What the modal shows: the model's name. Never a bit width or a quant (Owen, 2026-09-29). */
   label: string;
   /**
-   * The string AIManagerService.makeRequest routes on: the Crucible id for every option
-   * that runs through Crucible (`qwen3.8-27b-4bit`, `anthropic/claude-sonnet-5`), and
-   * `claude-cli:<alias>` for the `claude -p` rungs, which stay outside it (LEDGER #193).
+   * The Crucible ids this option stands for, as a FIXED, REVIEWED list: never guessed from names
+   * at run time. A local option lists every quant build of its model that some server may hold
+   * (`qwen3.8-27b-8bit` on the Mac, `qwen3.8-27b-4bit` on the PC); the server's catalog decides
+   * which one a run sends (exactly one must be runnable there). An upstream option lists its one
+   * `anthropic/` id. Null for the `claude -p` rungs, which never reach Crucible (LEDGER #193).
+   */
+  crucibleIds: readonly string[] | null;
+  /** The `claude -p` rungs only: `claude-cli:<alias>`, sent as it is. Null for every Crucible option. */
+  cliModel: string | null;
+}
+
+/**
+ * One option BOUND to the server a job runs on: what every caller sends. Made only by
+ * {@link RoutingModels} (a job's resolution, read from that server's catalog at the job's start),
+ * so no caller can send a table row's model without it having been resolved.
+ */
+export interface MetadataRoutingOption {
+  kind: 'cloud' | 'local';
+  /** The option's label (the model's name, no quant). */
+  label: string;
+  /**
+   * The string AIManagerService.makeRequest routes on: the RESOLVED Crucible id for a local
+   * option (`qwen3.8-27b-4bit` on the PC), the upstream id for Claude (`anthropic/claude-sonnet-5`),
+   * and `claude-cli:<alias>` for the `claude -p` rungs, which stay outside Crucible (LEDGER #193).
    */
   model: string;
   /**
-   * The Crucible model id this option runs as (plan 6.2), or null for the `claude -p` rungs.
-   * The routing dialog judges availability against the selected server's catalog by this id,
-   * and the transport sends exactly this id: nothing maps it to anything else downstream.
+   * The Crucible model id this binding runs as, or null for the `claude -p` rungs. The same as
+   * `model` whenever it is not null: the transport sends exactly this id and nothing maps it to
+   * anything else downstream.
    */
   crucibleModel: string | null;
-  /**
-   * THERE IS NO PER-OPTION HOST, AND NO PROMPT SHAPE TO CHOOSE, as of 2026-08-25.
-   *
-   * This interface used to carry `host`, `startHint`, `startCommand` and `promptStyle`, and
-   * all four existed for one thing: the trained adapters, and in particular the 32B titles
-   * model on its own Ollama-SHAPED MLX shim, which the app started on demand. The operator
-   * retired the adapters — the prompted models replaced them — so every local option is now a
-   * plain Ollama model on the one configured host, in the one prompt-set shape, and there is
-   * nothing left for those fields to vary. Keeping them would have described a choice the
-   * build can no longer make.
+  /*
+   * THERE IS NO PER-OPTION HOST, AND NO PROMPT SHAPE TO CHOOSE, as of 2026-08-25: the adapters
+   * those fields existed for were retired (see git history for `host`/`promptStyle`).
    */
 }
 
@@ -109,18 +141,20 @@ export interface MetadataRoutingOption {
  * summarizer is a fixed, stated part of the compilation pipeline, exactly like
  * the routing options below, and it is stated in one place.
  *
- * A Crucible id (plan 6.2), because AIManagerService's model strings are.
+ * AN OPTION ID, not a Crucible id, since 2026-09-29: it used to name `qwen3.8-27b-8bit`, a quant
+ * the PC cannot run. The job binds it on its own server like any routed row
+ * ({@link RoutingModels.bindRole}), so the Mac sends its 8-bit and the PC its 4-bit.
  *
  * NOT a fallback for an absent setting — there is no setting. Anyone who wants a different
  * summarizer changes this line, and the change is visible in the diff and in the run's log.
  */
-export const SUMMARIZATION_MODEL = 'qwen3.8-27b-8bit';
+export const SUMMARIZATION_OPTION = 'qwen38-27b';
 
 /**
  * The model the re-roll gate reads its decisions from (P9; LEDGER #201): the rule checks and the
  * title ranking, snap `decide` questions, never writing.
  *
- * A FIXED, DECLARED ROLE, like SUMMARIZATION_MODEL above and not a dialog row, for the reason the
+ * A FIXED, DECLARED ROLE, like SUMMARIZATION_OPTION above and not a dialog row, for the reason the
  * snap chaptering's scorer is one (#199: "9b -> outline, outline -> snap"): a decision is read off
  * one forward pass's letter probabilities, the thresholds that act on them were MEASURED on this
  * model (docs/crucible/P9.md), and a different model would need its own. A cloud model cannot
@@ -129,11 +163,11 @@ export const SUMMARIZATION_MODEL = 'qwen3.8-27b-8bit';
  */
 export const REROLL_SCORER_MODEL = 'qwen3.5-9b';
 
-export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
+export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOptionDef> = {
   // Crucible upstream ids (plan 6.2): the server that runs the call forwards them to Anthropic
   // on ITS key (LEDGER #194). Offered in the dialog only when that server has one configured.
-  sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'anthropic/claude-sonnet-5', crucibleModel: 'anthropic/claude-sonnet-5' },
-  opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'anthropic/claude-opus-5', crucibleModel: 'anthropic/claude-opus-5' },
+  sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', crucibleIds: ['anthropic/claude-sonnet-5'], cliModel: null },
+  opus5: { kind: 'cloud', label: 'Claude Opus 5', crucibleIds: ['anthropic/claude-opus-5'], cliModel: null },
   /**
    * The subscription rung (operator, 2026-08-24): the same Sonnet, reached through the
    * `claude -p` CLI on the operator's Claude Code plan instead of the metered API key.
@@ -145,13 +179,13 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * API fallback, deliberately: falling back would silently bill the key this option
    * exists to protect.
    */
-  'claude-cli': { kind: 'cloud', label: 'claude -p (Opus, subscription)', model: 'claude-cli:opus', crucibleModel: null },
+  'claude-cli': { kind: 'cloud', label: 'claude -p (Opus, subscription)', crucibleIds: null, cliModel: 'claude-cli:opus' },
   /**
    * The Sonnet rung of the same transport, split out 2026-08-24 when the operator asked
    * the claude -p rung to run Opus for an in-app comparison. Same key-free spawn, same
    * no-fallback rule; only the CLI model alias differs.
    */
-  'claude-cli-sonnet': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', model: 'claude-cli:sonnet', crucibleModel: null },
+  'claude-cli-sonnet': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', crucibleIds: null, cliModel: 'claude-cli:sonnet' },
   /**
    * The cheap cloud rung, added 2026-08-24. The prompt harness ran the production prompts
    * against it (tools/prompt-tune, cycle 1): descriptions and chapter details held at n=2
@@ -160,7 +194,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    */
   // The dated id the old mapClaudeModelName sent: the alias-less one the API is guaranteed
   // to accept (plan 6.2).
-  haiku45: { kind: 'cloud', label: 'Claude Haiku 4.5', model: 'anthropic/claude-haiku-4-5-20251001', crucibleModel: 'anthropic/claude-haiku-4-5-20251001' },
+  haiku45: { kind: 'cloud', label: 'Claude Haiku 4.5', crucibleIds: ['anthropic/claude-haiku-4-5-20251001'], cliModel: null },
   /**
    * The local default for the text fields as of 2026-08-22.
    *
@@ -170,7 +204,9 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * selectable is the point — an option naming a model that cannot run is a job that fails
    * an hour in. Every remaining adapter followed them out on 2026-08-25.
    */
-  'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5-9b', crucibleModel: 'qwen3.5-9b' },
+  // One Crucible id on every backend (the 9B has one build across hosts), so it resolves to itself
+  // wherever the server holds it.
+  'qwen35-9b': { kind: 'local', label: 'Qwen 3.5 · 9B', crucibleIds: ['qwen3.5-9b'], cliModel: null },
   /**
    * The metadata spec's A/B candidate for the two MECHANICAL calls, offered on description
    * and tags and nowhere else.
@@ -187,7 +223,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * reliably tell which is which. A default that changed on the strength of an untested
    * proposal would make that comparison retrospective.
    */
-  'qwen35-4b': { kind: 'local', label: 'Qwen3.5 4B', model: 'qwen3.5-4b', crucibleModel: 'qwen3.5-4b' },
+  'qwen35-4b': { kind: 'local', label: 'Qwen 3.5 · 4B', crucibleIds: ['qwen3.5-4b'], cliModel: null },
   /**
    * A BASE model on fields that used to be cloud-only, which is a deliberate exception to
    * this file's own rule and the reason the note below METADATA_ROUTING_TASKS was rewritten.
@@ -206,24 +242,21 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * `(descriptions)` label this table ever had marked a TRAINED ADAPTER, and this is a base
    * model appearing in six different dropdowns.
    *
-   * On Crucible it is the 4-bit build (`qwen3.8-27b-4bit`: mlx 4-bit on the Mac, AWQ-INT4 on
-   * the PC, plan 6.2). Its manifest states no thinking default, which is why every call on it
-   * states `thinking` (plan 1); the note about Ollama's generate endpoint went with Ollama.
-   */
-  'qwen38-27b': { kind: 'local', label: 'Qwen 27B (4-bit, PC)', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
-  /**
-   * THE 8-BIT 27B (2026-09-28, Owen: "isnt the 27b 8 bit available in crucible? we should use that
-   * if its available"). Installed on the Mac only (qwen3.8-27b-8bit, mlx); the PC holds the 4-bit.
-   * A separate option, not a quiet upgrade of `qwen38-27b`: a row routed to it on a server that
-   * lacks it is marked unavailable by the dialog and refused by name at call time.
+   * ONE OPTION FOR THE MODEL, not one per quant (Owen, 2026-09-29: "theres only one quant available
+   * on mac, one available on pc. we can retrieve the quant by listing the available model on each
+   * crucible server"). Crucible lists each quant as its own id: `qwen3.8-27b-8bit` (mlx-darwin only;
+   * the Mac's) and `qwen3.8-27b-4bit` (cuda-linux, mlx-darwin and llama-windows; the PC's), both
+   * `family = "qwen3.8"`, `params_b = 27`. The routing names the model; the job's server's catalog
+   * names the one build it runs (resolveLocalOption), so the Mac sends the 8-bit and WSL the 4-bit.
+   * The id is the old 4-bit option's, so a stored `qwen38-27b` keeps its row and now resolves per
+   * server; the old 8-bit option `qwen38-27b-8bit` is merged into it (MERGED_ROUTING_OPTIONS).
+   * Its manifests state no thinking default, which is why every call on it states `thinking`
+   * (plan 1).
    *
-   * THE DEFAULT OF EVERY 27B ROW since 2026-09-28 (Owen is removing the 4-bit 27B from the Mac):
-   * titles, description, chapters, thumbnail_text and pinned_comment default here and offer it
-   * first; `qwen38-27b` (the 4-bit) stays offered for runs on the PC, labelled "(4-bit, PC)". A
-   * STORED selection of `qwen38-27b` is left as stored (never rewritten); on a Mac without the
-   * 4-bit it is refused by name at call time and the dialog marks it unavailable.
+   * THE DEFAULT OF EVERY 27B ROW (titles, description, chapters, thumbnail_text, pinned_comment,
+   * thumbnail_words), as the 8-bit option was from 2026-09-28.
    */
-  'qwen38-27b-8bit': { kind: 'local', label: 'Qwen 27B (8-bit)', model: 'qwen3.8-27b-8bit', crucibleModel: 'qwen3.8-27b-8bit' },
+  'qwen38-27b': { kind: 'local', label: 'Qwen 3.8 · 27B', crucibleIds: ['qwen3.8-27b-8bit', 'qwen3.8-27b-4bit'], cliModel: null },
   // THE VISION RUNGS (qwen35-9b-vl, qwen35-2b, qwen35-08b, qwen38-27b-vl) were offered on the
   // thumbnail frame row only; they went with it on 2026-09-29 (REMOVED_ROUTING_OPTIONS).
 };
@@ -270,7 +303,7 @@ export interface MetadataRoutingTask {
  * EVERY DEFAULT IS LOCAL AS OF THIS BUILD. Titles were the last cloud default and moved to
  * the 27B; pinned comments moved off the 9B onto it too. The shipped table is now:
  *
- *   titles, thumbnail_text, pinned_comment  ->  qwen3.8:27b (the 8-bit build since 2026-09-28)
+ *   titles, thumbnail_text, pinned_comment  ->  Qwen 3.8 27B (the build the job's server holds)
  *   description                             ->  qwen3.5:9b (DescriptionUnit)
  *   tags                                    ->  code-assembled where the item has chapters,
  *                                               else qwen3.5:9b
@@ -304,19 +337,19 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'titles',
     label: 'Titles',
-    options: ['qwen38-27b-8bit', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b-8bit',
+    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'metadata',
   },
   {
     id: 'description',
     label: 'Description',
-    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    options: ['qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     // 27B as of 2026-08-23, up from the 9B: the 9B default shipped a description that
     // misattributed the video's claims and invented facts (the f2-braeden-sorbo
     // comparison). 9b/4b remain offered for the A/B.
-    defaultOptionId: 'qwen38-27b-8bit',
+    defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'metadata',
   },
@@ -338,8 +371,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'chapters',
     label: 'Chapters',
-    options: ['qwen38-27b-8bit', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b-8bit',
+    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'metadata',
   },
@@ -379,8 +412,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Thumbnail text',
     // 27B by default: the output is three words and the judgement behind them is the whole
     // video, so the cheaper model saves nothing worth having here.
-    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b-8bit',
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'metadata',
   },
@@ -395,8 +428,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b-8bit',
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'metadata',
   },
@@ -406,14 +439,14 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      * as a pair with one title: the tab's picked title, and in the metadata run each of the three
      * A/B titles (thumbnails/pipeline.ts). The metadata run's old `thumbnail_text` field is retired
      * the same day (no shipped channel declares it; its row stays for the re-roll button on older
-     * reports until phase 2 removes that field's UI). The same rungs as that field (the 8-bit 27B
-     * first, the default since 2026-09-28, Owen), so a run whose fields are on the 27B writes the
+     * reports until phase 2 removes that field's UI). The same rungs as that field (the 27B
+     * first, the default, Owen), so a run whose fields are on the 27B writes the
      * words on the model it already holds.
      */
     id: 'thumbnail_words',
     label: 'Thumbnail words',
-    options: ['qwen38-27b-8bit', 'qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b-8bit',
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'thumbnails',
   },
@@ -430,8 +463,8 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
  * is a plain table read. The name and signature survive because four call sites (the two
  * chapter runs, the two-model budget, the compilation summarizer) built on them.
  */
-export function resolveChapterModelOption(resolved: ResolvedMetadataRouting): MetadataRoutingOption {
-  return routingOption('chapters', resolved.chapters);
+export function resolveChapterModelOption(resolved: ResolvedMetadataRouting, models: RoutingModels): MetadataRoutingOption {
+  return models.bind('chapters', resolved.chapters);
 }
 
 /**
@@ -451,7 +484,8 @@ export const CHAPTER_SCORER_MODEL = 'qwen3.5-9b';
 /** Snap chaptering's two roles, resolved: the fixed scorer on a named server, and the chapters row for the titles. */
 export interface SnapChapterModels {
   scorer: { model: string; server: string };
-  titles: MetadataRoutingOption;
+  /** The chapters row bound on the job's server; null on a boundaries-only run that writes no titles (the in-queue split). */
+  titles: MetadataRoutingOption | null;
 }
 
 /** A snap run that cannot have its scorer: nothing is started (Law 1). Typed, so a caller reads the code (Law 10). */
@@ -472,17 +506,38 @@ export class SnapScorerUnavailableError extends Error {
 export function resolveSnapChapterModels(
   resolved: ResolvedMetadataRouting,
   venue: { server: string } | { server: null; reason: string },
+  models: RoutingModels,
+): SnapChapterModels & { titles: MetadataRoutingOption } {
+  const scorer = resolveSnapScorer(resolved, venue);
+  return { scorer, titles: resolveChapterModelOption(resolved, models) };
+}
+
+/**
+ * A boundaries-only snap run (the in-queue split): the scorer alone. It writes no titles, so the
+ * chapters row is not bound, and a chapters model its server lacks does not refuse a run that never
+ * calls it. `titles` is null and snapTransports refuses a title call by name.
+ */
+export function resolveSnapBoundaryModels(
+  resolved: ResolvedMetadataRouting,
+  venue: { server: string } | { server: null; reason: string },
 ): SnapChapterModels {
-  const titles = resolveChapterModelOption(resolved);
+  return { scorer: resolveSnapScorer(resolved, venue), titles: null };
+}
+
+function resolveSnapScorer(
+  resolved: ResolvedMetadataRouting,
+  venue: { server: string } | { server: null; reason: string },
+): { model: string; server: string } {
   if (venue.server === null) {
     throw new SnapScorerUnavailableError(
       `Chaptering on snap writes its outline and assigns every sentence on ${CHAPTER_SCORER_MODEL}, which runs on a ` +
-        `Crucible server, and none can take it (${venue.reason}). The chapters row (${titles.label}) writes only the ` +
+        `Crucible server, and none can take it (${venue.reason}). The chapters row ` +
+        `(${routingOptionDef(resolved.chapters).label}) writes only the ` +
         `titles, so it does not change that: select a Crucible server in Settings › Crucible Servers, or set the chapter ` +
         `engine to whole-transcript.`,
     );
   }
-  return { scorer: { model: CHAPTER_SCORER_MODEL, server: venue.server }, titles };
+  return { model: CHAPTER_SCORER_MODEL, server: venue.server };
 }
 
 /**
@@ -511,9 +566,10 @@ export function resolveSnapChapterModels(
  * setting here, because `titles` always resolves.
  */
 export function resolveCompilationPackagingOption(
-  resolved: ResolvedMetadataRouting
+  resolved: ResolvedMetadataRouting,
+  models: RoutingModels
 ): MetadataRoutingOption {
-  return routingOption('titles', resolved.titles);
+  return models.bind('titles', resolved.titles);
 }
 
 /**
@@ -570,6 +626,23 @@ export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
   'qwen35-2b': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
   'qwen35-08b': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
   'qwen38-27b-vl': 'it was offered for thumbnail frame scoring only, which was retired 2026-09-29 (Owen picks the frames)',
+};
+
+/**
+ * Ids this build MERGED into another option, and why: read by `migrateStoredRouting` ONLY. Unlike a
+ * removal (dropped to the shipped default), a merged id is REWRITTEN to the option that now stands
+ * for the same model, with a logged notice, and the store is written back so the notice is said
+ * once. An id not listed here and not in the table still throws, exactly as before.
+ */
+export const MERGED_ROUTING_OPTIONS: Record<string, { into: string; reason: string }> = {
+  // Owen, 2026-09-29: "crucible's job is to select the model quant that works for the system we're
+  // using. wsl uses 4 bit, mac uses 8 bit. it doenst need to tell the user that."
+  'qwen38-27b-8bit': {
+    into: 'qwen38-27b',
+    reason:
+      'the routing names models, not quants, since 2026-09-29: the 8-bit and 4-bit 27B are one option, ' +
+      'and the job\'s Crucible server decides which build it runs (the 8-bit on the Mac, the 4-bit on the PC)',
+  },
 };
 
 /**
@@ -811,6 +884,14 @@ export function migrateStoredRouting(stored: unknown, registered?: readonly stri
       continue;
     }
 
+    const merged = MERGED_ROUTING_OPTIONS[optionId];
+    if (merged) {
+      notices.push(`rewrote metadataRouting.${taskId} = "${optionId}" as "${merged.into}": ${merged.reason}`);
+      validateRoutingSelection(taskId, merged.into);
+      selections[taskId as MetadataRoutingTaskId] = merged.into;
+      continue;
+    }
+
     const removedOption = REMOVED_ROUTING_OPTIONS[optionId];
     if (removedOption) {
       const task = taskDef(taskId);
@@ -876,9 +957,23 @@ export function migrateStoredRouting(stored: unknown, registered?: readonly stri
   return { selections, changed, notices };
 }
 
-export function routingOption(taskId: MetadataRoutingTaskId, optionId: string): MetadataRoutingOption {
-  validateRoutingSelection(taskId, optionId);
-  return METADATA_ROUTING_OPTIONS[optionId];
+/**
+ * One task's option, BOUND to the job's server: the only way a routed row becomes something a
+ * caller can send (see {@link RoutingModels}). Refused by name when the server cannot run it.
+ */
+export function routingOption(taskId: MetadataRoutingTaskId, optionId: string, models: RoutingModels): MetadataRoutingOption {
+  return models.bind(taskId, optionId);
+}
+
+/** One table row by id, for its label and kind. Throws by name on an id the table does not have. */
+export function routingOptionDef(optionId: string): MetadataRoutingOptionDef {
+  const def = METADATA_ROUTING_OPTIONS[optionId];
+  if (!def) {
+    throw new Error(
+      `"${optionId}" is not a known model option (known options: ${Object.keys(METADATA_ROUTING_OPTIONS).join(', ')})`
+    );
+  }
+  return def;
 }
 
 /**
@@ -927,7 +1022,8 @@ export function taskOptionIds(taskId: MetadataRoutingTaskId): string[] {
  */
 export function resolveOperatorOption(
   taskId: MetadataRoutingTaskId,
-  optionId: unknown
+  optionId: unknown,
+  models: RoutingModels
 ): MetadataRoutingOption {
   const offered = taskOptionIds(taskId);
   if (typeof optionId !== 'string' || !offered.includes(optionId)) {
@@ -942,7 +1038,7 @@ export function resolveOperatorOption(
       `The ${taskId} task offers "${optionId}", but no such option is declared in the routing table.`
     );
   }
-  return option;
+  return models.bind(taskId, optionId);
 }
 
 /**
@@ -950,8 +1046,218 @@ export function resolveOperatorOption(
  * routing's server (LEDGER #222), or that it names none and the selected server runs the job.
  */
 export function describeRouting(routing: ResolvedMetadataRouting, server: string | null): string {
-  const models = metadataRunTasks().map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+  // Option ids: which build of a local model runs is the job's server's to say, and the job logs
+  // it when it resolves (RoutingModels).
+  const models = metadataRunTasks().map((t) => `${t.id}=${routing[t.id]}`).join(', ');
   return `${models}, server=${server === null ? '(the selected server)' : server}`;
+}
+
+// ---------------------------------------------------------------------------
+// Resolution: which Crucible id a routed option means on ONE server
+// ---------------------------------------------------------------------------
+
+/**
+ * What one LOCAL option is on one server (Owen, 2026-09-29: "content studio shouldnt request a
+ * model that isnt available on a crucible server").
+ *
+ * The option's candidates (its fixed `crucibleIds`) are read against that server's catalog. A
+ * candidate is RUNNABLE there when the catalog lists it for the server's backend AND it is
+ * installed (catalog.ts's `installed`). Then:
+ *
+ *   exactly one runnable   that id is what the option means on this server;
+ *   none                   the option is not on this server (`pullable` when a candidate could be
+ *                          downloaded there, else `not-here`); a run refuses it by name;
+ *   more than one          refused by name (`ambiguous`): each server holds exactly one build of a
+ *                          model, and if that stops being true Owen decides which, not this code;
+ *   catalog unread         `unknown`, with the reason: "we could not ask" is not "it is not there".
+ *
+ * ONE function, read by the routing dialog (availability) and by every job (RoutingModels.bind),
+ * so the dialog can never say one thing while a run does another.
+ */
+export type LocalResolution =
+  | { runs: true; model: string }
+  | { runs: false; availability: 'pullable' | 'not-here' | 'unknown' | 'ambiguous'; message: string };
+
+export function resolveLocalOption(option: MetadataRoutingOptionDef, inventory: CatalogInventory): LocalResolution {
+  if (option.kind !== 'local' || option.crucibleIds === null || option.crucibleIds.length === 0) {
+    throw new Error(`resolveLocalOption was handed "${option.label}", which is not a local option with Crucible ids`);
+  }
+  if (!inventory.reachable || inventory.server === null) {
+    const why = inventory.error ?? 'no Crucible server is selected';
+    return {
+      runs: false,
+      availability: 'unknown',
+      message: inventory.server === null
+        ? `${option.label} has no Crucible server to run on: ${why}`
+        : `Which build of ${option.label} "${inventory.server}" holds is unknown: its catalog could not be read (${why}).`,
+    };
+  }
+  const offers = option.crucibleIds.map((id) => ({ id, offer: offerFor(inventory, id).offer }));
+  const runnable = offers.filter((o) => o.offer === 'installed').map((o) => o.id);
+  if (runnable.length === 1) return { runs: true, model: runnable[0] };
+  if (runnable.length > 1) {
+    return {
+      runs: false,
+      availability: 'ambiguous',
+      message:
+        `"${inventory.server}" holds more than one build of ${option.label} (${runnable.join(', ')}), and ContentStudio ` +
+        `does not pick between them. Keep one of them on that server.`,
+    };
+  }
+  const pullable = offers.filter((o) => o.offer === 'pullable').map((o) => o.id);
+  return pullable.length > 0
+    ? {
+        runs: false,
+        availability: 'pullable',
+        message: `${option.label} is not on "${inventory.server}" (${pullable.join(' or ')} could be downloaded there).`,
+      }
+    : { runs: false, availability: 'not-here', message: `${option.label} is not on "${inventory.server}".` };
+}
+
+/** A routed option the job's server cannot run: refused by name before anything is loaded or sent (Law 1). */
+export class RoutedModelUnavailableError extends Error {
+  readonly code: 'routed_model_not_here' | 'routed_model_ambiguous' | 'routed_model_unknown';
+  constructor(readonly availability: 'pullable' | 'not-here' | 'unknown' | 'ambiguous', message: string) {
+    super(message);
+    this.name = 'RoutedModelUnavailableError';
+    this.code = availability === 'ambiguous' ? 'routed_model_ambiguous' : availability === 'unknown' ? 'routed_model_unknown' : 'routed_model_not_here';
+  }
+}
+
+/**
+ * ONE JOB'S RESOLUTION: the routing table's options bound to the server the job runs on, read from
+ * that server's catalog ONCE, at the job's start, and cached for the job (Owen, 2026-09-29).
+ *
+ * Every caller that turns a routed option into the id sent to Crucible goes through {@link bind}
+ * (the metadata fields, chapters, the scrub, the re-roll gate, the thumbnail words, the compilation
+ * package and summarizer, the story titles, the reports page's more titles / soften / re-roll and
+ * the Thumbnails window). A local option binds to the one build the server holds; the refusals are
+ * {@link resolveLocalOption}'s, thrown by name as {@link RoutedModelUnavailableError}. An upstream
+ * (Claude) option binds to its one id without the catalog (its key is the upstream server's, which
+ * the transport already checks), and `claude -p` binds to its CLI string.
+ *
+ * Each local option is logged once per job the first time it resolves:
+ * `Qwen 3.8 · 27B → qwen3.8-27b-4bit on "wsl"`.
+ */
+export class RoutingModels {
+  private readonly resolved = new Map<string, LocalResolution>();
+  private readonly said = new Set<string>();
+
+  private constructor(
+    /** The server the job's local calls run on, or null when none was read. */
+    readonly server: string | null,
+    private readonly inventory: CatalogInventory | null,
+    /** Why no catalog was read (a job whose routing names no local model). */
+    private readonly noCatalog: string | null,
+    private readonly say: (line: string) => void,
+  ) {}
+
+  /** The resolution against one server's catalog (the job's server, read at its start). */
+  static on(inventory: CatalogInventory, say: (line: string) => void = (line) => log.info(`[MetadataRouting] ${line}`)): RoutingModels {
+    return new RoutingModels(inventory.server, inventory, null, say);
+  }
+
+  /**
+   * A job that routes NO local model: nothing to match against a catalog, so none is read. Binding a
+   * local option on it is a caller bug (the job's option list was wrong), refused by name with `why`.
+   */
+  static withoutCatalog(why: string): RoutingModels {
+    return new RoutingModels(null, null, why, () => undefined);
+  }
+
+  /** One task's selection, validated against the table and bound to this server. */
+  bind(taskId: MetadataRoutingTaskId, optionId: string): MetadataRoutingOption {
+    validateRoutingSelection(taskId, optionId);
+    const task = taskDef(taskId)!;
+    return this.bindAs(optionId, `The ${task.label} row`);
+  }
+
+  /** A fixed role's option (SUMMARIZATION_OPTION), bound to this server. `role` names it in a refusal. */
+  bindRole(optionId: string, role: string): MetadataRoutingOption {
+    return this.bindAs(optionId, role);
+  }
+
+  /** What one option is on this server, without binding (the job-start log). Local options only. */
+  resolution(optionId: string): LocalResolution {
+    const option = routingOptionDef(optionId);
+    const cached = this.resolved.get(optionId);
+    if (cached !== undefined) return cached;
+    if (this.inventory === null) {
+      throw new Error(
+        `${option.label} is a local model, but this job read no Crucible catalog (${this.noCatalog}); its model ` +
+          `list and its calls disagree, so nothing was sent.`,
+      );
+    }
+    const answer = resolveLocalOption(option, this.inventory);
+    this.resolved.set(optionId, answer);
+    return answer;
+  }
+
+  /** One line per LOCAL option in `optionIds` (duplicates once): what it resolved to, for the job's log. */
+  describe(optionIds: readonly unknown[]): string[] {
+    const lines: string[] = [];
+    for (const optionId of new Set(optionIds)) {
+      if (typeof optionId !== 'string' || METADATA_ROUTING_OPTIONS[optionId] === undefined) continue;
+      const option = METADATA_ROUTING_OPTIONS[optionId];
+      if (option.kind !== 'local') continue;
+      const answer = this.resolution(optionId);
+      lines.push(answer.runs ? this.line(option, answer.model) : `${answer.message} (refused by name if the job uses it)`);
+      if (answer.runs) this.said.add(optionId);
+    }
+    return lines;
+  }
+
+  private line(option: MetadataRoutingOptionDef, model: string): string {
+    return `${option.label} → ${model} on "${this.server}"`;
+  }
+
+  private bindAs(optionId: string, who: string): MetadataRoutingOption {
+    const option = routingOptionDef(optionId);
+    if (option.crucibleIds === null) {
+      if (option.cliModel === null) throw new Error(`The routing option "${optionId}" names neither Crucible ids nor a claude -p model`);
+      return { kind: option.kind, label: option.label, model: option.cliModel, crucibleModel: null };
+    }
+    if (option.kind === 'cloud') {
+      if (option.crucibleIds.length !== 1) {
+        throw new Error(`The cloud routing option "${optionId}" must name exactly one upstream id (it names ${option.crucibleIds.length})`);
+      }
+      const id = option.crucibleIds[0];
+      return { kind: 'cloud', label: option.label, model: id, crucibleModel: id };
+    }
+    const answer = this.resolution(optionId);
+    if (!answer.runs) {
+      throw new RoutedModelUnavailableError(
+        answer.availability,
+        `${who} is set to ${option.label}, and nothing was sent: ${answer.message} Nothing was substituted; pick a model ` +
+          `this server offers in Model routing.`,
+      );
+    }
+    if (!this.said.has(optionId)) {
+      this.said.add(optionId);
+      this.say(this.line(option, answer.model));
+    }
+    return { kind: 'local', label: option.label, model: answer.model, crucibleModel: answer.model };
+  }
+}
+
+/**
+ * The option ids a job may bind: every row of its routing, plus the compilation summarizer when the
+ * chapters row is local (it follows chapters; see ipc-handlers / metadata-generator). A job reads its
+ * server's catalog only when one of these is local.
+ */
+export function jobOptionIds(routing: ResolvedMetadataRouting): string[] {
+  const ids = METADATA_ROUTING_TASKS.map((task) => routing[task.id]);
+  if (routingOptionDef(routing.chapters).kind === 'local') ids.push(SUMMARIZATION_OPTION);
+  return [...new Set(ids)];
+}
+
+/**
+ * Does any of these options run on a Crucible server's card? An id the table does not have is
+ * skipped here (an operator dropdown's pick is refused by name by resolveOperatorOption, which
+ * says what the dropdown offers).
+ */
+export function routesLocal(optionIds: readonly unknown[]): boolean {
+  return optionIds.some((id) => typeof id === 'string' && METADATA_ROUTING_OPTIONS[id]?.kind === 'local');
 }
 
 // ---------------------------------------------------------------------------
@@ -959,18 +1265,18 @@ export function describeRouting(routing: ResolvedMetadataRouting, server: string
 // ---------------------------------------------------------------------------
 
 /**
- * Can the SELECTED Crucible server run this option? (plan 6.2, 0a)
+ * Can the job's Crucible server run this option? (plan 6.2, 0a; resolveLocalOption)
  *
- * - `installed` — the server's catalog has its weights.
- * - `pullable` — the server's backend can hold it and it is not downloaded there yet; a run
- *   on it is refused by name (`model_not_installed`) until it is pulled on that server.
- * - `not-here` — the server's catalog does not list it for its backend.
+ * - `installed` — the server holds exactly one build of the model: it runs.
+ * - `pullable` — no build is on the server, and one could be downloaded there; refused by name.
+ * - `not-here` — no build of the model is on the server (none is in its catalog); refused by name.
+ * - `ambiguous` — the server holds more than one build; refused by name, nothing is picked.
  * - `upstream` — an `anthropic/` model, forwarded on the server's key.
  * - `outside` — `claude -p`, which never reaches Crucible (LEDGER #193).
  * - `unknown` — the server could not be read, so nothing it serves can be judged. Distinct
  *   from `not-here`: "we could not ask" and "it is not there" have different fixes.
  */
-export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'upstream' | 'outside' | 'unknown';
+export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'ambiguous' | 'upstream' | 'outside' | 'unknown';
 
 export interface MetadataRoutingOptionView {
   id: string;
@@ -1043,27 +1349,37 @@ export interface MetadataRoutingView {
   runsOn: MetadataRoutingRunsOnView;
 }
 
-/** One option judged against the selected server's inventory. */
+/**
+ * One option judged against the job's server's inventory, by the resolution a run uses
+ * (resolveLocalOption). `model` is the id the option runs as there, or its candidates when it
+ * runs as none of them.
+ */
 export function optionAvailability(
-  option: MetadataRoutingOption,
+  option: MetadataRoutingOptionDef,
   inventory: CatalogInventory
-): { availability: MetadataRoutingAvailability; note?: string } {
-  if (option.crucibleModel === null) return { availability: 'outside' };
-  if (!inventory.reachable) return { availability: 'unknown', note: inventory.error };
-  if (option.crucibleModel.includes('/')) {
+): { availability: MetadataRoutingAvailability; model: string; note?: string } {
+  if (option.crucibleIds === null) return { availability: 'outside', model: option.cliModel ?? option.label };
+  if (option.kind === 'cloud') {
+    const id = option.crucibleIds[0];
+    if (!inventory.reachable) return { availability: 'unknown', model: id, note: inventory.error };
     return inventory.anthropicConfigured === true
-      ? { availability: 'upstream' }
+      ? { availability: 'upstream', model: id }
       : {
           availability: 'not-here',
+          model: id,
           note: `"${inventory.server}" has no Anthropic key, so Claude cannot run there. Add one in Settings › Crucible Servers.`,
         };
   }
-  const offer = offerFor(inventory, option.crucibleModel);
-  if (offer.offer === 'installed') return { availability: 'installed' };
-  if (offer.offer === 'pullable') {
-    return { availability: 'pullable', note: `${option.crucibleModel} is not downloaded on "${inventory.server}" yet.` };
-  }
-  return { availability: 'not-here', note: offer.reason ?? `"${inventory.server}" does not offer ${option.crucibleModel}.` };
+  const answer = resolveLocalOption(option, inventory);
+  if (answer.runs) return { availability: 'installed', model: answer.model };
+  return {
+    availability: answer.availability,
+    model: option.crucibleIds.join(' / '),
+    // The server's own "not supported" sentence (a manifest with no block for its backend) is not
+    // repeated: which quant a server holds is Crucible's business (Owen, 2026-09-29), so the
+    // dialog says only whether the MODEL is there.
+    ...(answer.availability === 'unknown' && !inventory.reachable ? { note: inventory.error } : { note: answer.message }),
+  };
 }
 
 /** Is this availability one the dialog LISTS? `pullable` is listed: the server can hold it. */
@@ -1076,14 +1392,18 @@ function offered(availability: MetadataRoutingAvailability): boolean {
  *
  * A stored selection that fails validation is not quietly replaced by the default here —
  * resolveMetadataRouting throws, the IPC call fails, and the modal shows the user the same
- * error a generation would have failed with. A VALID selection the selected server cannot run
- * is kept and shown with the server's sentence (plan 0a): Briefcase replaced such a choice
- * with the server's own pick, and here nothing is substituted, because the routing table is
- * the only thing that picks a model (LEDGER #204).
+ * error a generation would have failed with. A VALID selection the server cannot run is kept
+ * and shown with the plain sentence (plan 0a): Briefcase replaced such a choice with the
+ * server's own pick, and here nothing is substituted, because the routing table is the only
+ * thing that picks a model (LEDGER #204).
  */
 export function buildRoutingView(stored: unknown, inventory: CatalogInventory, runsOn: MetadataRoutingRunsOnView): MetadataRoutingView {
   const resolved = resolveMetadataRouting(stored);
-  const chapterOption = resolveChapterModelOption(resolved);
+  const chapterJudged = optionAvailability(routingOptionDef(resolved.chapters), inventory);
+  const scorerJudged = optionAvailability(
+    { kind: 'local', label: 'the snap scorer', crucibleIds: [CHAPTER_SCORER_MODEL], cliModel: null },
+    inventory
+  );
   return {
     tasks: METADATA_ROUTING_TASKS.map((task) => ({
       id: task.id,
@@ -1095,7 +1415,7 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory, r
         return [{
           id,
           label: option.label,
-          model: option.model,
+          model: judged.model,
           availability: judged.availability,
           ...(judged.note === undefined ? {} : { availabilityNote: judged.note }),
         }];
@@ -1105,13 +1425,10 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory, r
       group: task.group,
     })),
     chapters: {
-      generationModel: chapterOption.model,
-      generationAvailability: optionAvailability(chapterOption, inventory).availability,
+      generationModel: chapterJudged.model,
+      generationAvailability: chapterJudged.availability,
       scorerModel: CHAPTER_SCORER_MODEL,
-      scorerAvailability: optionAvailability(
-        { kind: 'local', label: 'snap scorer', model: CHAPTER_SCORER_MODEL, crucibleModel: CHAPTER_SCORER_MODEL },
-        inventory
-      ).availability,
+      scorerAvailability: scorerJudged.availability,
     },
     server: {
       name: inventory.server,

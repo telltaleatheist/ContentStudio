@@ -363,17 +363,19 @@ export interface YouTubeCollectorState {
 
 // Metadata model routing (which model generates which metadata task)
 /**
- * Whether the SELECTED Crucible server can run the option (metadata-routing.ts, P2):
- * installed there, pullable there (not downloaded yet), not here at all, a Claude model on
+ * Whether the job's Crucible server can run the option's MODEL (metadata-routing.ts
+ * resolveLocalOption): it holds one build of it (installed), none but one could be downloaded
+ * (pullable), none (not-here), more than one and nothing is picked (ambiguous), a Claude model on
  * that server's key, `claude -p` outside Crucible, or unknown because the server could not be
- * read — which is deliberately not the same as `not-here`.
+ * read — which is deliberately not the same as `not-here`. Which build (quant) the server holds
+ * is never shown: that is Crucible's business (Owen, 2026-09-29).
  */
-export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'upstream' | 'outside' | 'unknown';
+export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'ambiguous' | 'upstream' | 'outside' | 'unknown';
 
 export interface MetadataRoutingOption {
   id: string;
   label: string;
-  /** The model name behind the label, so a missing one can be named. */
+  /** The Crucible id the option runs as on this server, or its candidates when it runs as none. */
   model: string;
   availability: MetadataRoutingAvailability;
   /** The server's own sentence, when the option is shown although the server cannot run it. */

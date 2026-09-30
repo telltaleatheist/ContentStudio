@@ -55,6 +55,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import type { Activity, AcceleratorState, CrucibleClient } from '@crucible/client';
 import * as log from 'electron-log';
+import { catalogInventory, type CatalogInventory } from './catalog';
 import { CrucibleRoutingError } from './errors';
 import type { InFlightKind, InFlightLedger } from './in-flight-ledger';
 import { JOB_SWEEP_DEADLINE_MS, QUIT_SWEEP_DEADLINE_MS, QUIT_UNWIND_MS, sweepCrucibleInFlight, type SweepReport } from './in-flight-sweep';
@@ -681,6 +682,14 @@ export class CrucibleLanes {
     } catch (err) {
       return { server: null, reason: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /**
+   * What `server` offers, read fresh (catalog.ts): the catalog a job's routed options are resolved
+   * against at its start (metadata-routing.ts RoutingModels, routing-models.ts). Takes no lane.
+   */
+  inventoryFor(server: string): Promise<CatalogInventory> {
+    return catalogInventory({ clientFor: (name, options) => this.deps.clientFor(name, options) }, server);
   }
 
   private standaloneServer(name: string): string {

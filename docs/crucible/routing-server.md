@@ -114,3 +114,105 @@ overrides this selection for them (a Fast item still goes to the fast server).*
 - The CLI does not rewrite the store when it drops a forgotten routing server. The app does
   that on its next read.
 - No LEDGER entry other than #222 was edited.
+
+# Models, not quants: the job's server picks the build (2026-09-29)
+
+Owen, 2026-09-29, after the dialog said "qwen3.8-27b-8bit.toml has no cuda-linux block ... Pick a
+model this server offers" for a routing whose "Runs on" was the PC's WSL Crucible: "crucible's job
+is to select the model quant that works for the system we're using. wsl uses 4 bit, mac uses 8
+bit. it doenst need to tell the user that." And: "theres only one quant available on mac, one
+available on pc. we can retrieve the quant by listing the available model on each crucible
+server. content studio shouldnt request a model that isnt available on a crucible server."
+
+## The option table names models
+
+`METADATA_ROUTING_OPTIONS` rows are `MetadataRoutingOptionDef`: `kind`, `label` (never a bit
+width), `crucibleIds` (a FIXED, reviewed list of the Crucible ids the option stands for) and
+`cliModel` (the `claude -p` rungs only). No row carries a model id a caller could send.
+
+| Option | Label | Candidate Crucible ids |
+|---|---|---|
+| `qwen38-27b` | Qwen 3.8 · 27B | `qwen3.8-27b-8bit`, `qwen3.8-27b-4bit` |
+| `qwen35-9b` | Qwen 3.5 · 9B | `qwen3.5-9b` |
+| `qwen35-4b` | Qwen 3.5 · 4B | `qwen3.5-4b` |
+| `sonnet5` / `opus5` / `haiku45` | Claude … | their one `anthropic/` id |
+| `claude-cli` / `claude-cli-sonnet` | claude -p … | none (`claude-cli:opus` / `claude-cli:sonnet`) |
+
+`qwen38-27b` keeps the old 4-bit option's id, so a stored `qwen38-27b` keeps its row and now
+resolves per server. The old 8-bit option `qwen38-27b-8bit` is gone from the table and listed in
+`MERGED_ROUTING_OPTIONS`: `migrateStoredRouting` rewrites a stored one to `qwen38-27b` with one
+logged line (`rewrote metadataRouting.<task> = "qwen38-27b-8bit" as "qwen38-27b": ...`), and the
+dialog's read writes the store back so the line is said once. The modal's strict save still
+refuses the old id. `SUMMARIZATION_MODEL` (a quant id) became `SUMMARIZATION_OPTION = 'qwen38-27b'`.
+
+## Resolution: one function, the dialog and every run
+
+`resolveLocalOption(option, inventory)` reads the candidates against one server's catalog
+(`catalog.ts` `inventoryOf`: a catalog row is backend-supported; `installed` says whether its
+weights are there). A candidate is runnable when it is installed there.
+
+- exactly one runnable: that id is what the option means on this server;
+- none: the option is not on that server, `pullable` when a candidate could be downloaded there,
+  else `not-here`. The sentence is plain: `Qwen 3.8 · 27B is not on "wsl".`;
+- more than one: `ambiguous`, refused by name (`"mac" holds more than one build of Qwen 3.8 · 27B
+  (qwen3.8-27b-8bit, qwen3.8-27b-4bit), and ContentStudio does not pick between them.`). Owen
+  says each server holds exactly one; if that changes, he decides;
+- the catalog could not be read: `unknown`, with the reason (never `not-here`).
+
+The server's own "not supported" sentence (the manifest's missing backend block) is never shown.
+
+**The dialog** (`buildRoutingView` → `optionAvailability`) judges every option this way against
+the server the routing's jobs run on. A resolved option shows `installed` and its view's `model`
+is the build it runs as; nothing is said about quants. The row note for a chosen option the server
+cannot run is "<note> <row> won't run until you pick a model this server offers." A new
+availability value, `ambiguous`, is flagged "more than one build on <server>".
+
+**A run** binds through `RoutingModels` (metadata-routing.ts), built ONCE at the start of each
+job from the job's server's catalog (`routing-models.ts` `readRoutingModels`: the server is
+`lanes.gpuVenue()`, the admitted job's venue inside a job, else the routing's server / the
+selected one; the catalog is read with `lanes.inventoryFor`). It is cached for the job and every
+routed option is bound from it: `models.bind(task, optionId)` returns a `MetadataRoutingOption`
+whose `model` / `crucibleModel` is the resolved id. A refusal is `RoutedModelUnavailableError`
+(`routed_model_not_here` / `routed_model_ambiguous` / `routed_model_unknown`), thrown when the job
+uses the option, before anything is loaded or sent:
+`The Thumbnail words row is set to Qwen 3.8 · 27B, and nothing was sent: Qwen 3.8 · 27B is not on
+"wsl". Nothing was substituted; pick a model this server offers in Model routing.`
+Each local option is logged once per job: `[MetadataRouting] the metadata job <id>: Qwen 3.8 ·
+27B → qwen3.8-27b-4bit on "wsl"`. A job whose options are all cloud or `claude -p` reads no
+catalog. Upstream (Claude) options bind to their one id without the catalog (their key is the
+upstream server's, which the transport checks), `claude -p` to its CLI string.
+
+Where the binding happens (every place a routed option becomes the id sent to Crucible):
+
+- the metadata job (`MetadataGeneratorService.generate` sets `params.routingModels` at its start):
+  field units and the description (`planMetadataUnits`), chapters (snap titles and
+  whole-transcript), the scrub, the re-roll gate's re-rolls, the guidelines distiller, the
+  compilation package and summarizer (now resolved inside the job), and the thumbnail words
+  (`ThumbnailJobDoors.models`);
+- the reports page: re-roll a field (and its cleanup), 10 more titles, soften, the cleanup
+  button, and the Thumbnails window's words / prepare / screenshots (`report-thumbnails.ts`);
+- the editor: stories analysis, story titles and the routed-model line (`story-ipc.ts`);
+- the in-queue split binds nothing: it writes no titles (`resolveSnapBoundaryModels`), so a
+  chapters model its server lacks cannot refuse it.
+
+The fixed roles `CHAPTER_SCORER_MODEL` and `REROLL_SCORER_MODEL` (`qwen3.5-9b`, one id on every
+backend) are unchanged.
+
+## Checks
+
+- `tools/routing-publish-checks.js` (`check:pure`): the 27B option and its candidates, no label
+  naming a quant; the Mac-like catalog binds the 8-bit and WSL-like the 4-bit, logged once per
+  option; none runnable refused by name in the run and shown plainly in the dialog (pullable and
+  unreadable catalogs too); two runnable refused by name (`ambiguous`, dialog and run); the dialog
+  for WSL shows the 27B installed with no "cuda-linux" sentence anywhere; the 8-bit migration
+  rewritten, logged, read clean the second time.
+- `tools/test-crucible-snap.js`: over the real transport and lanes against the fake, the job's
+  resolution read from the fake's own catalog; a Mac-like server loads and sends
+  `qwen3.8-27b-8bit` and never the 4-bit; a server with no build refuses the chapters row by name
+  with no job submitted and no chat sent.
+- `tools/test-crucible-transport.js`: the local call sites bound from the fake's catalog; every
+  chat body on the wire carries the resolved id.
+- `tools/thumbnail-pipeline-checks.js`: the words bound from the fake's catalog; a row whose model
+  the server lacks stops the words stage with the resolution's sentence.
+- `tools/test-crucible-acts.js`, `tools/test-crucible-p4.js`, `tools/reroll-checks.js` updated to
+  the option shape.
