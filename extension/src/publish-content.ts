@@ -38,6 +38,7 @@ import {
   requestItem,
   requestReports,
   requestResolve,
+  requestAbThumbnails,
   requestSaveTitles,
   requestThumbnail,
 } from './publish/publish-messages';
@@ -178,6 +179,13 @@ function fillContextOf(detail: ItemDetail): FillContext {
     // Bound to THIS item's id, and fetched only if the thumbnail action actually runs —
     // the bytes are up to 2 MiB and most fills never touch them.
     loadThumbnail: () => requestThumbnail(detail.itemId),
+    // Straight through, INCLUDING undefined, for hasThumbnail's reason above: an app that
+    // cannot say how many were saved is not an item with none.
+    abThumbnails: detail.abThumbnails,
+    loadAbThumbnails: () => requestAbThumbnails(detail.itemId),
+    // Onto the shelf as a waiting line, not an outcome: the A/B action uses it while it
+    // waits for the operator to answer Studio's "Run a new test?" question.
+    say: (line: string) => shelf?.note(line),
   };
 }
 
@@ -593,6 +601,8 @@ function callbacks() {
       requestReports(offset, limit, query),
 
     onLoadThumbnail: (itemId: string) => requestThumbnail(itemId),
+
+    onLoadAbThumbnails: (itemId: string) => requestAbThumbnails(itemId),
   };
 }
 

@@ -75,6 +75,11 @@ export interface PublishRoutes {
    * thumbnail is, only that the publish module can produce one.
    */
   getThumbnail(itemId: string): Promise<unknown>;
+  /**
+   * The thumbnails saved for the A/B test (Pick 1..n), in order, as the same kind of bytes
+   * getThumbnail serves; an empty list when there are none.
+   */
+  getAbThumbnails(itemId: string): Promise<unknown[]>;
   /** The shelf writing back the chosen A/B variant set. */
   setTitles(itemId: string, titles: string[]): Promise<unknown>;
 }
@@ -439,6 +444,22 @@ export class IngestServerService {
             return;
           }
           this.sendJson(res, 200, { thumbnail: await this.publishRoutes.getThumbnail(itemId) });
+          return;
+        }
+
+        // The thumbnails saved for the A/B test, Pick 1..n in order, for the extension's
+        // "Title and thumbnail" fill. Same envelope and the same reasons as the single
+        // thumbnail above. `{picks: []}` with a 200 is "none saved" (a state; the fill then
+        // sets up a titles-only test); a saved pick whose file cannot be served is a 500
+        // naming it, never a shorter list.
+        if (req.method === 'GET' && url === '/publish/ab-thumbnails') {
+          const params = this.queryOf(req);
+          const itemId = params.get('itemId');
+          if (!itemId) {
+            this.sendJson(res, 400, { error: 'itemId is required' });
+            return;
+          }
+          this.sendJson(res, 200, { picks: await this.publishRoutes.getAbThumbnails(itemId) });
           return;
         }
 

@@ -61,7 +61,22 @@ const THUMBNAIL_INPUT_SELECTORS: readonly string[] = [
 ];
 
 /**
- * The thumbnail file input, or null.
+ * Whether a file input belongs to Studio's A/B dialog rather than the details form.
+ *
+ * The A/B dialog's "Title and thumbnail" test puts a `ytcp-thumbnail-uploader` with its own
+ * `input#file-loader` on every variant row — the SAME markup as the video's own thumbnail
+ * control. While that dialog is open, the first selector below would match row 1 of the
+ * test as readily as the video's thumbnail, and in the upload wizard the details form is
+ * itself inside a dialog, so "inside any dialog" cannot be the test. What marks the A/B
+ * dialog is holding MORE THAN ONE uploader (three rows); the details form holds one.
+ */
+function insideAbDialog(input: HTMLInputElement): boolean {
+  const dialog = input.closest('ytcp-dialog, tp-yt-paper-dialog');
+  return !!dialog && dialog.querySelectorAll('ytcp-thumbnail-uploader').length > 1;
+}
+
+/**
+ * The video's own thumbnail file input, or null. Never one of the A/B test's rows.
  *
  * NOT filtered by visibility, unlike dom.ts's `visible()`. A file input attached to a
  * styled "Upload file" button is deliberately zero-sized — that is how every such control
@@ -70,8 +85,9 @@ const THUMBNAIL_INPUT_SELECTORS: readonly string[] = [
  */
 export function findThumbnailInput(): HTMLInputElement | null {
   for (const selector of THUMBNAIL_INPUT_SELECTORS) {
-    const el = document.querySelector<HTMLInputElement>(selector);
-    if (el) return el;
+    for (const el of document.querySelectorAll<HTMLInputElement>(selector)) {
+      if (!insideAbDialog(el)) return el;
+    }
   }
   return null;
 }
@@ -134,6 +150,25 @@ export async function setStudioThumbnail(thumbnail: PublishThumbnail): Promise<s
         `without custom-thumbnail permission, or a video still processing.`,
     );
   }
+  return setThumbnailOnInput(input, thumbnail, "Studio's thumbnail input");
+}
+
+/**
+ * Put one thumbnail into a GIVEN file input, and confirm the input holds it.
+ *
+ * The mechanism both callers share: the video's own thumbnail above, and each row of the
+ * A/B dialog's "Title and thumbnail" test (fillers.ts), which finds its inputs itself —
+ * strictly inside that dialog — and adds its own check that the row's preview changed.
+ * `what` names the input in every error, so a failure says which one it was.
+ */
+export async function setThumbnailOnInput(
+  input: HTMLInputElement,
+  thumbnail: PublishThumbnail,
+  what: string,
+): Promise<string> {
+  if (input.disabled) {
+    throw new FillError(`${what} is disabled, so ${thumbnail.filename} could not be put into it.`);
+  }
 
   const bytes = decodeBase64(thumbnail);
   const file = new File([bytes], thumbnail.filename, { type: thumbnail.mime });
@@ -159,13 +194,13 @@ export async function setStudioThumbnail(thumbnail: PublishThumbnail): Promise<s
   const landed = input.files?.[0];
   if (!landed) {
     throw new FillError(
-      `Studio dropped ${thumbnail.filename} straight back out of its thumbnail input. ` +
+      `Studio dropped ${thumbnail.filename} straight back out of ${what}. ` +
         `The image was not set.`,
     );
   }
   if (landed.name !== thumbnail.filename || landed.size !== thumbnail.bytes) {
     throw new FillError(
-      `Studio's thumbnail input holds ${landed.name} (${landed.size} bytes) rather than ` +
+      `${what} holds ${landed.name} (${landed.size} bytes) rather than ` +
         `${thumbnail.filename} (${thumbnail.bytes} bytes). Something else wrote to it; ` +
         `check the image before saving.`,
     );

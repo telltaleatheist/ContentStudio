@@ -7,6 +7,7 @@
 //   GET  /publish/item     -> ?itemId -> { item: ItemDetail }
 //   POST /publish/titles   -> body { itemId, titles } -> SetTitlesResult
 //   GET  /publish/thumbnail-> ?itemId -> { thumbnail: PublishThumbnail | null }
+//   GET  /publish/ab-thumbnails -> ?itemId -> { picks: PublishThumbnail[] }
 //
 // EVERY route names ONE generated item by its permanent `itemId`. They used to take a
 // (jobId, itemIndex) pair; the index was a position in the job's items[] array, so
@@ -148,6 +149,14 @@ export interface ItemDetail {
   monetize: boolean | null;
   /** Whether ContentStudio has a thumbnail for this item. See PendingFillItem. */
   hasThumbnail?: boolean;
+  /**
+   * How many thumbnails Owen saved for the A/B test (Pick 1..n), 0 for none.
+   *
+   * Optional on the wire for hasThumbnail's reason: an app older than the A/B thumbnails
+   * does not send it, and the A/B action reports `undefined` as "update the app" rather
+   * than reading it as 0 (ab-plan.ts).
+   */
+  abThumbnails?: number;
   maxVariants: number;
   maxTitleLength: number;
 }
@@ -383,4 +392,37 @@ export async function fetchThumbnail(itemId: string): Promise<PublishThumbnail |
     );
   }
   return thumbnail;
+}
+
+/**
+ * The thumbnails Owen saved for the A/B test, Pick 1..n in order; an empty list for none.
+ *
+ * Each is checked the way fetchThumbnail checks its one — bytes present, one of the two
+ * types YouTube takes — and a body without a `picks` array is refused: "could not tell"
+ * must never read as "none saved", which would quietly set up a titles-only test.
+ */
+export async function fetchAbThumbnails(itemId: string): Promise<PublishThumbnail[]> {
+  const params = new URLSearchParams({ itemId });
+  const route = '/publish/ab-thumbnails';
+  const body = await call<{ picks?: PublishThumbnail[] }>(`${route}?${params.toString()}`);
+  if (!body || !Array.isArray(body.picks)) {
+    throw new PublishClientError(
+      'unexpected-response',
+      `${route} returned a body with no "picks" list. If ContentStudio is older than the ` +
+        `A/B thumbnails, update it.`,
+    );
+  }
+  body.picks.forEach((pick, i) => {
+    if (!pick || typeof pick.base64 !== 'string' || !pick.base64) {
+      throw new PublishClientError('unexpected-response', `${route} sent thumbnail ${i + 1} with no bytes.`);
+    }
+    if (pick.mime !== 'image/png' && pick.mime !== 'image/jpeg') {
+      throw new PublishClientError(
+        'unexpected-response',
+        `${route} sent thumbnail ${i + 1} as ${JSON.stringify(pick.mime)}, which is not one of ` +
+          `the two types YouTube accepts. Nothing was set.`,
+      );
+    }
+  });
+  return body.picks;
 }

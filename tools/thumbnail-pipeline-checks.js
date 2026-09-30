@@ -547,7 +547,7 @@ check('storage: the record rides on the item in its job file, reads back checked
 
 // ── phase 2: the Thumbnails window (report-thumbnails.ts), the card editor since 2026-09-29 ──────
 
-const { ReportThumbnails } = services('thumbnails/report-thumbnails.js');
+const { ReportThumbnails, abTestPickFiles } = services('thumbnails/report-thumbnails.js');
 const { ThumbnailLook } = services('thumbnails/look.js');
 const { saveTranscript } = services('metadata/saved-transcript.service.js');
 const { deleteJobTxtFiles } = services('metadata/output-handler.service.js');
@@ -682,6 +682,8 @@ check('window, Save thumbnails: every card with a frame drawn and the cards in o
   assert.ok(rec.pairs.every((p) => !p.lines.includes(pipeline.NO_FRAME_YET) && !p.lines.includes(pipeline.NO_PHOTO_YET)), 'the "not picked yet" lines go once saved');
   assert.deepStrictEqual(progress.filter((e) => e.card !== undefined).map((e) => [e.card, e.line]), [[1, 'Drawing thumbnail 1 (1 of 3)…'], [2, 'Drawing thumbnail 2 (2 of 3)…'], [3, 'Drawing thumbnail 3 (3 of 3)…']], 'each card said as it is drawn');
   assert.deepStrictEqual(window.summary(job.jobId, itemId).picks.map((p) => p.n), [1, 2, 3], 'the reports page reads the same picks');
+  // The extension's A/B fill reads the same record through the same lookup (LEDGER #250).
+  assert.deepStrictEqual(abTestPickFiles(world.root, job.jobId, itemId), v0.picks.map((p) => ({ n: p.n, file: p.copy })), 'the A/B fill reads Pick 1..3 in order');
   // Card 2 emptied: card 3 becomes Pick 2 (pick k goes with title k), pair 2 loses its frame and its drawing.
   const oldTwo = rec.pairs[1].default.render.file;
   const f = rec.frames.map((x) => x.id);
@@ -731,6 +733,7 @@ check('window, Save thumbnails: every card with a frame drawn and the cards in o
   // Nothing on any card: the picks and their files go.
   const none = await window.saveCards(job.jobId, itemId, cardsFor(rec, [null, null, null]));
   assert.deepStrictEqual([none.picks.length, none.publishFile, fs.existsSync(path.join(folder, 'picks'))], [0, null, false], 'no picks: nothing to publish, no copies');
+  assert.deepStrictEqual(abTestPickFiles(world.root, job.jobId, itemId), [], 'no picks: the A/B fill has none');
   assert.ok(none.record.pairs.every((p) => p.default.frameId === null && !p.default.render.ok));
 }));
 

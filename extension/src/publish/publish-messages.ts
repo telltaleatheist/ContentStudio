@@ -35,7 +35,8 @@ export type PublishMessage =
   | { type: 'publish-reports'; offset: number; limit: number; query: string }
   | { type: 'publish-item'; itemId: string }
   | { type: 'publish-titles'; itemId: string; titles: string[] }
-  | { type: 'publish-thumbnail'; itemId: string };
+  | { type: 'publish-thumbnail'; itemId: string }
+  | { type: 'publish-ab-thumbnails'; itemId: string };
 
 export type PublishResponse<T> =
   | { ok: true; data: T }
@@ -54,6 +55,7 @@ const PUBLISH_MESSAGE_TYPES: ReadonlySet<string> = new Set<PublishMessage['type'
   'publish-item',
   'publish-titles',
   'publish-thumbnail',
+  'publish-ab-thumbnails',
 ]);
 
 export function isPublishMessage(message: unknown): message is PublishMessage {
@@ -174,4 +176,12 @@ export function requestSaveTitles(itemId: string, titles: string[]): Promise<Set
  */
 export function requestThumbnail(itemId: string): Promise<PublishThumbnail | null> {
   return sendToWorker<PublishThumbnail | null>({ type: 'publish-thumbnail', itemId });
+}
+
+/**
+ * The thumbnails saved for the A/B test, Pick 1..n, base64 — fetched at fill time for
+ * requestThumbnail's reason: up to three images, only when the A/B action runs.
+ */
+export function requestAbThumbnails(itemId: string): Promise<PublishThumbnail[]> {
+  return sendToWorker<PublishThumbnail[]>({ type: 'publish-ab-thumbnails', itemId });
 }

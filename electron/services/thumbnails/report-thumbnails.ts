@@ -297,6 +297,35 @@ function message(err: unknown): string {
 }
 
 /**
+ * One item's job file and thumbnails record, read now. THE ONE LOOKUP: the window's every action
+ * (ReportThumbnails.locate) and the browser extension's A/B fill (`abTestPickFiles`) both come
+ * through here, so the two can never disagree about which record an item has.
+ */
+function locateItem(outputDir: string, jobId: string, itemId: string): Located {
+  const handler = OutputHandlerService.forOutputDir(outputDir);
+  const job = handler.getJobMetadata(jobId) as unknown as Located['job'] | null;
+  if (job === null) throw new Error(`The report's job ${jobId} is not there any more.`);
+  if (!Array.isArray(job.items)) throw new Error(`Job ${jobId} has no items list; the report file is damaged.`);
+  const item = job.items.find((i) => i && i.item_id === itemId);
+  if (item === undefined) throw new Error(`Item ${itemId} is not in job ${jobId} any more.`);
+  const where = `item ${itemId} of job ${jobId}`;
+  return { outputDir, handler, job, item, record: readItemThumbnails(item.thumbnails, where), where };
+}
+
+/**
+ * The saved picks' copies, in order, for the browser extension's A/B fill (LEDGER #250): pick n
+ * goes into Studio's "Title and thumbnail" test beside chosen title n. The paths only, read from
+ * the record now; whether each file is there and usable is the publish bridge's check, where the
+ * bytes are read. A report with no thumbnails record (made before the pipeline) or no picks has
+ * none: an empty list, a state rather than a failure, and the extension then fills titles only.
+ */
+export function abTestPickFiles(outputDir: string, jobId: string, itemId: string): Array<{ n: number; file: string }> {
+  const { record } = locateItem(outputDir, jobId, itemId);
+  if (record === null) return [];
+  return pickCopies(record).map(({ n, file }) => ({ n, file }));
+}
+
+/**
  * Empty a record's folder for new screenshots, keeping the images Owen added (`<id>.png` in
  * `full/` and the whole `added/` folder). Nothing outside the folder is touched.
  */
@@ -346,15 +375,7 @@ export class ReportThumbnails {
   }
 
   private locate(jobId: string, itemId: string): Located {
-    const outputDir = this.outputDir();
-    const handler = OutputHandlerService.forOutputDir(outputDir);
-    const job = handler.getJobMetadata(jobId) as unknown as Located['job'] | null;
-    if (job === null) throw new Error(`The report's job ${jobId} is not there any more.`);
-    if (!Array.isArray(job.items)) throw new Error(`Job ${jobId} has no items list; the report file is damaged.`);
-    const item = job.items.find((i) => i && i.item_id === itemId);
-    if (item === undefined) throw new Error(`Item ${itemId} is not in job ${jobId} any more.`);
-    const where = `item ${itemId} of job ${jobId}`;
-    return { outputDir, handler, job, item, record: readItemThumbnails(item.thumbnails, where), where };
+    return locateItem(this.outputDir(), jobId, itemId);
   }
 
   /** Run `fn` as the one action on this item, refusing a second while it runs. */

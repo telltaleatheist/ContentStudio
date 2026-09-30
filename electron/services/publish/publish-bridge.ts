@@ -193,6 +193,14 @@ export interface ItemDetail {
   monetize: true;
   /** Whether there is a thumbnail to fetch for this item. See PublishThumbnail. */
   hasThumbnail: boolean;
+  /**
+   * How many thumbnails Owen saved in the Thumbnails window for the A/B test (Pick 1..n),
+   * 0 when none. A COUNT, not the bytes, for the reason hasThumbnail is a flag: the images
+   * are fetched only when the A/B fill runs (`GET /publish/ab-thumbnails`). The extension
+   * decides from it which test to set up — titles only, or title and thumbnail — before it
+   * touches Studio. Extensions older than 0.2.6 ignore it.
+   */
+  abThumbnails: number;
   /** Sent along so the shelf never hard-codes YouTube's limits. */
   maxVariants: number;
   maxTitleLength: number;
@@ -221,7 +229,15 @@ export class PublishBridge {
      * SENDS what it scraped (older extensions, offline app), but a null from the page
      * no longer ends the resolve.
      */
-    private lookupFileName: (videoId: string) => Promise<string | null> = async () => null
+    private lookupFileName: (videoId: string) => Promise<string | null> = async () => null,
+    /**
+     * The saved A/B picks' files for an item, in order (Pick 1..n), or an empty list when it
+     * has none — thumbnails/report-thumbnails.ts `abTestPickFiles`, injected for the same
+     * reason as the two readers above: this directory never imports the thumbnails service.
+     * Paths only; `getAbThumbnails` below reads and checks the files. Throws for a damaged
+     * record, which must never read as "no picks".
+     */
+    private readAbPicks: (itemId: string, jobId: string) => Array<{ n: number; file: string }>
   ) {}
 
   private toPending(itemId: string): PendingFillItem | null {
@@ -363,6 +379,11 @@ export class PublishBridge {
       // No record means nothing has been attached and nothing auto-discovered yet, which
       // is honestly "no thumbnail to fetch" — the first write is what runs discovery.
       hasThumbnail: chosen ? chosen.thumbnailPath !== null : false,
+      // Read from the thumbnails record, not the publish record: the picks are Owen's saved
+      // cards whether or not he has opened the Publish panel for this item. A record that
+      // cannot be read throws here and the shelf shows why, rather than a 0 that would
+      // quietly turn a title-and-thumbnail test into a titles-only one.
+      abThumbnails: this.readAbPicks(itemId, generated.jobId).length,
       maxVariants: MAX_AB_VARIANTS,
       maxTitleLength: MAX_TITLE_LENGTH,
     };
@@ -398,6 +419,55 @@ export class PublishBridge {
       bytes: bytes.length,
       base64: bytes.toString('base64'),
     };
+  }
+
+  /**
+   * The thumbnails Owen saved for the A/B test (Pick 1..n), in order, as bytes for the
+   * extension to put into Studio's "Title and thumbnail" test: Pick n beside chosen title n.
+   *
+   * Each one goes through `fitThumbnailFile`, exactly as getThumbnail's does — the one door
+   * for anything about to be handed to YouTube — so a pick is checked NOW, not trusted from
+   * the day it was saved.
+   *
+   * An empty list means no picks were saved (or the report predates thumbnails): a state, and
+   * the extension fills titles only. A pick the record names whose copy is missing or
+   * unreadable THROWS, naming it: the record says Owen saved n thumbnails, and serving fewer
+   * would set up a test he did not choose.
+   */
+  async getAbThumbnails(itemId: string): Promise<PublishThumbnail[]> {
+    const generated = this.readGenerated(itemId);
+    if (!generated) throw new Error(`No generated item ${itemId} on disk.`);
+
+    const picks = this.readAbPicks(itemId, generated.jobId);
+    const out: PublishThumbnail[] = [];
+    for (const [i, { n, file }] of picks.entries()) {
+      // The order IS the pairing (pick n with title n); a list that is not 1..n in order
+      // would pair the wrong images with the titles, so it is refused rather than re-sorted.
+      if (n !== i + 1) {
+        throw new Error(`The saved A/B thumbnails for ${itemId} are out of order: entry ${i + 1} is Pick ${n}.`);
+      }
+      if (!fs.existsSync(file)) {
+        throw new Error(
+          `Thumbnail ${n} for the A/B test is saved but its file is missing: ${file}. ` +
+            `Open this report's Thumbnails window and press Save thumbnails again.`
+        );
+      }
+      let fitted: ReturnType<typeof fitThumbnailFile>;
+      try {
+        fitted = fitThumbnailFile(file);
+      } catch (err) {
+        throw new Error(`Thumbnail ${n} for the A/B test cannot be used: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const bytes = fs.readFileSync(fitted.path);
+      out.push({
+        itemId,
+        filename: path.basename(fitted.path),
+        mime: fitted.meta.mime,
+        bytes: bytes.length,
+        base64: bytes.toString('base64'),
+      });
+    }
+    return out;
   }
 
   /**

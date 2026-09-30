@@ -9,7 +9,9 @@
 //
 // Nothing here is ever committed on the operator's behalf: fillers put text into the
 // form and stop. The operator still presses "Set test" in the A/B dialog and "Save" on
-// the page — that human click is the whole point of the design.
+// the page — that human click is the whole point of the design. The same holds for the
+// "Run a new test?" question Studio asks when a test already exists: its Continue deletes
+// the running test on YouTube's servers at once, so only the operator ever presses it.
 //
 // Selector policy: prefer STABLE attributes over visible text.
 //   * the radios carry locale-independent `name`s (VIDEO_HAS_ALTERED_CONTENT_NO, …)
@@ -17,6 +19,8 @@
 //   * A/B variant slots are located BY POSITION inside the dialog, with the
 //     `aria-label="Add title N"` only used as a confirmation, because that label is
 //     localized English and would break on a non-English Studio.
+//   * the A/B dialog's test type is chosen by chip POSITION (`ytcp-chip#chip-0..2`),
+//     never by its label ("Title only", "Title and thumbnail"), for the same reason.
 
 import { findLivestreamFields } from './livestream';
 import {
@@ -26,7 +30,8 @@ import {
   radioIsChecked,
 } from './monetization';
 import type { PublishThumbnail } from './publish-client';
-import { setStudioThumbnail, thumbnailSurfaceReady } from './thumbnail';
+import { setStudioThumbnail, setThumbnailOnInput, thumbnailSurfaceReady } from './thumbnail';
+import { checkArrivedThumbnails, classifyAbOpen, planAbTest, type AbPlan } from './ab-plan';
 import {
   FillError,
   buttonByText,
@@ -101,6 +106,30 @@ export interface FillContext {
    * nothing about the transport.
    */
   loadThumbnail: () => Promise<PublishThumbnail | null>;
+  /**
+   * How many thumbnails Owen saved for the A/B test in ContentStudio's Thumbnails window
+   * (Pick 1..n), and undefined when the app is too old to say.
+   *
+   * Read by the A/B action to choose its test before touching Studio: 0 or 1 is titles
+   * only (one is the video's own thumbnail), one per title is title and thumbnail,
+   * anything else is refused (ab-plan.ts). Undefined is refused as "update the app",
+   * never read as 0 — the hasThumbnail rule, again.
+   */
+  abThumbnails: number | undefined;
+  /**
+   * Fetch those thumbnails' bytes, Pick 1..n in order — a FUNCTION for loadThumbnail's
+   * reason: three images, needed only when the A/B action actually runs.
+   */
+  loadAbThumbnails: () => Promise<PublishThumbnail[]>;
+  /**
+   * Put a line in front of the operator WHILE a fill is still running.
+   *
+   * Every other message a filler has is its outcome, shown when it returns. The A/B action
+   * is the one that can stop part-way and wait for the operator — Studio's "Run a new
+   * test?" question, which only they may answer — and a wait nobody is told about looks
+   * exactly like a hang.
+   */
+  say: (line: string) => void;
 }
 
 export type FillOutcome =
@@ -112,8 +141,14 @@ export interface Filler {
   label: string;
   /** The Studio page/panel this filler's controls live on. */
   surface: FillSurface;
-  /** Whether this action has anything to do on the current page with this data. */
-  detect(ctx: FillContext): { available: true } | { available: false; reason: string };
+  /**
+   * Whether this action has anything to do on the current page with this data.
+   *
+   * `note`, when present, is what the action WILL do, shown on its button — for the one
+   * action whose behaviour depends on the data (the A/B test's titles-only vs title and
+   * thumbnail), so the operator reads the choice before pressing rather than after.
+   */
+  detect(ctx: FillContext): { available: true; note?: string } | { available: false; reason: string };
   fill(ctx: FillContext): Promise<FillOutcome>;
 }
 
@@ -141,6 +176,20 @@ const SEL = {
   // Stable ids beat visible text: these work regardless of Studio's language.
   // Verified live in BOTH entry points (standalone /edit page and the upload wizard).
   abTestButton: 'ytcp-button#ab-test-button',
+  // Inside the A/B dialog (verified live 2026-09-30 on /video/<id>/edit): the test-type
+  // chips, each role="radio" with aria-checked, in a fixed order — chip-0 "Title only",
+  // chip-1 "Thumbnail only", chip-2 "Title and thumbnail". ALWAYS searched inside the
+  // dialog: the page's own navigation chips are also ytcp-chip (LEDGER #70).
+  abChipBar: 'ytcp-static-chip-bar',
+  abChip: (n: number) => `ytcp-chip#chip-${n}`,
+  // Each "Title and thumbnail" row holds one of these, with its own file input. So does
+  // the details form (the video's own thumbnail) — which is why a row's uploader is only
+  // ever looked for inside that row.
+  uploader: 'ytcp-thumbnail-uploader',
+  uploaderInput: 'input[type="file"]',
+  // Any element that can be a dialog Studio puts up in front of the page; the A/B dialog's
+  // host differs by entry point (see abSlots), and so may the "Run a new test?" question's.
+  dialogHost: 'ytcp-dialog, tp-yt-paper-dialog, ytcp-confirmation-dialog',
   showMoreToggle: 'ytcp-video-metadata-editor ytcp-button#toggle-button',
 };
 
@@ -255,8 +304,62 @@ function abSlots(): HTMLElement[] {
   return [];
 }
 
-async function openAbDialog(): Promise<HTMLElement[]> {
+/** Every dialog host on screen now, so a NEW one can be told apart after a click. */
+function visibleDialogs(): Set<HTMLElement> {
+  return new Set(visibleAll<HTMLElement>(SEL.dialogHost));
+}
+
+/**
+ * A dialog that appeared since `before` and is not the A/B dialog, with its text; or null.
+ *
+ * This is how Studio's "Run a new test?" question is recognised: pressing the A/B button
+ * on a video that already has a test puts up a small dialog with no variant slots and no
+ * test-type chips, instead of the A/B dialog. Recognised by SHAPE — new, visible, holding
+ * a button, holding no title slot and no chip bar — not by its words, which are localized.
+ * The words are read only to say what Studio asked (see openAbDialog).
+ */
+function newQuestionDialog(before: Set<HTMLElement>): { el: HTMLElement; text: string } | null {
+  for (const el of visibleDialogs()) {
+    if (before.has(el)) continue;
+    if (el.querySelector('div#textbox') || el.querySelector(SEL.abChipBar)) continue;
+    if (!el.querySelector('ytcp-button, button, tp-yt-paper-button')) continue;
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    return { el, text: text.length > 200 ? `${text.slice(0, 200)}…` : text };
+  }
+  return null;
+}
+
+/**
+ * The English wording of Studio's "Run a new test?" question, as seen live 2026-09-30.
+ *
+ * CONFIRMATION ONLY, like every text match in this file: it picks the more specific of two
+ * messages to show the operator. A non-English Studio gets the general one, which quotes
+ * Studio's own words, and the fill behaves identically either way.
+ */
+const DELETE_TEST_QUESTION = /current test will be deleted/i;
+
+/**
+ * How long the fill waits for the operator to answer Studio's question. Generous on
+ * purpose: they are reading a warning about deleting a running test, and the fill must
+ * not give up while they decide.
+ */
+const QUESTION_WAIT_MS = 120_000;
+/**
+ * After the question closes, how long the A/B dialog gets to appear. Continue deletes the
+ * old test on the server before the dialog opens, so this is a round trip, not a render.
+ */
+const AFTER_QUESTION_MS = 8_000;
+
+/**
+ * Open the A/B dialog (if it is not open already) and return its variant slots.
+ *
+ * `say` puts a line on the shelf while this waits: see FillContext.say.
+ */
+async function openAbDialog(say: (line: string) => void): Promise<HTMLElement[]> {
   if (abSlots().length >= 2) return abSlots();
+
+  const before = visibleDialogs();
 
   // The TITLE A/B trigger has a stable id. The page also carries a separate thumbnail
   // experiment control (ytcp-thumbnails-experiment-editor), which must not be clicked.
@@ -285,10 +388,188 @@ async function openAbDialog(): Promise<HTMLElement[]> {
     nearest.click();
   }
 
-  return waitFor(() => {
+  // What the click led to: the dialog, or Studio's question. The question has to be seen
+  // on six polls running (about a second) before it is believed, so the A/B dialog's own
+  // first frames (a host with nothing rendered in it yet) are never taken for it.
+  let questionSeen = 0;
+  const first = await waitFor(() => {
     const slots = abSlots();
-    return slots.length >= 2 ? slots : null;
+    const question = newQuestionDialog(before);
+    const state = classifyAbOpen(slots.length, question !== null);
+    if (state === 'dialog') return { slots, question: null };
+    if (state === 'confirm') {
+      questionSeen += 1;
+      if (questionSeen >= 6) return { slots: [], question };
+    } else {
+      questionSeen = 0;
+    }
+    return null;
   }, 'the A/B testing dialog to open');
+
+  if (!first.question) return first.slots;
+
+  // Studio is asking first. Its Continue DELETES the video's running test on YouTube at
+  // once (verified live: not on Save), so it is the operator's click and never this one.
+  // Say so plainly, then wait for them.
+  const question = first.question;
+  say(
+    DELETE_TEST_QUESTION.test(question.text)
+      ? 'This video already has an A/B test. Studio is asking whether to delete it and start ' +
+          'a new one. Press Continue in Studio to delete it and go on, or Cancel to keep it. ' +
+          'Waiting up to 2 minutes.'
+      : `Studio asked this before opening the A/B test: "${question.text}" Answer it in ` +
+          `Studio. Waiting up to 2 minutes.`,
+  );
+
+  const answered = await waitFor(
+    () => {
+      if (abSlots().length >= 2) return 'dialog';
+      return question.el.isConnected && question.el.getBoundingClientRect().height > 0 ? null : 'closed';
+    },
+    "Studio's question to be answered",
+    QUESTION_WAIT_MS,
+  ).catch(() => {
+    throw new FillError(
+      "Studio's question was not answered within 2 minutes, so nothing was filled. " +
+        'Answer it, then press A/B test again.',
+    );
+  });
+  if (answered === 'dialog') return abSlots();
+
+  // The question closed. Continue opens the A/B dialog after the server has deleted the
+  // old test; Cancel (or Escape) opens nothing. Which one it was is read off the page, not
+  // assumed.
+  return waitFor(
+    () => {
+      const slots = abSlots();
+      return slots.length >= 2 ? slots : null;
+    },
+    'the A/B dialog after the question',
+    AFTER_QUESTION_MS,
+  ).catch(() => {
+    throw new FillError(
+      "Studio's question closed and no A/B dialog opened, so nothing was filled and the " +
+        'running test was kept if you pressed Cancel. If you pressed Continue, press A/B test ' +
+        'again once the dialog is open.',
+    );
+  });
+}
+
+/**
+ * The part of the page that IS the A/B dialog: the smallest element holding every
+ * variant slot and the test-type chip bar, and not the details form.
+ *
+ * Found from the slots outward rather than from a host tag, because the host differs by
+ * entry point (abSlots). Everything else the A/B action touches — chips, rows, uploaders,
+ * the Set test button — is looked for INSIDE this, so the details form's own thumbnail
+ * input can never be reached from here.
+ */
+function abScope(slots: HTMLElement[]): HTMLElement {
+  const first = slots[0];
+  if (!first) throw new FillError('The A/B dialog has no title slots');
+  const description = visible<HTMLElement>(SEL.description);
+  for (let el = first.parentElement; el && el !== document.body; el = el.parentElement) {
+    if (description && el.contains(description)) break; // reached the page / wizard form
+    if (slots.every((s) => el!.contains(s)) && el.querySelector(SEL.abChipBar)) return el;
+  }
+  throw new FillError(
+    "Could not find the A/B dialog's test-type chips (Title only / Title and thumbnail) " +
+      'around its title slots — Studio may have changed this dialog',
+  );
+}
+
+/**
+ * Select the test type by chip position, and confirm Studio selected it.
+ *
+ * ALWAYS explicit, even when it looks selected already: the dialog opened on "Title and
+ * thumbnail" by default when this was verified, and which chip Studio starts on is not a
+ * thing to rely on. Switching keeps whatever was already filled (verified live).
+ */
+async function selectAbChip(scope: HTMLElement, chip: number, name: string): Promise<void> {
+  const el = scope.querySelector<HTMLElement>(`${SEL.abChipBar} ${SEL.abChip(chip)}`);
+  if (!el) {
+    throw new FillError(`The A/B dialog has no "${name}" choice (${SEL.abChip(chip)}) — Studio may have changed it`);
+  }
+  if (el.getAttribute('aria-checked') === 'true') return;
+  el.click();
+  await waitFor(
+    () => el.getAttribute('aria-checked') === 'true',
+    `"${name}" to become selected in the A/B dialog`,
+    5000,
+  );
+}
+
+/**
+ * The row each title slot sits in, for the "Title and thumbnail" test.
+ *
+ * STRUCTURAL: a slot's row is its nearest ancestor that holds exactly ONE thumbnail
+ * uploader — its own. The row's class (`ytcpCreatorExperimentCreateDialogExperimentOption`,
+ * seen live) is not relied on; it is the kind of generated name that changes. Two slots
+ * resolving to the same row, or a slot with no uploader around it, is refused.
+ */
+function abRows(scope: HTMLElement, slots: HTMLElement[]): HTMLElement[] {
+  const rows = slots.map((slot, i) => {
+    for (let el = slot.parentElement; el && el !== scope; el = el.parentElement) {
+      const uploaders = el.querySelectorAll(SEL.uploader).length;
+      if (uploaders === 1) return el;
+      if (uploaders > 1) break;
+    }
+    throw new FillError(`A/B row ${i + 1} has no thumbnail control of its own — is "Title and thumbnail" selected?`);
+  });
+  if (new Set(rows).size !== rows.length) {
+    throw new FillError('Two A/B title slots share one thumbnail control — Studio may have changed this dialog');
+  }
+  return rows;
+}
+
+/** Every data: picture shown in a row now — the uploader's preview is one of these. */
+function rowPreviews(row: HTMLElement): Set<string> {
+  return new Set(
+    [...row.querySelectorAll<HTMLImageElement>('img')]
+      .map((img) => img.getAttribute('src') || '')
+      .filter((src) => src.startsWith('data:image/')),
+  );
+}
+
+/**
+ * Put Pick n into row n's uploader and confirm BOTH that the input holds it and that the
+ * row's preview changed to a new picture (a `data:image/…` src Studio makes from the file,
+ * seen within 1-2 s live). The first proves the file went in; only the second proves the
+ * uploader took it.
+ */
+async function setRowThumbnail(row: HTMLElement, n: number, thumbnail: PublishThumbnail): Promise<void> {
+  const uploader = row.querySelector<HTMLElement>(SEL.uploader);
+  const input = uploader?.querySelector<HTMLInputElement>(SEL.uploaderInput);
+  if (!input) throw new FillError(`A/B row ${n} has no thumbnail file input`);
+
+  const before = rowPreviews(row);
+  await setThumbnailOnInput(input, thumbnail, `A/B row ${n}'s thumbnail input`);
+  await waitFor(
+    () => [...rowPreviews(row)].some((src) => !before.has(src)),
+    `thumbnail ${n}'s picture to appear in A/B row ${n}`,
+    8000,
+  ).catch(() => {
+    throw new FillError(
+      `Thumbnail ${n} went into A/B row ${n} but the row's picture did not change. If that row ` +
+        `already showed this same picture from an earlier fill, it is set; otherwise Studio ` +
+        `did not take it.`,
+    );
+  });
+}
+
+/**
+ * The dialog's Set test button, which the operator presses — never this code.
+ *
+ * Found by its text inside the dialog because it has no stable id; on a non-English Studio
+ * this misses and the fill says so, rather than reporting a test it cannot see is ready.
+ */
+function setTestButton(scope: HTMLElement): HTMLElement | null {
+  const host = scope.closest<HTMLElement>(SEL.dialogHost) ?? scope;
+  return (
+    [...host.querySelectorAll<HTMLElement>('ytcp-button, button, tp-yt-paper-button')].find(
+      (b) => b.getBoundingClientRect().height > 0 && /set test/i.test((b.textContent || '').trim()),
+    ) ?? null
+  );
 }
 
 // ---------------------------------------------------------------- fillers
@@ -331,24 +612,28 @@ const titleFiller: Filler = {
 };
 
 /**
- * The A/B variant dialog, on its own so a test can be re-set at any time.
+ * The A/B test, on its own so a test can be re-set at any time: the chosen titles, and
+ * Owen's saved thumbnails beside them when there are any (LEDGER #250).
+ *
+ * WHICH TEST is decided before anything is touched (ab-plan.ts planAbTest): none or one
+ * thumbnail saved is "Title only" (one is the video's own thumbnail, said in the result);
+ * one saved per title (2-3) is "Title and thumbnail", pair n = title n + Pick n; any other
+ * count is refused in plain words. The images are fetched and checked
+ * BEFORE the dialog is opened, so a missing file stops the fill with Studio untouched.
  *
  * Deliberately does NOT check whether a test is already running: Studio's own dialog is
- * the authority on that, and guessing from the page would either block a legitimate
- * re-fill or claim a test exists when it doesn't. If a test IS live, opening the dialog
- * shows it and the fill reports what it actually found.
+ * the authority on that. When one is, Studio asks "Run a new test?" first, and its
+ * Continue deletes the running test at once — so the fill says what Studio is asking and
+ * waits for the operator to answer (openAbDialog). It never presses Continue, Set test or
+ * Save.
  */
 const abTestFiller: Filler = {
   id: 'ab-test',
-  label: 'A/B variants',
+  label: 'A/B test',
   surface: 'details',
   detect(ctx) {
-    if (ctx.titles.length < 2) {
-      return {
-        available: false,
-        reason: `Pick at least 2 titles (${ctx.titles.length} chosen)`,
-      };
-    }
+    const plan = planAbTest(ctx.titles.length, ctx.abThumbnails);
+    if (plan.kind === 'refuse') return { available: false, reason: plan.reason };
     // Drafts are ineligible for A/B testing, so the control simply isn't rendered — say
     // that rather than opening a dialog that will never appear.
     const hasControl =
@@ -359,45 +644,93 @@ const abTestFiller: Filler = {
     if (!hasControl) {
       return { available: false, reason: 'No A/B control here — drafts cannot be tested' };
     }
-    return { available: true };
+    return { available: true, note: plan.summary };
   },
   async fill(ctx) {
     try {
-      if (ctx.titles.length < 2) {
-        return { ok: false, reason: 'A/B testing needs at least 2 titles' };
+      const plan: AbPlan = planAbTest(ctx.titles.length, ctx.abThumbnails);
+      if (plan.kind === 'refuse') return { ok: false, reason: plan.reason };
+
+      // The images first: everything that can refuse without Studio refuses before the
+      // dialog opens.
+      let thumbnails: PublishThumbnail[] = [];
+      if (plan.mode === 'titles-and-thumbnails') {
+        thumbnails = await ctx.loadAbThumbnails();
+        const mismatch = checkArrivedThumbnails(plan.count, thumbnails.length);
+        if (mismatch) return { ok: false, reason: mismatch };
       }
 
-      const slots = await openAbDialog();
-      if (slots.length < ctx.titles.length) {
-        return {
-          ok: false,
-          reason: `Chose ${ctx.titles.length} titles but the dialog only offers ${slots.length} slots`,
-        };
-      }
+      const opened = await openAbDialog(ctx.say);
+      const chipName = plan.mode === 'titles' ? 'Title only' : 'Title and thumbnail';
+      await selectAbChip(abScope(opened), plan.chip, chipName);
 
-      for (let i = 0; i < ctx.titles.length; i++) {
+      // Everything re-read after the switch: the slots (and the dialog around them) may be
+      // re-rendered by it, and in "Title and thumbnail" they must be the ones in rows with
+      // uploaders.
+      const slots = await waitFor(() => {
+        const found = abSlots();
+        return found.length >= plan.count ? found : null;
+      }, `${plan.count} title slots in the A/B dialog`).catch(() => {
+        throw new FillError(`Chose ${plan.count} titles but the A/B dialog offers ${abSlots().length} slots`);
+      });
+      const scope = abScope(slots);
+
+      for (let i = 0; i < plan.count; i++) {
         const slot = slots[i];
         const text = ctx.titles[i];
         if (!slot || text === undefined) {
-          return { ok: false, reason: `A/B variant slot ${i + 1} went missing while filling` };
+          return { ok: false, reason: `A/B title slot ${i + 1} went missing while filling` };
         }
         setContentEditable(slot, text);
         await sleep(200);
       }
 
-      // Confirm Studio actually registered the variants: "Set test" stays disabled until
-      // variant 2 is non-empty, so an enabled button is proof the writes landed.
-      const setTest = buttonByText(/set test/i);
-      if (setTest && isDisabled(setTest)) {
+      if (plan.mode === 'titles-and-thumbnails') {
+        // Rows beyond the titles are left exactly as they are.
+        const rows = abRows(scope, slots.slice(0, plan.count));
+        for (let i = 0; i < plan.count; i++) {
+          await setRowThumbnail(rows[i]!, i + 1, thumbnails[i]!);
+        }
+      }
+
+      // The chip once more, AFTER the writes: proof that the test being set up is still
+      // the one planned, not one Studio switched to while the rows were filled.
+      const chip = scope.querySelector<HTMLElement>(`${SEL.abChipBar} ${SEL.abChip(plan.chip)}`);
+      if (chip?.getAttribute('aria-checked') !== 'true') {
+        return { ok: false, reason: `"${chipName}" is no longer selected in the A/B dialog — check it before setting the test` };
+      }
+
+      // Confirm Studio registered everything: "Set test" stays disabled until the test is
+      // complete (2nd title, and 2nd thumbnail in a thumbnail test), so an enabled button is
+      // proof the writes landed. Waited for, because the thumbnails are processed first.
+      const setTest = setTestButton(scope);
+      if (!setTest) {
         return {
           ok: false,
-          reason: 'Variants were written but "Set test" is still disabled — Studio did not register them',
+          reason: 'Filled the A/B dialog but could not find its "Set test" button to confirm Studio took it',
+        };
+      }
+      const ready = await waitFor(() => !isDisabled(setTest), '"Set test" to be enabled', 10_000)
+        .then(() => true)
+        .catch(() => false);
+      if (!ready) {
+        return {
+          ok: false,
+          reason: 'Filled the A/B dialog but "Set test" is still disabled — Studio did not take everything',
         };
       }
 
       return {
         ok: true,
-        detail: `Filled ${ctx.titles.length} variants. Press "Set test" to start it.`,
+        detail:
+          plan.mode === 'titles'
+            ? plan.savedThumbnails === 1
+              ? `Filled ${plan.count} titles (Title only). One thumbnail was saved, so it is used ` +
+                `as the video's thumbnail, not tested — the Thumbnail action sets it. ` +
+                `Press "Set test" to start the test.`
+              : `Filled ${plan.count} titles (Title only — no thumbnails saved). Press "Set test" to start it.`
+            : `Filled ${plan.count} titles and ${plan.count} thumbnails (Title and thumbnail). ` +
+              `Press "Set test" to start it.`,
       };
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) };

@@ -152,6 +152,7 @@ button.primary {
 .line { display: flex; gap: 5px; padding: 1px 0; font-size: 11px; }
 .ok { color: #7ddc7d; }
 .bad { color: #ff8a80; }
+.wait { color: #ffcc66; }
 .muted { color: #8f8f8f; }
 /*
  * The linkage note. Amber and boxed for a mismatch, quiet grey for a match, because the
@@ -222,6 +223,8 @@ export interface ShelfCallbacks {
    * the bytes.
    */
   onLoadThumbnail(itemId: string): Promise<PublishThumbnail | null>;
+  /** The thumbnails saved for the A/B test, Pick 1..n. Passed through, like onLoadThumbnail. */
+  onLoadAbThumbnails(itemId: string): Promise<PublishThumbnail[]>;
 }
 
 type Tab = 'current' | 'reports';
@@ -279,7 +282,8 @@ export class PublishShelf {
   private statusText = 'Waiting for ContentStudio…';
   private errorText: string | null = null;
   private showAllTitles = false;
-  private logLines: Array<{ ok: boolean; text: string }> = [];
+  /** 'wait' is a line said while a fill is still running (note()), not an outcome. */
+  private logLines: Array<{ mark: 'ok' | 'bad' | 'wait'; text: string }> = [];
 
   // ---- report browser state
   private pages = new Map<number, BrowseRow[]>();
@@ -384,7 +388,17 @@ export class PublishShelf {
 
   /** Append one fill result. Failures stay visible — never silently swallowed. */
   log(ok: boolean, filler: Filler | null, message: string): void {
-    this.logLines.push({ ok, text: filler ? `${filler.label}: ${message}` : message });
+    this.logLines.push({ mark: ok ? 'ok' : 'bad', text: filler ? `${filler.label}: ${message}` : message });
+    this.render();
+  }
+
+  /**
+   * A line said WHILE a fill is running and waiting on the operator — Studio's "Run a new
+   * test?" question. Marked as waiting rather than as a result, and left in the log after
+   * the fill's own outcome lands under it, so what was asked stays readable.
+   */
+  note(message: string): void {
+    this.logLines.push({ mark: 'wait', text: message });
     this.render();
   }
 
@@ -561,8 +575,8 @@ export class PublishShelf {
         const div = document.createElement('div');
         div.className = 'line';
         const mark = document.createElement('span');
-        mark.className = line.ok ? 'ok' : 'bad';
-        mark.textContent = line.ok ? '✓' : '✕';
+        mark.className = line.mark;
+        mark.textContent = line.mark === 'ok' ? '✓' : line.mark === 'bad' ? '✕' : '…';
         const text = document.createElement('span');
         text.textContent = line.text;
         div.append(mark, text);
@@ -795,6 +809,9 @@ export class PublishShelf {
       // is rebuilt on every render and fetching an image to decide whether to draw a
       // button would pull megabytes across the message channel on every repaint.
       loadThumbnail: () => this.callbacks.onLoadThumbnail(item.itemId),
+      abThumbnails: item.abThumbnails,
+      loadAbThumbnails: () => this.callbacks.onLoadAbThumbnails(item.itemId),
+      say: (line: string) => this.note(line),
     };
 
     // Only the actions this page can actually take. An action for the OTHER panel is not
@@ -820,7 +837,9 @@ export class PublishShelf {
         btn.textContent = `${filler.label} — ${detected.reason}`;
         btn.title = detected.reason;
       } else {
-        btn.textContent = filler.label;
+        // The note says what the action will do when that depends on the data (the A/B
+        // test: titles only, or titles and thumbnails), so it is read before the press.
+        btn.textContent = detected.note ? `${filler.label} — ${detected.note}` : filler.label;
         btn.addEventListener('click', () => this.run([filler.id]));
       }
       return btn;

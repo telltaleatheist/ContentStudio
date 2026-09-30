@@ -471,23 +471,45 @@ border kept nothing is drawn and the record says "No border is kept in the app, 
 so, in the record's lines and in Thumbnail look. Nothing is written back until Save look. So Owen's
 saved look (if any) gets the smaller text and his border without him doing anything.
 
-### The saved picks, for the A/B fill (the browser extension, later)
+### The saved picks, for the A/B fill (built 2026-09-30, LEDGER #250; extension 0.2.6)
 
-The extension's A/B fill (Studio's "Title and thumbnail" Test & Compare) was deferred to a session with
-a live Studio window. What it will read, all written already:
+The extension's A/B action ("A/B test" on the shelf) now puts the saved picks into Studio's
+"Title and thumbnail" test beside the chosen titles: pair n = chosen title n + Pick n. Built offline,
+not yet run against live Studio. What it reads and does:
 
-- The record: the item's `thumbnails` key in `<outputDir>/.contentstudio/metadata/<jobId>.json`, read
-  with `readItemThumbnails`. `picks` is ordered, at most 3.
-- The files: `pickCopies(record)` (pipeline-record.ts) gives `{ n, pick, file }` per pick, where `file`
-  is `<record.folder>/picks/Pick n.png` (`.jpg` when the picked file is not a PNG). The copies are
-  rewritten on every save, exactly the picks in order; no picks, no `picks/` folder.
-- The pairing: pick n goes with the report's chosen title n (the publish record's
-  `chosenTitles[n - 1]`), read live, because Owen can reorder titles after picking. Each made pick also
-  stores `wordsFor` (the title its words were written for), which is not the pairing.
-- The transport the extension already uses for the single thumbnail (`GET /publish/thumbnail`,
-  publish-bridge `getThumbnail`: fitted, base64 in JSON through the service worker) is the model for a
-  per-pick route; the extension would set each file on the variant's file input with a DataTransfer,
-  and never press Set test.
+- **The record**: the item's `thumbnails` key in `<outputDir>/.contentstudio/metadata/<jobId>.json`,
+  read by report-thumbnails.ts `abTestPickFiles(outputDir, jobId, itemId)` through `locateItem`, the
+  SAME lookup every Thumbnails window action uses. The files are `pickCopies(record)`
+  (`<record.folder>/picks/Pick n.png`, `.jpg` for a JPEG pick), in order.
+- **The app**: publish-bridge `getAbThumbnails` (injected reader, so publish/ still never imports the
+  thumbnails service) serves `GET /publish/ab-thumbnails?itemId` → `{ picks: PublishThumbnail[] }`,
+  each through `fitThumbnailFile` exactly as `getThumbnail` does, base64 in JSON through the service
+  worker. No record or no picks is `{ picks: [] }`; a saved pick whose file is missing or unusable is
+  a 500 naming it ("Thumbnail n for the A/B test is saved but its file is missing: … press Save
+  thumbnails again"), never a shorter list. The item detail carries `abThumbnails` (the count; a
+  record that cannot be read fails the detail rather than reading as 0).
+- **The pairing** is by position and read live: pick n goes with the report's chosen title n. Each
+  made pick's `wordsFor` is not the pairing.
+- **Which test** (extension ab-plan.ts `planAbTest`, pure, decided before Studio is touched):
+  0 picks → "Title only"; 1 pick → "Title only" too, the one image being the video's own thumbnail
+  (the separate Thumbnail action sets it), said in the result; 2-3 picks equal to the titles →
+  "Title and thumbnail"; 2-3 that differ → refused ("3 titles but 2 thumbnails saved — save a
+  thumbnail for each title in ContentStudio's Thumbnails window, or drop a title"); an app too old to
+  send the count → refused as "update the app", never read as 0. The images are fetched and counted
+  again before the dialog opens.
+- **In Studio** (fillers.ts): the chip is selected by position (`ytcp-chip#chip-0` / `#chip-2`) and
+  confirmed `aria-checked="true"`, every time; titles through the slots as before; each row found
+  structurally (the slot's nearest ancestor holding exactly one `ytcp-thumbnail-uploader`), its file
+  input set with a DataTransfer (thumbnail.ts `setThumbnailOnInput`, shared with the video's own
+  thumbnail) and confirmed twice: the input holds the file, and the row's picture changed to a new
+  `data:image/…` preview. Rows beyond the titles are left alone. Then "Set test" must become enabled.
+  Nothing outside the dialog is touched, and the video's own thumbnail filler now skips any file
+  input inside the A/B dialog.
+- **"Run a new test?"**: on a video that already has a test, Studio asks first and its Continue
+  deletes the running test on YouTube at once. The fill recognises the question by shape (a new
+  dialog with no title slots and no chips), never presses Continue, says on the shelf what Studio is
+  asking and waits up to 2 minutes for Owen to answer; Cancel ends the fill with that said.
+- It never presses Set test, Continue or Save.
 
 **Screenshots** (scratch userData, a fixture from the keeper's synthetic session, the fake Crucible
 standalone, Owen's photos, logo and border COPIED into the scratch folder; no live Crucible; session

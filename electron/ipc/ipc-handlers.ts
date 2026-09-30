@@ -114,6 +114,7 @@ import { PublishBridge } from '../services/publish/publish-bridge';
 import { setupEditorIpc } from '../services/editor/editor-ipc';
 import { setupTranscriptLinkIpc } from '../services/metadata/transcript-link-ipc';
 import { thumbnailRunChoice } from '../services/thumbnails/pipeline-setup';
+import { abTestPickFiles } from '../services/thumbnails/report-thumbnails';
 import { resolveRef } from '../services/metadata/editor-transcript-link';
 import type { TranscriptRef } from '../services/publish/publish-types';
 import type { TranscriptLink } from '../services/metadata/editor-transcript-link';
@@ -3969,6 +3970,16 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           if (name) return name;
         }
         return null;
+      },
+      // The A/B picks through the Thumbnails window's own lookup (report-thumbnails.ts), so
+      // the extension and the window read the same record the same way. The output folder is
+      // read per call, as metadataReportsDir does, so a changed setting needs no restart.
+      (itemId: string, jobId: string) => {
+        const outputDirectory = store.get('outputDirectory');
+        if (typeof outputDirectory !== 'string' || !outputDirectory.trim()) {
+          throw new Error('No output directory configured — cannot locate the saved thumbnails.');
+        }
+        return abTestPickFiles(outputDirectory, jobId, itemId);
       })
   );
 
