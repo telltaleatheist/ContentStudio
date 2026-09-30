@@ -142,6 +142,28 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Scrolled past the cards: they shrink to pictures only. */
   readonly compact = signal(false);
   private statusObserver: ResizeObserver | null = null;
+  /**
+   * The cards panel's height at full size, and how much shorter it is shrunk. While shrunk, that
+   * difference is kept as space under it, so nothing below moves when it shrinks: otherwise the
+   * content jumped up, the scroll position was pulled back, and the panel grew and shrank in a loop
+   * (Owen 2026-09-30: "it keeps trying to pull it back up and it jitters").
+   */
+  private readonly panelFull = signal(0);
+  private readonly panelNow = signal(0);
+  readonly panelSpacer = computed(() => (this.compact() ? Math.max(0, this.panelFull() - this.panelNow()) : 0));
+  private panelObserver: ResizeObserver | null = null;
+  private readonly cardsSecEl = viewChild<ElementRef<HTMLElement>>('cardsSec');
+  private readonly watchPanel = effect(() => {
+    const el = this.cardsSecEl()?.nativeElement;
+    this.panelObserver?.disconnect();
+    if (el === undefined) return;
+    this.panelObserver = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      this.panelNow.set(h);
+      if (!el.classList.contains('compact')) this.panelFull.set(h);
+    });
+    this.panelObserver.observe(el);
+  });
   private readonly watchStatus = effect(() => {
     const el = this.statusEl()?.nativeElement;
     this.statusObserver?.disconnect();
@@ -319,6 +341,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroyed = true;
     this.statusObserver?.disconnect();
+    this.panelObserver?.disconnect();
     this.unsubscribe?.();
     if (this.clock !== null) clearInterval(this.clock);
     // The window is gone, so there is nowhere to show a failure: the main process never refuses

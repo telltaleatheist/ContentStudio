@@ -75,7 +75,7 @@
 
   <!-- ═════ THE CARDS ═════ Three live previews; the active one is filled from the trays below. -->
   <div class="cards-mark" #cardsMark></div>
-  <section class="cards-sec" [class.compact]="compact()" [style.top.px]="statusHeight()">
+  <section class="cards-sec" #cardsSec [class.compact]="compact()" [style.top.px]="statusHeight()" [style.margin-bottom.px]="panelSpacer()">
     <div class="sec-head">
       <h3>Your thumbnails</h3>
       <span class="hint">The first one saved is the video's thumbnail; with an A/B test, the others go with titles 2 and 3. Your logo and border are added for you.</span>

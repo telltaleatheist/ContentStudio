@@ -4,7 +4,7 @@
 /* The window fills almost all of ContentStudio (96vw x 94vh, set where it opens): the title and the
    Close row keep their height and the content takes the rest, instead of Material's 65vh cap. */
 :host { display: flex; flex-direction: column; height: 100%; }
-.mat-mdc-dialog-content.tw { max-height: none; flex: 1 1 auto; min-height: 0; }
+.mat-mdc-dialog-content.tw { max-height: none; flex: 1 1 auto; min-height: 0; overflow-anchor: none; }
 .tw {
   /* One background for the window and its two sticky panels, so what scrolls under them is hidden. */
   background: var(--bg-secondary);
@@ -73,7 +73,7 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
     padding-top: 4px; padding-bottom: 6px;
     .sec-head { margin-bottom: 6px; }
     .sec-head > .hint, .why { display: none; }
-    .cards { max-width: 720px; gap: 10px; }
+    .cards { max-width: 720px; gap: 10px; margin: 0 auto; }
     .card { padding: 5px; gap: 4px; }
     .card-lines, .card-acts, .role { display: none; }
   }
