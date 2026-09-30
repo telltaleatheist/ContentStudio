@@ -1226,8 +1226,15 @@ export class ReportThumbnails {
         cancelled: () => false,
         progress: (line) => this.deps.progress({ jobId, itemId, line }),
       });
-      await run.beforeChapters();
-      await run.afterFields(fields);
+      // The frames (ffmpeg, CPU) and the words (the model) side by side when the story is kept:
+      // neither reads what the other makes. The render needs both, so it comes after.
+      if (run.storyKept()) {
+        await Promise.all([run.beforeChapters(), run.wordsStage(fields)]);
+      } else {
+        await run.beforeChapters();
+        await run.wordsStage(fields);
+      }
+      await run.renderStage();
       return run.record();
     } finally {
       ai.cleanup?.();

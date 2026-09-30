@@ -1006,6 +1006,25 @@ check('window, his images as frames: a non-16:9 PNG is cut to fill 16:9 at 1920x
   // A record that is not ready refuses (it is prepared first).
   const failed = await windowOver(world, { record: { ...rec, state: 'failed', failure: { stage: 'words', reason: 'x' }, line: 'The thumbnails stopped at the words stage: x' } });
   assert.ok(/not ready yet; they are prepared first/.test((await rejection(failed.window.addFrames(failed.job.jobId, failed.itemId, [shot]))).message));
+  // FRAMES PICKED AGAIN (an old record's scoring-era grid, prepared on opening): his images and
+  // their files stay, first in the list; the new grid follows them; the words ran beside the frames.
+  const legacy = JSON.parse(JSON.stringify(again.record));
+  const hadFiles = ['added1', 'added2'].filter((id) => fs.existsSync(path.join(legacy.folder, 'full', `${id}.png`)));
+  assert.ok(hadFiles.length > 0, 'at least one of his images is on disk before');
+  Object.assign(legacy, { state: 'failed', failure: { stage: 'scoring', reason: 'refused' }, line: 'The thumbnails stopped at the scoring stage: refused', pairs: [], titles: null, picks: [] });
+  legacy.scenes = legacy.scenes.map(({ shown, ...rest }) => ({ ...rest, scored: 1 }));
+  const old = await windowOver(world, { record: legacy });
+  assert.deepStrictEqual(pipeline.resumePlan(legacy, fs.existsSync).run, ['frames', 'words', 'render'], 'the old grid is picked again');
+  const prepared = await old.window.finish(old.job.jobId, old.itemId);
+  const pf = prepared.record.frames;
+  assert.strictEqual(prepared.record.state, 'made', prepared.record.line);
+  assert.deepStrictEqual(pf.filter((f) => f.origin === 'added').map((f) => f.id), ['added1', 'added2'], 'his images are still frames');
+  assert.ok(pf.some((f) => f.origin !== 'added'), 'and the new grid is there');
+  const pfolder = prepared.record.folder;
+  assert.ok(hadFiles.every((id) => fs.existsSync(path.join(pfolder, 'full', `${id}.png`)) && fs.existsSync(path.join(pfolder, 'added', `${id}.jpg`))), 'their files were not removed');
+  assert.ok(prepared.record.pairs.length > 0 && prepared.record.pairs.every((p) => p.words.claim.length + p.words.stakes.length + p.words.reaction.length > 0), 'the words were written');
+  assert.deepStrictEqual(compose.frameList(prepared.record).slice(0, 2), ['added1', 'added2']);
+  await old.window.releaseHold('the check moves on');
 }));
 
 check('window, the words are kept: New options and More options are in the report before any save (read from the job file); New puts a fresh set first and keeps the old one; More shows the model every line already written for the title and adds none twice; closing the window mid-run neither stops the run nor gives the model back under it, and the model goes back after; a window opened meanwhile sees it running; a line on a card never disappears', () => withWorld({

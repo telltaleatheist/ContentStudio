@@ -381,7 +381,8 @@ export class ItemThumbnailRun {
     if (!keep.has('frames')) {
       rec.source = null;
       rec.scenes = [];
-      rec.frames = [];
+      // The images Owen added are his, not the sampler's: they stay when the frames are picked again.
+      rec.frames = rec.frames.filter((f) => f.origin === 'added');
     }
     if (!keep.has('words')) {
       // The words written so far are kept as earlier options (never dropped): new ones are written.
@@ -476,11 +477,17 @@ export class ItemThumbnailRun {
       // A stop is the job's, never this stage's failure: it goes to the generator's one exit.
       if (this.doors.cancelled()) throw err;
       const reason = message(err);
-      this.rec.state = 'failed';
-      this.rec.failure = { stage: name, reason };
-      this.rec.line = `The thumbnails stopped at the ${name} stage: ${reason}`;
+      // Two stages can run side by side (the window's preparing: frames beside words); the first
+      // to fail is the record's failure, and a later one is logged only.
+      if (this.rec.state === 'failed') {
+        log.error(`[Thumbnails] ${this.item.sourceLabel}: the ${name} stage also failed: ${reason}`);
+      } else {
+        this.rec.state = 'failed';
+        this.rec.failure = { stage: name, reason };
+        this.rec.line = `The thumbnails stopped at the ${name} stage: ${reason}`;
+        log.error(`[Thumbnails] ${this.item.sourceLabel}: ${this.rec.line}`);
+      }
       this.stopped = true;
-      log.error(`[Thumbnails] ${this.item.sourceLabel}: ${this.rec.line}`);
     } finally {
       this.rec.timings.push({ stage: name, seconds: Math.round((Date.now() - t0) / 100) / 10 });
     }
@@ -518,11 +525,30 @@ export class ItemThumbnailRun {
     const story = this.rec.story;
     if (story === null || story.state !== 'linked') throw new Error('The frames stage ran without a linked story.');
     const folder = this.rec.folder!;
+    // The images Owen added (their `added/` pictures and `full/<id>.png`) are the only copies and
+    // stay; everything else an earlier attempt of THIS job wrote here is replaced (the folder is
+    // named by the job id).
+    const added = this.rec.frames.filter((f) => f.origin === 'added');
     if (fs.existsSync(folder)) {
-      // Only an earlier attempt of THIS job writes here (the folder is named by the job id), and
-      // starting the job again rewrote its report without that attempt's items.
-      fs.rmSync(folder, { recursive: true, force: true });
-      this.rec.lines.push(`An earlier attempt of this job left thumbnail files in ${folder}; they were replaced.`);
+      const keepFull = new Set(added.map((f) => `${f.id}.png`));
+      let removed = false;
+      for (const entry of fs.readdirSync(folder)) {
+        if (entry === 'added' && added.length > 0) continue;
+        const at = path.join(folder, entry);
+        if (entry === 'full' && fs.statSync(at).isDirectory()) {
+          for (const file of fs.readdirSync(at)) {
+            if (keepFull.has(file)) continue;
+            fs.rmSync(path.join(at, file), { recursive: true, force: true });
+            removed = true;
+          }
+          continue;
+        }
+        fs.rmSync(at, { recursive: true, force: true });
+        removed = true;
+      }
+      if (removed) {
+        this.rec.lines.push(`An earlier attempt of this job left thumbnail files in ${folder}; they were replaced${added.length > 0 ? ` (the ${added.length} image${added.length === 1 ? '' : 's'} you added were kept)` : ''}.`);
+      }
     }
     this.doors.progress('Thumbnails: finding frames in the story\'s screen recording...');
     const source = await resolveStorySource(story.ref, {
@@ -560,10 +586,10 @@ export class ItemThumbnailRun {
       number: s.number, seconds: s.seconds, label: sceneLabel(s), kept: s.frames.length,
       shown: s.frames.filter((f) => gridIds.has(frameId(f))).length,
     }));
-    this.rec.frames = grid.map((f) => ({
+    this.rec.frames = [...added, ...grid.map((f) => ({
       id: frameId(f), t: f.t, clock: clock(f.t), scene: sceneOf.get(frameId(f))!, large: f.large, small: f.small,
-    }));
-    for (const f of this.rec.frames) this.frameFiles.set(f.id, { t: f.t, large: f.large });
+    }))];
+    for (const f of this.rec.frames) this.frameFiles.set(f.id, { t: f.t, large: f.large, ...(f.origin === 'added' ? { origin: 'added' as const } : {}) });
     const blurry = filtered.dropped.filter((d) => d.reason === 'blurry').length;
     const repeats = filtered.dropped.filter((d) => d.reason === 'repeat').length;
     this.rec.lines.push(
@@ -574,11 +600,30 @@ export class ItemThumbnailRun {
 
   /** The words (GPU), then the three renders (CPU, no photo): after the item's fields are written. */
   async afterFields(fields: GeneratedFields): Promise<void> {
+    await this.wordsStage(fields);
+    await this.renderStage();
+  }
+
+  /**
+   * Whether the story is already linked and kept, so the words (from the transcript) need nothing
+   * the frames stage makes and may run beside it (the window's preparing, Owen 2026-09-30: the
+   * frames took two minutes before the model was even asked for).
+   */
+  storyKept(): boolean {
+    return this.skip.has('story') && this.rec.story?.state === 'linked';
+  }
+
+  /** The words stage alone (afterFields' first half). */
+  async wordsStage(fields: GeneratedFields): Promise<void> {
     await this.stage('words', async () => {
       const titles = pairSubjects(fields);
       this.rec.titles = titles;
       await this.words(titles.subjects);
     });
+  }
+
+  /** The render stage and the record's closing line (afterFields' second half). */
+  async renderStage(): Promise<void> {
     await this.stage('render', () => this.render());
     if (!this.stopped) {
       const n = this.rec.pairs.length;
