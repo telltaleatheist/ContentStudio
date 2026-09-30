@@ -1,8 +1,11 @@
 /**
  * The shapes the Thumbnails window and the Thumbnail look read from the main process (phase 2,
  * 2026-09-28). They mirror electron/services/thumbnails/pipeline-record.ts (the stored record),
- * report-thumbnails.ts (the window's view) and look.ts (the one look); change them together.
+ * report-thumbnails.ts (the window's view) and look.ts (the one look); change them together. The
+ * card editor's shapes (CardAdjust and the layout's) are not mirrored: they come from the shared
+ * module both sides compile (thumbnail-shared.ts).
  */
+import type { CardAdjust, Rect, ThumbnailStyle } from './thumbnail-shared';
 
 export type ThumbnailsAnswer<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -41,6 +44,8 @@ export interface StoredDefault {
   draw: PhotoDraw | null;
   logo: boolean;
   render: StoredRender;
+  /** Owen's edits to the card (the card editor); absent: none. */
+  adjust?: CardAdjust;
 }
 
 export interface StoredPair {
@@ -66,7 +71,8 @@ export interface StoredFrame {
 
 export type ThumbnailPick =
   | { kind: 'made'; pair: number; file: string; wordsFor: string }
-  | { kind: 'own'; file: string };
+  /** `card`: the card it was put on; absent in picks saved before the card editor (pick n sat on card n). */
+  | { kind: 'own'; file: string; card?: number };
 
 export type ThumbnailsState = 'made' | 'no-story' | 'off' | 'failed';
 
@@ -126,38 +132,61 @@ export interface FinishView {
   blocked: string | null;
 }
 
+/** The look, border and logo the live preview draws with (the logo at its drawn size), or why there can be none. */
+export type ComposeView =
+  | {
+      ok: true;
+      style: ThumbnailStyle;
+      width: number;
+      height: number;
+      border: string | null;
+      logo: { image: string; width: number; height: number } | null;
+      lines: string[];
+    }
+  | { ok: false; error: string };
+
 export interface ThumbnailsView extends ThumbnailsSummary {
   jobId: string;
   itemId: string;
   title: string;
   record: ItemThumbnails | null;
   titles: string[];
-  renders: Record<string, string>;
   frames: Record<string, string>;
   photos: Array<{ name: string; preview: string }>;
-  hasLogo: boolean;
+  compose: ComposeView;
   heldModel: string | null;
   finish: FinishView | null;
-  remake: { blocked: string | null } | null;
 }
 
-export interface PairChange {
-  pair: number;
-  frameId?: string;
-  phrase?: string | null;
-  kind?: WordKind | null;
-  wordsFor?: string | null;
-  /** A photo name from the library, or null for none. */
-  photo?: string | null;
-  logo?: boolean;
+/** A frame at full size for the preview, and the faces the final render will find in it (or why not). */
+export interface FrameDetail {
+  frameId: string;
+  picture: string;
+  width: number;
+  height: number;
+  faces: Rect[] | null;
+  facesError: string | null;
 }
 
-export type PickRequest = { kind: 'made'; pair: number } | { kind: 'own'; file: string };
+export interface PhotoDetail {
+  name: string;
+  image: string;
+  width: number;
+  height: number;
+}
+
+/** One card as Save thumbnails sends it (report-thumbnails.ts CardRequest). */
+export type CardRequest =
+  | { card: number; kind: 'empty' }
+  | { card: number; kind: 'own'; file: string }
+  | { card: number; kind: 'made'; frameId: string; phrase: string | null; textKind: WordKind | null; wordsFor: string | null; photo: string | null; adjust: CardAdjust };
 
 export interface ThumbnailsProgress {
   jobId: string;
   itemId: string;
   line: string;
+  /** The card being drawn while saving. */
+  card?: number;
 }
 
 // ── the look ─────────────────────────────────────────────────────────────────

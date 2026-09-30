@@ -1,41 +1,43 @@
-import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
-import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChildren } from '@angular/core';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { ElectronService } from '../../services/electron';
 import { PublishState } from '../../features/publish/publish-state';
 import { ThumbnailLookDialog } from './thumbnail-look-dialog';
+import { ThumbnailCardEditor, type ThumbnailCardEditorData } from './thumbnail-card-editor';
+import { PreviewPieces, Redrawer, composeError, drawCard, readyCompose } from './thumbnail-preview';
 import {
   ActionRunner,
-  MAX_PICKS,
-  NO_TEXT,
-  addFrame,
-  addNoPhoto,
-  frameNumbers,
+  CARD_COUNT,
+  cardRequests,
+  cardsFromView,
+  cardsUsing,
+  clearCard,
   clockOf,
-  drawChange,
+  emptyCards,
   failureLine,
   frameList,
-  generateBlocked,
-  photoNumbers,
-  pickRequests,
-  planSlots,
-  ready,
-  removeFrameAt,
-  removePhotoAt,
-  samePicks,
-  selectionFromPicks,
-  suggestedTexts,
+  generatedText,
+  noPairFor,
+  planCards,
+  saveBlocked,
+  setAdjust,
+  setOwn,
   textOptions,
+  titleOf,
+  toggleFrame,
   togglePhoto,
-  togglePick,
+  toggleText,
   typedText,
-  wantedChange,
-  type PhotoOption,
-  type Slot,
+  unsavedCards,
+  wordsMismatch,
+  sameCard,
+  type Card,
+  type CardPlan,
   type TextOption,
 } from './thumbnails-compose';
-import type { PickRequest, PickView, StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
+import type { StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
 
 export interface ThumbnailsWindowData {
   jobId: string;
@@ -43,31 +45,29 @@ export interface ThumbnailsWindowData {
 }
 
 /**
- * THE THUMBNAILS WINDOW (2026-09-29, rebuilt twice that day with Owen). Top to bottom:
+ * THE THUMBNAILS WINDOW: THE CARD EDITOR (2026-09-29, Owen: "maybe i select the thumbnail card i
+ * want to fill. then i select the frame, the text, and the image of myself to use in it. then i
+ * click a different card and do the same ... as soon as i click something, it adds it to the frame.
+ * if i unclick it, it removes it from the frame").
  *
- *   1. FRAMES: one flat list of the story's frames in time order (at most two per scene, the
- *      sharpest, chosen on the CPU; nothing ranks them since the frame scoring was removed
- *      2026-09-29). Up to three, in click order (badges 1, 2, 3). Frame n is thumbnail n's: the run
- *      gives no pair a frame, so a thumbnail is drawn only once its frame is picked.
- *   2. TEXT: every line the model wrote, one per row, with its kind and the title it was written
- *      for in small text; typed words; "No text". Up to three, in click order.
- *   3. PHOTOS: one row of Owen's reaction photos and "No photo". Up to three, in click order: photo n
- *      goes on thumbnail n (Owen: "just let me pick the image of myself that goes in the corner
- *      instead of letting the model pick it"). The logo switch.
- *   4. GENERATE THUMBNAILS, at the bottom (Owen: "the 'generate thumbnails' button should be at the
- *      bottom"): draws thumbnail n = frame n + text n + photo n + logo, then saves them as the
- *      ordered picks (pick 1 the video's thumbnail through the publish record's one door; pick n goes
- *      with title n in an A/B test). Disabled, with the reason written beside it, until at least one
- *      frame and text are picked. Nothing is drawn before it is pressed.
- *   5. YOUR THUMBNAILS: what was generated, large and phone-size; a card whose picks changed since
- *      says so. His own image can take any place; "Rewrite words for this title" when a thumbnail's
- *      words were written for another title than the one it goes with.
+ *   - THREE CARDS across the top, each a LIVE preview drawn here with the final render's own layout
+ *     and drawing (thumbnail-preview.ts), with the title it goes with under it. One card is ACTIVE
+ *     (card 1 on opening); clicking a card makes it active.
+ *   - THE TRAYS below: Frames (the grid), Text (every generated line, labelled with its kind and
+ *     title, and words he types), Photos. A click puts the item on the active card at once, replacing
+ *     what it had; clicking what the active card already has takes it off. The badges on each item
+ *     say which cards use it (thumbnails-compose.ts has the rules).
+ *   - EDIT (on a card): a larger editor (thumbnail-card-editor.ts) to zoom or move the frame, move or
+ *     size the words and the photo. The logo (top right) and the border are drawn automatically and
+ *     are never edited.
+ *   - SAVE THUMBNAILS draws every card with a frame at 1280x720 and saves the cards in order as the
+ *     picks (the first saved card is Pick 1, the video's thumbnail), each card showing its progress
+ *     and any failure by name. A card with no frame is left out and says why. Closing with changes
+ *     not saved asks first, in the window.
  *
- * A report whose thumbnail stages stopped says where and why, with "Finish making thumbnails" (only
- * the missing stages) and "Make thumbnails again from scratch". Every action runs through ONE runner
- * (thumbnails-compose.ts ActionRunner): a spinner and a running clock while it runs, and any failure
- * as a banner naming what failed. Picking rules: thumbnails-compose.ts.
- *
+ * A video whose frames and text are not ready is prepared on opening (Owen: "i havent even started
+ * making a thumbnail yet. why would i hit finish making thumbnails?"). Every action runs through ONE
+ * runner (a spinner and a running clock while it runs, any failure as a banner naming what failed).
  * Closing the window gives back the text model it kept loaded for the words.
  */
 @Component({
@@ -80,36 +80,51 @@ export interface ThumbnailsWindowData {
 export class ThumbnailsWindow implements OnInit, OnDestroy {
   private readonly electron = inject(ElectronService);
   private readonly dialog = inject(MatDialog);
+  private readonly ref = inject<MatDialogRef<ThumbnailsWindow>>(MatDialogRef);
   readonly publish = inject(PublishState);
   readonly data = inject<ThumbnailsWindowData>(MAT_DIALOG_DATA);
 
-  readonly MAX_PICKS = MAX_PICKS;
-  readonly NO_TEXT = NO_TEXT;
+  readonly CARD_NUMBERS = Array.from({ length: CARD_COUNT }, (_, i) => i + 1);
   readonly view = signal<ThumbnailsView | null>(null);
   readonly busy = signal<{ what: string; since: number } | null>(null);
   readonly progress = signal<string | null>(null);
   readonly now = signal(Date.now());
   /** The last failure, as a banner, until closed or the next action is asked for. */
   readonly failure = signal<string | null>(null);
-  /** A click that was refused (a fourth pick), said where the eye is. */
+  /** A click that was refused, said where the eye is. */
   readonly notice = signal<string | null>(null);
 
-  // ── Owen's picks (in click order) ─────────────────────────────────────────
-  readonly frames = signal<string[]>([]);
-  readonly texts = signal<TextOption[]>([]);
-  readonly photos = signal<PhotoOption[]>([]);
-  readonly own = signal<Record<number, string>>({});
-  readonly logo = signal(true);
+  // ── the cards ─────────────────────────────────────────────────────────────
+  readonly cards = signal<Card[]>(emptyCards());
+  /** The cards as last saved (what "not saved" is measured against). */
+  readonly saved = signal<Card[]>(emptyCards());
+  readonly active = signal(1);
+  /** The card Save thumbnails is drawing now (from the main process's progress). */
+  readonly savingCard = signal<number | null>(null);
+  /** Per card: a preview still loading, its failure, its notes. */
+  readonly loading = signal<Record<number, boolean>>({});
+  readonly cardError = signal<Record<number, string | null>>({});
+  readonly cardNotes = signal<Record<number, string[]>>({});
+  /** A card whose save failed, and why (shown on the card). */
+  readonly saveFailed = signal<Record<number, string>>({});
+  /** The saved thumbnails could not be read (the record and its picks disagree): Save is refused. */
+  readonly readError = signal<string | null>(null);
+  /** Closing was asked with changes not saved: the in-window question is showing. */
+  readonly closeAsked = signal(false);
   readonly typed = signal('');
-  /** The thumbnail being drawn now, for its card. */
-  readonly drawing = signal<number | null>(null);
-
   readonly shots = signal<string[]>([]);
+
+  private readonly canvases = viewChildren<ElementRef<HTMLCanvasElement>>('cardCanvas');
+  private pieces: PreviewPieces;
+  private readonly redrawers = new Map<HTMLCanvasElement, { redrawer: Redrawer; shape: string }>();
 
   private readonly runner = new ActionRunner({
     busy: (state) => {
       this.busy.set(state);
-      if (state === null) this.progress.set(null);
+      if (state === null) {
+        this.progress.set(null);
+        this.savingCard.set(null);
+      }
     },
     failed: (line) => this.failure.set(line),
   });
@@ -118,85 +133,163 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Pick 1's source file when the publish record was last set from it. */
   private publishedFrom: string | null = null;
 
+  constructor() {
+    this.pieces = new PreviewPieces(this.electron, this.data.jobId, this.data.itemId);
+    // Closing asks first when a card changed (the window's own question, never a browser dialog).
+    this.ref.disableClose = true;
+    this.ref.backdropClick().subscribe(() => this.requestClose());
+    this.ref.keydownEvents().subscribe((event) => {
+      if (event.key === 'Escape') this.requestClose();
+    });
+    // Each card redraws when it, the look or its surface changes; the rest are left as they are.
+    effect(() => {
+      const compose = this.view()?.compose ?? null;
+      const cards = this.cards();
+      const canvases = this.canvases();
+      for (const ref of canvases) {
+        const el = ref.nativeElement;
+        const n = Number(el.dataset['card']);
+        const card = cards.find((c) => c.n === n);
+        if (card === undefined) continue;
+        const shape = JSON.stringify([card, compose === null ? null : 'error' in compose ? compose.error : [compose.style, compose.border?.length, compose.logo?.image.length]]);
+        let entry = this.redrawers.get(el);
+        if (entry === undefined) {
+          entry = { redrawer: new Redrawer(() => this.paint(el, n)), shape: '' };
+          this.redrawers.set(el, entry);
+        }
+        if (entry.shape === shape) continue;
+        entry.shape = shape;
+        const draw = entry.redrawer;
+        untracked(() => draw.request());
+      }
+    });
+  }
+
   readonly record = computed(() => this.view()?.record ?? null);
   readonly pairs = computed<StoredPair[]>(() => this.record()?.pairs ?? []);
   readonly options = computed(() => textOptions(this.pairs()));
   /**
    * The grid. Empty while the frames are to be prepared again (an old record's up-to-120 scoring
-   * frames, Owen 2026-09-29: "doesnt look like anything changed at all"): the stored ones are about
-   * to be replaced, look-alikes dropped, so they are not offered.
+   * frames): the stored ones are about to be replaced, look-alikes dropped, so they are not offered.
    */
   readonly frameIds = computed(() => (this.view()?.finish?.run.includes('frames') ? [] : frameList(this.record())));
-  readonly slots = computed<Slot[]>(() => planSlots({ pairs: this.pairs(), frames: this.frames(), texts: this.texts(), photos: this.photos(), own: this.own() }));
+  readonly plans = computed<CardPlan[]>(() => planCards(this.cards(), this.pairs()));
+  readonly unsaved = computed(() => unsavedCards(this.cards(), this.saved()));
   readonly elapsed = computed(() => {
     const b = this.busy();
     return b === null ? '' : clockOf(this.now() - b.since);
   });
   /** The report's chosen titles (pick n goes with title n), when the publish record open is this item's. */
   readonly chosenTitles = computed(() => (this.publish.itemId() === this.data.itemId ? this.publish.chosenTitles() : []));
+  readonly activeCard = computed(() => this.cards().find((c) => c.n === this.active())!);
+  /** Why the cards cannot be drawn (the look, border or logo could not be read), or null. */
+  readonly composeProblem = computed(() => composeError(this.view()?.compose));
+  /** The look's own lines (an older look read with new defaults, no logo kept, no border). */
+  readonly lookLines = computed(() => {
+    const c = this.view()?.compose;
+    return readyCompose(c) ? c.lines : [];
+  });
 
-  /** Why the record's thumbnails cannot be drawn now, or null when they can. */
-  readonly drawBlocked = computed<string | null>(() => {
+  /** Why the trays cannot fill a card now (his own image still can), or null. */
+  readonly fillBlocked = computed<string | null>(() => {
     const v = this.view();
     if (v === null) return 'The thumbnails are not read yet.';
     const r = v.record;
-    if (r === null) return 'This report was made before thumbnails were made with the metadata. Use the Thumbnail row\'s Choose… for your own image, or “Use my own image…” below.';
-    if (r.state === 'off') return r.line;
+    const own = this.ownBlocked();
+    if (own !== null || r === null) return own;
     if (r.state === 'failed') return 'The frames and text for this video are not ready yet.';
-    if (r.state === 'no-story') return 'This report has no story to take frames from. Make thumbnails from your screenshots below.';
+    if (r.state === 'no-story') return 'This report has no story to take frames from. Make thumbnails from your screenshots below, or use your own image on a card.';
+    if (composeError(v.compose) !== null) return `The thumbnails cannot be drawn: ${composeError(v.compose)}`;
     return null;
   });
 
-  /** Why Generate thumbnails cannot run now, or null. */
-  readonly generateWhy = computed<string | null>(() => {
+  /** Why Save thumbnails cannot run now, or null. */
+  readonly saveWhy = computed<string | null>(() => {
     const b = this.busy();
     if (b !== null) return `Wait: ${b.what.toLowerCase()} is running.`;
-    return generateBlocked(this.slots(), this.drawBlocked());
+    const v = this.view();
+    if (v === null) return 'The thumbnails are not read yet.';
+    const unread = this.readError();
+    if (unread !== null) return `Your saved thumbnails could not be read, so saving would write over them: ${unread}`;
+    const own = this.ownBlocked();
+    if (own !== null) return own;
+    return saveBlocked(this.cards(), this.pairs(), v.picks.length);
   });
 
-  readonly canPickFrames = computed(() => this.frameIds().length > 0);
+  /**
+   * Why nothing at all can be saved in this window, not even his own image (the main process refuses
+   * the same): a report from before thumbnails were made with the metadata, or one whose thumbnails
+   * were switched off. Null otherwise.
+   */
+  readonly ownBlocked = computed<string | null>(() => {
+    const r = this.view()?.record;
+    if (r === undefined) return 'The thumbnails are not read yet.';
+    if (r === null) return 'This report was made before thumbnails were made with the metadata. Use the Thumbnail row\'s Choose… on the report for your own image.';
+    if (r.state === 'off') return r.line;
+    return null;
+  });
 
   async ngOnInit(): Promise<void> {
     this.unsubscribe = this.electron.onThumbnailsProgress((event) => {
-      if (event.jobId === this.data.jobId && event.itemId === this.data.itemId) this.progress.set(event.line);
+      if (event.jobId !== this.data.jobId || event.itemId !== this.data.itemId) return;
+      this.progress.set(event.line);
+      if (event.card !== undefined) this.savingCard.set(event.card);
     });
     this.clock = setInterval(() => this.now.set(Date.now()), 1000);
     const view = await this.runner.run('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId));
     if (view === null) return;
-    this.view.set(view);
+    this.takeView(view, true);
     this.publishedFrom = view.picks[0]?.pick.file ?? null;
-    this.readSelection(view);
-    // Not ready (the metadata job's thumbnail preparation stopped, or an older version made it):
-    // prepared on opening, with no button to find (Owen 2026-09-29: "i havent even started making
-    // a thumbnail yet. why would i hit finish making thumbnails?"). A reason it cannot run now is
-    // shown instead, with Try again.
+    // Not ready (the metadata job's preparation stopped, or an older version made it): prepared on
+    // opening, with no button to find. A reason it cannot run now is shown instead, with Try again.
     if (view.finish !== null && view.finish.blocked === null) await this.prepare();
   }
 
   ngOnDestroy(): void {
     this.unsubscribe?.();
     if (this.clock !== null) clearInterval(this.clock);
-    // The window is gone, so there is nowhere to show a failure: the main process never refuses a
-    // release (it is housekeeping), and a missing bridge is said in the console.
-    void this.electron.thumbnailsReleaseModel().catch((err: Error) => console.error('[Thumbnails] giving back the text model:', err.message));
+    // The window is gone, so there is nowhere to show a failure: the main process never refuses
+    // this (it is housekeeping), and a missing bridge is said in the console.
+    void this.electron.thumbnailsClosed().catch((err: Error) => console.error('[Thumbnails] closing the window:', err.message));
   }
 
-  /** Owen's picks as the saved picks stand for them; the logo as the drawn thumbnails have it. */
-  private readSelection(view: ThumbnailsView): void {
-    const pairs = view.record?.pairs ?? [];
-    let sel: ReturnType<typeof selectionFromPicks>;
+  /** A new view; with `cards`, the cards are read from it too (opening, a save, new frames). */
+  private takeView(view: ThumbnailsView, cards: boolean): void {
+    this.view.set(view);
+    if (!cards) return;
+    let read: Card[];
     try {
-      sel = selectionFromPicks(view.picks, pairs);
+      read = cardsFromView(view);
+      this.readError.set(null);
     } catch (err) {
-      this.failure.set(failureLine('Reading your saved picks', err));
-      return;
+      // The cards are left empty and Save is refused with this reason: saving would write over
+      // picks that could not be read.
+      this.readError.set((err as Error).message);
+      this.failure.set(failureLine('Reading your saved thumbnails', err));
+      read = emptyCards();
     }
-    this.frames.set(sel.frames);
-    this.texts.set(sel.texts);
-    this.photos.set(sel.photos);
-    this.own.set(sel.own);
-    const drawnLogo = pairs.find((p) => view.picks.some((k) => k.pick.kind === 'made' && k.pick.pair === p.pair))?.default.logo;
-    this.logo.set(view.hasLogo && (drawnLogo ?? true));
+    this.saved.set(read);
+    this.cards.set(read);
+  }
+
+  /** Draw card n on its surface; its loading line, failure and notes follow. */
+  private async paint(el: HTMLCanvasElement, n: number): Promise<void> {
+    const card = this.cards().find((c) => c.n === n);
+    const compose = this.view()?.compose;
+    if (card === undefined || !readyCompose(compose)) return;
+    const set = <T>(sig: { update(fn: (v: Record<number, T>) => Record<number, T>): void }, value: T) => sig.update((v) => ({ ...v, [n]: value }));
+    set(this.loading, true);
+    try {
+      const drawn = await drawCard(el, card, this.pieces, compose);
+      if (drawn === null) el.getContext('2d')?.clearRect(0, 0, el.width, el.height);
+      set(this.cardError, null);
+      set(this.cardNotes, drawn?.notes ?? []);
+    } catch (err) {
+      set(this.cardError, (err as Error).message);
+      set(this.cardNotes, []);
+    } finally {
+      set(this.loading, false);
+    }
   }
 
   /**
@@ -204,86 +297,153 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
    * through the publish record's one door whenever pick 1's source changes; with no picks left, a
    * thumbnail that was pick 1's copy is cleared, and one Owen chose himself is left).
    */
-  private async act(what: string, fn: () => Promise<ThumbnailsView>): Promise<boolean> {
+  private async act(what: string, fn: () => Promise<ThumbnailsView>, cards: boolean): Promise<boolean> {
     const done = await this.runner.run(what, async () => {
       const view = await fn();
-      this.view.set(view);
-      const first = view.picks[0]?.pick.file ?? null;
-      if (first !== this.publishedFrom && this.publish.itemId() === this.data.itemId) {
-        if (view.publishFile !== null) await this.publish.setThumbnail(view.publishFile);
-        else {
-          const current = this.publish.thumbnailPath();
-          if (current !== null && view.picksFolder !== null && current.startsWith(view.picksFolder)) await this.publish.clearThumbnail();
-        }
-      }
-      this.publishedFrom = first;
+      this.takeView(view, cards);
+      await this.followPublish(view);
       return view;
     });
     return done !== null;
   }
 
-  /** A change Owen made to his picks: nothing is drawn until Generate thumbnails; old lines go. */
-  private changed(): void {
-    this.notice.set(null);
-  }
-
-  /**
-   * GENERATE THUMBNAILS: every place with a frame and a text is drawn (pair n takes frame n, text n,
-   * photo n, the logo; always drawn fresh, so a look changed since is used), then the places are
-   * saved as the ordered picks. One at a time through the runner; a failure stops it with its banner.
-   */
-  async generate(): Promise<void> {
-    if (this.generateWhy() !== null) return;
-    this.failure.set(null);
-    this.notice.set(null);
-    // A stopped or story-less record draws nothing; only Owen's own images are saved then.
-    const slots = this.drawBlocked() === null ? this.slots().filter(ready) : [];
-    for (const slot of slots) {
-      const change = drawChange(slot, this.logo());
-      this.drawing.set(slot.n);
-      const ok = await this.act(`Drawing thumbnail ${slot.n}`, () => this.electron.thumbnailsRenderPair(this.data.jobId, this.data.itemId, change));
-      this.drawing.set(null);
-      if (!ok) return;
-      const now = this.slots().find((s) => s.n === slot.n)!;
-      if (wantedChange(now, this.pairs(), this.logo()) !== null) {
-        this.failure.set(`Thumbnail ${slot.n} was drawn, and it still does not show what was picked. Close the window and open it again; if it happens again, the record and the picks disagree.`);
-        return;
+  private async followPublish(view: ThumbnailsView): Promise<void> {
+    const first = view.picks[0]?.pick.file ?? null;
+    if (first !== this.publishedFrom && this.publish.itemId() === this.data.itemId) {
+      if (view.publishFile !== null) await this.publish.setThumbnail(view.publishFile);
+      else {
+        const current = this.publish.thumbnailPath();
+        if (current !== null && view.picksFolder !== null && current.startsWith(view.picksFolder)) await this.publish.clearThumbnail();
       }
     }
-    const requests: PickRequest[] | null = this.drawBlocked() === null
-      ? pickRequests(this.slots(), this.pairs(), this.logo())
-      : this.slots().flatMap((s) => (s.own === null ? [] : [{ kind: 'own' as const, file: s.own }]));
-    if (requests === null) {
-      this.failure.set('A thumbnail changed while the others were drawn. Press Generate thumbnails again.');
+    this.publishedFrom = first;
+  }
+
+  // ── the cards ─────────────────────────────────────────────────────────────
+
+  selectCard(n: number): void {
+    this.active.set(n);
+    this.notice.set(null);
+  }
+
+  plan(n: number): CardPlan {
+    return this.plans().find((p) => p.n === n)!;
+  }
+
+  card(n: number): Card {
+    return this.cards().find((c) => c.n === n)!;
+  }
+
+  /** The title card n goes with once saved (pick k, title k: his chosen titles first). */
+  titleFor(n: number): { title: string; chosen: boolean } | null {
+    return titleOf(this.plan(n).position, this.chosenTitles(), this.view()?.titles ?? []);
+  }
+
+  /** Whether a saved pick is card n (a pair's drawing, or his own image put on it). */
+  isPicked(n: number): boolean {
+    return (this.view()?.picks ?? []).some((p) => (p.pick.kind === 'made' ? p.pick.pair === n : (p.pick.card ?? p.n) === n));
+  }
+
+  /** Card n's state in a few words. */
+  cardState(n: number): string {
+    if (this.unsaved().includes(n)) return 'Changed: not saved yet.';
+    if (this.isPicked(n)) return 'Saved.';
+    return this.plan(n).saved === null ? '' : 'Not saved yet.';
+  }
+
+  /** Card n's words were written for another title than the chosen one it goes with. */
+  mismatch(n: number): string | null {
+    return wordsMismatch(this.card(n), this.titleFor(n));
+  }
+
+  /** Put a change on the active card, unless it cannot hold frames and text. */
+  private change(fn: (cards: Card[], n: number) => Card[]): void {
+    const n = this.active();
+    const blocked = this.fillBlocked() ?? noPairFor(n, this.pairs());
+    if (blocked !== null) {
+      this.notice.set(blocked);
       return;
     }
-    if (!samePicks(requests, this.view()?.picks ?? [])) {
-      await this.act('Saving your picks', () => this.electron.thumbnailsSavePicks(this.data.jobId, this.data.itemId, requests));
-    }
+    this.notice.set(null);
+    this.saveFailed.update((f) => {
+      const next = { ...f };
+      delete next[n];
+      return next;
+    });
+    this.cards.set(fn(this.cards(), n));
   }
 
-  // ── 1. frames ─────────────────────────────────────────────────────────────
-
-  frameNumbers(id: string): number[] {
-    return frameNumbers(this.frames(), id);
+  clickFrame(id: string): void {
+    this.change((cards, n) => toggleFrame(cards, n, id));
   }
 
-  addFrame(id: string): void {
-    const r = addFrame(this.frames(), id);
-    if (r.refused !== null) {
-      this.notice.set(r.refused);
+  clickText(option: TextOption): void {
+    this.change((cards, n) => toggleText(cards, n, option));
+  }
+
+  clickPhoto(name: string): void {
+    this.change((cards, n) => togglePhoto(cards, n, name));
+  }
+
+  putTyped(): void {
+    let option: TextOption;
+    try {
+      option = typedText(this.typed());
+    } catch (err) {
+      this.notice.set((err as Error).message);
       return;
     }
-    this.frames.set(r.list);
-    this.changed();
+    this.typed.set('');
+    if (this.activeCard().text?.key === option.key) return;
+    this.clickText(option);
   }
 
-  /** Takes out pick k (1-based); the rest close up. */
-  removeFrame(k: number, event: Event): void {
+  clear(n: number, event: Event): void {
     event.stopPropagation();
-    this.frames.set(removeFrameAt(this.frames(), k - 1));
-    this.changed();
+    this.active.set(n);
+    this.cards.set(clearCard(this.cards(), n));
   }
+
+  /** Put back what is saved on card n. */
+  undo(n: number, event: Event): void {
+    event.stopPropagation();
+    const saved = this.saved().find((c) => c.n === n)!;
+    this.cards.set(this.cards().map((c) => (c.n === n ? saved : c)));
+  }
+
+  async useOwn(n: number, event: Event): Promise<void> {
+    event.stopPropagation();
+    this.active.set(n);
+    this.failure.set(null);
+    const own = await this.runner.run('Choosing your image', () => this.electron.thumbnailsChooseOwn());
+    if (own === null) return;
+    this.cards.set(setOwn(this.cards(), n, own));
+  }
+
+  // ── what the trays show ───────────────────────────────────────────────────
+
+  frameCards(id: string): number[] {
+    return cardsUsing(this.cards(), (c) => c.frameId === id);
+  }
+
+  textCards(option: TextOption): number[] {
+    return cardsUsing(this.cards(), (c) => c.text?.key === option.key);
+  }
+
+  photoCards(name: string): number[] {
+    return cardsUsing(this.cards(), (c) => c.photo === name);
+  }
+
+  onActive(numbers: number[]): boolean {
+    return numbers.includes(this.active());
+  }
+
+  /** Text on a card that is not in the generated list (typed words, or words written for a title since replaced). */
+  readonly otherTexts = computed(() => {
+    const keys = new Set(this.options().map((o) => o.key));
+    const seen = new Set<string>();
+    return this.cards().flatMap((c) => (c.own === null && c.text !== null && !keys.has(c.text.key) && !seen.has(c.text.key) && seen.add(c.text.key) ? [c.text] : []));
+  });
 
   frameInfo(id: string): string {
     const f = this.record()?.frames.find((x: StoredFrame) => x.id === id);
@@ -296,131 +456,93 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return this.view()?.frames[id] ?? null;
   }
 
-  // ── 2. text ───────────────────────────────────────────────────────────────
+  // ── edit, save, close ─────────────────────────────────────────────────────
 
-  textNumber(option: TextOption): number | null {
-    const i = this.texts().findIndex((t) => t.key === option.key);
-    return i === -1 ? null : i + 1;
+  /** Why card n cannot be edited, or null. */
+  editBlocked(n: number): string | null {
+    const c = this.card(n);
+    if (c.own !== null) return 'Your own image is saved as it is.';
+    if (c.frameId === null) return 'Pick a frame for it first.';
+    const compose = this.view()?.compose;
+    if (!readyCompose(compose)) return this.fillBlocked();
+    return null;
   }
 
-  toggleText(option: TextOption): void {
-    const r = togglePick(this.texts(), option, (t) => t.key, 'lines of text');
-    if (r.refused !== null) {
-      this.notice.set(r.refused);
-      return;
-    }
-    this.texts.set(r.list);
-    this.changed();
-  }
-
-  /** Typed words that are picked (they are not in the generated list). */
-  readonly typedPicked = computed(() => this.texts().filter((t) => t.kind === null && t.phrase !== null));
-
-  addTyped(): void {
-    let option: TextOption;
-    try {
-      option = typedText(this.typed());
-    } catch (err) {
-      this.notice.set((err as Error).message);
-      return;
-    }
-    if (this.textNumber(option) !== null) {
-      this.notice.set('These words are already picked.');
-      return;
-    }
-    this.typed.set('');
-    this.toggleText(option);
-  }
-
-  // ── 3. photos ─────────────────────────────────────────────────────────────
-
-  photoNumber(name: string): number | null {
-    return photoNumbers(this.photos(), name)[0] ?? null;
-  }
-
-  /** The places "No photo" holds, 1-based. */
-  readonly noPhotoNumbers = computed(() => photoNumbers(this.photos(), null));
-
-  togglePhoto(name: string): void {
-    const r = togglePhoto(this.photos(), name);
-    if (r.refused !== null) {
-      this.notice.set(r.refused);
-      return;
-    }
-    this.photos.set(r.list);
-    this.changed();
-  }
-
-  addNoPhoto(): void {
-    const r = addNoPhoto(this.photos());
-    if (r.refused !== null) {
-      this.notice.set(r.refused);
-      return;
-    }
-    this.photos.set(r.list);
-    this.changed();
-  }
-
-  /** Take one "No photo" out (its badge was clicked); the rest close up. */
-  removeNoPhoto(n: number): void {
-    this.photos.set(removePhotoAt(this.photos(), n - 1));
-    this.changed();
-  }
-
-  setLogo(on: boolean): void {
-    this.logo.set(on);
-    this.changed();
-  }
-
-  // ── 4. generate, 5. result ────────────────────────────────────────────────
-
-  /** What Generate thumbnails will draw, one line per place. */
-  readonly plan = computed(() => this.slots().map((s) => {
-    if (s.own !== null) return `${s.n}: your image`;
-    if (!ready(s)) return `${s.n}: ${s.missing ?? 'not picked'}`;
-    const photo = s.photo === null ? 'no photo' : `photo “${s.photo}”`;
-    return `${s.n}: frame ${s.pickIndex! + 1} + ${s.text!.phrase === null ? 'no text' : `text ${s.pickIndex! + 1}`} + ${photo}`;
-  }));
-
-  /** The saved pick this place is (1-based), or null while it is not saved. */
-  pickOf(slot: Slot): PickView | null {
-    const picks = this.view()?.picks ?? [];
-    return picks.find((p) => (slot.own !== null ? p.pick.kind === 'own' && p.pick.file === slot.own : p.pick.kind === 'made' && p.pick.pair === slot.n)) ?? null;
+  edit(n: number, event: Event): void {
+    event.stopPropagation();
+    this.active.set(n);
+    const compose = this.view()?.compose;
+    if (this.editBlocked(n) !== null || !readyCompose(compose)) return;
+    const data: ThumbnailCardEditorData = { card: this.card(n), pieces: this.pieces, compose, title: this.titleFor(n)?.title ?? null };
+    const ref = this.dialog.open(ThumbnailCardEditor, { data, width: '1100px', maxWidth: '96vw', maxHeight: '96vh', autoFocus: false });
+    ref.afterClosed().subscribe((adjust) => {
+      if (adjust === undefined) return;
+      try {
+        this.cards.set(setAdjust(this.cards(), n, adjust));
+      } catch (err) {
+        this.failure.set(failureLine(`Keeping your changes to thumbnail ${n}`, err));
+      }
+    });
   }
 
   /**
-   * The generated picture of place n, once Generate thumbnails has saved it as a pick; `current` is
-   * false when the picks changed since (the card says to generate again).
+   * SAVE THUMBNAILS: every card with a frame drawn at 1280x720 with its edits, then the cards in
+   * order saved as the picks. A card that cannot be drawn stops it, named on the card, and nothing
+   * is saved. Changes made while it runs stay on the cards, not saved yet.
    */
-  resultPicture(slot: Slot): { src: string; current: boolean } | null {
-    const pv = this.pickOf(slot);
-    if (slot.own !== null) return pv !== null && pv.picture !== '' ? { src: pv.picture, current: true } : null;
-    if (pv === null || this.drawBlocked() !== null) return null;
-    const pair = this.pairs().find((p) => p.pair === slot.n);
-    if (pair === undefined || !pair.default.render.ok) return null;
-    const src = this.view()?.renders[pair.default.render.file];
-    if (src === undefined) return null;
-    return { src, current: ready(slot) && wantedChange(slot, this.pairs(), this.logo()) === null };
+  async save(): Promise<boolean> {
+    if (this.saveWhy() !== null) return false;
+    this.failure.set(null);
+    this.notice.set(null);
+    this.saveFailed.set({});
+    const sent = this.cards();
+    const requests = cardRequests(sent, this.pairs());
+    const done = await this.runner.run('Saving the thumbnails', () => this.electron.thumbnailsSaveCards(this.data.jobId, this.data.itemId, requests).catch((err: Error) => this.failedOnCard(err)));
+    if (done === null) return false;
+    const changedMeanwhile = this.cards().some((c, i) => !sameCard(c, sent[i]));
+    const kept = changedMeanwhile ? this.cards() : null;
+    this.takeView(done, true);
+    if (kept !== null) this.cards.set(kept);
+    await this.runner.run('Setting the video\'s thumbnail', () => this.followPublish(done));
+    return true;
   }
 
-  renderNotes(slot: Slot): string[] {
-    if (this.pickOf(slot) === null) return [];
-    const r = this.pairs().find((p) => p.pair === slot.n)?.default.render;
-    return r !== undefined && r.ok ? r.notes : [];
+  /** "Thumbnail 2 could not be drawn, so nothing was saved: ..." is said on that card too; the failure goes on to the banner. */
+  private failedOnCard(err: Error): never {
+    const n = /^Thumbnail (\d) could not be drawn/.exec(err.message)?.[1];
+    if (n !== undefined) this.saveFailed.set({ [Number(n)]: err.message });
+    throw err;
   }
 
-  /** The title this place goes with (pick k goes with chosen title k), or null. */
-  titleFor(pick: PickView | null): string | null {
-    return pick === null ? null : this.chosenTitles()[pick.n - 1] ?? null;
+  /** Close, asking first (in the window) when a card has changes that are not saved. */
+  requestClose(): void {
+    if (this.busy() !== null && /^Saving/.test(this.busy()!.what)) {
+      this.notice.set('Wait: the thumbnails are being saved.');
+      return;
+    }
+    if (this.unsaved().length > 0) {
+      this.closeAsked.set(true);
+      return;
+    }
+    this.ref.close();
   }
 
-  /** Its words were written for another title than the one it goes with. */
-  mismatch(slot: Slot): string | null {
-    const title = this.titleFor(this.pickOf(slot));
-    const t = slot.text;
-    if (slot.own !== null || t === null || t.kind === null || t.wordsFor === null || title === null) return null;
-    return t.wordsFor !== title ? t.wordsFor : null;
+  async saveAndClose(): Promise<void> {
+    this.closeAsked.set(false);
+    if (await this.save()) this.ref.close();
   }
+
+  closeWithoutSaving(): void {
+    this.ref.close();
+  }
+
+  /** The cards with changes not saved, in words. */
+  unsavedLine(): string {
+    const list = this.unsaved();
+    return list.length === 1 ? `Thumbnail ${list[0]} has changes that are not saved.` : `Thumbnails ${list.join(', ').replace(/, (\d)$/, ' and $1')} have changes that are not saved.`;
+  }
+
+  // ── rewrite the words for a title ─────────────────────────────────────────
 
   /** Why "Rewrite words for this title" cannot run now, or null. */
   rewriteBlocked(): string | null {
@@ -428,56 +550,18 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return null;
   }
 
-  async rewrite(slot: Slot): Promise<void> {
-    const title = this.titleFor(this.pickOf(slot));
-    if (title === null || slot.pickIndex === null) return;
+  /** New words for card n's title (pair n's words are written again for it); they go on card n, not saved yet. */
+  async rewrite(n: number, event: Event): Promise<void> {
+    event.stopPropagation();
+    const title = this.titleFor(n);
+    if (title === null) return;
     this.failure.set(null);
-    const at = slot.pickIndex;
-    const ok = await this.act(`Writing the words for “${title}”`, () => this.electron.thumbnailsPairTitle(this.data.jobId, this.data.itemId, slot.n, title));
-    if (!ok) return;
-    // Thumbnail n now carries the new words for its title (drawn with the photo it had).
-    const pair = this.pairs().find((p) => p.pair === slot.n);
-    const option = pair === undefined ? undefined : this.options().find((o) => o.pair === slot.n && o.phrase === pair.default.phrase);
-    if (option !== undefined) {
-      const texts = [...this.texts()];
-      texts[at] = option;
-      this.texts.set(texts);
-    }
-    this.changed();
-  }
-
-  async useOwn(slot: Slot): Promise<void> {
-    this.failure.set(null);
-    const file = await this.runner.run('Choosing your image', () => this.electron.thumbnailsChooseOwn());
-    if (file === null) return;
-    this.own.set({ ...this.own(), [slot.n]: file });
-    this.changed();
-  }
-
-  clearOwn(slot: Slot): void {
-    const own = { ...this.own() };
-    delete own[slot.n];
-    this.own.set(own);
-    this.changed();
-  }
-
-  /** Start from the words the metadata run chose for its three titles (the frames and photos are Owen's to pick). */
-  suggested(): void {
-    try {
-      this.texts.set(suggestedTexts(this.pairs()));
-    } catch (err) {
-      this.failure.set(failureLine('Taking the suggested words', err));
-      return;
-    }
-    this.changed();
-  }
-
-  clearAll(): void {
-    this.frames.set([]);
-    this.texts.set([]);
-    this.photos.set([]);
-    this.own.set({});
-    this.changed();
+    const kind = this.card(n).text?.kind ?? null;
+    const answer = await this.runner.run(`Writing the words for “${title.title}”`, () => this.electron.thumbnailsPairTitle(this.data.jobId, this.data.itemId, n, title.title, kind));
+    if (answer === null) return;
+    this.view.set(answer.view);
+    const option = generatedText(this.options(), answer.text.kind, answer.text.phrase, answer.text.wordsFor, n);
+    this.cards.set(this.cards().map((c) => (c.n === n ? { ...c, text: option } : c)));
   }
 
   // ── a video whose frames and text are not ready ───────────────────────────
@@ -485,8 +569,8 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Prepares what is missing (frames on the CPU, the words on the 27B); on opening, and on Try again. */
   async prepare(): Promise<void> {
     this.failure.set(null);
-    const ok = await this.act('Preparing the frames and text', () => this.electron.thumbnailsFinish(this.data.jobId, this.data.itemId));
-    if (ok) this.changed();
+    this.pieces.forgetFrames();
+    await this.act('Preparing the frames and text', () => this.electron.thumbnailsFinish(this.data.jobId, this.data.itemId), true);
   }
 
   /** Reads the view again (a Crucible server may be there now) and prepares if it can. */
@@ -494,7 +578,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.failure.set(null);
     const view = await this.runner.run('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId));
     if (view === null) return;
-    this.view.set(view);
+    this.takeView(view, true);
     if (view.finish !== null && view.finish.blocked === null) await this.prepare();
   }
 
@@ -518,37 +602,33 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.failure.set(null);
     const files = await this.runner.run('Choosing screenshots', () => this.electron.thumbnailsChooseScreenshots());
     if (files === null) return;
-    if (files.length > MAX_PICKS) {
+    if (files.length > CARD_COUNT) {
       this.notice.set(`Pick 1 to 3 screenshots; ${files.length} were chosen.`);
       return;
     }
     this.shots.set(files);
   }
 
+  /** Screenshots make that many pairs; each card then shows its screenshot with the words written for its title. */
   async makeFromShots(): Promise<void> {
     const files = this.shots();
     const titles = this.shotTitles();
     if (files.length === 0) return;
     this.failure.set(null);
+    this.pieces.forgetFrames();
     const what = `Making ${files.length} thumbnail${files.length === 1 ? '' : 's'} from your screenshots`;
-    const ok = await this.act(what, () => this.electron.thumbnailsScreenshots(this.data.jobId, this.data.itemId, files, titles));
-    if (!ok) return;
-    this.shots.set([]);
-    // Each screenshot is its own pair's frame (screenshot n, thumbnail n), with the words the run chose.
-    const pairs = [...this.pairs()].sort((a, b) => a.pair - b.pair).slice(0, MAX_PICKS);
-    this.frames.set(pairs.flatMap((p) => (p.default.frameId === null ? [] : [p.default.frameId])));
-    this.photos.set([]);
-    this.own.set({});
-    this.suggested();
+    if (await this.act(what, () => this.electron.thumbnailsScreenshots(this.data.jobId, this.data.itemId, files, titles), true)) this.shots.set([]);
   }
 
   // ── elsewhere ─────────────────────────────────────────────────────────────
 
   openLook(): void {
     const ref = this.dialog.open(ThumbnailLookDialog, { width: '760px', maxHeight: '90vh', autoFocus: false });
-    // Photos, the logo or the border may have been added: read the thumbnails again.
+    // Photos, the logo, the border or the look may have changed: read them again (the cards stay).
     ref.afterClosed().subscribe(async () => {
-      if (await this.act('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId))) this.changed();
+      this.pieces.forgetPhotos();
+      const view = await this.runner.run('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId));
+      if (view !== null) this.takeView(view, false);
     });
   }
 

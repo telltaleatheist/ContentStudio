@@ -1,35 +1,49 @@
 /**
- * THE THUMBNAILS WINDOW'S PICKING RULES, pure. Two rounds with Owen on 2026-09-29:
+ * THE THUMBNAILS WINDOW'S CARD RULES, pure (the card editor, 2026-09-29). Owen:
  *
- *   First: "the images it gathered from the original section should be at the top. i pick three. the
- *   text it generated. i pick three. it overlays them."
- *   Then: "just let me pick the image of myself that goes in the corner ... for my images, let me click
- *   1->2->3, same as everything else ... the thumbnail text should be a list i pick. 1, 2, 3 ... we dont
- *   need to separate by scene. just show a list of possible images to use ... the 'generate
- *   thumbnails' button should be at the bottom".
+ *   "maybe i select the thumbnail card i want to fill. then i select the frame, the text, and the
+ *   image of myself to use in it. then i click a different card and do the same. ... i should be
+ *   able to hit a zoom button on a frame and resize (zoom/shrink) or reposition any of the three
+ *   elements. logo goes in top right automatically, border goes on top of the image automatically
+ *   and neither of those two should be edited. as soon as i click something, it adds it to the
+ *   frame. if i unclick it, it removes it from the frame"
  *
- *   - FRAMES, TEXTS and PHOTOS are each picked in click order, up to three; clicking a picked one
- *     takes it out and the rest close up (the titles' rule, publish-state.ts toggleTitle). The
- *     frames are ONE flat list in time order (`frameList`): at most two per scene, the sharpest,
- *     chosen on the CPU. Nothing ranks them (the vision model's frame scoring was removed
- *     2026-09-29: Owen picks the frames, so the run gives no pair a frame of its own).
- *   - "No photo" can be picked more than once (thumbnail 1 and 3 without a photo, 2 with one); a
- *     thumbnail beyond the photos picked has none. There is no ranking and no percentage any more.
- *   - THUMBNAIL n is frame n + text n + photo n + the logo, drawn into pair n of the record. Nothing
- *     is drawn until Owen presses Generate thumbnails (at the bottom): then every place that has a
- *     frame and a text is drawn (`drawChange`) and the places are saved as the ordered picks
- *     (`pickRequests`; pick 1 is the video's thumbnail, pick n goes with title n in an A/B test).
- *     A card whose picks changed after it was drawn says so (`wantedChange` is not null).
- *   - Owen's own image can take any of the three places instead; the frames, texts and photos then
- *     fill the other places in order.
+ *   - THREE CARDS, card n = title and thumbnail pair n. One is ACTIVE. Clicking a frame, a line of
+ *     text or a photo in the trays puts it on the active card at once, replacing what it had;
+ *     clicking the one the active card already has takes it off (`toggleFrame`, `toggleText`,
+ *     `togglePhoto`). The same frame, text or photo may sit on several cards (`cardsUsing` gives
+ *     the tray's badges).
+ *   - A card may instead hold Owen's own image (`setOwn`), which replaces its content; clicking a
+ *     tray item on it puts the card back to frames and text. `clearCard` empties one card.
+ *   - EDITS (`Card.adjust`, shared CardAdjust): the frame zoomed or moved, the words in his own box,
+ *     the photo moved or resized. A new frame starts unzoomed; taking the words or the photo off
+ *     drops their edit; another photo keeps the place the last one had.
+ *   - SAVING (`planCards`, `cardRequests`): a card with a frame is drawn; his own image is saved as
+ *     it is; a card with no frame is left out, and says why. The saved cards in order are the picks:
+ *     the first saved card is Pick 1 (the video's thumbnail), and pick k goes with title k.
+ *   - Reading the saved state back (`cardsFromView`) and what changed since (`unsavedCards`).
  *   - Every action goes through ONE runner that shows what is running and turns any failure into a
  *     line on screen (`ActionRunner`): nothing reaches only the log.
  *
- * No Angular and only type imports, so tools/thumbnail-pipeline-checks.js runs it under plain Node.
+ * No Angular. The keeper (tools/thumbnail-pipeline-checks.js) runs it under plain Node, handing the
+ * compiled shared layout for './thumbnail-shared'.
  */
-import type { ItemThumbnails, PairChange, PickRequest, PickView, StoredPair, WordKind } from './thumbnails.types';
+import {
+  FRAME_MIN_COVER,
+  FRAME_SCALE_MAX,
+  FRAME_SCALE_MIN,
+  PHOTO_HEIGHT_MAX,
+  PHOTO_HEIGHT_MIN,
+  TEXT_BOX_MIN,
+  validateAdjust,
+  type CardAdjust,
+  type FrameView,
+  type PhotoPlaceEdit,
+  type TextBoxEdit,
+} from './thumbnail-shared';
+import type { CardRequest, ItemThumbnails, PickView, StoredPair, WordKind } from './thumbnails.types';
 
-export const MAX_PICKS = 3;
+export const CARD_COUNT = 3;
 
 const KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
 
@@ -37,9 +51,8 @@ const KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
 
 /**
  * The frames as ONE list (no scenes), in time order: every candidate the record keeps (the run
- * keeps at most two per scene, frame-scenes.ts gridFrames; a record made before 2026-09-29 keeps
- * the frames it sent to the since-removed scoring, and their scores are ignored). Screenshots keep
- * their own order (screenshot 1, 2, 3: all at t 0, and the sort is stable).
+ * keeps at most two per scene, look-alikes dropped). Screenshots keep their own order (screenshot
+ * 1, 2, 3: all at t 0, and the sort is stable).
  */
 export function frameList(record: Pick<ItemThumbnails, 'frames'> | null): string[] {
   if (record === null) return [];
@@ -48,19 +61,16 @@ export function frameList(record: Pick<ItemThumbnails, 'frames'> | null): string
 
 // ── text ──────────────────────────────────────────────────────────────────────
 
-/** One line of text Owen can pick: generated words (labelled with their title and kind), typed words, or no text. */
+/** One line of text for a card: generated words (labelled with their title and kind), or words Owen typed. */
 export interface TextOption {
   key: string;
-  /** Null: "No text". */
-  phrase: string | null;
+  phrase: string;
   kind: WordKind | null;
-  /** The title the words were written for; null for typed words or no text. */
+  /** The title the words were written for; null for typed words. */
   wordsFor: string | null;
   /** The pair whose words list it came from, or null. */
   pair: number | null;
 }
-
-export const NO_TEXT: TextOption = { key: 'none', phrase: null, kind: null, wordsFor: null, pair: null };
 
 function generatedKey(wordsFor: string, phrase: string): string {
   return `for|${wordsFor}|${phrase}`;
@@ -90,145 +100,155 @@ export function typedText(phrase: string): TextOption {
   return { key: `typed|${words}`, phrase: words, kind: null, wordsFor: null, pair: null };
 }
 
-/**
- * Click order is pick order: a new one goes last; a picked one comes out and the rest close up; a
- * fourth is refused with a line that says what to do.
- */
-export function togglePick<T>(list: readonly T[], item: T, key: (t: T) => string, what: string): { list: T[]; refused: string | null } {
-  const k = key(item);
-  const at = list.findIndex((x) => key(x) === k);
-  if (at !== -1) return { list: list.filter((_, i) => i !== at), refused: null };
-  if (list.length >= MAX_PICKS) return { list: [...list], refused: `Up to ${MAX_PICKS} ${what} can be picked. Click a picked one to take it out first.` };
-  return { list: [...list, item], refused: null };
+/** Generated words as a text option (the words' own title and kind), found in the tray or made as stored. */
+export function generatedText(options: readonly TextOption[], kind: WordKind, phrase: string, wordsFor: string, pair: number | null): TextOption {
+  return options.find((o) => o.key === generatedKey(wordsFor, phrase)) ?? { key: generatedKey(wordsFor, phrase), phrase, kind, wordsFor, pair };
 }
 
-/**
- * A frame clicked: always the next pick, even one already picked (Owen 2026-09-29: "make it so i can
- * select the same frame for all three thumbnails if i want"); a fourth is refused. Each place is
- * taken out on its own badge (`removeFrameAt`).
- */
-export function addFrame(list: readonly string[], id: string): { list: string[]; refused: string | null } {
-  if (list.length >= MAX_PICKS) return { list: [...list], refused: `Up to ${MAX_PICKS} frames can be picked. Click a number on a picked frame to take that one out first.` };
-  return { list: [...list, id], refused: null };
-}
+// ── the cards ─────────────────────────────────────────────────────────────────
 
-export function removeFrameAt(list: readonly string[], index: number): string[] {
-  return list.filter((_, i) => i !== index);
-}
-
-/** The pick numbers (1-based) a frame holds. */
-export function frameNumbers(list: readonly string[], id: string): number[] {
-  return list.flatMap((f, i) => (f === id ? [i + 1] : []));
-}
-
-// ── photos ────────────────────────────────────────────────────────────────────
-
-/** One of Owen's photo picks: a reaction photo by name, or "No photo" (name null). */
-export interface PhotoOption {
-  key: string;
-  name: string | null;
-}
-
-export function photoOption(name: string): PhotoOption {
-  return { key: `photo|${name}`, name };
-}
-
-/** A photo clicked: picked last, or taken out (the rest close up), a fourth refused. */
-export function togglePhoto(list: readonly PhotoOption[], name: string): { list: PhotoOption[]; refused: string | null } {
-  return togglePick(list, photoOption(name), (p) => p.key, 'photos');
-}
-
-/**
- * "No photo" clicked: one more place without a photo, last in the order (it can be picked more than
- * once, so thumbnails 1 and 3 can go without while 2 has one). Each is taken out on its own badge
- * (`removePhotoAt`).
- */
-export function addNoPhoto(list: readonly PhotoOption[]): { list: PhotoOption[]; refused: string | null } {
-  if (list.length >= MAX_PICKS) return { list: [...list], refused: `Up to ${MAX_PICKS} photos can be picked. Click a picked one to take it out first.` };
-  let k = 1;
-  while (list.some((p) => p.key === `none|${k}`)) k++;
-  return { list: [...list, { key: `none|${k}`, name: null }], refused: null };
-}
-
-export function removePhotoAt(list: readonly PhotoOption[], index: number): PhotoOption[] {
-  return list.filter((_, i) => i !== index);
-}
-
-/** The pick numbers (1-based) a photo holds; for "No photo" (null) every place it holds. */
-export function photoNumbers(list: readonly PhotoOption[], name: string | null): number[] {
-  return list.flatMap((p, i) => (p.name === name ? [i + 1] : []));
-}
-
-// ── the places ────────────────────────────────────────────────────────────────
-
-export interface Slot {
-  /** The thumbnail's place, 1 to 3 (pair n is drawn for it). */
+export interface Card {
+  /** 1 to CARD_COUNT: card n is drawn into title and thumbnail pair n. */
   n: number;
-  /** Owen's own image in this place, or null. */
-  own: string | null;
-  /** Which frame, text and photo pick this place takes (0-based), or null for his own image. */
-  pickIndex: number | null;
+  /** Owen's own image on this card (it replaces the frame, text and photo), with a picture of it. */
+  own: { file: string; picture: string } | null;
   frameId: string | null;
   text: TextOption | null;
-  /** The photo drawn on it: photo pick `pickIndex`, or null (No photo, or none picked for it). */
   photo: string | null;
-  /** True when a photo pick (a photo or "No photo") stands for this place; false: none picked for it. */
-  photoPicked: boolean;
-  /** What is missing before it can be drawn; null when it can be (or it is his own image). */
-  missing: string | null;
+  /** His edits; {} for none. */
+  adjust: CardAdjust;
 }
 
-export function planSlots(input: {
-  pairs: readonly StoredPair[];
-  frames: readonly string[];
-  texts: readonly TextOption[];
-  photos: readonly PhotoOption[];
-  own: Readonly<Record<number, string>>;
-}): Slot[] {
-  const { pairs } = input;
-  const has = (n: number) => pairs.some((p) => p.pair === n);
-  const slots: Slot[] = [];
-  let k = 0;
-  for (let n = 1; n <= MAX_PICKS; n++) {
-    const own = input.own[n] ?? null;
-    if (own !== null) {
-      slots.push({ n, own, pickIndex: null, frameId: null, text: null, photo: null, photoPicked: false, missing: null });
-      continue;
-    }
-    const i = k++;
-    const frameId = input.frames[i] ?? null;
-    const text = input.texts[i] ?? null;
-    const photoPick = input.photos[i];
-    let missing: string | null = null;
-    if (!has(n)) {
-      missing = pairs.length === 0
-        ? 'There are no thumbnails to draw into yet.'
-        : `This report has ${pairs.length} title and thumbnail pair${pairs.length === 1 ? '' : 's'}, so there is no thumbnail ${n} to draw.`;
-    } else if (frameId === null && text === null) missing = `Pick frame ${i + 1} and text ${i + 1} above.`;
-    else if (frameId === null) missing = `Pick frame ${i + 1} above.`;
-    else if (text === null) missing = `Pick text ${i + 1} above.`;
-    slots.push({ n, own: null, pickIndex: i, frameId, text, photo: photoPick?.name ?? null, photoPicked: photoPick !== undefined, missing });
-  }
-  return slots;
+export function emptyCard(n: number): Card {
+  return { n, own: null, frameId: null, text: null, photo: null, adjust: {} };
 }
 
-/** A place that Generate thumbnails will draw: a frame and a text (or No text) picked, and a pair to draw into. */
-export function ready(slot: Slot): boolean {
-  return slot.own === null && slot.missing === null && slot.frameId !== null && slot.text !== null;
+export function emptyCards(): Card[] {
+  return Array.from({ length: CARD_COUNT }, (_, i) => emptyCard(i + 1));
+}
+
+function withCard(cards: readonly Card[], n: number, change: (c: Card) => Card): Card[] {
+  if (!cards.some((c) => c.n === n)) throw new Error(`There is no thumbnail ${n}; there are ${cards.length}.`);
+  return cards.map((c) => (c.n === n ? change(c) : c));
+}
+
+function without<K extends keyof CardAdjust>(adjust: CardAdjust, key: K): CardAdjust {
+  const out = { ...adjust };
+  delete out[key];
+  return out;
 }
 
 /**
- * Why Generate thumbnails cannot run, or null when it can: it needs at least one place with a frame
- * and a text (or "No text"), or one of Owen's own images. `blocked` is the record's own reason
- * (stopped, no story, off), which only his own images get past.
+ * A frame clicked in the tray: on the active card (replacing its frame, which starts unzoomed), or
+ * off it when it is the frame the card has. His own image on the card gives way to frames and text.
  */
-export function generateBlocked(slots: readonly Slot[], blocked: string | null): string | null {
-  const own = slots.some((s) => s.own !== null);
-  if (blocked !== null && !own) return blocked;
-  if (blocked === null && slots.some(ready)) return null;
-  if (own) return null;
-  return 'Pick at least one frame and one line of text (or “No text”) above.';
+export function toggleFrame(cards: readonly Card[], n: number, frameId: string): Card[] {
+  return withCard(cards, n, (c) => {
+    if (c.own === null && c.frameId === frameId) return { ...c, frameId: null, adjust: without(c.adjust, 'frame') };
+    return { ...c, own: null, frameId, adjust: without(c.adjust, 'frame') };
+  });
 }
+
+/** A line of text clicked: on the active card (his text box, if any, kept for the new words), or off it (and its box). */
+export function toggleText(cards: readonly Card[], n: number, option: TextOption): Card[] {
+  return withCard(cards, n, (c) => {
+    if (c.own === null && c.text !== null && c.text.key === option.key) return { ...c, text: null, adjust: without(c.adjust, 'text') };
+    return { ...c, own: null, text: option };
+  });
+}
+
+/** A photo clicked: on the active card (where he put the last one, if he moved it), or off it (and its place). */
+export function togglePhoto(cards: readonly Card[], n: number, name: string): Card[] {
+  return withCard(cards, n, (c) => {
+    if (c.own === null && c.photo === name) return { ...c, photo: null, adjust: without(c.adjust, 'photo') };
+    return { ...c, own: null, photo: name };
+  });
+}
+
+/** His own image on card n: it replaces the card's frame, text, photo and edits. */
+export function setOwn(cards: readonly Card[], n: number, own: { file: string; picture: string }): Card[] {
+  return withCard(cards, n, () => ({ ...emptyCard(n), own }));
+}
+
+export function clearCard(cards: readonly Card[], n: number): Card[] {
+  return withCard(cards, n, () => emptyCard(n));
+}
+
+/**
+ * The card editor's result for card n, checked as the save checks it: an edit for a piece the card
+ * does not have is refused (the editor offers only what is on the card).
+ */
+export function setAdjust(cards: readonly Card[], n: number, adjust: CardAdjust): Card[] {
+  const checked = validateAdjust(adjust, `Thumbnail ${n}`);
+  return withCard(cards, n, (c) => {
+    if (checked.frame !== undefined && c.frameId === null) throw new Error(`Thumbnail ${n} has no frame to zoom.`);
+    if (checked.text !== undefined && c.text === null) throw new Error(`Thumbnail ${n} has no text to place.`);
+    if (checked.photo !== undefined && c.photo === null) throw new Error(`Thumbnail ${n} has no photo to place.`);
+    return { ...c, adjust: checked };
+  });
+}
+
+/** The cards (numbers) a tray item is on: the tray's badges. */
+export function cardsUsing(cards: readonly Card[], on: (c: Card) => boolean): number[] {
+  return cards.filter((c) => c.own === null && on(c)).map((c) => c.n);
+}
+
+/** What happens to one card on Save thumbnails. */
+export interface CardPlan {
+  n: number;
+  /** 'made': drawn from its frame; 'own': his image as it is; null: left out (`why`). */
+  saved: 'made' | 'own' | null;
+  why: string | null;
+  /** Its pick number when saved (the saved cards in order: the first is Pick 1), else null. */
+  position: number | null;
+}
+
+/** Why a card cannot hold frames and text: the report has no pair n to draw it into. Null when it can. */
+export function noPairFor(n: number, pairs: readonly StoredPair[]): string | null {
+  if (pairs.some((p) => p.pair === n)) return null;
+  return pairs.length === 0
+    ? `There are no title and thumbnail pairs to draw into yet, so thumbnail ${n} can only hold your own image.`
+    : `This report has ${pairs.length} title and thumbnail pair${pairs.length === 1 ? '' : 's'}, so thumbnail ${n} can only hold your own image.`;
+}
+
+export function planCards(cards: readonly Card[], pairs: readonly StoredPair[]): CardPlan[] {
+  let k = 0;
+  return [...cards].sort((a, b) => a.n - b.n).map((c) => {
+    if (c.own !== null) return { n: c.n, saved: 'own', why: null, position: ++k };
+    if (c.frameId !== null) {
+      const noPair = noPairFor(c.n, pairs);
+      if (noPair !== null) return { n: c.n, saved: null, why: noPair, position: null };
+      return { n: c.n, saved: 'made', why: null, position: ++k };
+    }
+    if (c.text !== null || c.photo !== null) return { n: c.n, saved: null, why: 'It has no frame yet, so it is left out when you save. Pick a frame for it.', position: null };
+    return { n: c.n, saved: null, why: 'Empty: it is left out when you save.', position: null };
+  });
+}
+
+/** The cards as Save thumbnails sends them: all of them, in order. */
+export function cardRequests(cards: readonly Card[], pairs: readonly StoredPair[]): CardRequest[] {
+  const plans = planCards(cards, pairs);
+  return [...cards].sort((a, b) => a.n - b.n).map((c): CardRequest => {
+    const plan = plans.find((p) => p.n === c.n)!;
+    if (plan.saved === 'own') return { card: c.n, kind: 'own', file: c.own!.file };
+    if (plan.saved === 'made') {
+      return {
+        card: c.n, kind: 'made', frameId: c.frameId!,
+        phrase: c.text?.phrase ?? null, textKind: c.text?.kind ?? null, wordsFor: c.text?.wordsFor ?? null,
+        photo: c.photo, adjust: c.adjust,
+      };
+    }
+    return { card: c.n, kind: 'empty' };
+  });
+}
+
+/** Why Save thumbnails cannot run, or null: nothing is saved while no card can be (and nothing was saved before). */
+export function saveBlocked(cards: readonly Card[], pairs: readonly StoredPair[], savedBefore: number): string | null {
+  if (planCards(cards, pairs).some((p) => p.saved !== null) || savedBefore > 0) return null;
+  return 'Put a frame (or your own image) on at least one thumbnail first.';
+}
+
+// ── the saved state ───────────────────────────────────────────────────────────
 
 /** The title pair n's current words were written for (older records: its own title when the words are generated). */
 export function currentWordsFor(pair: StoredPair): string | null {
@@ -237,130 +257,123 @@ export function currentWordsFor(pair: StoredPair): string | null {
   return d.kind !== null ? pair.title : null;
 }
 
-/** The whole change that draws place n as picked: what Generate thumbnails sends for every ready place. */
-export function drawChange(slot: Slot, logo: boolean): PairChange {
-  if (!ready(slot)) throw new Error(`Thumbnail ${slot.n} cannot be drawn: ${slot.missing ?? 'it is your own image'}.`);
-  const t = slot.text!;
-  return { pair: slot.n, frameId: slot.frameId!, phrase: t.phrase, kind: t.kind, wordsFor: t.wordsFor, photo: slot.photo, logo };
-}
-
 /**
- * What pair n's current drawing differs in from place n as picked, or null when it already shows
- * it (or the place cannot be drawn: his own image, or something missing). The window uses it to say
- * a card changed since it was generated, and Generate checks it after drawing.
+ * The cards as saved (the window opened, or a save came back). Card n shows pair n when the pair
+ * has a frame (what Save stored, or screenshot n), with his edits; his own image sits on the card it
+ * was saved on (picks saved before the card editor: the card of its position). The run's suggested
+ * words on a pair with no frame are not a card's content: that card starts empty. Two picks claiming
+ * one card is refused (the record and the picks disagree).
  */
-export function wantedChange(slot: Slot, pairs: readonly StoredPair[], logo: boolean): PairChange | null {
-  if (!ready(slot)) return null;
-  const pair = pairs.find((p) => p.pair === slot.n);
-  if (pair === undefined) return null;
-  const d = pair.default;
-  const change: PairChange = { pair: slot.n };
-  let changed = false;
-  if (d.frameId !== slot.frameId) {
-    change.frameId = slot.frameId!;
-    changed = true;
-  }
-  const t = slot.text!;
-  if (d.phrase !== t.phrase || d.kind !== t.kind || currentWordsFor(pair) !== t.wordsFor) {
-    change.phrase = t.phrase;
-    change.kind = t.kind;
-    change.wordsFor = t.wordsFor;
-    changed = true;
-  }
-  if (d.photo !== slot.photo) {
-    change.photo = slot.photo;
-    changed = true;
-  }
-  if (d.logo !== logo) {
-    change.logo = logo;
-    changed = true;
-  }
-  if (!changed && !d.render.ok) {
-    change.frameId = slot.frameId!;
-    changed = true;
-  }
-  return changed ? change : null;
-}
-
-/**
- * The picks to save: the places in order, each his own image or a drawn pair; a place with
- * something missing is left out (the rest close up). Null while a place does not show its picks yet.
- */
-export function pickRequests(slots: readonly Slot[], pairs: readonly StoredPair[], logo: boolean): PickRequest[] | null {
-  const out: PickRequest[] = [];
-  for (const s of slots) {
-    if (s.own !== null) {
-      out.push({ kind: 'own', file: s.own });
-      continue;
-    }
-    if (!ready(s)) continue;
-    if (wantedChange(s, pairs, logo) !== null) return null;
-    out.push({ kind: 'made', pair: s.n });
-  }
-  return out;
-}
-
-export function samePicks(requests: readonly PickRequest[], saved: readonly PickView[]): boolean {
-  return requests.length === saved.length && requests.every((r, i) => {
-    const p = saved[i].pick;
-    return r.kind === 'own' ? p.kind === 'own' && p.file === r.file : p.kind === 'made' && p.pair === r.pair;
-  });
-}
-
-/**
- * The frames, texts, photos and own images the saved picks stand for (the window reopened). A
- * trailing run of "No photo" is left out: a place beyond the photos picked has none anyway. A pick
- * is a drawn pair, so it has its frame; one without is refused (the record and the picks disagree).
- */
-export function selectionFromPicks(picks: readonly PickView[], pairs: readonly StoredPair[]): {
-  frames: string[]; texts: TextOption[]; photos: PhotoOption[]; own: Record<number, string>;
-} {
+export function cardsFromView(view: { record: Pick<ItemThumbnails, 'pairs'> | null; picks: readonly PickView[] }): Card[] {
+  const pairs = view.record?.pairs ?? [];
   const options = textOptions(pairs);
-  const frames: string[] = [];
-  const texts: TextOption[] = [];
-  let photos: PhotoOption[] = [];
-  const own: Record<number, string> = {};
-  picks.forEach((view, i) => {
-    const n = i + 1;
-    const pick = view.pick;
-    if (pick.kind === 'own') {
-      own[n] = pick.file;
+  const cards = emptyCards();
+  const taken = new Map<number, string>();
+  const claim = (n: number, what: string) => {
+    if (n < 1 || n > CARD_COUNT) throw new Error(`${what} is on thumbnail ${n}; there are ${CARD_COUNT}.`);
+    const had = taken.get(n);
+    if (had !== undefined) throw new Error(`${had} and ${what} are both saved on thumbnail ${n}: the saved picks and the record disagree.`);
+    taken.set(n, what);
+  };
+  for (const p of pairs) {
+    if (p.pair < 1 || p.pair > CARD_COUNT || p.default.frameId === null) continue;
+    const d = p.default;
+    const wordsFor = currentWordsFor(p);
+    let text: TextOption | null = null;
+    if (d.phrase !== null) text = d.kind === null || wordsFor === null ? typedText(d.phrase) : generatedText(options, d.kind, d.phrase, wordsFor, pairs.find((x) => x.title === wordsFor)?.pair ?? null);
+    cards[p.pair - 1] = { n: p.pair, own: null, frameId: d.frameId, text, photo: d.photo, adjust: d.adjust === undefined ? {} : validateAdjust(d.adjust, `Thumbnail ${p.pair}`) };
+  }
+  view.picks.forEach((v, i) => {
+    const pick = v.pick;
+    if (pick.kind === 'made') {
+      claim(pick.pair, `Pick ${v.n}`);
+      if (!pairs.some((p) => p.pair === pick.pair && p.default.frameId !== null)) throw new Error(`Pick ${v.n} is thumbnail ${pick.pair}, which has no frame: the saved picks and the record disagree.`);
       return;
     }
-    const pair = pairs.find((p) => p.pair === pick.pair);
-    if (pair === undefined) return;
-    const d = pair.default;
-    if (d.frameId === null) throw new Error(`Pick ${n} is thumbnail ${pair.pair}, which has no frame: the saved picks and the record disagree.`);
-    frames.push(d.frameId);
-    const wordsFor = currentWordsFor(pair);
-    if (d.phrase === null) texts.push(NO_TEXT);
-    else if (d.kind === null || wordsFor === null) texts.push(typedText(d.phrase));
-    else {
-      texts.push(options.find((o) => o.key === generatedKey(wordsFor, d.phrase!))
-        ?? { key: generatedKey(wordsFor, d.phrase), phrase: d.phrase, kind: d.kind, wordsFor, pair: pairs.find((p) => p.title === wordsFor)?.pair ?? pair.pair });
-    }
-    photos = d.photo === null ? addNoPhoto(photos).list : [...photos, photoOption(d.photo)];
+    const n = pick.card ?? i + 1;
+    claim(n, `Pick ${v.n} (your own image)`);
+    cards[n - 1] = { ...emptyCard(n), own: { file: pick.file, picture: v.picture } };
   });
-  while (photos.length > 0 && photos[photos.length - 1].name === null) photos = photos.slice(0, -1);
-  return { frames, texts, photos, own };
+  return cards;
+}
+
+/** The part of a card that is saved (his own image by its file; the picture is only for the eye). */
+function savedShape(c: Card): string {
+  const a = c.adjust;
+  return JSON.stringify([
+    c.own?.file ?? null, c.frameId, c.text?.key ?? null, c.photo,
+    a.frame === undefined ? null : [a.frame.x, a.frame.y, a.frame.scale],
+    a.text === undefined ? null : [a.text.x, a.text.y, a.text.w, a.text.h],
+    a.photo === undefined ? null : [a.photo.cx, a.photo.cy, a.photo.h],
+  ]);
+}
+
+export function sameCard(a: Card, b: Card): boolean {
+  return a.n === b.n && savedShape(a) === savedShape(b);
+}
+
+/** The cards (numbers) that differ from what is saved. */
+export function unsavedCards(cards: readonly Card[], saved: readonly Card[]): number[] {
+  return cards.filter((c) => {
+    const s = saved.find((x) => x.n === c.n);
+    return s === undefined || !sameCard(c, s);
+  }).map((c) => c.n);
 }
 
 /**
- * "Start from the suggested words": each pair's words as the run chose them (pair 1 its first
- * claim, pair 2 its first stakes, pair 3 its first reaction), in pair order. The frames and photos
- * are Owen's to pick; the run suggests neither.
+ * The title a saved card goes with: pick k goes with title k, his chosen titles first, then the
+ * generated ones (as the screenshots are titled). `chosen` false: that title is not picked on the
+ * report yet, so the pairing may still change.
  */
-export function suggestedTexts(pairs: readonly StoredPair[]): TextOption[] {
-  const options = textOptions(pairs);
-  return [...pairs].sort((a, b) => a.pair - b.pair).slice(0, MAX_PICKS).map((pair) => {
-    const d = pair.default;
-    const wordsFor = currentWordsFor(pair);
-    if (d.phrase === null) return NO_TEXT;
-    if (d.kind === null || wordsFor === null) return typedText(d.phrase);
-    const option = options.find((o) => o.key === generatedKey(wordsFor, d.phrase!));
-    if (option === undefined) throw new Error(`Pair ${pair.pair}'s words “${d.phrase}” are not among the words written for “${wordsFor}”.`);
-    return option;
-  });
+export function titleOf(position: number | null, chosen: readonly string[], generated: readonly string[]): { title: string; chosen: boolean } | null {
+  if (position === null) return null;
+  const all = [...new Set([...chosen, ...generated])];
+  const title = all[position - 1];
+  return title === undefined ? null : { title, chosen: position <= chosen.length };
+}
+
+/** The title a card's generated words were written for, when it is not the chosen title it goes with; else null. */
+export function wordsMismatch(card: Card, title: { title: string; chosen: boolean } | null): string | null {
+  if (title === null || !title.chosen || card.own !== null || card.text === null || card.text.kind === null || card.text.wordsFor === null) return null;
+  return card.text.wordsFor !== title.title ? card.text.wordsFor : null;
+}
+
+// ── the editor's arithmetic (fractions of the picture) ────────────────────────
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** A frame place kept inside the editor's limits (zoom range; a little of the frame always shows). */
+export function clampFrame(f: FrameView): FrameView {
+  const scale = clamp(f.scale, FRAME_SCALE_MIN, FRAME_SCALE_MAX);
+  return { scale, x: clamp(f.x, FRAME_MIN_COVER - scale, 1 - FRAME_MIN_COVER), y: clamp(f.y, FRAME_MIN_COVER - scale, 1 - FRAME_MIN_COVER) };
+}
+
+/** Zoom the frame by `factor` about a point of the picture (cx, cy), the point staying put. */
+export function zoomFrame(f: FrameView, factor: number, cx: number, cy: number): FrameView {
+  const scale = clamp(f.scale * factor, FRAME_SCALE_MIN, FRAME_SCALE_MAX);
+  const k = scale / f.scale;
+  return clampFrame({ scale, x: cx - (cx - f.x) * k, y: cy - (cy - f.y) * k });
+}
+
+/** A text box kept inside the picture and the editor's smallest size. */
+export function clampBox(b: TextBoxEdit): TextBoxEdit {
+  const w = clamp(b.w, TEXT_BOX_MIN, 1);
+  const h = clamp(b.h, TEXT_BOX_MIN, 1);
+  return { w, h, x: clamp(b.x, 0, 1 - w), y: clamp(b.y, 0, 1 - h) };
+}
+
+/** Grow or shrink a text box by `factor` about its centre. */
+export function scaleBox(b: TextBoxEdit, factor: number): TextBoxEdit {
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2;
+  const w = clamp(b.w * factor, TEXT_BOX_MIN, 1);
+  const h = clamp(b.h * factor, TEXT_BOX_MIN, 1);
+  return clampBox({ w, h, x: cx - w / 2, y: cy - h / 2 });
+}
+
+/** A photo place kept inside the editor's limits (its centre on the picture). */
+export function clampPhoto(p: PhotoPlaceEdit): PhotoPlaceEdit {
+  return { cx: clamp(p.cx, 0, 1), cy: clamp(p.cy, 0, 1), h: clamp(p.h, PHOTO_HEIGHT_MIN, PHOTO_HEIGHT_MAX) };
 }
 
 // ── the runner ────────────────────────────────────────────────────────────────
@@ -371,7 +384,7 @@ export function clockOf(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/** "Drawing thumbnail 2 failed: The reaction photo "laugh" is not in the app's library any more." */
+/** "Saving the thumbnails failed: The reaction photo "laugh" is not in the app's library any more." */
 export function failureLine(what: string, err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   return `${what} failed: ${message}`;

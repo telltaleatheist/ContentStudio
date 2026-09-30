@@ -35,8 +35,10 @@ import type {
   LookBorder,
   LookPhotos,
   LookStyle,
-  PairChange,
-  PickRequest,
+  CardRequest,
+  FrameDetail,
+  PhotoDetail,
+  WordKind,
   ThumbnailsAnswer,
   ThumbnailsProgress,
   ThumbnailsSummary,
@@ -1103,15 +1105,15 @@ declare global {
       // call answers { ok, value } or { ok: false, error }.
       thumbnailsSummary: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsSummary>>;
       thumbnailsItem: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsRenderPair: (jobId: string, itemId: string, change: PairChange) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsSavePicks: (jobId: string, itemId: string, picks: PickRequest[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsFrameDetail: (jobId: string, itemId: string, frameId: string) => Promise<ThumbnailsAnswer<FrameDetail>>;
+      thumbnailsPhotoDetail: (name: string) => Promise<ThumbnailsAnswer<PhotoDetail>>;
+      thumbnailsSaveCards: (jobId: string, itemId: string, cards: CardRequest[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
+      thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string, kind: WordKind | null) => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; text: { kind: WordKind; phrase: string; wordsFor: string } }>>;
       thumbnailsFinish: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsRemake: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsChooseOwn: () => Promise<ThumbnailsAnswer<string | null>>;
+      thumbnailsChooseOwn: () => Promise<ThumbnailsAnswer<{ file: string; picture: string } | null>>;
       thumbnailsChooseScreenshots: () => Promise<ThumbnailsAnswer<string[] | null>>;
-      thumbnailsReleaseModel: () => Promise<ThumbnailsAnswer<string | null>>;
+      thumbnailsClosed: () => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsShowFolder: (folder: string) => Promise<ThumbnailsAnswer<void>>;
       thumbnailsGetStyle: () => Promise<ThumbnailsAnswer<{ style: LookStyle; stored: boolean; line: string | null }>>;
       thumbnailsSetStyle: (style: LookStyle) => Promise<ThumbnailsAnswer<LookStyle>>;
@@ -2602,27 +2604,27 @@ export class ElectronService {
   thumbnailsItem(jobId: string, itemId: string): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsItem(jobId, itemId));
   }
-  thumbnailsRenderPair(jobId: string, itemId: string, change: PairChange): Promise<ThumbnailsView> {
-    return this.thumbnails(this.thumbnailsBridge.thumbnailsRenderPair(jobId, itemId, change));
+  thumbnailsFrameDetail(jobId: string, itemId: string, frameId: string): Promise<FrameDetail> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsFrameDetail(jobId, itemId, frameId));
   }
-  thumbnailsPairTitle(jobId: string, itemId: string, pair: number, title: string): Promise<ThumbnailsView> {
-    return this.thumbnails(this.thumbnailsBridge.thumbnailsPairTitle(jobId, itemId, pair, title));
+  thumbnailsPhotoDetail(name: string): Promise<PhotoDetail> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsPhotoDetail(name));
   }
-  thumbnailsSavePicks(jobId: string, itemId: string, picks: PickRequest[]): Promise<ThumbnailsView> {
-    return this.thumbnails(this.thumbnailsBridge.thumbnailsSavePicks(jobId, itemId, picks));
+  thumbnailsSaveCards(jobId: string, itemId: string, cards: CardRequest[]): Promise<ThumbnailsView> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsSaveCards(jobId, itemId, cards));
+  }
+  thumbnailsPairTitle(jobId: string, itemId: string, pair: number, title: string, kind: WordKind | null): Promise<{ view: ThumbnailsView; text: { kind: WordKind; phrase: string; wordsFor: string } }> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsPairTitle(jobId, itemId, pair, title, kind));
   }
   thumbnailsFinish(jobId: string, itemId: string): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsFinish(jobId, itemId));
   }
-  thumbnailsRemake(jobId: string, itemId: string): Promise<ThumbnailsView> {
-    return this.thumbnails(this.thumbnailsBridge.thumbnailsRemake(jobId, itemId));
-  }
   thumbnailsScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsScreenshots(jobId, itemId, files, titles));
   }
-  thumbnailsChooseOwn(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseOwn()); }
+  thumbnailsChooseOwn(): Promise<{ file: string; picture: string } | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseOwn()); }
   thumbnailsChooseScreenshots(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseScreenshots()); }
-  thumbnailsReleaseModel(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsReleaseModel()); }
+  thumbnailsClosed(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsClosed()); }
   thumbnailsShowFolder(folder: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsShowFolder(folder)); }
   thumbnailsGetStyle(): Promise<{ style: LookStyle; stored: boolean; line: string | null }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsGetStyle()); }
   thumbnailsSetStyle(style: LookStyle): Promise<LookStyle> { return this.thumbnails(this.thumbnailsBridge.thumbnailsSetStyle(style)); }

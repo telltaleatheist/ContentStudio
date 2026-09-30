@@ -1,6 +1,6 @@
-/* Theme tokens only, so the window follows the app's light and dark themes. The smallest text is
-   12px, above the app's 11.5px legibility floor. One top-to-bottom flow (2026-09-29): frames (one
-   flat list), text (a list), photos (one row), Generate thumbnails, the thumbnails. */
+/* Theme tokens only, so the window follows the app's light and dark themes; the accent is the app's
+   orange. The smallest text is 12px, above the app's 11.5px legibility floor. The card editor
+   (2026-09-29): three live cards across the top, the trays (frames, text, photos) below. */
 .tw {
   font-family: var(--font-family);
   font-size: 13px;
@@ -10,20 +10,20 @@
 h3 { margin: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .hint { color: var(--text-secondary); font-size: 12px; font-weight: 400; }
 .warn { color: var(--warning-text); }
-.why { color: var(--warning-text); font-size: 12px; }
+.why { color: var(--warning-text); font-size: 12px; margin: 0 0 8px; }
+.bad { color: var(--danger-text); font-size: 12px; }
 .line { margin: 6px 0; }
+.look-line { margin: 4px 0 0; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 0; }
-.check { display: flex; align-items: center; gap: 6px; }
-.link { background: none; border: none; padding: 0; color: var(--text-secondary); cursor: pointer; text-decoration: underline; font: inherit; font-size: 12px; }
-.spacer { flex: 1; }
-.count { color: var(--text-secondary); font-size: 12px; }
-.step {
-  display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
-  background: var(--primary-orange); color: #1a1a1a; font-size: 12px; font-weight: 700;
+.link {
+  background: none; border: none; padding: 0; color: var(--text-secondary); cursor: pointer; text-decoration: underline; font: inherit; font-size: 12px;
+  &:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
 }
+.spacer { flex: 1; }
 
 section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-top: 14px; }
 .sec-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.trays-why { margin-top: 14px; }
 
 /* ── status: sticky, so the line is seen wherever the click was ── */
 .status {
@@ -45,39 +45,69 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   &.error { background: var(--danger-bg); color: var(--danger-text); }
   &.warn { background: var(--warning-bg); color: var(--warning-text); }
   &.info { background: var(--info-bg); color: var(--info-text); }
+  &.ask { flex-wrap: wrap; font-weight: 600; }
   .x { background: none; border: none; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; }
 }
 .stopped {
   align-items: flex-start; margin-top: 10px;
   .stopped-lines { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-  .stopped-lines .hint { color: inherit; opacity: 0.85; }
   .stopped-acts { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
 }
 
+/* ── the cards ── */
+.cards-sec { border-top: none; margin-top: 8px; }
+.save { font-size: 14px; padding: 0 20px; height: 38px; }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.card {
+  display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; cursor: pointer;
+  border: 2px solid var(--border-color); background: var(--bg-primary);
+  &:hover { border-color: var(--text-secondary); }
+  &.active { border-color: var(--primary-orange); box-shadow: 0 0 0 2px var(--primary-orange); }
+}
+.card-head { display: flex; align-items: center; gap: 8px; }
+.card-n {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--bg-secondary); color: var(--text-primary); font-weight: 700; font-size: 13px;
+  .active & { background: var(--primary-orange); color: #1a1a1a; }
+}
+.card-title { font-weight: 600; }
+.role { font-size: 12px; color: var(--text-secondary); }
+.card-pic {
+  position: relative; aspect-ratio: 16 / 9; width: 100%; border-radius: 4px; overflow: hidden;
+  background: var(--bg-secondary); display: grid; place-items: center;
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  canvas.hidden { visibility: hidden; }
+  .empty { position: relative; padding: 12px; color: var(--text-secondary); font-size: 12px; text-align: center; }
+  .drawing { position: absolute; top: 8px; right: 8px; }
+}
+.card-lines { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; min-height: 18px; }
+.state { font-size: 12px; color: var(--text-secondary); }
+.card-acts { display: flex; align-items: center; gap: 10px; }
+
+/* ── the trays: a badge per thumbnail using an item; the active thumbnail's items outlined ── */
+.badges { display: flex; gap: 3px; }
 .badge {
-  position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 50%;
-  background: var(--primary-orange); color: #1a1a1a; font-weight: 700; font-size: 13px; display: grid; place-items: center;
+  display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);
+  font-weight: 700; font-size: 12px;
+  &.mine { background: var(--primary-orange); color: #1a1a1a; border-color: var(--primary-orange); }
 }
 
-/* ── 1. frames: one flat grid ── */
-.frame-badges { position: absolute; top: 4px; left: 4px; display: flex; gap: 4px; }
-.frame-badges .badge { position: static; cursor: pointer; }
 .frames { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .frame {
   position: relative; padding: 0; border: 3px solid transparent; border-radius: 5px; cursor: pointer; background: none;
   img { width: 176px; height: 99px; object-fit: cover; display: block; border-radius: 2px; }
+  .badges { position: absolute; top: 4px; left: 4px; }
   &:hover { border-color: var(--border-color); }
   &.on { border-color: var(--primary-orange); }
 }
 
-/* ── 2. text: a vertical list, one line each ── */
 .texts { display: flex; flex-direction: column; gap: 2px; max-width: 900px; }
 .text {
   display: flex; align-items: baseline; gap: 10px;
   text-align: left; font: inherit; padding: 4px 8px; border-radius: 4px; cursor: pointer;
   border: 1px solid transparent; background: none; color: var(--text-primary);
-  .badge-slot { position: relative; width: 22px; height: 22px; flex: 0 0 auto; align-self: center; }
-  .badge-slot .badge { top: 0; left: 0; width: 22px; height: 22px; font-size: 12px; }
+  .badges { min-width: 20px; align-self: center; }
   .phrase { font-weight: 600; }
   .label { font-size: 12px; color: var(--text-secondary); }
   &:hover { background: var(--bg-secondary); }
@@ -85,7 +115,6 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 }
 .own { flex: 1; min-width: 240px; max-width: 480px; font: inherit; padding: 5px 8px; }
 
-/* ── 3. photos: one row, picked 1, 2, 3 ── */
 .photos { display: flex; flex-wrap: wrap; gap: 6px; }
 .photo {
   position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 92px; min-height: 96px; padding: 4px;
@@ -93,43 +122,6 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);
   img { height: 56px; max-width: 84px; object-fit: contain; }
   .name { text-align: center; }
+  .badges { position: absolute; top: 3px; left: 3px; }
   &.on { border-color: var(--primary-orange); box-shadow: inset 0 0 0 1px var(--primary-orange); }
-  &.none { cursor: default; background: var(--bg-secondary); }
-  .none-add { font: inherit; background: none; border: none; color: var(--text-primary); cursor: pointer; padding: 8px 4px; }
-  .none-badges { display: flex; gap: 4px; }
-  .none-badges .badge { position: static; border: none; cursor: pointer; }
 }
-
-/* ── 4. generate: at the bottom of the picks ── */
-.generate { border-top-width: 2px; }
-.gen-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.gen { font-size: 15px; padding: 0 22px; height: 42px; }
-
-/* ── 5. your thumbnails ── */
-.results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.result {
-  display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 6px;
-  border: 1px dashed var(--border-color);
-  &.picked { border-style: solid; border-color: var(--primary-orange); }
-}
-.result-head { display: flex; align-items: center; gap: 8px; }
-.result-n {
-  display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
-  background: var(--primary-orange); color: #1a1a1a; font-weight: 700;
-}
-.role { font-weight: 600; }
-.result-pic {
-  position: relative; aspect-ratio: 16 / 9; width: 100%; border-radius: 4px; overflow: hidden;
-  background: var(--bg-secondary); display: grid; place-items: center;
-  .large { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .empty { padding: 12px; color: var(--text-secondary); font-size: 12px; text-align: center; }
-  .drawing { position: absolute; top: 8px; right: 8px; }
-  &.stale .large { opacity: 0.45; }
-}
-.phone {
-  display: flex; align-items: flex-end; gap: 8px;
-  img { width: 168px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 3px; display: block; }
-}
-.result-lines { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
-
-.again { display: flex; align-items: center; gap: 10px; }
