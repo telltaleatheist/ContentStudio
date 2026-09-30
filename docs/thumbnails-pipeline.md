@@ -612,3 +612,157 @@ thumbnails? why dont we reanalyze the flow so it makes sense." The flow he sees 
   "This video's frames and text are not ready yet." with the reason and **Try again**. No stage
   names, no "Kept as they are", no Finish button. The "Make thumbnails again from scratch" button is
   gone from the window (the `thumbnails:remake` channel stays, unused by it).
+
+(Superseded the same day by the card editor below: the `thumbnails:remake` channel and
+`ReportThumbnails.remake` are removed, as is the pick-1/2/3 window with Generate thumbnails.)
+
+## The card editor (2026-09-29, LEDGER #247)
+
+Owen: "maybe i select the thumbnail card i want to fill. then i select the frame, the text, and the
+image of myself to use in it. then i click a different card and do the same. frames and everything
+should be generated upfront, if they arent already. i should be able to hit a zoom button on a
+frame and resize (zoom/shrink) or reposition any of the three elements. logo goes in top right
+automatically, border goes on top of the image automatically and neither of those two should be
+edited. as soon as i click something, it adds it to the frame. if i unclick it, it removes it from
+the frame". It replaces the pick-1/2/3 lists and Generate thumbnails (#243-#246).
+
+### The window (`frontend/src/app/components/thumbnails-window/`)
+
+1. **Three cards** across the top, Thumbnail 1/2/3, each a **live preview** (a 1280x720 canvas scaled
+   down) with, under it, the title it goes with and its state ("Saved.", "Changed: not saved yet.",
+   or why it is left out). Card n is title and thumbnail pair n. One card is **active** (card 1 on
+   opening, outlined in the app's orange); clicking a card makes it active.
+2. **The trays** below: Frames (the grid, in time order; for a report with no story, his
+   screenshots), Text (every generated line labelled with its kind and the title it was written
+   for, plus "Type your own words" / "Put on thumbnail n"), Photos (the library). **A click puts the
+   item on the active card at once**, replacing what it had; clicking the item the active card
+   already has **takes it off**. Each item carries small badges naming the cards that use it (the
+   active card's badge in orange); the same frame, text or photo may sit on several cards. "No text"
+   and "No photo" are gone: a card without them simply has none. The logo switch is gone: the logo is
+   drawn top right whenever one is kept, the border whenever the look has it on; neither is editable.
+3. **⤢ Edit** on a card opens a larger editor (`thumbnail-card-editor.ts`): pick the Frame, the Text
+   or the Photo (or click it on the picture, topmost first), **drag to move**, and resize it with the
+   **scroll wheel**, the **Size slider** or the **corner handle**. The frame zoomed in is a crop;
+   zoomed out it sits smaller on black. The words are fitted into the box he sizes (one or two lines,
+   as large as the box holds). Each piece has **Reset**. Done keeps the edits on the card (not saved
+   yet); Cancel drops them. A new frame on a card starts unzoomed; taking the words or the photo off
+   drops their edit; another photo keeps the place the last one had.
+4. **Save thumbnails** (in the cards' header, disabled with its reason beside it) draws every card
+   that has a frame at 1280x720 with its edits, one after another, the card being drawn showing a
+   spinner (`thumbnails:progress` carries `card`), then saves the cards **in order** as the picks:
+   the first saved card is Pick 1 (the video's thumbnail, set through `PublishState.setThumbnail` as
+   before), a card with no frame is left out (it says why) and the rest close up; pick k goes with
+   title k (his chosen titles first). His own image ("Use my own image…", checked against YouTube's
+   rules the moment he picks it) replaces a card's content and is saved as it is; a tray click on that
+   card brings frames and text back. **Clear** empties a card; **Undo changes** puts back what is
+   saved on it. If a card cannot be drawn, nothing is saved: the banner and the card both say
+   "Thumbnail n could not be drawn, so nothing was saved: …". Changes made while a save runs stay on
+   the cards, unsaved. The `picks/Pick n` files and `pickCopies` are unchanged.
+5. **Closing** with changes not saved (Close, Escape or a click outside) asks in the window: "Save and
+   close", "Close without saving", "Keep editing" (the dialog is `disableClose`; no browser dialog).
+6. Kept: preparing a video that is not ready on opening, "Thumbnail look…", "Show folder", **Rewrite
+   words for this title** (on a card whose generated words were written for another chosen title
+   than the one it goes with: pair n's words are written again for that title and the first of the
+   card's kind goes on the card, unsaved; nothing is drawn), screenshots for a report with no story
+   (they become the Frames tray, card n showing screenshot n with its words).
+
+Pure rules: `thumbnails-compose.ts` (`toggleFrame` / `toggleText` / `togglePhoto`, `setOwn`,
+`clearCard`, `setAdjust`, `cardsUsing`, `planCards`, `cardRequests`, `cardsFromView`,
+`unsavedCards`, `titleOf`, `wordsMismatch`, the editor's clamps). Reading back: card n shows pair n
+when the pair has a frame (with its edits); his own image sits on the card it was saved on (a pick
+saved before the editor, with no card, on the card of its position); the run's suggested words on a
+pair with no frame are not card content, so a new report opens with empty cards. Two picks claiming
+one card is refused on reading (Save is then refused too, with the reason).
+
+### One layout and one drawing for the preview and the saved PNG
+
+The preview is drawn **in the window**, with no round trip per click, by the **same code** that draws
+the final PNG:
+
+- `electron/shared/thumbnail-layout.ts` (moved from `services/thumbnails/layout.ts`; import-free)
+  holds the placement, now including **`composeThumbnail`**: the frame's rectangle, the faces moved
+  with it, the photo (in its space or where he moved it), the logo and the words (automatic
+  `planText`, or `planTextIn` his box). With no edit it is exactly the renderer's old arithmetic
+  (checked step for step in thumbnail-lab-checks.js). `renderer.ts` places with it.
+- `electron/shared/thumbnail-draw.ts` holds **`paintThumbnail`** and **`measurePhrase`** (moved from
+  canvas-page.ts's `pageDraw` / `pageMeasure`), each self-contained. The hidden canvas page runs them
+  from their source (`fn.toString()`) on data URLs; the window calls them directly with pictures
+  already decoded.
+- The frontend reaches both through `thumbnails-window/thumbnail-shared.ts`
+  (`export * from '../../../../../electron/shared/…'`), the pattern `master-timeline-map.ts` set: one
+  copy compiled by both builds.
+- What only the main process has comes from `ReportThumbnails` (`PreviewPieces`, the app's in
+  thumbnails-ipc.ts): `thumbnails:frame-detail` gives the frame at full size (extracted from the
+  screen recording into `full/` the first time, written beside its name and moved into place so a
+  reader never sees half a file) with **the faces Apple Vision finds in that same file** (the render's
+  own search, asked once per frame and kept; a failed search comes back as `facesError`, and the card
+  says the text is placed without them and that saving will stop on the same problem);
+  `thumbnails:photo-detail` gives a photo trimmed as the render trims it; the view's `compose` gives
+  the saved look, the border and the logo already at its drawn size (`placeLogo` and the render's own
+  downscale), or why there can be no preview.
+- Left by construction: the window gets the frame as a 1280-wide JPEG (the render reads the full PNG)
+  and a photo at most 900 px tall; both are drawn into the same rectangles, so only sharpness can
+  differ. The Electron smoke checks that `paintThumbnail` handed decoded pictures and the render page
+  handed data URLs give the same pixels.
+
+### What is stored
+
+On each pair's `default` (record version 1; absent in every record before the editor, and those
+render exactly as before):
+
+```jsonc
+"adjust": {                                   // optional; each part optional; fractions of the picture
+  "frame": { "x": -0.5, "y": -0.25, "scale": 2 },           // drawn at (x*W, y*H), scale*W x scale*H (16:9 kept)
+  "text":  { "x": 0.05, "y": 0.08, "w": 0.55, "h": 0.3 },   // the box the words are fitted into
+  "photo": { "cx": 0.2, "cy": 0.7, "h": 0.45 }              // the photo's centre and height (width from its shape)
+}
+```
+
+Limits (`validateAdjust`, checked when the record is read and when the window saves; a bad value is
+refused naming it, never clamped): zoom 0.25-5 with at least 5% of the picture's width and height
+still covered by the frame; the text box at least 3% each way and inside the picture; the photo
+5-200% of the picture's height, its centre on the picture; no other keys. Words in his box are drawn
+at the largest size the box holds (the look's text size is not applied; faces are not avoided). With
+the photo moved, the automatic words may use the whole width and keep clear of the photo. An
+own-image pick gains `card` (1-3). `renderThumbnail`, the `ThumbnailRenderer` and `drawPair` take
+`adjust` (null draws as before); the run's render stage passes a screenshot pair's stored edit.
+
+### IPC
+
+Added `thumbnails:frame-detail`, `thumbnails:photo-detail`, `thumbnails:save-cards`,
+`thumbnails:closed` (the window closed: the face search's page and the text model are given back).
+Changed: `thumbnails:choose-own` answers `{ file, picture }` after checking the file;
+`thumbnails:pair-title` takes the card's kind and answers `{ view, text }`, drawing nothing.
+Removed: `thumbnails:render-pair`, `thumbnails:save-picks`, `thumbnails:remake`,
+`thumbnails:release-model` (and `ReportThumbnails.renderPair` / `savePicks` / `remake`,
+`ItemThumbnailRun.start`'s from-scratch folder, `PairChange`, `PickRequest`, the view's `renders`,
+`hasLogo` and `remake`).
+
+### Keeper
+
+thumbnail-pipeline-checks.js (25): Save thumbnails (cards in order, the gap closing up, one frame on
+all three, per-card progress, a failed card saving nothing, ten refusals); card edits handed to the
+renderer and stored, none stored or drawn when reset, the run drawing a stored edit, drawPair with
+null; the preview's pieces (extraction once, faces once, a failed search said, photos, the look,
+border and logo, closing); own image by card; rewrite drawing nothing; screenshots (a third card only
+his image); the card rules (active card, click on and off, badges, edits following the pieces, own
+image, clamps); saved and read back equal, unsaved changes, old picks, a clash refused; the window's
+shape (no pick lists, Generate, suggested words, Clear picks, logo switch, No text / No photo; clicks
+ask the main process nothing; the shared layout and drawing; the in-window close question; no teal);
+storage (own card range, two picks on a card, a bad edit refused, edits round-trip).
+thumbnail-lab-checks.js (33): one `composeThumbnail` check. thumbnail-lab-render-smoke.js (18): the
+edits change the drawing where expected (quarters zoomed, panned, shrunk on black; words in the box
+and not in the automatic place; the photo moved), an empty edit byte for byte the same as none, and
+the preview's paint equal to the page's.
+
+### Not verified (no app launch on Owen's data, no live model call)
+
+Built and checked offline only; nobody has seen the window. A human should look at: the three cards'
+layout at the window's width; the first paint of a card while its frame is extracted (a spinner, then
+the picture); the badges and the active outline; dragging, the wheel and the corner handle in the
+editor (feel, redraw speed, the handle when the frame is zoomed past the picture's edge); the Size
+slider's ranges; the in-window close question; that the saved PNG looks like the card. Open: a card
+with words or a photo but no frame is not kept when saved (it says so first); "Rewrite words for this
+title" replaces pair n's words, so another card using one of the old lines keeps it but the tray lists
+it under the generated ones; the title under a card is the one its pick number will go with, and a
+card that will not be saved shows none.
