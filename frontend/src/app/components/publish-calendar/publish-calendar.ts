@@ -941,12 +941,15 @@ export class PublishCalendar implements OnInit, OnDestroy {
         titles: elsewhere.map((chip) => chip.title),
       });
     }
+    // Counted, not listed: every video already on YouTube is on the board, so naming them all
+    // put the same long list in front of every upload (Owen, 2026-09-30: "every time i start to
+    // upload something it says this. im not sure why"). The count still closes the gap between
+    // the board and the button; Push is where one of them is changed.
     if (done.length > 0) {
       groups.push({
         reason:
-          `already uploaded — a second insert would duplicate the video, so use Push to ` +
-          `change one of these`,
-        titles: done.map((chip) => chip.title),
+          `${done.length} already on YouTube (never sent twice; use Push to change one)`,
+        titles: [],
       });
     }
     // Grouped BY REASON, one group per distinct missing-list: the template tracks these

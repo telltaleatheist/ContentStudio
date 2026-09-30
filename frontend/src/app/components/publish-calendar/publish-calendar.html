@@ -245,7 +245,7 @@
         <div class="uc-skipped">
           @for (group of excludedFromRun(); track group.reason) {
             <div class="uc-skip-row">
-              <span class="uc-skip-reason">Not included, {{ group.reason }}:</span>
+              <span class="uc-skip-reason">Not included: {{ group.reason }}{{ group.titles.length > 0 ? ':' : '.' }}</span>
               @for (title of group.titles; track $index) {
                 <span class="uc-skip-title">{{ title }}</span>
               }
@@ -357,7 +357,7 @@
         <div class="uc-skipped">
           @for (group of spreakerExcluded(); track group.reason) {
             <div class="uc-skip-row">
-              <span class="uc-skip-reason">Not included, {{ group.reason }}:</span>
+              <span class="uc-skip-reason">Not included: {{ group.reason }}{{ group.titles.length > 0 ? ':' : '.' }}</span>
               @for (title of group.titles; track $index) {
                 <span class="uc-skip-title">{{ title }}</span>
               }
