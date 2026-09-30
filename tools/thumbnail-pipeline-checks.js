@@ -1559,7 +1559,8 @@ check('the tab is gone and nothing dangles: no route, sidebar entry, component, 
   assert.ok(!/thumbnail_text|Thumbnail text/.test(html), 'no THUMBNAIL TEXT OPTIONS section on the reports page');
   assert.ok(/openThumbnails\(\)/.test(html), 'the reports page opens the Thumbnails window');
   const win = read('frontend/src/app/components/thumbnails-window/thumbnails-window.ts');
-  assert.ok(/this\.publish\.setThumbnail\(view\.publishFile\)/.test(win), 'pick 1 goes through the publish record\'s one thumbnail door');
+  assert.ok(/setReportThumbnail\(view\.publishFile, inPanel\)/.test(win) && /this\.publish\.setThumbnail\(file\)/.test(win) && /this\.electron\.publishSetThumbnail\(this\.data\.itemId, file\)/.test(win), 'pick 1 goes through the publish record\'s one thumbnail door, whichever report the Publish panel shows');
+  assert.ok(!/publishFile[^\n]*this\.publish\.itemId\(\) === this\.data\.itemId|this\.publish\.itemId\(\) === this\.data\.itemId\) \{/.test(win), 'pick 1 is not skipped when the Publish panel shows another report');
   // The model's tone and photo ranking is gone (2026-09-29): no module, no routing row, no decide in the pipeline or the window.
   for (const gone of ['electron/services/thumbnails/judge.ts', 'electron/services/thumbnails/photo-draw.ts']) assert.ok(!fs.existsSync(path.join(REPO, gone)), `${gone} is still there`);
   for (const file of ['electron/services/thumbnails/pipeline.ts', 'electron/services/thumbnails/report-thumbnails.ts']) {

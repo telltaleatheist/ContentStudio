@@ -413,16 +413,43 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     return done !== null;
   }
 
+  /**
+   * Pick 1 is the video's thumbnail: when it changes, the report's thumbnail follows it, and when
+   * the picks are all taken away, a thumbnail that was Pick 1's copy goes with them (one he chose
+   * elsewhere stays). Written to the report whether or not the Publish panel shows it; the panel is
+   * only the way in when it does, so it shows the change. A refusal is thrown, so the pick is not
+   * counted as followed and the next save tries again.
+   */
   private async followPublish(view: ThumbnailsView): Promise<void> {
     const first = view.picks[0]?.pick.file ?? null;
-    if (first !== this.publishedFrom && this.publish.itemId() === this.data.itemId) {
-      if (view.publishFile !== null) await this.publish.setThumbnail(view.publishFile);
-      else {
-        const current = this.publish.thumbnailPath();
-        if (current !== null && view.picksFolder !== null && current.startsWith(view.picksFolder)) await this.publish.clearThumbnail();
-      }
+    if (first === this.publishedFrom) return;
+    const inPanel = this.publish.itemId() === this.data.itemId;
+    if (view.publishFile !== null) await this.setReportThumbnail(view.publishFile, inPanel);
+    else {
+      const current = inPanel ? this.publish.thumbnailPath() : await this.reportThumbnail();
+      if (current !== null && view.picksFolder !== null && current.startsWith(view.picksFolder)) await this.setReportThumbnail(null, inPanel);
     }
     this.publishedFrom = first;
+  }
+
+  /** The report's thumbnail as stored now (the Publish panel may show another report). */
+  private async reportThumbnail(): Promise<string | null> {
+    const res = await this.electron.publishGetSelection(this.data.itemId);
+    if (!res.success) throw new Error(`The report's thumbnail could not be read: ${res.error ?? 'no reason given'}`);
+    return res.data?.thumbnailPath ?? null;
+  }
+
+  private async setReportThumbnail(file: string | null, inPanel: boolean): Promise<void> {
+    const what = file === null ? 'taken off' : 'set to Pick 1';
+    if (inPanel) {
+      if (file === null) await this.publish.clearThumbnail();
+      else await this.publish.setThumbnail(file);
+      const error = this.publish.error();
+      if (error !== null) throw new Error(`The video's thumbnail could not be ${what}: ${error}`);
+      return;
+    }
+    const res = await this.electron.publishSetThumbnail(this.data.itemId, file);
+    if (!res.success) throw new Error(`The video's thumbnail could not be ${what}: ${res.error ?? 'no reason given'}`);
   }
 
   // ── the cards ─────────────────────────────────────────────────────────────
