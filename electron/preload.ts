@@ -707,7 +707,10 @@ const api = {
   thumbnailsFinish: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:finish', jobId, itemId),
   thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) =>
     ipcRenderer.invoke('thumbnails:screenshots', jobId, itemId, files, titles),
-  thumbnailsChooseOwn: () => ipcRenderer.invoke('thumbnails:choose-own'),
+  thumbnailsWords: (jobId: string, itemId: string, pair: number, mode: 'new' | 'more') => ipcRenderer.invoke('thumbnails:words', jobId, itemId, pair, mode),
+  thumbnailsRunning: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:running', jobId, itemId),
+  thumbnailsAddFrames: (jobId: string, itemId: string, files: string[]) => ipcRenderer.invoke('thumbnails:add-frames', jobId, itemId, files),
+  thumbnailsChooseFrames: () => ipcRenderer.invoke('thumbnails:choose-frames'),
   thumbnailsChooseScreenshots: () => ipcRenderer.invoke('thumbnails:choose-screenshots'),
   thumbnailsClosed: () => ipcRenderer.invoke('thumbnails:closed'),
   thumbnailsShowFolder: (folder: string) => ipcRenderer.invoke('thumbnails:show-folder', folder),

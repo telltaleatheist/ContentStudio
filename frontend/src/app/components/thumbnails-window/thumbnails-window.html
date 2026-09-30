@@ -93,7 +93,8 @@
     }
     <div class="cards">
       @for (n of CARD_NUMBERS; track n) {
-        <div class="card" [class.active]="active() === n" (click)="selectCard(n)" role="button" [attr.aria-pressed]="active() === n">
+        <div class="card" [class.active]="active() === n" [class.drop-on]="dropOver() === n" (click)="selectCard(n)" role="button" [attr.aria-pressed]="active() === n"
+             (dragover)="dragOver($event, n)" (dragleave)="dragLeave($event, n)" (drop)="dropOnCard($event, n)">
           <div class="card-head">
             <span class="card-n">{{ n }}</span>
             <span class="card-title">Thumbnail {{ n }}</span>
@@ -105,9 +106,10 @@
           <div class="card-pic">
             <canvas #cardCanvas [attr.data-card]="n" width="1280" height="720" [class.hidden]="card(n).own === null && card(n).frameId === null"></canvas>
             @if (card(n).own === null && card(n).frameId === null) {
-              <span class="empty">{{ card(n).text !== null || card(n).photo !== null ? 'Pick a frame for it below.' : active() === n ? 'Click a frame, text and photo below.' : 'Empty. Click here, then pick below.' }}</span>
+              <span class="empty">{{ card(n).text !== null || card(n).photo !== null ? 'Pick a frame for it below, or drop an image here.' : active() === n ? 'Click a frame, text and photo below, or drop an image here.' : 'Empty. Click here, then pick below, or drop an image here.' }}</span>
             }
             @if (savingCard() === n || loading()[n]) { <span class="drawing"><mat-spinner diameter="22"></mat-spinner></span> }
+            @if (dropOver() === n) { <span class="drop-here">Drop to use it as this thumbnail's frame</span> }
           </div>
           <div class="card-lines">
             @if (titleFor(n); as t) {
@@ -116,7 +118,7 @@
               <span class="hint">{{ why }}</span>
             }
             @if (cardState(n); as s) { <span class="state" [class.warn]="unsaved().includes(n)">{{ s }}</span> }
-            @if (card(n).own; as own) { <span>Your image: {{ fileName(own.file) }}</span> }
+            @if (card(n).own; as own) { <span>Your finished image, saved as it is: {{ fileName(own.file) }}</span> }
             @if (saveFailed()[n]; as f) { <span class="bad">{{ f }}</span> }
             @if (cardError()[n]; as e) { <span class="bad">This thumbnail cannot be drawn: {{ e }}</span> }
             @for (note of cardNotes()[n] ?? []; track $index) { <span class="hint">{{ note }}</span> }
@@ -128,9 +130,6 @@
           </div>
           <div class="card-acts">
             <button mat-stroked-button (click)="edit(n, $event)" [disabled]="editBlocked(n) !== null" [title]="editBlocked(n) ?? 'Zoom or move the frame, move or resize the text and the photo'">⤢ Edit</button>
-            @if (card(n).own === null && ownBlocked() === null) {
-              <button class="link" (click)="useOwn(n, $event)" title="Use your own image file on this thumbnail (PNG or JPEG, within YouTube's thumbnail limits)">Use my own image…</button>
-            }
             <span class="spacer"></span>
             @if (unsaved().includes(n)) {
               <button class="link" (click)="undo(n, $event)" title="Put back what is saved on this thumbnail">Undo changes</button>
@@ -142,19 +141,30 @@
     </div>
   </section>
 
-  <!-- ═════ THE TRAYS ═════ A click puts the item on the active thumbnail; clicking what it already has takes it off. -->
+  <!-- ═════ THE TRAYS ═════ A click puts the item on the active thumbnail; clicking what it already has takes it off.
+       The Frames tray also takes his own images (dropped from Finder, or Add an image…); the Text
+       tray keeps every line the model wrote, grouped by the title it was written for. -->
   @if (fillBlocked(); as why) {
     <p class="hint trays-why">{{ why }}</p>
-  } @else {
-    <section>
+  }
+  @if (framesShown()) {
+    <section class="frames-sec" [class.drop-on]="dropOver() === 'tray'"
+             (dragover)="dragOver($event, 'tray')" (dragleave)="dragLeave($event, 'tray')" (drop)="dropOnTray($event)">
       <div class="sec-head">
         <h3>Frames</h3>
-        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots.' : 'From the story, in time order: the sharpest of each shot.' }} Putting one on thumbnail {{ active() }}.</span>
+        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots' : record()!.state === 'made' ? 'From the story, in time order: the sharpest of each shot' : 'Your images' }}, and any image you drop here or on a thumbnail (it is cut to fill the thumbnail; Edit zooms or moves it). Putting one on thumbnail {{ active() }}.</span>
+        <span class="spacer"></span>
+        <button mat-stroked-button (click)="chooseImages()" [disabled]="busy() !== null"
+                [title]="busy() !== null ? 'Wait for the running step' : 'Add one or more of your own images (PNG or JPEG) to the frames'">Add an image…</button>
       </div>
+      @if (frameIds().length === 0) {
+        <p class="hint">No frames yet. Drop your own images here or on a thumbnail, or use Add an image….</p>
+      }
       <div class="frames">
         @for (id of frameIds(); track id) {
           <button class="frame" [class.on]="onActive(frameCards(id))" [class.used]="frameCards(id).length > 0" (click)="clickFrame(id)" [title]="frameInfo(id)">
             @if (framePicture(id); as pic) { <img [src]="pic" [alt]="id" /> } @else { <span class="hint">{{ id }}</span> }
+            @if (isAdded(id)) { <span class="yours">Yours</span> }
             @if (frameCards(id).length > 0) {
               <span class="badges">@for (k of frameCards(id); track k) { <span class="badge" [class.mine]="k === active()">{{ k }}</span> }</span>
             }
@@ -162,31 +172,65 @@
         }
       </div>
     </section>
-
+  }
+  @if (fillBlocked() === null) {
     <section>
       <div class="sec-head">
         <h3>Text</h3>
-        <span class="hint">Putting it on thumbnail {{ active() }}. The small line says what kind it is and which title it was written for.</span>
+        <span class="hint">Putting it on thumbnail {{ active() }}. Everything written is kept: New options puts a fresh set first, More options adds to them. Either keeps going if you close this window.</span>
       </div>
-      @if (options().length === 0) {
+      @if (textGroups().length === 0) {
         <p class="hint">No suggested text yet. You can still type your own.</p>
       }
-      <div class="texts">
-        @for (o of options(); track o.key) {
-          <button class="text" [class.on]="onActive(textCards(o))" (click)="clickText(o)">
-            <span class="badges">@for (k of textCards(o); track k) { <span class="badge" [class.mine]="k === active()">{{ k }}</span> }</span>
-            <span class="phrase">{{ o.phrase }}</span>
-            <span class="label">{{ o.kind }} · for “{{ o.wordsFor }}”</span>
-          </button>
-        }
-        @for (o of otherTexts(); track o.key) {
-          <button class="text" [class.on]="onActive(textCards(o))" (click)="clickText(o)">
-            <span class="badges">@for (k of textCards(o); track k) { <span class="badge" [class.mine]="k === active()">{{ k }}</span> }</span>
-            <span class="phrase">{{ o.phrase }}</span>
-            <span class="label">{{ o.kind === null ? 'your words' : o.kind + ' · for “' + o.wordsFor + '”' }}</span>
-          </button>
-        }
-      </div>
+      @for (g of textGroups(); track g.title) {
+        <div class="words-group">
+          <div class="group-head">
+            <span class="for">For “{{ g.title }}”</span>
+            @if (g.pair !== null) {
+              <button mat-stroked-button class="small" (click)="writeWords(g, 'new')" [disabled]="rewriteBlocked() !== null"
+                      [title]="rewriteBlocked() ?? 'A fresh set of suggestions for this title, listed first; the ones here now stay below (the words model, about a minute)'">New options</button>
+              <button mat-stroked-button class="small" (click)="writeWords(g, 'more')" [disabled]="rewriteBlocked() !== null"
+                      [title]="rewriteBlocked() ?? 'More suggestions for this title, added to these; none of them twice (the words model, about a minute)'">More options</button>
+            } @else {
+              <span class="hint">No thumbnail goes with this title now.</span>
+            }
+          </div>
+          <div class="texts">
+            @for (o of g.current; track o.key) {
+              <button class="text" [class.on]="onActive(textCards(o))" (click)="clickText(o)">
+                <span class="badges">@for (k of textCards(o); track k) { <span class="badge" [class.mine]="k === active()">{{ k }}</span> }</span>
+                <span class="phrase">{{ o.phrase }}</span>
+                <span class="label">{{ o.kind }}</span>
+              </button>
+            }
+          </div>
+          @if (g.earlier.length > 0) {
+            <details class="earlier">
+              <summary>Earlier options ({{ g.earlier.length }}){{ earlierUsed(g) }}</summary>
+              <div class="texts">
+                @for (o of g.earlier; track o.key) {
+                  <button class="text" [class.on]="onActive(textCards(o))" (click)="clickText(o)">
+                    <span class="badges">@for (k of textCards(o); track k) { <span class="badge" [class.mine]="k === active()">{{ k }}</span> }</span>
+                    <span class="phrase">{{ o.phrase }}</span>
+                    <span class="label">{{ o.kind }}</span>
+                  </button>
+                }
+              </div>
+            </details>
+          }
+        </div>
+      }
+      @if (otherTexts().length > 0) {
+        <div class="texts">
+          @for (o of otherTexts(); track o.key) {
+            <button class="text" [class.on]="onActive(textCards(o))" (click)="clickText(o)">
+              <span class="badges">@for (k of textCards(o); track k) { <span class="badge" [class.mine]="k === active()">{{ k }}</span> }</span>
+              <span class="phrase">{{ o.phrase }}</span>
+              <span class="label">{{ o.kind === null ? 'your words' : o.kind + ' · for “' + o.wordsFor + '”' }}</span>
+            </button>
+          }
+        </div>
+      }
       <div class="row">
         <input class="own" type="text" placeholder="Type your own words" [value]="typed()" (input)="typed.set($any($event.target).value)" (keydown.enter)="putTyped()" />
         <button mat-stroked-button (click)="putTyped()" [disabled]="typed().trim() === ''" [title]="typed().trim() === '' ? 'Type the words first' : 'Put these words on thumbnail ' + active()">Put on thumbnail {{ active() }}</button>

@@ -86,14 +86,36 @@ export type StoredStoryLink =
  */
 export interface StoredFrame {
   id: string;
-  /** Seconds into the screen recording. */
+  /** Seconds into the screen recording (0 for a screenshot or an image Owen added). */
   t: number;
   clock: string;
+  /** The scene it belongs to (screenshot n for a screenshot; 0 for an image Owen added: no scene). */
   scene: number;
   /** 640x360 JPEG (the larger view). */
   large: string;
   /** 320x180 JPEG (for the grid). */
   small: string;
+  /**
+   * 'added': an image Owen dropped on the window or chose with "Add an image…" (2026-09-29, Owen:
+   * "lets make it so i can drag/drop them into the slot"). Its full-size picture
+   * (`<folder>/full/<id>.png`, cut to fill 16:9 around its centre) is the only copy: it is never
+   * taken from the screen recording again, so when it is gone that is said by name. Absent: a
+   * frame of the story's recording, or one of the screenshots.
+   */
+  origin?: 'added';
+  /** For an added image: the name of the file he gave (it is only read, never moved). */
+  from?: string;
+}
+
+/** An added image's id: `added1`, `added2`, ... never one the record already holds. */
+export const ADDED_FRAME_PREFIX = 'added';
+
+export function nextAddedFrameId(frames: readonly Pick<StoredFrame, 'id'>[]): string {
+  const taken = new Set(frames.map((f) => f.id));
+  for (let n = 1; ; n++) {
+    const id = `${ADDED_FRAME_PREFIX}${n}`;
+    if (!taken.has(id)) return id;
+  }
 }
 
 export interface StoredScene {
@@ -118,6 +140,16 @@ export interface StoredWords {
   warnings: string[];
   /** The routed model that wrote them. */
   model: string;
+}
+
+/**
+ * A set of words written earlier for `title` and since followed by newer ones ("New options", a
+ * rewrite for another title, new screenshots). Kept, never dropped (Owen, 2026-09-29: "if the
+ * thumbnail page runs the model to generate text, that should be kept ... it shouldnt disappear"):
+ * the Text tray shows them under "Earlier options" for their title, and a card can still use them.
+ */
+export interface EarlierWords extends StoredWords {
+  title: string;
 }
 
 /**
@@ -175,6 +207,47 @@ export interface StoredPair {
   default: StoredDefault;
   /** One plain line about this pair (a kind with no options, a repeated scene). */
   lines: string[];
+}
+
+const KINDS = ['claim', 'stakes', 'reaction'] as const;
+
+/** Every line in a set of words, all kinds. */
+export function linesOf(words: Pick<StoredWords, 'claim' | 'stakes' | 'reaction'>): string[] {
+  return KINDS.flatMap((k) => words[k]);
+}
+
+/**
+ * The record's earlier words with `sets` put first (newest first), each set that holds no line
+ * left out. Nothing already there is dropped.
+ */
+export function keepEarlier(record: Pick<ItemThumbnails, 'earlierWords'>, sets: readonly EarlierWords[]): EarlierWords[] {
+  return [...sets.filter((s) => linesOf(s).length > 0), ...(record.earlierWords ?? [])];
+}
+
+/** Every line ever written for `title` in this record (its pairs' words and the earlier sets). */
+export function linesWrittenFor(record: Pick<ItemThumbnails, 'pairs' | 'earlierWords'>, title: string): string[] {
+  const sets = [...record.pairs.filter((p) => p.title === title).map((p) => p.words), ...(record.earlierWords ?? []).filter((e) => e.title === title)];
+  return [...new Set(sets.flatMap(linesOf))];
+}
+
+/**
+ * "More options": the fresh lines added after the current ones, kind by kind; a line already
+ * written for this title (`written`, any kind) is not added twice. The warnings are kept.
+ */
+export function appendWords(current: StoredWords, fresh: Pick<StoredWords, 'claim' | 'stakes' | 'reaction' | 'warnings'>, written: readonly string[]): { words: StoredWords; added: number; repeated: number } {
+  const seen = new Set(written);
+  const words: StoredWords = { ...current, claim: [...current.claim], stakes: [...current.stakes], reaction: [...current.reaction], warnings: [...current.warnings, ...fresh.warnings] };
+  let added = 0;
+  let repeated = 0;
+  for (const k of KINDS) {
+    for (const line of fresh[k]) {
+      if (seen.has(line)) { repeated++; continue; }
+      seen.add(line);
+      words[k].push(line);
+      added++;
+    }
+  }
+  return { words, added, repeated };
 }
 
 /**
@@ -250,6 +323,11 @@ export interface ItemThumbnails {
   frames: StoredFrame[];
   /** The titles the pairs are written for, and where their order came from. */
   titles: { order: 'gate ranking' | 'as written'; subjects: string[] } | null;
+  /**
+   * Every set of words written for this video and since followed by a newer set, newest first
+   * (the Thumbnails window, 2026-09-29). Absent in records written before: none.
+   */
+  earlierWords?: EarlierWords[];
   /** Records before 2026-09-29: the model's tone read. Always null now. */
   tone: { ranking: Ranked[]; model: string; server: string } | null;
   pairs: StoredPair[];
@@ -284,6 +362,21 @@ export function readItemThumbnails(value: unknown, where: string): ItemThumbnail
     need(Array.isArray(r[key]), where, `has no ${key} list`);
   }
   need(r.state !== 'made' || (r.pairs.length > 0 && r.folder !== null), where, 'is made and holds no pairs');
+  for (const f of r.frames) {
+    need(f !== null && typeof f === 'object' && typeof f.id === 'string' && f.id !== '', where, 'holds a frame with no id');
+    need(f.origin === undefined || f.origin === 'added', where, `holds frame ${f.id} of an unknown origin ${JSON.stringify(f.origin)}`);
+    need(f.origin !== 'added' || (typeof f.from === 'string' && f.from !== ''), where, `holds the added image ${f.id} with no file name`);
+  }
+  need(new Set(r.frames.map((f) => f.id)).size === r.frames.length, where, 'holds one frame id twice');
+  if (r.earlierWords !== undefined) {
+    need(Array.isArray(r.earlierWords), where, 'has earlier words that are not a list');
+    for (const e of r.earlierWords) {
+      need(e !== null && typeof e === 'object' && typeof e.title === 'string' && e.title !== '' && typeof e.model === 'string', where, `holds earlier words with no title or model (${JSON.stringify(e).slice(0, 120)})`);
+      for (const key of ['claim', 'stakes', 'reaction', 'warnings'] as const) {
+        need(Array.isArray(e[key]) && e[key].every((x) => typeof x === 'string'), where, `holds earlier words for "${e.title}" whose ${key} is not a list of lines`);
+      }
+    }
+  }
   // Owen's card edits: refused by name when a value is off (never clamped or dropped).
   for (const p of r.pairs) {
     if (p !== null && typeof p === 'object' && p.default !== null && typeof p.default === 'object' && p.default.adjust !== undefined) {

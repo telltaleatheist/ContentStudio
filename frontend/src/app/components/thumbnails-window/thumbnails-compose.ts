@@ -13,8 +13,14 @@
  *     clicking the one the active card already has takes it off (`toggleFrame`, `toggleText`,
  *     `togglePhoto`). The same frame, text or photo may sit on several cards (`cardsUsing` gives
  *     the tray's badges).
- *   - A card may instead hold Owen's own image (`setOwn`), which replaces its content; clicking a
- *     tray item on it puts the card back to frames and text. `clearCard` empties one card.
+ *   - A card saved before 2026-09-29 may hold Owen's own finished image (an own-image pick): it is
+ *     read back where it sat and saved as it is; clicking a tray item on it puts the card back to
+ *     frames and text. Nothing makes a new one: his images are ADDED AS FRAMES now (dropped on a
+ *     card, which `putFrame` fills, or on the Frames tray), so the words, photo, logo and border go
+ *     on top and Edit zooms them. `clearCard` empties one card.
+ *   - TEXT (`textOptions`, `textGroups`): every line the model wrote for this video, grouped by the
+ *     title it was written for; a set followed by a newer one stays under "Earlier options", so a
+ *     line on a card never disappears.
  *   - EDITS (`Card.adjust`, shared CardAdjust): the frame zoomed or moved, the words in his own box,
  *     the photo moved or resized. A new frame starts unzoomed; taking the words or the photo off
  *     drops their edit; another photo keeps the place the last one had.
@@ -41,7 +47,7 @@ import {
   type PhotoPlaceEdit,
   type TextBoxEdit,
 } from './thumbnail-shared';
-import type { CardRequest, ItemThumbnails, PickView, StoredPair, WordKind } from './thumbnails.types';
+import type { CardRequest, EarlierWords, ItemThumbnails, PickView, StoredPair, StoredWords, WordKind } from './thumbnails.types';
 
 export const CARD_COUNT = 3;
 
@@ -50,13 +56,16 @@ const KINDS: readonly WordKind[] = ['claim', 'stakes', 'reaction'];
 // ── frames ────────────────────────────────────────────────────────────────────
 
 /**
- * The frames as ONE list (no scenes), in time order: every candidate the record keeps (the run
- * keeps at most two per scene, look-alikes dropped). Screenshots keep their own order (screenshot
- * 1, 2, 3: all at t 0, and the sort is stable).
+ * The frames as ONE list (no scenes): the images Owen added first, in the order he added them,
+ * then every other candidate the record keeps in time order (the run keeps at most two per scene,
+ * look-alikes dropped). Screenshots keep their own order (screenshot 1, 2, 3: all at t 0, and the
+ * sort is stable).
  */
 export function frameList(record: Pick<ItemThumbnails, 'frames'> | null): string[] {
   if (record === null) return [];
-  return [...record.frames].sort((a, b) => a.t - b.t).map((f) => f.id);
+  const added = record.frames.filter((f) => f.origin === 'added');
+  const rest = record.frames.filter((f) => f.origin !== 'added').sort((a, b) => a.t - b.t);
+  return [...added, ...rest].map((f) => f.id);
 }
 
 // ── text ──────────────────────────────────────────────────────────────────────
@@ -76,21 +85,59 @@ function generatedKey(wordsFor: string, phrase: string): string {
   return `for|${wordsFor}|${phrase}`;
 }
 
-/** Every generated line, pair by pair (the pairs' order is the titles' order), claim, stakes, reaction. */
-export function textOptions(pairs: readonly StoredPair[]): TextOption[] {
+function linesOf(words: StoredWords, title: string, pair: number | null, seen: Set<string>): TextOption[] {
   const out: TextOption[] = [];
-  const seen = new Set<string>();
-  for (const p of [...pairs].sort((a, b) => a.pair - b.pair)) {
-    for (const kind of KINDS) {
-      for (const phrase of p.words[kind]) {
-        const key = generatedKey(p.title, phrase);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ key, phrase, kind, wordsFor: p.title, pair: p.pair });
-      }
+  for (const kind of KINDS) {
+    for (const phrase of words[kind]) {
+      const key = generatedKey(title, phrase);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, phrase, kind, wordsFor: title, pair });
     }
   }
   return out;
+}
+
+/**
+ * Every generated line: pair by pair (the pairs' order is the titles' order), claim, stakes,
+ * reaction; then the earlier sets' lines (newest first) not already listed. One line written for
+ * one title is listed once.
+ */
+export function textOptions(pairs: readonly StoredPair[], earlier: readonly EarlierWords[] = []): TextOption[] {
+  const seen = new Set<string>();
+  const out: TextOption[] = [];
+  for (const p of [...pairs].sort((a, b) => a.pair - b.pair)) out.push(...linesOf(p.words, p.title, p.pair, seen));
+  for (const e of earlier) out.push(...linesOf(e, e.title, null, seen));
+  return out;
+}
+
+/** The Text tray's groups: one per title the words were written for, its current lines and its earlier ones. */
+export interface TextGroup {
+  /** The pair whose title this is (its New options / More options write for it); null: a title no pair has now. */
+  pair: number | null;
+  title: string;
+  current: TextOption[];
+  earlier: TextOption[];
+}
+
+/**
+ * The Text tray, one group per pair (its title, its current lines), each with the earlier lines
+ * written for that same title; then a group for each title only earlier sets were written for (a
+ * pair since given another title). Every generated line appears exactly once.
+ */
+export function textGroups(pairs: readonly StoredPair[], earlier: readonly EarlierWords[] = []): TextGroup[] {
+  const seen = new Set<string>();
+  const sorted = [...pairs].sort((a, b) => a.pair - b.pair);
+  const groups: TextGroup[] = sorted.map((p) => ({ pair: p.pair, title: p.title, current: linesOf(p.words, p.title, p.pair, seen), earlier: [] }));
+  for (const e of earlier) {
+    let g = groups.find((x) => x.title === e.title);
+    if (g === undefined) {
+      g = { pair: null, title: e.title, current: [], earlier: [] };
+      groups.push(g);
+    }
+    g.earlier.push(...linesOf(e, e.title, null, seen));
+  }
+  return groups.filter((g) => g.current.length > 0 || g.earlier.length > 0 || g.pair !== null);
 }
 
 /** Words Owen typed. Refused when empty. */
@@ -165,9 +212,12 @@ export function togglePhoto(cards: readonly Card[], n: number, name: string): Ca
   });
 }
 
-/** His own image on card n: it replaces the card's frame, text, photo and edits. */
-export function setOwn(cards: readonly Card[], n: number, own: { file: string; picture: string }): Card[] {
-  return withCard(cards, n, () => ({ ...emptyCard(n), own }));
+/**
+ * A frame put on card n whatever it had (an image Owen dropped on the card): like a tray click,
+ * except that it never takes the frame off. It starts unzoomed; the words and photo stay.
+ */
+export function putFrame(cards: readonly Card[], n: number, frameId: string): Card[] {
+  return withCard(cards, n, (c) => ({ ...c, own: null, frameId, adjust: c.own === null && c.frameId === frameId ? c.adjust : without(c.adjust, 'frame') }));
 }
 
 export function clearCard(cards: readonly Card[], n: number): Card[] {
@@ -264,9 +314,9 @@ export function currentWordsFor(pair: StoredPair): string | null {
  * words on a pair with no frame are not a card's content: that card starts empty. Two picks claiming
  * one card is refused (the record and the picks disagree).
  */
-export function cardsFromView(view: { record: Pick<ItemThumbnails, 'pairs'> | null; picks: readonly PickView[] }): Card[] {
+export function cardsFromView(view: { record: Pick<ItemThumbnails, 'pairs' | 'earlierWords'> | null; picks: readonly PickView[] }): Card[] {
   const pairs = view.record?.pairs ?? [];
-  const options = textOptions(pairs);
+  const options = textOptions(pairs, view.record?.earlierWords ?? []);
   const cards = emptyCards();
   const taken = new Map<number, string>();
   const claim = (n: number, what: string) => {

@@ -30,10 +30,12 @@ export async function writeThumbnailWords(input: {
   title: string;
   transcript: readonly string[];
   sourceLabel: string;
-  /** The tab's held job for this local model (kept loaded for the tone/photo step); absent for cloud. */
+  /** The window's held job for this local model; absent for cloud. */
   job?: JobLeases;
+  /** Lines already written for this title, for "More options": the model is asked for others. */
+  avoid?: readonly string[];
 }): Promise<WordsResult> {
-  const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript });
+  const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript, avoid: input.avoid ?? [] });
   const what = `thumbnail text for ${input.sourceLabel}`;
   const answer = await input.aiManager.runPlainRequest(
     prompt,

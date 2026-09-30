@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChild, viewChildren } from '@angular/core';
+import { Component, ElementRef, HostListener, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChild, viewChildren } from '@angular/core';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -21,9 +21,10 @@ import {
   generatedText,
   noPairFor,
   planCards,
+  putFrame,
   saveBlocked,
   setAdjust,
-  setOwn,
+  textGroups,
   textOptions,
   titleOf,
   toggleFrame,
@@ -35,6 +36,7 @@ import {
   sameCard,
   type Card,
   type CardPlan,
+  type TextGroup,
   type TextOption,
 } from './thumbnails-compose';
 import type { StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
@@ -65,10 +67,21 @@ export interface ThumbnailsWindowData {
  *     and any failure by name. A card with no frame is left out and says why. Closing with changes
  *     not saved asks first, in the window.
  *
+ *   - HIS OWN IMAGES AS FRAMES (2026-09-29, Owen: "lets make it so i can drag/drop them into the
+ *     slot"): an image file dropped from Finder on a card becomes that card's frame at once (cut to
+ *     fill 16:9; Edit zooms or moves it), dropped on the Frames tray or chosen with "Add an image…"
+ *     it joins the tray. They are kept in the report, listed first.
+ *   - THE WORDS ARE KEPT (2026-09-29, Owen: "that should be kept even if i leave the modal"): each
+ *     title's group in the Text tray has New options (a fresh set first, the earlier ones kept
+ *     below) and More options (added to them, none twice). The main process writes every set into
+ *     the report the moment the model answers, and a run keeps going when the window closes; a
+ *     window opened while one runs says so and waits for it.
+ *
  * A video whose frames and text are not ready is prepared on opening (Owen: "i havent even started
  * making a thumbnail yet. why would i hit finish making thumbnails?"). Every action runs through ONE
  * runner (a spinner and a running clock while it runs, any failure as a banner naming what failed).
- * Closing the window gives back the text model it kept loaded for the words.
+ * Closing the window gives back the text model it kept loaded for the words (after a words step
+ * still running, which runs to its end).
  */
 @Component({
   selector: 'app-thumbnails-window',
@@ -113,6 +126,9 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   readonly closeAsked = signal(false);
   readonly typed = signal('');
   readonly shots = signal<string[]>([]);
+  /** Where files are being dragged over: a card, the Frames tray, or nowhere. */
+  readonly dropOver = signal<number | 'tray' | null>(null);
+  private destroyed = false;
 
   private readonly canvases = viewChildren<ElementRef<HTMLCanvasElement>>('cardCanvas');
 
@@ -200,7 +216,11 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   readonly record = computed(() => this.view()?.record ?? null);
   readonly pairs = computed<StoredPair[]>(() => this.record()?.pairs ?? []);
-  readonly options = computed(() => textOptions(this.pairs()));
+  /** Every set of words since followed by a newer one (kept, shown under "Earlier options"). */
+  readonly earlierWords = computed(() => this.record()?.earlierWords ?? []);
+  readonly options = computed(() => textOptions(this.pairs(), this.earlierWords()));
+  /** The Text tray: one group per title, with its New options / More options. */
+  readonly textGroups = computed<TextGroup[]>(() => textGroups(this.pairs(), this.earlierWords()));
   /**
    * The grid. Empty while the frames are to be prepared again (an old record's up-to-120 scoring
    * frames): the stored ones are about to be replaced, look-alikes dropped, so they are not offered.
@@ -269,16 +289,36 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
       if (event.card !== undefined) this.savingCard.set(event.card);
     });
     this.clock = setInterval(() => this.now.set(Date.now()), 1000);
-    const view = await this.runner.run('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId));
+    let view = await this.runner.run('Reading the thumbnails', () => this.electron.thumbnailsItem(this.data.jobId, this.data.itemId));
     if (view === null) return;
     this.takeView(view, true);
+    // A step started from an earlier window (writing words, preparing) is still running: it goes on
+    // to its end and saves what it wrote; this window waits for it and then shows it.
+    if (view.running !== null) {
+      const after = await this.runner.run(`Still ${view.running} (started before this window was opened)`, () => this.waitForRun());
+      if (after === null) return;
+      this.takeView(after, this.unsaved().length === 0);
+      view = after;
+    }
     this.publishedFrom = view.picks[0]?.pick.file ?? null;
     // Not ready (the metadata job's preparation stopped, or an older version made it): prepared on
     // opening, with no button to find. A reason it cannot run now is shown instead, with Try again.
     if (view.finish !== null && view.finish.blocked === null) await this.prepare();
   }
 
+  /** Polls until nothing runs for this item, then reads it again. */
+  private async waitForRun(): Promise<ThumbnailsView> {
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (this.destroyed) throw new Error('The window was closed.');
+      if ((await this.electron.thumbnailsRunning(this.data.jobId, this.data.itemId)) === null) {
+        return this.electron.thumbnailsItem(this.data.jobId, this.data.itemId);
+      }
+    }
+  }
+
   ngOnDestroy(): void {
+    this.destroyed = true;
     this.statusObserver?.disconnect();
     this.unsubscribe?.();
     if (this.clock !== null) clearInterval(this.clock);
@@ -445,13 +485,125 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.cards.set(this.cards().map((c) => (c.n === n ? saved : c)));
   }
 
-  async useOwn(n: number, event: Event): Promise<void> {
+  // ── his own images as frames ──────────────────────────────────────────────
+
+  /** Whether the Frames tray is shown: a report with thumbnails made or with no story (images can be added to both). */
+  readonly framesShown = computed(() => {
+    const r = this.record();
+    return r !== null && this.ownBlocked() === null && (r.state === 'made' || r.state === 'no-story');
+  });
+
+  private static hasFiles(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+  }
+
+  /** Files dragged over a card or the Frames tray: show where they would go. */
+  dragOver(event: DragEvent, target: number | 'tray'): void {
+    if (!ThumbnailsWindow.hasFiles(event)) return;
+    event.preventDefault();
     event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    this.dropOver.set(target);
+  }
+
+  /**
+   * While the window is open, files let go anywhere but a card or the Frames tray do nothing (said):
+   * Electron would otherwise open the dropped file in place of the app.
+   */
+  @HostListener('document:dragover', ['$event'])
+  onDocumentDragOver(event: DragEvent): void {
+    if (!ThumbnailsWindow.hasFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+  }
+
+  @HostListener('document:drop', ['$event'])
+  onDocumentDrop(event: DragEvent): void {
+    if (!ThumbnailsWindow.hasFiles(event)) return;
+    event.preventDefault();
+    this.dropOver.set(null);
+    this.notice.set('Drop the image on a thumbnail to use it as its frame, or on Frames to add it there.');
+  }
+
+  dragLeave(event: DragEvent, target: number | 'tray'): void {
+    const to = event.relatedTarget as Node | null;
+    if (to !== null && (event.currentTarget as HTMLElement).contains(to)) return;
+    if (this.dropOver() === target) this.dropOver.set(null);
+  }
+
+  /** The dropped files as paths on this Mac, or null (said) when one is not a file there. */
+  private droppedPaths(event: DragEvent): string[] | null {
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    if (files.length === 0) {
+      this.notice.set('Only image files can be dropped here: drag them out of Finder.');
+      return null;
+    }
+    const paths: string[] = [];
+    const notFiles: string[] = [];
+    for (const f of files) {
+      const p = this.electron.getPathForFile(f);
+      if (p === '') notFiles.push(f.name);
+      else paths.push(p);
+    }
+    if (notFiles.length > 0) {
+      this.notice.set(`${notFiles.map((n) => `"${n}"`).join(', ')} ${notFiles.length === 1 ? 'is' : 'are'} not a file on this Mac, so nothing was added. Drag the image out of Finder.`);
+      return null;
+    }
+    return paths;
+  }
+
+  /** Images dropped on card n: the first becomes its frame at once, any others go to the Frames tray. */
+  async dropOnCard(event: DragEvent, n: number): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    this.dropOver.set(null);
     this.active.set(n);
+    const files = this.droppedPaths(event);
+    if (files !== null) await this.addImages(files, n);
+  }
+
+  /** Images dropped on the Frames tray: added to it, on no card. */
+  async dropOnTray(event: DragEvent): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    this.dropOver.set(null);
+    const files = this.droppedPaths(event);
+    if (files !== null) await this.addImages(files, null);
+  }
+
+  /** "Add an image…": one or more image files, added to the Frames tray. */
+  async chooseImages(): Promise<void> {
     this.failure.set(null);
-    const own = await this.runner.run('Choosing your image', () => this.electron.thumbnailsChooseOwn());
-    if (own === null) return;
-    this.cards.set(setOwn(this.cards(), n, own));
+    const files = await this.runner.run('Choosing images', () => this.electron.thumbnailsChooseFrames());
+    if (files !== null && files.length > 0) await this.addImages(files, null);
+  }
+
+  /**
+   * His image files added to the report as frames (each cut to fill 16:9, said); with `card`, the
+   * first is put on that card (the rest stay in the tray).
+   */
+  private async addImages(files: string[], card: number | null): Promise<void> {
+    this.failure.set(null);
+    this.notice.set(null);
+    const what = files.length === 1 ? 'Adding your image' : `Adding your ${files.length} images`;
+    const done = await this.runner.run(what, () => this.electron.thumbnailsAddFrames(this.data.jobId, this.data.itemId, files));
+    if (done === null) return;
+    this.pieces.forgetFrames();
+    this.takeView(done.view, false);
+    const said = done.lines.join(' ');
+    if (card === null) {
+      this.notice.set(`Added to Frames. ${said}`);
+      return;
+    }
+    const blocked = this.fillBlocked() ?? noPairFor(card, this.pairs());
+    if (blocked !== null) {
+      this.notice.set(`${done.added.length === 1 ? 'Your image is' : 'Your images are'} in Frames, but not on thumbnail ${card}: ${blocked}`);
+      return;
+    }
+    this.active.set(card);
+    this.change((cards, n) => putFrame(cards, n, done.added[0]));
+    const rest = done.added.length - 1;
+    this.notice.set(`${rest === 0 ? `Your image is on thumbnail ${card}.` : `The first image is on thumbnail ${card}; the other ${rest} ${rest === 1 ? 'is' : 'are'} in Frames.`} ${said}`);
   }
 
   // ── what the trays show ───────────────────────────────────────────────────
@@ -482,6 +634,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   frameInfo(id: string): string {
     const f = this.record()?.frames.find((x: StoredFrame) => x.id === id);
     if (f === undefined) return id;
+    if (f.origin === 'added') return `Your image: ${f.from ?? id}`;
     if (this.record()?.source?.video === null) return `Screenshot ${f.scene}`;
     return f.clock;
   }
@@ -578,7 +731,12 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   // ── rewrite the words for a title ─────────────────────────────────────────
 
-  /** Why "Rewrite words for this title" cannot run now, or null. */
+  /** Whether frame `id` is an image he added (marked in the tray). */
+  isAdded(id: string): boolean {
+    return this.record()?.frames.find((x: StoredFrame) => x.id === id)?.origin === 'added';
+  }
+
+  /** Why "Rewrite words for this title", New options or More options cannot run now, or null. */
   rewriteBlocked(): string | null {
     if (this.busy() !== null) return `Wait: ${this.busy()!.what.toLowerCase()} is running.`;
     return null;
@@ -596,6 +754,29 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.view.set(answer.view);
     const option = generatedText(this.options(), answer.text.kind, answer.text.phrase, answer.text.wordsFor, n);
     this.cards.set(this.cards().map((c) => (c.n === n ? { ...c, text: option } : c)));
+  }
+
+  /**
+   * NEW OPTIONS / MORE OPTIONS for a title's group (pair n's title): written into the report by the
+   * main process the moment the model answers; nothing already written goes. The cards keep what
+   * they have.
+   */
+  async writeWords(group: TextGroup, mode: 'new' | 'more'): Promise<void> {
+    const n = group.pair;
+    if (n === null) return;
+    this.failure.set(null);
+    this.notice.set(null);
+    const what = mode === 'new' ? `Writing new options for “${group.title}”` : `Writing more options for “${group.title}”`;
+    const done = await this.runner.run(what, () => this.electron.thumbnailsWords(this.data.jobId, this.data.itemId, n, mode));
+    if (done === null) return;
+    this.takeView(done.view, false);
+    this.notice.set(done.line);
+  }
+
+  /** " · 1 on thumbnail 2": which cards use a group's earlier lines (they stay folded away otherwise). */
+  earlierUsed(group: TextGroup): string {
+    const on = [...new Set(group.earlier.flatMap((o) => this.textCards(o)))].sort();
+    return on.length === 0 ? '' : ` · on thumbnail ${on.join(', ').replace(/, (\d)$/, ' and $1')}`;
   }
 
   // ── a video whose frames and text are not ready ───────────────────────────

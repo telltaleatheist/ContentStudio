@@ -21,7 +21,13 @@
  *     door; picks 2 and 3 sit beside it for his manual Test & Compare upload in Studio. A card that
  *     cannot be drawn stops the save with its reason, and nothing is saved;
  *   - has a pair's words written again for another title (`pairTitle`, the words row on demand),
- *     when he reorders his titles so card n now goes with a different title;
+ *     when he reorders his titles so card n now goes with a different title; or more of them for
+ *     the same title (`writeWords`: "New options" puts a fresh set first, "More options" adds
+ *     lines it has not written yet). NO WORDS ARE EVER DROPPED: a set that is followed by a newer
+ *     one is kept in the record's `earlierWords`, and every set is written into the record the
+ *     moment the model answers (Owen, 2026-09-29: "that should be kept even if i leave the modal");
+ *   - adds his own images as frames (`addFrames`: dropped on a card or the Frames tray, or "Add an
+ *     image…"): each cut to fill 16:9 around its centre and kept in the record's folder;
  *   - for a report with NO STORY (or whose stages failed), gives 1 to 3 of his own screenshots
  *     (`useScreenshots`): that many pairs are made from them, the words by the model as in the run
  *     (pipeline.ts ItemThumbnailRun.fromScreenshots);
@@ -32,7 +38,10 @@
  * THE MODEL IS HELD across the window's words steps (the tab's pattern, which Owen asked for: "if
  * we're using the 27b anyway we might as well keep it loaded"): one held job per local model,
  * given back when another model is needed, when the window closes, on quit, or after
- * TEXT_HOLD_IDLE_MS with no step.
+ * TEXT_HOLD_IDLE_MS with no step. A words step that is running when the window closes (or the idle
+ * clock runs out) runs to its end and saves what it wrote; the model is given back AFTER it
+ * (2026-09-29: closing used to give the lease back under the running request). Only quitting the
+ * app gives it back at once.
  *
  * ONE ACTION PER ITEM AT A TIME: a model step reads the record, waits a minute for the model and
  * writes it back, and a save landing in between would be written away; a second action on the same
@@ -51,7 +60,7 @@ import { promptAssets } from '../metadata/prompt-assets';
 import { loadSavedTranscript } from '../metadata/saved-transcript.service';
 import { validateThumbnailFile } from '../publish/thumbnail-validate';
 import { noAdjust, phraseWords, placeLogo, validateAdjust, type CardAdjust, type Rect, type ThumbnailStyle } from '../../shared/thumbnail-layout';
-import { prepareStill } from './frame-sampler';
+import { prepareStill, writeGridPictures } from './frame-sampler';
 import type { ThumbnailLook } from './look';
 import { libraryBorder, libraryLogo, libraryPhotos } from './photo-library';
 import {
@@ -72,10 +81,15 @@ import {
   PAIR_KINDS,
   PICKS_FOLDER,
   THUMBNAILS_FOLDER,
+  appendWords,
   checkPicks,
+  keepEarlier,
+  linesWrittenFor,
+  nextAddedFrameId,
   pickCopies,
   readItemThumbnails,
   type ItemThumbnails,
+  type StoredFrame,
   type StoredDefault,
   type StoredPair,
   type RecordedStage,
@@ -89,8 +103,15 @@ import { writeThumbnailWords } from './words-writer';
 /** How long the window keeps its text model held after its last words step. */
 export const TEXT_HOLD_IDLE_MS = 5 * 60_000;
 
-/** The file types Owen can give as his own thumbnail or as a screenshot. */
+/**
+ * The file types Owen can give as a screenshot or as an image to use as a frame (and that an old
+ * own-image pick was). PNG and JPEG only: the app's ffmpeg reads both; it cannot read HEIC, and
+ * WebP was not checked, so neither is taken.
+ */
 export const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg'] as const;
+
+/** Where an added image's two grid pictures are kept, under the record's folder (its full size is in `full/`). */
+export const ADDED_FOLDER = 'added';
 
 /**
  * What the live preview needs that only the main process can make (Electron's nativeImage and the
@@ -242,6 +263,24 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   heldModel: string | null;
   /** Set when the record's stages stopped (state `failed`): the window prepares what is missing. */
   finish: FinishView | null;
+  /**
+   * What is running for this item now ("writing words", ...), or null. A window opened while a
+   * step started from an earlier one runs says so and waits for it (`running`).
+   */
+  running: string | null;
+}
+
+/** Images added as frames: the view, the new frames' ids in the order given, and one plain line each. */
+export interface AddedFrames {
+  view: ThumbnailsView;
+  added: string[];
+  lines: string[];
+}
+
+/** New or more words for one pair's title: the view and a plain line about what was written. */
+export interface WrittenWords {
+  view: ThumbnailsView;
+  line: string;
 }
 
 interface Located {
@@ -257,9 +296,40 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Empty a record's folder for new screenshots, keeping the images Owen added (`<id>.png` in
+ * `full/` and the whole `added/` folder). Nothing outside the folder is touched.
+ */
+function clearFolderKeeping(folder: string, addedIds: readonly string[]): void {
+  if (!fs.existsSync(folder)) return;
+  const keepFull = new Set(addedIds.map((id) => `${id}.png`));
+  for (const entry of fs.readdirSync(folder)) {
+    const at = path.join(folder, entry);
+    if (entry === ADDED_FOLDER && addedIds.length > 0) continue;
+    if (entry === 'full' && addedIds.length > 0 && fs.statSync(at).isDirectory()) {
+      for (const f of fs.readdirSync(at)) if (!keepFull.has(f)) fs.rmSync(path.join(at, f), { recursive: true, force: true });
+      continue;
+    }
+    fs.rmSync(at, { recursive: true, force: true });
+  }
+}
+
+function linesOfCount(words: { claim: string[]; stakes: string[]; reaction: string[] }): number {
+  return words.claim.length + words.stakes.length + words.reaction.length;
+}
+
+/** A stored frame as the drawing takes it: an added image says so, so it is never taken from the recording. */
+function frameRef(frame: StoredFrame): { id: string; t: number; origin?: 'added' } {
+  return { id: frame.id, t: frame.t, ...(frame.origin === undefined ? {} : { origin: frame.origin }) };
+}
+
 export class ReportThumbnails {
   private readonly busy = new Map<string, string>();
   private textHold: { job: JobLeases; model: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  /** Words steps running on the held model now: the hold is never given back under one. */
+  private textSteps = 0;
+  /** Why the hold goes once the running words steps end (the window closed, the idle clock, a failure). */
+  private releaseAfterSteps: string | null = null;
   /** Faces found per frame file (and its modification time): a frame is searched once per window session. */
   private readonly facesCache = new Map<string, { mtimeMs: number; faces: Promise<Rect[]> }>();
   /** A full frame being extracted, so two asks for the same frame run ffmpeg once. */
@@ -328,7 +398,10 @@ export class ReportThumbnails {
   private async textJob(option: MetadataRoutingOption): Promise<JobLeases | undefined> {
     if (option.kind !== 'local' || option.crucibleModel === null) return undefined;
     const model = option.crucibleModel;
-    if (this.textHold !== null && this.textHold.model !== model) await this.releaseHold(`the next step runs on ${model}`);
+    if (this.textHold !== null && this.textHold.model !== model) {
+      if (this.textSteps > 0) throw new Error(`${this.textHold.model} is still writing words for another report, and this step needs ${model}; wait for it to finish.`);
+      await this.releaseHold(`the next step runs on ${model}`);
+    }
     if (this.textHold === null) {
       this.textHold = { job: this.deps.holdJob('the Thumbnails window (words)'), model, timer: null };
       log.info(`[Thumbnails] holding ${model} across the window's words steps`);
@@ -340,8 +413,46 @@ export class ReportThumbnails {
     return hold.job;
   }
 
-  /** Give the text model's lease back. Never throws: it is housekeeping. Returns the model released. */
+  /**
+   * Run one words step on `option` (the held job for a local model, none for a cloud or `claude -p`
+   * one). While it runs the hold is never given back: a release asked for meanwhile (the window
+   * closed, the idle clock) waits for the last running step to end. A failed step gives the model
+   * back after it.
+   */
+  private async textStep<T>(option: MetadataRoutingOption, fn: (job: JobLeases | undefined) => Promise<T>): Promise<T> {
+    const job = await this.textJob(option);
+    this.textSteps++;
+    try {
+      return await fn(job);
+    } catch (err) {
+      if (job !== undefined) this.releaseAfterSteps ??= 'a words step failed';
+      throw err;
+    } finally {
+      this.textSteps--;
+      const reason = this.releaseAfterSteps;
+      if (this.textSteps === 0 && reason !== null) {
+        this.releaseAfterSteps = null;
+        await this.releaseHold(reason);
+      }
+    }
+  }
+
+  /**
+   * Give the text model's lease back. Never throws: it is housekeeping. Returns the model released,
+   * or null when none was held, or when a words step is running: then it is given back when the
+   * step ends (said in the log).
+   */
   async releaseHold(reason: string): Promise<string | null> {
+    if (this.textSteps > 0 && this.textHold !== null) {
+      this.releaseAfterSteps = reason;
+      log.info(`[Thumbnails] ${this.textHold.model} is given back when the running words step ends (${reason})`);
+      return null;
+    }
+    return this.releaseNow(reason);
+  }
+
+  /** Give the lease back now, whatever runs (quitting the app). Never throws. */
+  private async releaseNow(reason: string): Promise<string | null> {
     const hold = this.textHold;
     this.textHold = null;
     if (hold === null) return null;
@@ -352,10 +463,24 @@ export class ReportThumbnails {
     return hold.model;
   }
 
-  /** The window closed: the text model goes back and the face search's hidden page goes. Never throws. */
+  /**
+   * The window closed: the face search's hidden page goes, and the text model goes back, after
+   * any words step still running (it runs to its end and saves what it wrote). Never throws.
+   */
   async closed(): Promise<string | null> {
     this.deps.pieces.close();
     return this.releaseHold('the Thumbnails window was closed');
+  }
+
+  /** The app is quitting: the text model goes back now. Never throws. */
+  async quit(): Promise<string | null> {
+    this.deps.pieces.close();
+    return this.releaseNow('the app is quitting');
+  }
+
+  /** What is running for this item now, or null (a reopened window waits for it). */
+  running(jobId: string, itemId: string): string | null {
+    return this.busy.get(`${jobId}/${itemId}`) ?? null;
   }
 
   heldModel(): string | null {
@@ -438,6 +563,7 @@ export class ReportThumbnails {
       compose: this.composeView(),
       heldModel: this.heldModel(),
       finish: this.finishView(record),
+      running: this.running(jobId, itemId),
     };
   }
 
@@ -450,7 +576,7 @@ export class ReportThumbnails {
     const running = this.extracting.get(key);
     if (running !== undefined) return running;
     const setup = this.setup();
-    const next = fullFrame({ ffmpeg: setup.ffmpeg, video: record.source?.video ?? null, folder: record.folder, frame: { id: frame.id, t: frame.t } })
+    const next = fullFrame({ ffmpeg: setup.ffmpeg, video: record.source?.video ?? null, folder: record.folder, frame: frameRef(frame) })
       .finally(() => this.extracting.delete(key));
     this.extracting.set(key, next);
     return next;
@@ -493,12 +619,10 @@ export class ReportThumbnails {
     return { name, ...this.deps.pieces.photo(name, file) };
   }
 
-  /** Owen's own image for a card: checked against YouTube's thumbnail rules now, so a refusal comes at once. */
-  ownImage(file: string): { file: string; picture: string } {
-    this.checkOwn(file);
-    return { file, picture: this.deps.picture(file, 640) };
-  }
-
+  /**
+   * An own-image pick saved before 2026-09-29, still on its card, saved again as it is: checked
+   * against YouTube's thumbnail rules. Nothing makes a new one (Owen's images are added as frames).
+   */
   private checkOwn(file: unknown): string {
     if (typeof file !== 'string' || !path.isAbsolute(file)) throw new Error(`Your own image must be a file on this Mac, got ${JSON.stringify(file)}.`);
     if (!(IMAGE_EXTENSIONS as readonly string[]).includes(path.extname(file).toLowerCase())) throw new Error(`${path.basename(file)} is not a PNG or JPEG.`);
@@ -671,7 +795,7 @@ export class ReportThumbnails {
                 ffmpeg: setup.ffmpeg,
                 video: record.source?.video ?? null,
                 folder,
-                frame: { id: frame.id, t: frame.t },
+                frame: frameRef(frame),
                 phrase: c.phrase,
                 photo: c.photo,
                 logo,
@@ -705,7 +829,7 @@ export class ReportThumbnails {
         const frame = record.frames.find((f) => f.id === c.frameId)!;
         const d: StoredDefault = {
           frameId: frame.id,
-          scene: frame.scene,
+          scene: frame.origin === 'added' ? null : frame.scene,
           kind: c.phrase === null ? null : c.textKind,
           phrase: c.phrase,
           wordsFor: c.phrase === null ? null : c.wordsFor,
@@ -753,11 +877,52 @@ export class ReportThumbnails {
   }
 
   /**
+   * One words call for `title` on the `thumbnail_words` row (the window's held model), `avoid`
+   * being lines already written for it ("More options"). The caller writes what comes back into
+   * the record at once.
+   */
+  private async wordsCall(jobId: string, itemId: string, loc: Located, n: number, title: string, avoid: readonly string[], line: string): Promise<{ claim: string[]; stakes: string[]; reaction: string[]; warnings: string[]; model: string }> {
+    const ctx = this.itemContext(loc);
+    const option = (await this.routed('thumbnail_words', 'the Thumbnails window\'s words')).option;
+    this.deps.progress({ jobId, itemId, line });
+    const ai = this.deps.aiManager();
+    try {
+      const words = await this.textStep(option, (job) => writeThumbnailWords({
+        aiManager: ai,
+        option,
+        ...(job === undefined ? {} : { job }),
+        channel: ctx.channel.name,
+        creator: ctx.creator,
+        title,
+        transcript: ctx.transcript,
+        sourceLabel: `${loc.item._title ?? itemId} (pair ${n})`,
+        avoid,
+      }));
+      const { claim, stakes, reaction, warnings } = words.options;
+      return { claim, stakes, reaction, warnings, model: words.model };
+    } finally {
+      ai.cleanup?.();
+    }
+  }
+
+  /**
+   * The record as it is NOW with pair `n` changed by `change`, written through the one door. Read
+   * again after the model answered, so nothing written meanwhile is lost (only one action runs per
+   * item, and this is the same door every write takes).
+   */
+  private async writePair(jobId: string, itemId: string, n: number, change: (record: ItemThumbnails, pair: StoredPair) => ItemThumbnails): Promise<void> {
+    const loc = this.locate(jobId, itemId);
+    const record = this.actionable(loc, 'change');
+    await this.write(loc, jobId, itemId, change(record, this.pairOf(record, n)));
+  }
+
+  /**
    * Write pair `n`'s words again for `title` (Owen reordered his titles, so card n now goes with
-   * another title) on the `thumbnail_words` row. The pair takes the title and the new words; its
-   * saved card is left as it is (nothing is drawn: the window puts the new words on card n, and Save
-   * thumbnails draws it). Answers the words to put on the card: the first of the kind the card's
-   * words were (claim, stakes, reaction for cards 1-3 when it had none), else the first there is.
+   * another title) on the `thumbnail_words` row. The pair takes the title and the new words; the
+   * words it had are KEPT as earlier options for their title (never dropped). Its saved card is left
+   * as it is (nothing is drawn: the window puts the new words on card n, and Save thumbnails draws
+   * it). Answers the words to put on the card: the first of the kind the card's words were (claim,
+   * stakes, reaction for cards 1-3 when it had none), else the first there is.
    */
   pairTitle(jobId: string, itemId: string, n: number, title: string, kind: WordKind | null): Promise<{ view: ThumbnailsView; text: { kind: WordKind; phrase: string; wordsFor: string } }> {
     return this.exclusive(jobId, itemId, 'writing words', async () => {
@@ -766,46 +931,146 @@ export class ReportThumbnails {
       const wanted = title.trim();
       const loc = this.locate(jobId, itemId);
       const record = this.actionable(loc, 'rewrite');
-      const pair = this.pairOf(record, n);
-      const ctx = this.itemContext(loc);
-      const wordsOption = (await this.routed('thumbnail_words', 'the Thumbnails window\'s words')).option;
-      this.deps.progress({ jobId, itemId, line: `Writing the words for “${wanted}”...` });
-      const ai = this.deps.aiManager();
-      let words;
-      try {
-        words = await writeThumbnailWords({
-          aiManager: ai,
-          option: wordsOption,
-          job: await this.textJob(wordsOption),
-          channel: ctx.channel.name,
-          creator: ctx.creator,
-          title: wanted,
-          transcript: ctx.transcript,
-          sourceLabel: `${loc.item._title ?? itemId} (pair ${n})`,
-        });
-      } catch (err) {
-        await this.releaseHold('the words step failed');
-        throw err;
-      } finally {
-        ai.cleanup?.();
-      }
-      const { claim, stakes, reaction, warnings } = words.options;
+      this.pairOf(record, n);
+      const words = await this.wordsCall(jobId, itemId, loc, n, wanted, [], `Writing the words for “${wanted}”...`);
+      const { claim, stakes, reaction } = words;
       const chosen = defaultWords({ claim, stakes, reaction }, kind ?? PAIR_KINDS[(n - 1) % PAIR_KINDS.length]);
       if (chosen === null) throw new Error(`The words for “${wanted}” came back with no option of any kind.`);
-      const next: StoredPair = {
-        ...pair,
-        title: wanted,
-        words: { claim, stakes, reaction, warnings, model: words.model },
-        photos: [],
-        lines: [
-          ...pair.lines.filter((l) => l === NO_FRAME_YET || l === NO_PHOTO_YET),
-          ...(chosen.line === null ? [] : [chosen.line]),
-          `Words written for this title on ${words.model}.`,
-        ],
-      };
-      await this.write(loc, jobId, itemId, { ...record, pairs: record.pairs.map((p) => (p.pair === n ? next : p)) });
-      log.info(`[Thumbnails] ${loc.where}: pair ${n}'s words rewritten for “${wanted}” on ${words.model}`);
+      await this.writePair(jobId, itemId, n, (now, pair) => {
+        const next: StoredPair = {
+          ...pair,
+          title: wanted,
+          words,
+          photos: [],
+          lines: [
+            ...pair.lines.filter((l) => l === NO_FRAME_YET || l === NO_PHOTO_YET),
+            ...(chosen.line === null ? [] : [chosen.line]),
+            `Words written for this title on ${words.model}.`,
+          ],
+        };
+        return { ...now, earlierWords: keepEarlier(now, [{ ...pair.words, title: pair.title }]), pairs: now.pairs.map((p) => (p.pair === n ? next : p)) };
+      });
+      log.info(`[Thumbnails] ${loc.where}: pair ${n}'s words rewritten for “${wanted}” on ${words.model}; the ones it had are kept as earlier options`);
       return { view: this.view(jobId, itemId), text: { kind: chosen.kind, phrase: chosen.phrase, wordsFor: wanted } };
+    });
+  }
+
+  /**
+   * THE TEXT TRAY'S "NEW OPTIONS" AND "MORE OPTIONS" for pair `n`'s title (Owen, 2026-09-29: "i
+   * should have a re-roll option to regenerate options (or MORE options if i want) but it shouldnt
+   * disappear"). Nothing already written is dropped:
+   *   new   a fresh set becomes the pair's words, listed first; the set it had is kept as earlier
+   *         options for the title;
+   *   more  the model is shown every line already written for the title and asked for others; the
+   *         new lines are added after the pair's own, a line already written never twice.
+   * Written into the record the moment the model answers, whether the window is still open or not.
+   */
+  writeWords(jobId: string, itemId: string, n: number, mode: 'new' | 'more'): Promise<WrittenWords> {
+    return this.exclusive(jobId, itemId, 'writing words', async () => {
+      if (mode !== 'new' && mode !== 'more') throw new Error(`Ask for "new" or "more" options, got ${JSON.stringify(mode)}.`);
+      const loc = this.locate(jobId, itemId);
+      const record = this.actionable(loc, 'write words for');
+      const title = this.pairOf(record, n).title;
+      const avoid = mode === 'more' ? linesWrittenFor(record, title) : [];
+      const words = await this.wordsCall(jobId, itemId, loc, n, title, avoid,
+        mode === 'more' ? `Writing more options for “${title}”...` : `Writing new options for “${title}”...`);
+      let line = '';
+      await this.writePair(jobId, itemId, n, (now, pair) => {
+        if (pair.title !== title) throw new Error(`Pair ${n}'s title changed to “${pair.title}” while the words for “${title}” were written.`);
+        if (mode === 'new') {
+          line = `${linesOfCount(words)} new options for “${title}” on ${words.model}; the earlier ones are kept below them.`;
+          return {
+            ...now,
+            earlierWords: keepEarlier(now, [{ ...pair.words, title }]),
+            pairs: now.pairs.map((p) => (p.pair === n ? { ...p, words, lines: [...p.lines, `New options written on ${words.model}.`] } : p)),
+          };
+        }
+        const merged = appendWords(pair.words, words, linesWrittenFor(now, title));
+        line = merged.added === 0
+          ? `The model wrote nothing new for “${title}”: all ${merged.repeated} of its lines were already there.`
+          : `${merged.added} more option${merged.added === 1 ? '' : 's'} for “${title}” on ${words.model}` + (merged.repeated > 0 ? ` (${merged.repeated} it repeated were left out).` : '.');
+        return {
+          ...now,
+          pairs: now.pairs.map((p) => (p.pair === n ? { ...p, words: merged.words, lines: merged.added === 0 ? p.lines : [...p.lines, `More options written on ${words.model}.`] } : p)),
+        };
+      });
+      log.info(`[Thumbnails] ${loc.where}: ${line}`);
+      return { view: this.view(jobId, itemId), line };
+    });
+  }
+
+  // ── images Owen adds as frames ───────────────────────────────────────────────
+
+  /**
+   * IMAGES OWEN ADDS AS FRAMES (2026-09-29, Owen: "it didnt come up with any good screenshots for
+   * one of my videos... lets make it so i can drag/drop them into the slot ... it should just fit to
+   * fill the whole thing. if it needs to be adjusted, i can edit it already"). Each file (absolute,
+   * on disk, PNG or JPEG) becomes a new candidate frame `addedN`: cut to fill 16:9 around its centre
+   * and written at 1920x1080 into `<folder>/full/<id>.png` (prepareStill, its line logged and kept
+   * on the record), with the grid's two JPEGs beside the sampler's in `<folder>/added/`. His file is
+   * only read. They are listed first in the Frames tray; the words, photo, logo and border go on top
+   * as on any frame, and Edit zooms or moves them. A report with no folder yet gets the one
+   * screenshots would get. One that is not ready (failed) is refused: it is prepared first. If one
+   * file cannot be read, nothing is added and the file is named.
+   */
+  addFrames(jobId: string, itemId: string, files: unknown): Promise<AddedFrames> {
+    return this.exclusive(jobId, itemId, 'adding your images', async () => {
+      if (!Array.isArray(files) || files.length === 0) throw new Error('Give at least one image to add.');
+      for (const f of files) {
+        if (typeof f !== 'string' || !path.isAbsolute(f)) throw new Error(`The image must be a file on this Mac, got ${JSON.stringify(f)}.`);
+        if (!fs.existsSync(f) || !fs.statSync(f).isFile()) throw new Error(`${path.basename(f)} is not a file on this Mac (${f}).`);
+        if (!(IMAGE_EXTENSIONS as readonly string[]).includes(path.extname(f).toLowerCase())) throw new Error(`${path.basename(f)} is not a PNG or JPEG, so it cannot be used as a frame.`);
+      }
+      const loc = this.locate(jobId, itemId);
+      const record = this.actionable(loc, 'add images to');
+      if (record.state === 'failed') throw new Error("This video's frames and text are not ready yet; they are prepared first, then you can add your images.");
+      let folder = record.folder;
+      if (folder === null) {
+        const txtFolder = loc.job.txt_folder;
+        if (typeof txtFolder !== 'string' || txtFolder === '') throw new Error('The report records no folder, so there is nowhere to put your images.');
+        folder = path.join(txtFolder, THUMBNAILS_FOLDER, `${jobId}-${itemId}`);
+      }
+      const setup = this.setup();
+      const frames: StoredFrame[] = [];
+      const lines: string[] = [];
+      const written: string[] = [];
+      try {
+        for (const [i, file] of (files as string[]).entries()) {
+          const id = nextAddedFrameId([...record.frames, ...frames]);
+          const full = path.join(folder, 'full', `${id}.png`);
+          const large = path.join(folder, ADDED_FOLDER, `${id}.jpg`);
+          const small = path.join(folder, ADDED_FOLDER, `${id}-small.jpg`);
+          if ([full, large, small].some((x) => fs.existsSync(x))) throw new Error(`${path.basename(full)} is already in ${folder} and the record does not name it; it is not written over.`);
+          this.deps.progress({ jobId, itemId, line: `Adding your image ${i + 1} of ${files.length}: ${path.basename(file)}...` });
+          written.push(full, large, small);
+          let still: { line: string };
+          try {
+            still = await prepareStill(setup.ffmpeg, this.deps.ffprobe, file, full);
+            await writeGridPictures(setup.ffmpeg, full, large, small);
+          } catch (err) {
+            throw new Error(`${path.basename(file)} could not be used as a frame, so no image was added: ${message(err)}`);
+          }
+          frames.push({ id, t: 0, clock: '', scene: 0, large, small, origin: 'added', from: path.basename(file) });
+          lines.push(still.line);
+          log.info(`[Thumbnails] ${loc.where}: added ${id}: ${still.line}`);
+        }
+      } catch (err) {
+        for (const x of written) if (fs.existsSync(x)) fs.rmSync(x);
+        throw err;
+      }
+      const next: ItemThumbnails = {
+        ...record,
+        folder,
+        frames: [...record.frames, ...frames],
+        lines: [...record.lines, ...frames.map((f, i) => `Your image ${f.id}: ${lines[i]}`)],
+      };
+      try {
+        await this.write(loc, jobId, itemId, next);
+      } catch (err) {
+        for (const x of written) if (fs.existsSync(x)) fs.rmSync(x);
+        throw err;
+      }
+      return { view: this.view(jobId, itemId), added: frames.map((f) => f.id), lines };
     });
   }
 
@@ -839,7 +1104,9 @@ export class ReportThumbnails {
       const setup = this.setup();
       const ctx = this.itemContext(loc);
       // A failed run's frames, or earlier screenshots, are replaced; the picks folder is rewritten.
-      if (fs.existsSync(folder)) fs.rmSync(folder, { recursive: true, force: true });
+      // The images Owen added as frames stay (their full size in full/, their grid pictures in added/).
+      const added = record.frames.filter((f) => f.origin === 'added');
+      clearFolderKeeping(folder, added.map((f) => f.id));
       this.facesCache.clear();
       const shots: Array<{ id: string; full: string; lines: string[] }> = [];
       for (const [i, file] of files.entries()) {
@@ -851,49 +1118,56 @@ export class ReportThumbnails {
       // The words on the window's held model when the row is local; a cloud or `claude -p` row
       // holds no card, and its run gets a job of its own (nothing is leased on it), given back after.
       const words = await this.routed('thumbnail_words', 'Thumbnails from your screenshots');
-      const held = await this.textJob(words.option);
-      const own = held === undefined ? this.deps.holdJob('Thumbnails from your screenshots') : null;
-      const leases = held ?? own!;
-      const ai = this.deps.aiManager();
-      try {
-        const run = ItemThumbnailRun.fromScreenshots(
-          setup,
-          {
-            jobId,
-            itemIndex: 0,
-            sourceLabel: String(loc.item._title ?? itemId),
-            contentType: 'video',
-            videoPath: typeof loc.item.source_path === 'string' ? loc.item.source_path : null,
-            operatorRef: null,
-            segments: ctx.segments,
-            reportFolder: txtFolder,
-            channel: ctx.channel,
-          },
-          {
-            leases,
-            aiManager: ai,
-            routing: words.routing,
-            models: words.models,
-            cancelled: () => false,
-            progress: (line) => this.deps.progress({ jobId, itemId, line }),
-          },
-          { story: record.story, folder },
-          shots,
-        );
-        await run.afterFields({ titles: titles.map((t) => t.trim()), reroll_gate: null });
-        const made = run.record();
-        if (made.state === 'failed') await this.releaseHold('a screenshots step failed');
-        const own = record.picks.filter((p) => p.kind === 'own');
-        const next: ItemThumbnails = { ...made, picks: own };
-        await this.write(loc, jobId, itemId, next);
-        log.info(`[Thumbnails] ${loc.where}: ${files.length} screenshot(s): ${made.line}`);
-      } finally {
-        ai.cleanup?.();
-        if (own !== null) {
-          const lost = await own.releaseAll();
-          for (const line of lost) log.error(`[Thumbnails] the screenshots run lost its lease on ${line} before it was given back`);
+      await this.textStep(words.option, async (held) => {
+        const own = held === undefined ? this.deps.holdJob('Thumbnails from your screenshots') : null;
+        const leases = held ?? own!;
+        const ai = this.deps.aiManager();
+        try {
+          const run = ItemThumbnailRun.fromScreenshots(
+            setup,
+            {
+              jobId,
+              itemIndex: 0,
+              sourceLabel: String(loc.item._title ?? itemId),
+              contentType: 'video',
+              videoPath: typeof loc.item.source_path === 'string' ? loc.item.source_path : null,
+              operatorRef: null,
+              segments: ctx.segments,
+              reportFolder: txtFolder,
+              channel: ctx.channel,
+            },
+            {
+              leases,
+              aiManager: ai,
+              routing: words.routing,
+              models: words.models,
+              cancelled: () => false,
+              progress: (line) => this.deps.progress({ jobId, itemId, line }),
+            },
+            { story: record.story, folder },
+            shots,
+          );
+          await run.afterFields({ titles: titles.map((t) => t.trim()), reroll_gate: null });
+          const made = run.record();
+          if (made.state === 'failed' && held !== undefined) this.releaseAfterSteps ??= 'a screenshots step failed';
+          const ownPicks = record.picks.filter((p) => p.kind === 'own');
+          // The words the replaced pairs had are kept as earlier options, and his added images stay frames.
+          const next: ItemThumbnails = {
+            ...made,
+            frames: [...made.frames, ...added],
+            earlierWords: keepEarlier(record, record.pairs.map((p) => ({ ...p.words, title: p.title }))),
+            picks: ownPicks,
+          };
+          await this.write(loc, jobId, itemId, next);
+          log.info(`[Thumbnails] ${loc.where}: ${files.length} screenshot(s): ${made.line}`);
+        } finally {
+          ai.cleanup?.();
+          if (own !== null) {
+            const lost = await own.releaseAll();
+            for (const line of lost) log.error(`[Thumbnails] the screenshots run lost its lease on ${line} before it was given back`);
+          }
         }
-      }
+      });
       return this.view(jobId, itemId);
     });
   }

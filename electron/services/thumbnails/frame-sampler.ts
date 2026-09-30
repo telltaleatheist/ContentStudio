@@ -311,12 +311,13 @@ export async function extractFullFrame(ffmpeg: string, video: string, t: number,
 export const STILL_SIZE = { w: 1920, h: 1080 } as const;
 
 /**
- * One of Owen's screenshots as a thumbnail background (a report with no story, phase 2): cut to
+ * One of Owen's screenshots as a thumbnail background (a report with no story, phase 2), or an
+ * image he added as a frame (2026-09-29, "it should just fit to fill the whole thing"): cut to
  * 16:9 around its centre when it is another shape, scaled to STILL_SIZE, written as PNG. What was
  * done comes back as a plain line, so the window can say it (Law 8). His file is only read.
  */
 export async function prepareStill(ffmpeg: string, ffprobe: string, image: string, outPng: string): Promise<{ line: string }> {
-  if (!fs.existsSync(image)) throw new Error(`The screenshot is not on disk: ${image}`);
+  if (!fs.existsSync(image)) throw new Error(`The image is not on disk: ${image}`);
   const out = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', image]);
   const stream = (JSON.parse(out) as { streams?: Array<{ width?: number; height?: number }> }).streams?.[0];
   if (!stream || !stream.width || !stream.height) throw new Error(`ffprobe found no picture in ${image}.`);
@@ -337,4 +338,23 @@ export async function prepareStill(ffmpeg: string, ffprobe: string, image: strin
       ? `${name} is ${width}x${height}, not 16:9, so its middle was cut to 16:9 (the ${ratio > 16 / 9 ? 'left and right' : 'top and bottom'} edges were left out).${small}`
       : `${name} (${width}x${height}) is used whole.${small}`,
   };
+}
+
+/**
+ * The grid's two JPEGs of a full-size picture (an image Owen added, 2026-09-29), written as the
+ * sampler writes a frame's: LARGE at quality 3 and SMALL at quality 5. `full` is already 16:9
+ * (prepareStill), so the scale changes no shape.
+ */
+export async function writeGridPictures(ffmpeg: string, full: string, large: string, small: string): Promise<void> {
+  fs.mkdirSync(path.dirname(large), { recursive: true });
+  fs.mkdirSync(path.dirname(small), { recursive: true });
+  await run(ffmpeg, [
+    '-hide_banner', '-nostdin', '-v', 'error', '-i', full,
+    '-filter_complex', `[0:v]split=2[a][b];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h}[small]`,
+    '-map', '[big]', '-frames:v', '1', '-q:v', '3', '-y', large,
+    '-map', '[small]', '-frames:v', '1', '-q:v', '5', '-y', small,
+  ]);
+  for (const file of [large, small]) {
+    if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new Error(`ffmpeg wrote no grid picture ${path.basename(file)} from ${path.basename(full)}.`);
+  }
 }

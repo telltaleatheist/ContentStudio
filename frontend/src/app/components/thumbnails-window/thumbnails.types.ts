@@ -48,10 +48,23 @@ export interface StoredDefault {
   adjust?: CardAdjust;
 }
 
+export interface StoredWords {
+  claim: string[];
+  stakes: string[];
+  reaction: string[];
+  warnings: string[];
+  model: string;
+}
+
+/** A set of words written earlier for `title` and followed by a newer set: kept, shown under "Earlier options". */
+export interface EarlierWords extends StoredWords {
+  title: string;
+}
+
 export interface StoredPair {
   pair: number;
   title: string;
-  words: { claim: string[]; stakes: string[]; reaction: string[]; warnings: string[]; model: string };
+  words: StoredWords;
   /** Records before 2026-09-29 only (the model's ranking); empty now. */
   photos: Ranked[];
   rankedFor?: string | null;
@@ -67,6 +80,10 @@ export interface StoredFrame {
   scene: number;
   large: string;
   small: string;
+  /** 'added': an image Owen added as a frame (cut to fill 16:9); absent: the story's recording or a screenshot. */
+  origin?: 'added';
+  /** For an added image: the name of the file he gave. */
+  from?: string;
 }
 
 export type ThumbnailPick =
@@ -91,6 +108,8 @@ export interface ItemThumbnails {
   /** The grid's frames, in time order. Older records' `bestScenes` and `scoring` are ignored. */
   frames: StoredFrame[];
   titles: { order: string; subjects: string[] } | null;
+  /** Every set of words since followed by a newer one, newest first; absent in older records. */
+  earlierWords?: EarlierWords[];
   tone: { ranking: Ranked[]; model: string; server: string } | null;
   pairs: StoredPair[];
   seed: number | null;
@@ -156,6 +175,8 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   compose: ComposeView;
   heldModel: string | null;
   finish: FinishView | null;
+  /** What is running for this item now (a step started from an earlier window), or null. */
+  running: string | null;
 }
 
 /** A frame at full size for the preview, and the faces the final render will find in it (or why not). */

@@ -17,7 +17,7 @@ text: |-
 
   CLAIM: the subject's own claim or advice, lightly paraphrased, stated the way the subject means it. Example: DON'T STAND UNDER A ROOF (a preacher's advice for surviving the rapture).
   STAKES: the stakes or the absurdity the claim leads to, in the fewest words. Example: MAYBE TOMORROW (a rapture that keeps not arriving).
-  REACTION: the host's reaction to the subject, as a viewer would feel it. Example: SHE'S SERIOUS
+  REACTION: the host's reaction to the subject, as a viewer would feel it. Example: SHE'S SERIOUS{more}
 
   Answer in exactly this shape: the kind's name alone on a line, its options one per line under it, and a blank line before the next kind.
 
@@ -32,3 +32,7 @@ text: |-
   REACTION
   option
   option
+
+more: |-
+  These options were already written for this title. Every option you write now must be a new one: none of these, and none that says the same thing in other words.
+  {written}

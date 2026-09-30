@@ -1113,7 +1113,10 @@ declare global {
       thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string, kind: WordKind | null) => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; text: { kind: WordKind; phrase: string; wordsFor: string } }>>;
       thumbnailsFinish: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsChooseOwn: () => Promise<ThumbnailsAnswer<{ file: string; picture: string } | null>>;
+      thumbnailsWords: (jobId: string, itemId: string, pair: number, mode: 'new' | 'more') => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; line: string }>>;
+      thumbnailsRunning: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<string | null>>;
+      thumbnailsAddFrames: (jobId: string, itemId: string, files: string[]) => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; added: string[]; lines: string[] }>>;
+      thumbnailsChooseFrames: () => Promise<ThumbnailsAnswer<string[] | null>>;
       thumbnailsChooseScreenshots: () => Promise<ThumbnailsAnswer<string[] | null>>;
       thumbnailsClosed: () => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsShowFolder: (folder: string) => Promise<ThumbnailsAnswer<void>>;
@@ -2624,7 +2627,17 @@ export class ElectronService {
   thumbnailsScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsScreenshots(jobId, itemId, files, titles));
   }
-  thumbnailsChooseOwn(): Promise<{ file: string; picture: string } | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseOwn()); }
+  /** "New options" (a fresh set first, the earlier ones kept) or "More options" (added, none twice) for pair n's title. */
+  thumbnailsWords(jobId: string, itemId: string, pair: number, mode: 'new' | 'more'): Promise<{ view: ThumbnailsView; line: string }> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsWords(jobId, itemId, pair, mode));
+  }
+  /** What is running for this item now (a step started from an earlier window), or null. */
+  thumbnailsRunning(jobId: string, itemId: string): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsRunning(jobId, itemId)); }
+  /** His image files added as frames (cut to fill 16:9): the view and the new frames' ids in order. */
+  thumbnailsAddFrames(jobId: string, itemId: string, files: string[]): Promise<{ view: ThumbnailsView; added: string[]; lines: string[] }> {
+    return this.thumbnails(this.thumbnailsBridge.thumbnailsAddFrames(jobId, itemId, files));
+  }
+  thumbnailsChooseFrames(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseFrames()); }
   thumbnailsChooseScreenshots(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseScreenshots()); }
   thumbnailsClosed(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsClosed()); }
   thumbnailsShowFolder(folder: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsShowFolder(folder)); }

@@ -107,11 +107,26 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   &.mine { background: var(--primary-orange); color: #1a1a1a; border-color: var(--primary-orange); }
 }
 
+/* ── dropping his own images: the card or tray under the pointer is outlined in the accent ── */
+.card.drop-on { border-color: var(--primary-orange); border-style: dashed; }
+.frames-sec {
+  border-radius: 6px; transition: background-color 0.1s ease;
+  &.drop-on { outline: 2px dashed var(--primary-orange); outline-offset: 2px; background: var(--bg-secondary); }
+}
+.card-pic .drop-here {
+  position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; text-align: center;
+  background: rgba(0, 0, 0, 0.55); color: #fff; font-weight: 600; font-size: 13px; pointer-events: none;
+}
+
 .frames { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .frame {
   position: relative; padding: 0; border: 3px solid transparent; border-radius: 5px; cursor: pointer; background: none;
   img { width: 176px; height: 99px; object-fit: cover; display: block; border-radius: 2px; }
   .badges { position: absolute; top: 4px; left: 4px; }
+  .yours {
+    position: absolute; bottom: 4px; right: 4px; padding: 1px 6px; border-radius: 8px;
+    background: var(--primary-orange); color: #1a1a1a; font-size: 12px; font-weight: 700;
+  }
   &:hover { border-color: var(--border-color); }
   &.on { border-color: var(--primary-orange); }
 }
@@ -126,6 +141,16 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   .label { font-size: 12px; color: var(--text-secondary); }
   &:hover { background: var(--bg-secondary); }
   &.on { border-color: var(--primary-orange); }
+}
+.words-group { margin: 0 0 10px; }
+.group-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 4px;
+  .for { font-weight: 600; }
+  .small { font-size: 12px; line-height: 28px; height: 30px; padding: 0 10px; }
+}
+.earlier {
+  margin: 2px 0 0 8px;
+  summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; padding: 2px 0; }
 }
 .own { flex: 1; min-width: 240px; max-width: 480px; font: inherit; padding: 5px 8px; }
 

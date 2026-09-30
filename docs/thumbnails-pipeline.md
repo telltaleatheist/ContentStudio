@@ -654,7 +654,8 @@ the frame". It replaces the pick-1/2/3 lists and Generate thumbnails (#243-#246)
    before), a card with no frame is left out (it says why) and the rest close up; pick k goes with
    title k (his chosen titles first). His own image ("Use my own image…", checked against YouTube's
    rules the moment he picks it) replaces a card's content and is saved as it is; a tray click on that
-   card brings frames and text back. **Clear** empties a card; **Undo changes** puts back what is
+   card brings frames and text back. *(Superseded by LEDGER #249: the button is gone; his images are
+   added as frames. An own-image pick saved before is still read onto its card and saved as it is.)* **Clear** empties a card; **Undo changes** puts back what is
    saved on it. If a card cannot be drawn, nothing is saved: the banner and the card both say
    "Thumbnail n could not be drawn, so nothing was saved: …". Changes made while a save runs stay on
    the cards, unsaved. The `picks/Pick n` files and `pickCopies` are unchanged.
@@ -666,7 +667,7 @@ the frame". It replaces the pick-1/2/3 lists and Generate thumbnails (#243-#246)
    card's kind goes on the card, unsaved; nothing is drawn), screenshots for a report with no story
    (they become the Frames tray, card n showing screenshot n with its words).
 
-Pure rules: `thumbnails-compose.ts` (`toggleFrame` / `toggleText` / `togglePhoto`, `setOwn`,
+Pure rules: `thumbnails-compose.ts` (`toggleFrame` / `toggleText` / `togglePhoto`, `setOwn` (removed by #249; `putFrame` added),
 `clearCard`, `setAdjust`, `cardsUsing`, `planCards`, `cardRequests`, `cardsFromView`,
 `unsavedCards`, `titleOf`, `wordsMismatch`, the editor's clamps). Reading back: card n shows pair n
 when the pair has a frame (with its edits); his own image sits on the card it was saved on (a pick
@@ -766,3 +767,137 @@ with words or a photo but no frame is not kept when saved (it says so first); "R
 title" replaces pair n's words, so another card using one of the old lines keeps it but the tray lists
 it under the generated ones; the title under a card is the one its pick number will go with, and a
 card that will not be saved shows none.
+
+## His images as frames; the words kept, New options and More options (2026-09-29, LEDGER #249)
+
+Owen: "it didnt come up with any good screenshots for one of my videos... lets make it so i can
+drag/drop them into the slot if i want. i tried adding manually but it gave me this error [the own
+image path's 1280x720 limit]. im going to screenshot stuff. it should just fit to fill the whole thing.
+if it needs to be adjusted, i can edit it already"; and "if the thumbnail page runs the model to
+generate text, that should be kept even if i leave the modal. i should have a re-roll option to
+regenerate options (or MORE options if i want) but it shouldnt disappear if i close it".
+
+### His images as frames
+
+- **In the window**: an image file dragged from Finder onto a **card** becomes that card's frame at
+  once (the card becomes active; `putFrame` puts it on, never off; the words and photo stay). Several
+  files on a card: the first goes on the card, the rest into the Frames tray (said). Dropped on the
+  **Frames tray**, or chosen with **Add an image…** (multi-select), they join the tray on no card. The
+  card or tray under the pointer is outlined (dashed, in the app's orange). His images are listed
+  **first** in the tray, in the order added, marked "Yours" (hover: "Your image: <file name>"); the
+  story's frames follow in time order (`frameList`), screenshots keep their order. Paths come from
+  the preload's `getPathForFile` (webUtils); a dropped thing that is not a file on the Mac is refused
+  by name and nothing is added. While the window is open, files let go anywhere else in the app do
+  nothing and say where to drop them (Electron would otherwise open the file in place of the app).
+  The Frames tray also shows for a report with no story (images can be
+  added there; its cards still need pairs, which screenshots make).
+- **The card's "Use my own image…" is gone**, with `thumbnails:choose-own`, the preload's
+  `thumbnailsChooseOwn`, `ReportThumbnails.ownImage` and the compose rule `setOwn`: nothing makes a
+  new own-image pick. An own-image pick saved before is still read onto its card ("Your finished
+  image, saved as it is") and saved again as it is (`CardRequest` kind `own`, still checked against
+  YouTube's rules).
+- **Main process** (`ReportThumbnails.addFrames(jobId, itemId, files)`, `thumbnails:add-frames`;
+  `thumbnails:choose-frames` opens the picker): one action per item (`exclusive`, "adding your
+  images"). Each path must be absolute, a file, and `.png` / `.jpg` / `.jpeg` (the app's ffmpeg reads
+  both; it cannot read HEIC, and WebP was not checked, so neither is taken), else refused by name. A
+  record that is not ready (`failed`) is refused (it is prepared first); a record with no folder (no
+  story) gets `<report folder>/thumbnails/<jobId>-<itemId>/`, as screenshots would. Each file gets a
+  new id `added1`, `added2`, … (`nextAddedFrameId`, never one the record holds), is cut to fill 16:9
+  around its centre at 1920x1080 into `full/<id>.png` by `prepareStill` (its line, e.g. "… is
+  1386x756, not 16:9, so its middle was cut to 16:9 (the left and right edges were left out).", is
+  logged, kept in the record's `lines` and shown in the window), and gets the grid's 640x360 (q 3)
+  and 320x180 (q 5) JPEGs in `added/<id>.jpg` / `added/<id>-small.jpg` (`writeGridPictures`, the
+  sampler's sizes and qualities). A file that cannot be read stops the call naming it, and nothing
+  it wrote is left. His file is only read.
+- **Stored**: a `StoredFrame` with `origin: 'added'`, `from` (his file's name), `t` 0, `scene` 0,
+  appended to `frames`. Checked on reading: an unknown `origin`, an added frame with no `from`, or one
+  id twice is refused by name. Old records carry no `origin` and read as before. A pair saved on an
+  added frame stores `scene: null`.
+- **Drawing**: `fullFrame` takes the frame's `origin`; for an added image whose `full/` file is gone
+  it throws "The image you added (<id>) is not in <folder>/full any more. Add it again." and never
+  extracts a frame of the recording at its `t`. The preview (`frameDetail`), Edit (zoom/pan) and Save
+  thumbnails work on it as on any frame; words, photo, logo and border go on top.
+- **Screenshots and finishing**: new screenshots keep his images (their `full/` PNGs and `added/`
+  folder are left; the rest of the folder is replaced; they follow the screenshots in `frames`). A
+  screenshots record's pairs are only ever put on screenshots (`resumePlan` / `resume` and
+  `fromScreenshots` ignore added frames).
+
+### The words are kept
+
+- **What was already right** (base ce81865): every words step the window runs writes into the
+  report the moment the model answers, not on Save (`pairTitle` wrote the record before answering,
+  report-thumbnails.ts:806 at ce81865), and the IPC call finishes in the main process whether the
+  window is open or not. Owen had not lost any text; he stated the requirement.
+- **The loss paths found and closed** (none was observed live):
+  1. "Rewrite words for this title" **replaced** pair n's words (report-thumbnails.ts:795-806 at
+     ce81865): every earlier option for that pair's old title was gone from the record.
+  2. **Closing the window during a words step gave the lease back under the running request**
+     (`closed()` → `releaseHold`, report-thumbnails.ts:356-359 at ce81865, called from the window's
+     `ngOnDestroy`, thumbnails-window.ts:287): `JobLeases.releaseAll` waits only for a lease being
+     taken, not for a chat (crucible/lease.ts:676-683), so the model could be unloaded mid-request,
+     the step failing and nothing being written.
+  3. **New screenshots replaced the pairs** and their words (report-thumbnails.ts:842/887 at
+     ce81865); preparing a record whose words were incomplete cleared the pairs' words
+     (`resume`, pipeline.ts).
+- **Now**: nothing already written is dropped. A set followed by a newer one goes to the record's
+  **`earlierWords`** (`EarlierWords` = the words plus the `title` they were written for, newest
+  first; absent in older records; checked on reading) by the rewrite for another title, **New
+  options**, new screenshots and preparing again (`keepEarlier`).
+- **The hold**: the window's words steps run inside `textStep`, which counts them; `releaseHold`
+  (the window closed, the five-minute idle clock, a failure, another model needed) waits for the last
+  running step to end and gives the model back after it; while one runs, a step for another model is
+  refused by name. Quitting the app gives it back at once (`quit()`, `before-quit`).
+- **Reopening while it runs**: the view carries `running` (what `exclusive` is doing for the item);
+  a window opened meanwhile shows "Still writing words (started before this window was opened)…" and
+  polls `thumbnails:running` every 1.5 s through the runner (actions queue behind it), then reads the
+  report again and goes on (preparing on opening only after).
+- **The Text tray** is grouped by the title the words were written for (`textGroups`): "For
+  “<title>”" with **New options** and **More options** for each pair's title (pair n's words are
+  written for title n), its lines labelled with their kind, and **Earlier options (k)** folded below
+  (the summary names any thumbnail using one of them). A title only earlier sets were written for
+  (a pair since given another title) gets its own group with no buttons. Typed words stay below.
+  Every line is listed once (`textOptions(pairs, earlierWords)`), so a line on a card is always
+  offered and always read back onto its card.
+- **New options** (`writeWords(n, 'new')`, `thumbnails:words`): a fresh set for pair n's title
+  becomes its words, listed first; the old set goes to `earlierWords`. **More options**
+  (`writeWords(n, 'more')`): every line already written for the title (`linesWrittenFor`: the
+  pair's and the earlier sets') is shown to the model in thumbnails.yml's new **`more`** paragraph
+  (in the `{more}` slot after the three kinds, before the answer's shape; empty otherwise, so the
+  prompt is byte for byte the one before), and the new lines are appended per kind, a line already
+  written never twice (`appendWords`); when all come back repeated it says so and adds nothing.
+  Both on the routed `thumbnail_words` model bound on the server (#248), both said in a line in the
+  window, both written into the report the moment the model answers.
+
+### IPC
+
+Added `thumbnails:add-frames`, `thumbnails:choose-frames`, `thumbnails:words`,
+`thumbnails:running`. Removed `thumbnails:choose-own`. The view gained `running`.
+
+### Keeper
+
+thumbnail-pipeline-checks.js (+2, 27): his images as frames (a 1386x756 PNG and a 600x900 JPEG cut
+to fill 16:9 at 1920x1080 with 640x360 / 320x180 JPEGs, on the record and validated, listed first,
+seen on reopening, drawn on a card and saved and read back; a missing added file refused by name
+and not re-extracted, in the preview and in a save; eight bad inputs refused by name with nothing
+added; an unreadable image named and nothing left; a second action refused; bad origins, names and
+duplicate ids refused on reading; a report with no story gets its folder, new screenshots keep the
+images, a new id never reused, a screenshots pair never put on an added image; a failed record
+refused); the words kept (New options and More options read from the job file before any save, the
+earlier set kept, More's prompt listing what was written before the answer's shape, three added and
+two repeats left out, "nothing new" said; closing mid-run: the run goes on and saves, `running` seen
+meanwhile, no lease released until it ends, then released; quit releases at once; the prompt without
+`avoid` identical, a `$` kept). Updated: the own-image check (no `ownImage`; an old own pick still
+saved), rewrite keeps the old words, the card rules (`putFrame`; `setOwn` gone), the window's shape
+(drop targets, Add an image…, New / More options, Earlier options; no own-image button), the
+channels (the four new ones offered and handled, `choose-own` gone), the runner check (waitForRun
+only through the runner).
+
+### Not verified (no app launch on Owen's data, no live model call)
+
+Nobody has seen these in the window. A human should try: dragging one screenshot from Finder onto a
+card (the dashed outline, the frame appearing, the crop line), several onto a card and onto the
+Frames tray, Add an image… with several files, then Edit on the dropped frame; dragging text or a
+browser image (should be refused by name); New options and More options on a title and the Earlier
+options fold; closing the window while New options runs, reopening it (the "Still writing" line) and
+seeing the new options arrive. Live: the model's answer to the `more` paragraph (whether it avoids
+near-repeats, not just exact ones) is unmeasured.

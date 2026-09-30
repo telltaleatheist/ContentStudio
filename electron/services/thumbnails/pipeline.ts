@@ -67,6 +67,7 @@ import {
   THUMBNAIL_STAGES,
   THUMBNAILS_FOLDER,
   THUMBNAILS_RECORD_VERSION,
+  keepEarlier,
   type ItemThumbnails,
   type StoredPair,
   type ThumbnailStage,
@@ -94,14 +95,25 @@ export interface ThumbnailRenderer {
 /** A drawn pair, as the record stores it. */
 export type DrawnRender = Extract<StoredRender, { ok: true }>;
 
+/** The frame a drawing is made on: its id, its time in the recording, and whether Owen added it. */
+export interface FrameRef {
+  id: string;
+  t: number;
+  /** 'added': an image Owen added; its full-size file is the only copy (pipeline-record.ts StoredFrame). */
+  origin?: 'added';
+}
+
 /**
  * A frame at full size, `<folder>/full/<id>.png`: extracted from the screen recording the first
- * time (a screenshot is already there). Used by the drawing and by the Thumbnails window's live
- * preview, which asks for the same file so its faces and picture are the render's.
+ * time (a screenshot or an image Owen added is already there). Used by the drawing and by the
+ * Thumbnails window's live preview, which asks for the same file so its faces and picture are the
+ * render's. An added image whose file is gone is refused by name: it is never replaced by a frame
+ * of the recording at its time.
  */
-export async function fullFrame(input: { ffmpeg: string; video: string | null; folder: string; frame: { id: string; t: number }; signal?: AbortSignal }): Promise<string> {
+export async function fullFrame(input: { ffmpeg: string; video: string | null; folder: string; frame: FrameRef; signal?: AbortSignal }): Promise<string> {
   const full = path.join(input.folder, 'full', `${input.frame.id}.png`);
   if (!fs.existsSync(full)) {
+    if (input.frame.origin === 'added') throw new Error(`The image you added (${input.frame.id}) is not in ${path.dirname(full)} any more. Add it again.`);
     if (input.video === null) throw new Error(`The background ${input.frame.id} is not in ${path.dirname(full)} any more, and there is no screen recording to take it from again.`);
     await extractFullFrame(input.ffmpeg, input.video, input.frame.t, full, input.signal);
   }
@@ -121,7 +133,7 @@ export async function drawPair(input: {
   /** The screen recording, or null when the backgrounds are screenshots (already in `full/`). */
   video: string | null;
   folder: string;
-  frame: { id: string; t: number };
+  frame: FrameRef;
   phrase: string | null;
   photo: string | null;
   logo: boolean;
@@ -252,7 +264,7 @@ export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind):
 
 /** The backgrounds are Owen's screenshots (pair n on screenshot n), not a story's frames. */
 function fromScreenshots(r: Pick<ItemThumbnails, 'source' | 'frames'>): boolean {
-  return r.source !== null && r.source.video === null && r.frames.length > 0;
+  return r.source !== null && r.source.video === null && r.frames.some((f) => f.origin !== 'added');
 }
 
 /**
@@ -304,7 +316,7 @@ export class ItemThumbnailRun {
   /** Stages a resumed run keeps as stored (ItemThumbnailRun.resume): they do not run again. */
   private skip = new Set<ThumbnailStage>();
   private video: string | null = null;
-  private frameFiles = new Map<string, { t: number; large: string }>();
+  private frameFiles = new Map<string, { t: number; large: string; origin?: 'added' }>();
   /**
    * The frame each pair is drawn on, pair n on entry n: Owen's screenshots, in the order he gave
    * them. Null for a story: its pairs get no frame until he picks them in the Thumbnails window.
@@ -372,6 +384,8 @@ export class ItemThumbnailRun {
       rec.frames = [];
     }
     if (!keep.has('words')) {
+      // The words written so far are kept as earlier options (never dropped): new ones are written.
+      rec.earlierWords = keepEarlier(rec, rec.pairs.map((p) => ({ ...p.words, title: p.title })));
       rec.titles = null;
       rec.pairs = [];
     }
@@ -397,8 +411,9 @@ export class ItemThumbnailRun {
     // `render` is never kept (a plan with nothing to run is refused above), so every pair is drawn.
     for (const s of plan.keep) run.skip.add(s);
     run.video = rec.source?.video ?? null;
-    for (const f of rec.frames) run.frameFiles.set(f.id, { t: f.t, large: f.large });
-    if (shots) run.pairFrames = rec.frames.map((f) => ({ id: f.id, scene: f.scene }));
+    for (const f of rec.frames) run.frameFiles.set(f.id, { t: f.t, large: f.large, ...(f.origin === undefined ? {} : { origin: f.origin }) });
+    // Pair n goes on screenshot n: the images Owen added are frames to pick, never a pair's screenshot.
+    if (shots) run.pairFrames = rec.frames.filter((f) => f.origin !== 'added').map((f) => ({ id: f.id, scene: f.scene }));
     return run;
   }
 
@@ -638,7 +653,7 @@ export class ItemThumbnailRun {
           ffmpeg: setup.ffmpeg,
           video: this.video,
           folder,
-          frame: { id: d.frameId!, t: frame.t },
+          frame: { id: d.frameId!, t: frame.t, ...(frame.origin === undefined ? {} : { origin: frame.origin }) },
           phrase: d.phrase,
           photo: d.photo,
           logo: logoFile !== null,

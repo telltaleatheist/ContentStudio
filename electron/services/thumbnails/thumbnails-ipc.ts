@@ -129,7 +129,7 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     gpuVenue: () => crucible.lanes.gpuVenue(),
   });
   app.on('before-quit', () => {
-    void report.closed();
+    void report.quit();
   });
 
   // ── the window ──────────────────────────────────────────────────────────────
@@ -145,6 +145,15 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     progressTo = event.sender;
     return answer('rewriting the words', () => report.pairTitle(jobId, itemId, pair, title, kind));
   });
+  ipcMain.handle('thumbnails:words', (event, jobId: string, itemId: string, pair: number, mode: 'new' | 'more') => {
+    progressTo = event.sender;
+    return answer('writing the words', () => report.writeWords(jobId, itemId, pair, mode));
+  });
+  ipcMain.handle('thumbnails:running', (_e, jobId: string, itemId: string) => answer('reading what is running', () => report.running(jobId, itemId)));
+  ipcMain.handle('thumbnails:add-frames', (event, jobId: string, itemId: string, files: unknown) => {
+    progressTo = event.sender;
+    return answer('adding your images', () => report.addFrames(jobId, itemId, files));
+  });
   ipcMain.handle('thumbnails:finish', (event, jobId: string, itemId: string) => {
     progressTo = event.sender;
     return answer('preparing the frames and text', () => report.finish(jobId, itemId));
@@ -153,12 +162,7 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     progressTo = event.sender;
     return answer('making thumbnails from screenshots', () => report.useScreenshots(jobId, itemId, files, titles));
   });
-  ipcMain.handle('thumbnails:choose-own', (event) =>
-    answer('choosing your image', async () => {
-      const file = (await chooseFiles(event, false))?.[0] ?? null;
-      return file === null ? null : report.ownImage(file);
-    }),
-  );
+  ipcMain.handle('thumbnails:choose-frames', (event) => answer('choosing images', () => chooseFiles(event, true)));
   ipcMain.handle('thumbnails:choose-screenshots', (event) => answer('choosing screenshots', () => chooseFiles(event, true)));
   ipcMain.handle('thumbnails:closed', () => answer('closing the Thumbnails window', () => report.closed()));
   ipcMain.handle('thumbnails:show-folder', (_e, folder: string) =>

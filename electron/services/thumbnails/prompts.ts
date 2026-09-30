@@ -60,8 +60,12 @@ export function transcriptLines(segments: ReadonlyArray<{ start: string; text: s
 /**
  * The words prompt, every slot filled in one pass with a function replacer (PROMPT-LEARNINGS:
  * a `$` in a transcript must never be read as a replacement pattern). An unfilled slot throws.
+ *
+ * `avoid` ("More options" in the Thumbnails window, 2026-09-29): the lines already written for this
+ * title, shown to the model in the asset's `more` paragraph so it writes others. Empty: the `more`
+ * slot is empty and the prompt is exactly the one without it.
  */
-export function buildWordsPrompt(input: { channel: string; creator: string; title: string; transcript: readonly string[] }): string {
+export function buildWordsPrompt(input: { channel: string; creator: string; title: string; transcript: readonly string[]; avoid?: readonly string[] }): string {
   if (input.transcript.length === 0) throw new Error('The thumbnail words need the video\'s transcript, and it has no lines.');
   if (input.title.trim() === '') throw new Error('The thumbnail words are written as a pair with a title, and no title was picked.');
   const values: Record<string, string> = {
@@ -70,7 +74,13 @@ export function buildWordsPrompt(input: { channel: string; creator: string; titl
     title: input.title.trim(),
     transcript: input.transcript.join('\n'),
     per_kind: String(OPTIONS_PER_KIND),
+    more: '',
   };
+  const avoid = [...new Set((input.avoid ?? []).map((l) => l.trim()).filter((l) => l !== ''))];
+  if (avoid.length > 0) {
+    // The paragraph sits after the three kinds' descriptions, before the answer's shape.
+    values.more = '\n\n' + asset('more').replace(/\{written\}/g, () => avoid.join('\n'));
+  }
   return asset('text').replace(/\{([a-z_]+)\}/g, (whole, name: string) => {
     const value = values[name];
     if (value === undefined) throw new Error(`thumbnails.yml "text" has a slot {${name}} that nothing fills.`);
