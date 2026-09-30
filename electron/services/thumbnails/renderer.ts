@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MAX_THUMBNAIL_BYTES, measureThumbnailFile, validateThumbnailFile } from '../publish/thumbnail-validate';
 import { bytesOfDataUrl, dataUrlOf, type ThumbnailCanvas } from './canvas-page';
-import { REFERENCE_SIZE, phraseWords, placeLogo, placeReaction, planText, type ReactionPlacement, type Rect, type TextPlan, type ThumbnailStyle } from './layout';
+import { REFERENCE_SIZE, composeThumbnail, phraseWords, type CardAdjust, type PhraseMetrics, type ReactionPlacement, type Rect, type TextPlan, type ThumbnailStyle } from '../../shared/thumbnail-layout';
 
 /** Text made safe for a file name: path and reserved characters become spaces, at most 80 characters. */
 export function safeFileName(text: string): string {
@@ -62,47 +62,62 @@ export async function renderThumbnail(input: {
   logo: { width: number; height: number; at: (w: number, h: number) => Buffer } | null;
   /** Where to write, WITHOUT extension: `.png` or `.jpg` is added. */
   outStem: string;
+  /**
+   * Owen's edits to this card (the Thumbnails window's card editor): the frame moved or zoomed, the
+   * words in his own box, the photo moved or resized. Null (every record from before the editor,
+   * and a card he did not edit) draws exactly as before.
+   */
+  adjust: CardAdjust | null;
 }): Promise<RenderResult> {
   const meta = measureThumbnailFile(input.frame);
   if (Math.abs(meta.width / meta.height - 16 / 9) > 0.01) {
     throw new Error(`The frame ${path.basename(input.frame)} is ${meta.width}x${meta.height}, not 16:9.`);
   }
   const image = dataUrlOf(input.frame);
-  const scale = OUTPUT_WIDTH / meta.width;
-  const faces = (await input.canvas.detectFaces(image)).map((f) => ({ x: f.x * scale, y: f.y * scale, w: f.w * scale, h: f.h * scale }));
   const notes: string[] = [];
-  if (faces.length === 0) notes.push('The face detector found no face in this frame, so the text was placed with only the reserved slots to avoid.');
-
-  const reaction = input.photo === null ? null : placeReaction(input.photo.width, input.photo.height, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  // The faces only decide where automatic words go: words in Owen's own box need no search.
+  const needFaces = input.adjust?.text === undefined;
+  const found = needFaces ? await input.canvas.detectFaces(image) : [];
+  if (needFaces && found.length === 0) notes.push('The face detector found no face in this frame, so the text was placed with only the reserved slots to avoid.');
   if (input.photo?.note) notes.push(input.photo.note);
+
+  let metrics: PhraseMetrics | null = null;
+  if (input.phrase !== null) {
+    const words = phraseWords(input.phrase);
+    metrics = { words, ...(await input.canvas.measure(input.style.font, words, REFERENCE_SIZE)) };
+  }
+  // The one layout, shared with the Thumbnails window's live preview.
+  const placed = composeThumbnail({
+    width: OUTPUT_WIDTH,
+    height: OUTPUT_HEIGHT,
+    frameSize: { width: meta.width, height: meta.height },
+    faces: found,
+    style: input.style,
+    adjust: input.adjust,
+    metrics,
+    photo: input.photo === null ? null : { width: input.photo.width, height: input.photo.height },
+    logo: input.logo === null ? null : { width: input.logo.width, height: input.logo.height },
+  });
+  if (placed.note !== null) notes.push(placed.note);
+  const { faces, reaction, logo, plan } = placed;
   const reactionDraw = reaction === null ? null : {
     image: `data:image/png;base64,${input.photo!.png.toString('base64')}`,
     x: reaction.x, y: reaction.y, w: reaction.w, h: reaction.h, outlinePx: reaction.outlinePx,
   };
-
-  const logo = input.logo === null ? null : placeLogo(input.logo.width, input.logo.height, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT);
   const logoDraw = logo === null ? null : {
     image: `data:image/png;base64,${input.logo!.at(logo.w, logo.h).toString('base64')}`,
     x: logo.x, y: logo.y, w: logo.w, h: logo.h,
   };
 
-  let plan: TextPlan | null = null;
-  if (input.phrase !== null) {
-    const words = phraseWords(input.phrase);
-    const measured = await input.canvas.measure(input.style.font, words, REFERENCE_SIZE);
-    const placed = planText({ words, ...measured }, faces, input.style, OUTPUT_WIDTH, OUTPUT_HEIGHT, reaction?.avoid ?? null, logo);
-    plan = placed.plan;
-    if (placed.note !== null) notes.push(placed.note);
-  }
-
   const border = input.border === null ? null : `data:image/png;base64,${input.border.toString('base64')}`;
+  const draw = (jpegQuality: number | null) => input.canvas.draw({ image, frame: placed.frame, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, border, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality });
   fs.mkdirSync(path.dirname(input.outStem), { recursive: true });
   let format: 'png' | 'jpeg' = 'png';
-  let bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, border, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality: null }));
+  let bytes = bytesOfDataUrl(await draw(null));
   if (bytes.length > MAX_THUMBNAIL_BYTES) {
     const pngBytes = bytes.length;
     for (const quality of JPEG_QUALITIES) {
-      bytes = bytesOfDataUrl(await input.canvas.draw({ image, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, style: input.style, border, plan, reaction: reactionDraw, logo: logoDraw, jpegQuality: quality }));
+      bytes = bytesOfDataUrl(await draw(quality));
       format = 'jpeg';
       if (bytes.length <= MAX_THUMBNAIL_BYTES) {
         notes.push(`Saved as JPEG (quality ${Math.round(quality * 100)}): as PNG it was ${(pngBytes / 1048576).toFixed(1)} MB, over YouTube's 2 MB limit.`);

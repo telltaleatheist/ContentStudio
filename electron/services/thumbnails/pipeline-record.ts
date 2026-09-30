@@ -11,7 +11,7 @@
  */
 import * as path from 'path';
 import type { TranscriptRef } from '../publish/publish-types';
-import type { ThumbnailStyle } from './layout';
+import { validateAdjust, type CardAdjust, type ThumbnailStyle } from '../../shared/thumbnail-layout';
 import type { WordKind } from './prompts';
 import type { StoryLinkMethod, StoryMatchEvidence } from './story-match';
 
@@ -64,7 +64,7 @@ export interface PhotoDraw {
 
 /**
  * made        every stage ran; `pairs` holds the three pairs with their words. From a story, no pair
- *             has a frame or a render until Owen picks the frames and presses Generate thumbnails
+ *             has a frame or a render until Owen fills its card and presses Save thumbnails
  *             (since 2026-09-29); from his screenshots, each pair is drawn on its screenshot.
  * no-story    the item has no editor story to take frames from; `reason` says why. Not a failure.
  * off         the run did not make thumbnails: switched off for this run, a channel that makes none,
@@ -131,7 +131,7 @@ export type StoredRender =
 /** One title and thumbnail pair's current thumbnail: which pieces, and the file. */
 export interface StoredDefault {
   /**
-   * The frame this pair is drawn on: Owen's frame pick for its place, set when he presses Generate
+   * The frame this pair is drawn on: the frame on Owen's card n, set when he presses Save
    * thumbnails; or screenshot n for a pair made from his screenshots. Null: no frame picked yet
    * (the metadata run assigns none since 2026-09-29, when the frame ranking that chose them was
    * removed), and the pair is not drawn.
@@ -154,6 +154,13 @@ export interface StoredDefault {
   draw: PhotoDraw | null;
   logo: boolean;
   render: StoredRender;
+  /**
+   * Owen's edits to this card in the Thumbnails window's card editor (2026-09-29): the frame moved
+   * or zoomed, the words in his own box, the photo moved or resized (shared/thumbnail-layout.ts
+   * CardAdjust, fractions of the picture). Absent: none, the automatic layout (every record before
+   * the editor). Checked on reading; a bad value is refused by name. The render honours it.
+   */
+  adjust?: CardAdjust;
 }
 
 export interface StoredPair {
@@ -190,6 +197,11 @@ export type ThumbnailPick =
       kind: 'own';
       /** Owen's own image file, absolute, read in place (never moved or changed). */
       file: string;
+      /**
+       * The Thumbnails window's card it was put on (1-3; the card editor, 2026-09-29). Absent in
+       * picks saved before: such a pick sat on the card of its own position (pick n, card n).
+       */
+      card?: number;
     };
 
 /** Where the picks are copied for publishing and the A/B test: `<folder>/picks/Pick 1.png` ... */
@@ -272,13 +284,20 @@ export function readItemThumbnails(value: unknown, where: string): ItemThumbnail
     need(Array.isArray(r[key]), where, `has no ${key} list`);
   }
   need(r.state !== 'made' || (r.pairs.length > 0 && r.folder !== null), where, 'is made and holds no pairs');
+  // Owen's card edits: refused by name when a value is off (never clamped or dropped).
+  for (const p of r.pairs) {
+    if (p !== null && typeof p === 'object' && p.default !== null && typeof p.default === 'object' && p.default.adjust !== undefined) {
+      validateAdjust(p.default.adjust, `${where}, thumbnail ${p.pair}`);
+    }
+  }
   checkPicks(r.picks, where);
   return r;
 }
 
 /**
  * The picks, checked: at most PAIR_COUNT; each a pair's render (pair number, file, the title its
- * words were written for) or Owen's own image (a file); no file twice, no pair twice.
+ * words were written for) or Owen's own image (a file, and the card it was put on when saved by the
+ * card editor); no file twice, no pair twice, no card holding two picks.
  */
 export function checkPicks(picks: unknown, where: string): ThumbnailPick[] {
   need(Array.isArray(picks), where, 'picks is not a list');
@@ -288,9 +307,13 @@ export function checkPicks(picks: unknown, where: string): ThumbnailPick[] {
     need(p !== null && typeof p === 'object' && typeof p.file === 'string' && p.file !== '', where, 'holds a pick with no file');
     need(p.kind === 'own' || (p.kind === 'made' && Number.isInteger(p.pair) && p.pair >= 1 && typeof p.wordsFor === 'string' && p.wordsFor !== ''), where,
       `holds a pick that is neither a pair's render nor your own image (${JSON.stringify(p).slice(0, 120)})`);
+    need(p.kind !== 'own' || p.card === undefined || (Number.isInteger(p.card) && p.card >= 1 && p.card <= PAIR_COUNT), where,
+      `holds your own image on card ${JSON.stringify(p.kind === 'own' ? p.card : null)}; the cards are 1 to ${PAIR_COUNT}`);
   }
   need(new Set(list.map((p) => p.file)).size === list.length, where, 'picks one file twice');
   const pairs = list.flatMap((p) => (p.kind === 'made' ? [p.pair] : []));
   need(new Set(pairs).size === pairs.length, where, 'picks one pair twice');
+  const cards = [...pairs, ...list.flatMap((p) => (p.kind === 'own' && p.card !== undefined ? [p.card] : []))];
+  need(new Set(cards).size === cards.length, where, 'puts two picks on one card');
   return list;
 }

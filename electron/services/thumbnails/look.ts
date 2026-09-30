@@ -16,7 +16,7 @@
  * the page unchanged.
  */
 import * as log from 'electron-log';
-import { DEFAULT_STYLE, readStoredStyle, validateStyle, type ThumbnailStyle } from './layout';
+import { DEFAULT_STYLE, readStoredStyle, validateStyle, type ThumbnailStyle } from '../../shared/thumbnail-layout';
 import { borderPreview, readBorder } from './border';
 import { logoPreview, readLogo } from './logo';
 import {

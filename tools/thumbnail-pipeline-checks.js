@@ -32,54 +32,31 @@
  *     leave the file as it was. A record made before 2026-09-29 (the frame scoring's scores, rows
  *     and line, a stop at `scoring`) is still read.
  *
- * Phase 2 (the reports page's Thumbnails window, report-thumbnails.ts, 2026-09-28):
+ * The reports page's Thumbnails window (report-thumbnails.ts; the card editor since 2026-09-29,
+ * LEDGER #247):
  *
- *   - ORDERED PICKS AND PAIRING: picks are saved in click order (pick n goes with chosen title n by
- *     position); the copies `picks/Pick 1..n` are written and the file to publish is pick 1's copy;
- *     a fourth pick, one pair twice and a stale record shape are refused; with none, the copies go.
- *   - SWAPS DRAWN: a changed frame, words (or "No text"), photo (a name from the library, or none)
- *     or logo draws a NEW file beside the old one (the old one removed once no pick points at it);
- *     a picked pair's pick follows it; the retired 'draw' is refused as a photo name.
- *   - OWN IMAGE AS A PICK: Owen's file, checked against YouTube's thumbnail rules and read in place.
- *   - REWRITE WORDS FOR A TITLE: one words call carrying the new title on ONE held load of the 27B,
- *     no decide; the pair keeps its photo; the pair and its pick follow; a second action on the item
- *     while one runs is refused; the hold is given back on request.
- *   - NO STORY -> SCREENSHOTS: N screenshots make N pairs, one per title given, a non-16:9 one cut to
- *     16:9 (said); own picks kept; a report whose pairs came from its story refuses them.
- *   - DELETE: deleting an item removes its thumbnails folder (and the empty thumbnails/ folder); a
- *     record naming a folder elsewhere is left and said; a whole job's cleanup removes each item's.
- *   - THE TAB IS GONE: no route, sidebar entry, component, lab service, combine or `thumbs:` channel;
- *     every `thumbnails:` channel the preload offers has a handler and the reverse; the reports page
- *     shows no THUMBNAIL TEXT OPTIONS section; the window sets pick 1 through the publish door.
- *
- * The window rebuilt as one flow (2026-09-29, LEDGER #242):
- *
- *   - ERRORS REACH THE WINDOW: with no Crucible server the view blocks Finish with the reason and
- *     Finish is refused before any model call; a record stopped at a removed stage (tone-photos,
- *     Owen's first run; scoring) says that step is gone; the window's one runner turns a failure into
- *     a banner line naming it; every window call goes through the runner and every channel answers
- *     { ok, error }.
- *   - FINISH RESUMES ONLY THE MISSING STAGES: no word written again; a record stopped at tone-photos
- *     is finished with no model call and no lease, its story pairs left without the frames the old
- *     ranking gave them; a screenshots record stopped at render draws only; the plans for a stop at
- *     the removed scoring (its frames kept as the grid) and for screenshots. FROM SCRATCH runs every
- *     stage on one job, the 27B its only model.
- *
- * The window's second rebuild (2026-09-29, Owen: "let me click 1->2->3 ... the thumbnail text should
- * be a list i pick ... just show a list of possible images ... the 'generate thumbnails' button
- * should be at the bottom"):
- *
- *   - PICKING: frames (one flat list in time order, every candidate; at most two per scene), texts
- *     and photos each in click order (out and close up; a fourth refused); "No photo" can be
- *     picked more than once and taken out on its badge; thumbnail n = frame n + text n + photo n;
- *     Generate thumbnails is disabled with its reason until a frame and a text are picked; it draws
- *     every ready place (`drawChange`) and each then shows what was picked; the picks are the places
- *     in order and read back on reopening; his own image takes a place; a story pair with no frame
- *     is drawn only once its frame is picked; "Start from the suggested words" fills the texts only.
- *   - THE WINDOW'S SHAPE: frames, text (a list), photos (one row, no percentages), then Generate
- *     thumbnails, then the results; no scene labels; nothing drawn on a click.
+ *   - SAVE THUMBNAILS: every card with a frame drawn (per-card progress), the cards in order saved as
+ *     the picks (Pick 1..n copies, pick 1 the file to publish); an empty card left out and the rest
+ *     closing up, its pair losing its frame and its old drawing; one frame on all three; a card that
+ *     cannot be drawn saves nothing and is named; bad cards refused before anything is drawn.
+ *   - CARD EDITS: the frame's zoom and pan, the text box and the photo's place are handed to the
+ *     renderer and stored on the pair; none stored or drawn when reset; the run's own drawings carry a
+ *     stored edit; drawPair with none draws as before.
+ *   - THE PREVIEW'S PIECES: a frame at full size extracted once, its faces searched once, a failed
+ *     search said; photos; the look, border and logo in the view; closing gives everything back.
+ *   - OWN IMAGE on a card (checked at once, read in place); REWRITE WORDS for a title (one call on one
+ *     held load of the 27B, nothing drawn, the saved card and picks left as they are); NO STORY ->
+ *     SCREENSHOTS (they become the frames; a card with no pair only holds his image); DELETE.
+ *   - ERRORS REACH THE WINDOW; a video that is not ready is PREPARED from what it stores.
+ *   - THE CARD RULES (frontend thumbnails-compose.ts, run here with the compiled shared layout): the
+ *     active card, a click on and off, badges, edits following the pieces, his own image, the
+ *     editor's clamps; cards saved and read back equal, unsaved changes, old picks, a clash refused.
+ *   - THE WINDOW'S SHAPE: cards and Save above the trays; no pick lists, Generate, suggested words,
+ *     Clear picks, logo switch or No text / No photo; a click asks the main process nothing; the
+ *     preview uses the shared layout and drawing; closing asks in the window; no teal.
  *   - THE BORDER: drawPair hands the renderer the kept border when the look has it on, none when it
- *     is off or none is kept (said in the record's lines).
+ *     is off or none is kept (said in the record's lines); the shared drawing's order.
+ *   - THE TAB IS GONE and the removed channels with it; every channel offered has a handler.
  *
  *   npm run build:electron && node tools/thumbnail-pipeline-checks.js
  */
@@ -292,6 +269,8 @@ async function withWorld(options, fn) {
   for (const name of ['laugh', 'horrified', 'oh please', 'ooh']) fs.writeFileSync(path.join(photos, `selfie ${name}.png`), PNG_BYTES);
   library.addPhotos(userData, [photos], false);
   const renders = [];
+  /** Set `failing.when(input)` to make the stand-in renderer refuse a drawing (a save that must stop). */
+  const failing = { when: null };
   const plainCalls = [];
   const doors = { lanes: made.ctx.lanes, transport: made.ctx.transport, clientFor: (s) => made.ctx.factory.clientFor(s) };
   const setup = {
@@ -300,6 +279,7 @@ async function withWorld(options, fn) {
     openRenderer: () => ({
       render: async (input) => {
         renders.push(input);
+        if (failing.when !== null && failing.when(input)) throw new Error('the drawing page closed');
         const file = `${input.outStem}.png`;
         fs.mkdirSync(path.dirname(file), { recursive: true });
         // Each drawing's bytes name it, so a copy can be told from another drawing.
@@ -309,7 +289,7 @@ async function withWorld(options, fn) {
       },
       close: () => renders.push('closed'),
     }),
-    style: services('thumbnails/layout.js').DEFAULT_STYLE, styleSaved: false, styleLine: null,
+    style: require(path.join(DIST, 'shared', 'thumbnail-layout.js')).DEFAULT_STYLE, styleSaved: false, styleLine: null,
   };
   /** AIManagerService.runPlainRequest as it reaches the door: its own GPU step, the job passed through. */
   const aiManager = {
@@ -342,7 +322,7 @@ async function withWorld(options, fn) {
     cancelled: () => controller.signal.aborted, progress: () => undefined,
   });
   try {
-    await fn({ server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, transport: made.ctx.transport, lanes: made.ctx.lanes });
+    await fn({ failing, server, w, root, renders, plainCalls, aiManager, job, itemRun, setup, userData, transport: made.ctx.transport, lanes: made.ctx.lanes });
   } finally {
     installCrucibleTransport(null);
     installLanes(null);
@@ -524,7 +504,16 @@ check('storage: the record rides on the item in its job file, reads back checked
     assert.ok(/at most 3/.test(four.message), four.message);
     const old = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ title: 'T1', file: '/a' }] })));
     assert.ok(/neither a pair's render nor your own image/.test(old.message), old.message);
+    // The card editor (2026-09-29): an own image names its card; two picks on one card, a card out of range and a bad edit are refused.
+    const cardFour = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ kind: 'own', file: '/a', card: 4 }] })));
+    assert.ok(/your own image on card 4; the cards are 1 to 3/.test(cardFour.message), cardFour.message);
+    const sameCard = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, picks: [{ kind: 'made', pair: 2, file: '/r/2.png', wordsFor: 'T2' }, { kind: 'own', file: '/a', card: 2 }] })));
+    assert.ok(/puts two picks on one card/.test(sameCard.message), sameCard.message);
+    const badEdit = await rejection(out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, pairs: r.pairs.map((p) => (p.pair === 3 ? { ...p, default: { ...p.default, adjust: { frame: { x: 0, y: 0, scale: 40 } } } } : p)) })));
+    assert.ok(/thumbnail 3: the frame's zoom is 40; it must be a number from 0.25 to 5/.test(badEdit.message), badEdit.message);
     assert.strictEqual(fs.readFileSync(job.jsonPath, 'utf8'), before, 'a refused write leaves the file byte for byte');
+    const edited = await out.updateItemThumbnails(job.jobId, saved.itemId, (r) => ({ ...r, pairs: r.pairs.map((p) => (p.pair === 1 ? { ...p, default: { ...p.default, adjust: { frame: { x: -0.25, y: -0.25, scale: 1.5 }, photo: { cx: 0.2, cy: 0.7, h: 0.4 } } } } : p)), picks: [{ kind: 'own', file: '/mine.png', card: 3 }] }));
+    assert.deepStrictEqual(record.readItemThumbnails(out.getJobMetadata(job.jobId).items[0].thumbnails, 'keeper').pairs[0].default.adjust, edited.pairs[0].default.adjust, 'a card\'s edits round-trip');
     assert.throws(() => record.readItemThumbnails({ ...rec, version: 2 }, 'keeper'), /is version 2, and this build reads version 1/);
     assert.strictEqual(record.readItemThumbnails(undefined, 'keeper'), null, 'an item from before the pipeline has none');
     // A record made before 2026-09-29 carries the frame scoring's scores, rows and line, and may have stopped AT the scoring: read, those fields ignored.
@@ -542,7 +531,7 @@ check('storage: the record rides on the item in its job file, reads back checked
   }
 });
 
-// ── phase 2: the Thumbnails window (report-thumbnails.ts) ───────────────────
+// ── phase 2: the Thumbnails window (report-thumbnails.ts), the card editor since 2026-09-29 ──────
 
 const { ReportThumbnails } = services('thumbnails/report-thumbnails.js');
 const { ThumbnailLook } = services('thumbnails/look.js');
@@ -558,13 +547,67 @@ function picture(file, size) {
 }
 
 /**
- * The window over the world: a job in `root` (the output directory), the item's transcript saved,
- * its record from a real pipeline run (or `record`), and ReportThumbnails wired as the IPC wires it.
- * A story run gives no pair a frame (Owen picks them), so unless `draw` is false the three pairs are
- * then drawn as Generate thumbnails would draw them: pair n on grid frame n. `rec` is the record
- * after that; `runRec` the record the run wrote.
+ * The live preview's pieces as the keeper hands them (the app's use nativeImage and the hidden
+ * canvas page): what was asked is recorded; faces come from `faceTable` by file name (an Error
+ * there is a face search that fails), a default face otherwise.
  */
-async function windowOver(world, { record: given = null, noStory = false, gpuVenue = null, draw = true } = {}) {
+function standInPieces(faceTable = {}) {
+  const asked = { frames: [], faces: [], photos: [], closed: 0 };
+  return {
+    asked,
+    framePicture: (file) => {
+      asked.frames.push(file);
+      assert.ok(fs.existsSync(file), `the preview asked for a frame that is not on disk: ${file}`);
+      return { picture: `picture of ${path.basename(file)}`, width: 1920, height: 1080 };
+    },
+    faces: async (file) => {
+      asked.faces.push(file);
+      const f = faceTable[path.basename(file)];
+      if (f instanceof Error) throw f;
+      return f ?? [{ x: 700, y: 200, w: 300, h: 300 }];
+    },
+    photo: (name) => {
+      asked.photos.push(name);
+      return { image: `picture of ${name}`, width: 606, height: 883 };
+    },
+    logo: () => ({ width: 400, height: 400, at: (w, h) => `logo at ${w}x${h}` }),
+    border: (file) => `border ${path.basename(file)}`,
+    close: () => { asked.closed += 1; },
+  };
+}
+
+/**
+ * Cards as the window sends them to Save thumbnails: `spec[i]` for card i+1, null for an empty
+ * card, `{ own }` for his image, else `{ frame, phrase?, kind?, wordsFor?, photo?, adjust? }` (the
+ * pair's own default words when `phrase` is left out).
+ */
+function cardsFor(rec, spec) {
+  return [1, 2, 3].map((n) => {
+    const s = spec[n - 1] ?? null;
+    if (s === null) return { card: n, kind: 'empty' };
+    if (s.own !== undefined) return { card: n, kind: 'own', file: s.own };
+    const pair = rec.pairs.find((p) => p.pair === n);
+    const given = s.phrase !== undefined;
+    const phrase = given ? s.phrase : pair.default.phrase;
+    return {
+      card: n, kind: 'made', frameId: s.frame, phrase,
+      textKind: given ? (s.kind ?? null) : pair.default.kind,
+      wordsFor: given ? (s.wordsFor ?? null) : (phrase === null ? null : pair.title),
+      photo: s.photo ?? null, adjust: s.adjust ?? {},
+    };
+  });
+}
+
+const drawsOf = (world) => world.renders.filter((r) => r !== 'closed');
+
+/**
+ * The window over the world: a job in `root` (the output directory), the item's transcript saved,
+ * its record from a real pipeline run (or `record`), and ReportThumbnails wired as the IPC wires it
+ * (the preview's pieces stood in). A story run gives no pair a frame (Owen picks them), so unless
+ * `draw` is false the three cards are then saved as Save thumbnails would save them: card n on grid
+ * frame n with pair n's words. `rec` is the record after that; `runRec` the record the run wrote.
+ */
+async function windowOver(world, { record: given = null, noStory = false, gpuVenue = null, draw = true, faces = {} } = {}) {
   const { root, w, job: inJob, itemRun, setup, userData, transport, aiManager } = world;
   const out = OutputHandlerService.forOutputDir(root);
   const job = out.initializeJob('f2 - the rapture', 'youtube-fireside', `keeper-window-${noStory ? 'nostory' : 'story'}`);
@@ -591,6 +634,7 @@ async function windowOver(world, { record: given = null, noStory = false, gpuVen
   }, { source_key: 'f2 - the rapture', source_path: video }, PROVENANCE);
   const settings = { outputDirectory: root };
   const progress = [];
+  const pieces = standInPieces(faces);
   const window = new ReportThumbnails({
     store: { get: (k) => settings[k] },
     userDataPath: userData,
@@ -601,114 +645,202 @@ async function windowOver(world, { record: given = null, noStory = false, gpuVen
     aiManager: () => aiManager,
     picture: (file, width) => `picture of ${path.basename(file)} at ${width}`,
     photoList: () => library.libraryPhotos(userData).map((ph) => ({ name: ph.name, preview: `picture of ${ph.name}` })),
-    progress: (e) => progress.push(e.line),
+    pieces,
+    progress: (e) => progress.push(e),
     gpuVenue: gpuVenue ?? (() => world.lanes.gpuVenue()),
   });
   let drawn = rec;
   if (given === null && !noStory && draw) {
-    for (const p of rec.pairs) await window.renderPair(job.jobId, saved.itemId, { pair: p.pair, frameId: rec.frames[p.pair - 1].id });
-    drawn = window.view(job.jobId, saved.itemId).record;
+    drawn = (await window.saveCards(job.jobId, saved.itemId, cardsFor(rec, rec.pairs.map((p) => ({ frame: rec.frames[p.pair - 1].id }))))).record;
   }
-  return { out, job, itemId: saved.itemId, window, rec: drawn, runRec: rec, progress, video };
+  return { out, job, itemId: saved.itemId, window, rec: drawn, runRec: rec, progress, video, pieces };
 }
 
-check('window, picks: saved in click order, pick n pairs with chosen title n by position; copies Pick 1..n; the file to publish is pick 1\'s copy; a fourth pick, one pair twice and an old pick shape are refused; none removes the copies', () => withWorld({}, async (world) => {
-  const { job, itemId, window } = await windowOver(world);
-  const v = await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 2 }, { kind: 'made', pair: 1 }]);
-  assert.deepStrictEqual(v.picks.map((p) => [p.n, p.pick.kind, p.pick.pair, p.pick.wordsFor]), [[1, 'made', 2, 'Title two'], [2, 'made', 1, 'Title one']], 'the order clicked, each with the title its words were written for');
-  const folder = v.record.folder;
-  assert.deepStrictEqual(v.picks.map((p) => p.copy), [path.join(folder, 'picks', 'Pick 1.png'), path.join(folder, 'picks', 'Pick 2.png')]);
-  assert.strictEqual(v.publishFile, path.join(folder, 'picks', 'Pick 1.png'), 'pick 1 is what is published');
-  assert.ok(fs.readFileSync(v.publishFile).equals(fs.readFileSync(v.record.pairs[1].default.render.file)), 'Pick 1 is thumbnail 2, the first clicked');
-  assert.deepStrictEqual(window.summary(job.jobId, itemId).picks.map((p) => p.n), [1, 2], 'the reports page reads the same picks');
-  assert.ok(/at most 3/.test((await rejection(window.savePicks(job.jobId, itemId, [1, 2, 3].map((pair) => ({ kind: 'made', pair })).concat([{ kind: 'made', pair: 1 }])))).message));
-  assert.ok(/Thumbnail 1 is picked twice/.test((await rejection(window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 1 }, { kind: 'made', pair: 1 }]))).message));
-  assert.ok(/neither a pair nor your own image/.test((await rejection(window.savePicks(job.jobId, itemId, [{ title: 'Title one', file: '/x.png' }]))).message));
-  const none = await window.savePicks(job.jobId, itemId, []);
+check('window, Save thumbnails: every card with a frame drawn and the cards in order saved as the picks (Pick 1..n copies, pick 1 published); an empty card is left out and the rest close up, its pair losing its frame; one frame on all three; per-card progress; a card that cannot be drawn stops the save by name and nothing is saved; bad cards refused', () => withWorld({}, async (world) => {
+  const { job, itemId, window, rec, runRec, progress } = await windowOver(world);
+  const v0 = window.view(job.jobId, itemId);
+  assert.deepStrictEqual(v0.picks.map((p) => [p.n, p.pick.kind, p.pick.pair, p.pick.wordsFor]), [[1, 'made', 1, 'Title one'], [2, 'made', 2, 'Title two'], [3, 'made', 3, 'Title three']], 'card n is pick n');
+  const folder = rec.folder;
+  assert.deepStrictEqual(v0.picks.map((p) => p.copy), [1, 2, 3].map((n) => path.join(folder, 'picks', `Pick ${n}.png`)));
+  assert.strictEqual(v0.publishFile, path.join(folder, 'picks', 'Pick 1.png'), 'pick 1 is what is published');
+  assert.ok(fs.readFileSync(v0.publishFile).equals(fs.readFileSync(rec.pairs[0].default.render.file)), 'Pick 1 is card 1\'s drawing');
+  assert.deepStrictEqual(rec.pairs.map((p) => [p.default.frameId, p.default.phrase, p.default.photo, p.default.adjust]), runRec.pairs.map((p, i) => [rec.frames[i].id, p.default.phrase, null, undefined]), 'each pair holds its card; no edit stored for a card with none');
+  assert.ok(rec.pairs.every((p) => !p.lines.includes(pipeline.NO_FRAME_YET) && !p.lines.includes(pipeline.NO_PHOTO_YET)), 'the "not picked yet" lines go once saved');
+  assert.deepStrictEqual(progress.filter((e) => e.card !== undefined).map((e) => [e.card, e.line]), [[1, 'Drawing thumbnail 1 (1 of 3)…'], [2, 'Drawing thumbnail 2 (2 of 3)…'], [3, 'Drawing thumbnail 3 (3 of 3)…']], 'each card said as it is drawn');
+  assert.deepStrictEqual(window.summary(job.jobId, itemId).picks.map((p) => p.n), [1, 2, 3], 'the reports page reads the same picks');
+  // Card 2 emptied: card 3 becomes Pick 2 (pick k goes with title k), pair 2 loses its frame and its drawing.
+  const oldTwo = rec.pairs[1].default.render.file;
+  const f = rec.frames.map((x) => x.id);
+  const gap = await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ frame: f[0] }, null, { frame: f[1] }]));
+  assert.deepStrictEqual(gap.picks.map((p) => [p.n, p.pick.pair]), [[1, 1], [2, 3]], 'the saved cards in order: the rest close up');
+  const p2 = gap.record.pairs[1];
+  assert.deepStrictEqual([p2.default.frameId, p2.default.scene, p2.default.render.ok, p2.lines.includes(pipeline.NO_FRAME_YET)], [null, null, false, true], 'an empty card\'s pair has no frame again');
+  assert.ok(!fs.existsSync(oldTwo), 'its old drawing is removed (no pick points at it)');
+  assert.deepStrictEqual(fs.readdirSync(path.join(folder, 'picks')).sort(), ['Pick 1.png', 'Pick 2.png'], 'exactly the picks, as files');
+  assert.ok(fs.readFileSync(path.join(folder, 'picks', 'Pick 2.png')).equals(fs.readFileSync(gap.record.pairs[2].default.render.file)), 'Pick 2 is card 3');
+  const renders = fs.readdirSync(folder).filter((x) => /^Pair \d/.test(x));
+  assert.deepStrictEqual(renders.sort(), gap.record.pairs.filter((p) => p.default.render.ok).map((p) => path.basename(p.default.render.file)).sort(), 'one current drawing per saved card in the folder');
+  // The same frame on all three, the third with no words.
+  const same = await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ frame: f[0] }, { frame: f[0] }, { frame: f[0], phrase: null }]));
+  assert.deepStrictEqual(same.record.pairs.map((p) => [p.default.frameId, p.default.phrase === null]), [[f[0], false], [f[0], false], [f[0], true]]);
+  assert.deepStrictEqual(same.picks.map((p) => p.pick.pair), [1, 2, 3]);
+  assert.strictEqual(drawsOf(world).pop().phrase, null, 'drawn with no words');
+  // A card that cannot be drawn: nothing is saved, the drawings of this save are removed, the card named.
+  const before = window.view(job.jobId, itemId);
+  const filesBefore = fs.readdirSync(folder).sort();
+  world.failing.when = (input) => /^Pair 2 /.test(path.basename(input.outStem));
+  const failed = await rejection(window.saveCards(job.jobId, itemId, cardsFor(rec, [{ frame: f[1] }, { frame: f[1] }, { frame: f[1] }])));
+  world.failing.when = null;
+  assert.ok(/^Thumbnail 2 could not be drawn, so nothing was saved: the drawing page closed$/.test(failed.message), failed.message);
+  const after = window.view(job.jobId, itemId);
+  assert.deepStrictEqual([after.record.pairs, after.picks.map((p) => p.pick.file)], [before.record.pairs, before.picks.map((p) => p.pick.file)], 'the record and the picks as they were');
+  assert.deepStrictEqual(fs.readdirSync(folder).sort(), filesBefore, 'card 1\'s drawing from the failed save is removed');
+  // Refused before anything is drawn.
+  const draws = drawsOf(world).length;
+  const refusals = [
+    [cardsFor(rec, [{ frame: f[0] }, null]).slice(0, 2), /The window sends all 3 cards; 2 came\./],
+    [[{ card: 1, kind: 'empty' }, { card: 1, kind: 'empty' }, { card: 3, kind: 'empty' }], /Card 1 came twice\./],
+    [cardsFor(rec, [{ frame: 'f999999' }]), /Card 1's frame "f999999" is not among this report's candidate frames\./],
+    [cardsFor(rec, [{ frame: f[0], photo: 'nobody' }]), /Card 1: there is no reaction photo "nobody"/],
+    [cardsFor(rec, [{ frame: f[0], phrase: null, kind: 'claim' }]), /Card 1 has no words, and names where they came from\./],
+    [cardsFor(rec, [{ frame: f[0], phrase: 'x', kind: 'shout' }]), /Card 1: "shout" is not a kind of words/],
+    [cardsFor(rec, [{ frame: f[0], adjust: { frame: { x: 0, y: 0, scale: 9 } } }]), /^Card 1: the frame's zoom is 9/],
+    [cardsFor(rec, [{ frame: f[0], adjust: { photo: { cx: 0.5, cy: 0.5, h: 0.4 } } }]), /Card 1 places a photo and has none\./],
+    [cardsFor(rec, [{ frame: f[0], phrase: null, adjust: { text: { x: 0.1, y: 0.1, w: 0.3, h: 0.2 } } }]), /Card 1 places words and has none\./],
+    [[{ card: 1, kind: 'drawn' }, { card: 2, kind: 'empty' }, { card: 3, kind: 'empty' }], /Card 1 is neither a thumbnail, your own image nor empty/],
+  ];
+  for (const [cards, re] of refusals) {
+    const e = await rejection(window.saveCards(job.jobId, itemId, cards));
+    assert.ok(re.test(e.message), `${re}: ${e.message}`);
+  }
+  assert.strictEqual(drawsOf(world).length, draws, 'nothing drawn for a refused save');
+  // Nothing on any card: the picks and their files go.
+  const none = await window.saveCards(job.jobId, itemId, cardsFor(rec, [null, null, null]));
   assert.deepStrictEqual([none.picks.length, none.publishFile, fs.existsSync(path.join(folder, 'picks'))], [0, null, false], 'no picks: nothing to publish, no copies');
+  assert.ok(none.record.pairs.every((p) => p.default.frameId === null && !p.default.render.ok));
 }));
 
-check('window, swaps: frame, words ("No text"), a photo by name (or none) and logo are drawn as a NEW file beside the old; a picked pair\'s pick follows it; the retired draw is refused', () => withWorld({}, async (world) => {
+check('window, card edits: the frame zoom and pan, the text box and the photo\'s place are handed to the renderer and stored on the pair; saving again without them stores none and draws with none; the run\'s own drawings (screenshots) carry the stored edit; an old record renders with none', () => withWorld({}, async (world) => {
+  const { job, itemId, window, rec } = await windowOver(world, { draw: false });
+  const f = rec.frames.map((x) => x.id);
+  const adjust = { frame: { x: -0.5, y: -0.25, scale: 2 }, text: { x: 0.05, y: 0.08, w: 0.55, h: 0.3 }, photo: { cx: 0.2, cy: 0.7, h: 0.45 } };
+  const v = await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ frame: f[0], photo: 'laugh', adjust }, { frame: f[1] }, null]));
+  const [d1, d2] = drawsOf(world).slice(-2);
+  assert.deepStrictEqual([d1.adjust, d1.photo.name], [adjust, 'laugh'], 'card 1 drawn with its edits');
+  assert.strictEqual(d2.adjust, null, 'card 2 had none: drawn exactly as before the editor');
+  assert.deepStrictEqual(v.record.pairs[0].default.adjust, adjust, 'stored on the pair');
+  assert.ok(!('adjust' in v.record.pairs[1].default), 'no edit, nothing stored');
+  assert.deepStrictEqual(record.readItemThumbnails(v.record, 'keeper').pairs[0].default.adjust, adjust, 'read back checked');
+  const again = await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ frame: f[0], photo: 'laugh' }, { frame: f[1] }, null]));
+  assert.strictEqual(drawsOf(world).slice(-2)[0].adjust, null);
+  assert.ok(!('adjust' in again.record.pairs[0].default), 'Reset everything: the edit is gone');
+  // A pair the run draws itself (a screenshots record stopped at the render) is drawn with the edit it stores.
+  const shotRec = JSON.parse(JSON.stringify(again.record));
+  Object.assign(shotRec, { state: 'failed', failure: { stage: 'render', reason: 'x' }, line: 'The thumbnails stopped at the render stage: x', source: { video: null, lines: [] }, picks: [] });
+  shotRec.pairs = shotRec.pairs.slice(0, 2).map((p, i) => ({ ...p, default: { ...p.default, frameId: f[i], render: { ok: false, reason: 'Not drawn yet.' }, ...(i === 0 ? { adjust } : {}) } }));
+  const resumed = await windowOver(world, { record: shotRec });
+  const n0 = drawsOf(world).length;
+  await resumed.window.finish(resumed.job.jobId, resumed.itemId);
+  const runDraws = drawsOf(world).slice(n0);
+  assert.deepStrictEqual(runDraws.map((d) => d.adjust), [adjust, null], 'the run draws a stored edit, and none where none is stored');
+  // pipeline.drawPair with no edit hands the renderer null (every record from before the editor).
+  const renderer = world.setup.openRenderer();
+  await pipeline.drawPair({ renderer, ffmpeg: FFMPEG, video: rec.source.video, folder: rec.folder, frame: { id: f[0], t: rec.frames[0].t }, phrase: 'X', photo: null, logo: false, style: world.setup.style, userDataPath: world.userData, outStem: path.join(rec.folder, 'old record'), adjust: null });
+  assert.strictEqual(drawsOf(world).pop().adjust, null);
+}));
+
+check('window, the live preview\'s pieces: a frame at full size (extracted once from the recording) with the faces the render will find, searched once per frame; a failed face search said, not hidden; a photo trimmed as the render trims it; the look, border and logo at its drawn size in the view; closing the window closes the face search\'s page and gives the model back', () => withWorld({}, async (world) => {
+  const { job, itemId, window, rec, pieces } = await windowOver(world, { draw: false });
+  const frame = rec.frames[0];
+  const full = path.join(rec.folder, 'full', `${frame.id}.png`);
+  assert.ok(!fs.existsSync(full), 'not extracted yet');
+  const [a, b] = await Promise.all([window.frameDetail(job.jobId, itemId, frame.id), window.frameDetail(job.jobId, itemId, frame.id)]);
+  assert.ok(fs.existsSync(full), 'extracted from the screen recording');
+  assert.ok(!fs.readdirSync(path.dirname(full)).some((x) => x.startsWith('.')), 'no half-written file left beside it');
+  assert.deepStrictEqual([a.frameId, a.picture, a.width, a.height, a.faces, a.facesError], [frame.id, `picture of ${frame.id}.png`, 1920, 1080, [{ x: 700, y: 200, w: 300, h: 300 }], null]);
+  assert.deepStrictEqual(b, a);
+  await window.frameDetail(job.jobId, itemId, frame.id);
+  assert.strictEqual(pieces.asked.faces.filter((x) => x === full).length, 1, 'the faces are searched once per frame');
+  assert.ok(/Frame f999 is not among this report's candidate frames/.test((await rejection(window.frameDetail(job.jobId, itemId, 'f999'))).message));
+  // A face search that fails: the picture still comes, and why the faces are missing.
+  const failFile = path.join(rec.folder, 'full', 'f_fail.png');
+  fs.copyFileSync(full, failFile);
+  const withFail = { ...rec, frames: [...rec.frames, { ...frame, id: 'f_fail' }] };
+  const failWin = await windowOver(world, { record: withFail, faces: { 'f_fail.png': new Error('The face detector could not run: no FaceDetector.') } });
+  const fd = await failWin.window.frameDetail(failWin.job.jobId, failWin.itemId, 'f_fail');
+  assert.deepStrictEqual([fd.faces, fd.facesError], [null, 'The face detector could not run: no FaceDetector.']);
+  // Photos (the second window: the first one's job was replaced by it).
+  assert.deepStrictEqual(failWin.window.photoDetail('laugh'), { name: 'laugh', image: 'picture of laugh', width: 606, height: 883 });
+  assert.throws(() => failWin.window.photoDetail('nobody'), /There is no reaction photo "nobody" in the app's library/);
+  // The view's compose: the look, the logo at its drawn size (the render's placeLogo on 1280x720), the border when kept and on.
+  const layoutMod = require(path.join(DIST, 'shared', 'thumbnail-layout.js'));
+  const c0 = failWin.window.view(failWin.job.jobId, failWin.itemId).compose;
+  assert.deepStrictEqual([c0.ok, c0.border, c0.logo, c0.width, c0.height], [true, null, null, 1280, 720]);
+  assert.ok(c0.lines.includes('No logo is kept in the app, so none is drawn.') && c0.lines.includes('No border is kept in the app, so none is drawn.'), c0.lines.join(' | '));
+  const logoFile = picture(path.join(world.root, 'Downloads', 'logo.png'), '640x360');
+  library.setLibraryLogo(world.userData, logoFile, () => {});
+  const borderFile = path.join(world.root, 'Downloads', 'thumbnail-border.png');
+  fs.writeFileSync(borderFile, PNG_BYTES);
+  library.setLibraryBorder(world.userData, borderFile, () => {});
+  const c1 = failWin.window.view(failWin.job.jobId, failWin.itemId).compose;
+  const at = layoutMod.placeLogo(400, 400, world.setup.style, 1280, 720);
+  assert.deepStrictEqual([c1.logo, c1.border], [{ image: `logo at ${at.w}x${at.h}`, width: 400, height: 400 }, 'border thumbnail-border.png']);
+  // Closing.
+  const closedBefore = pieces.asked.closed;
+  assert.strictEqual(await window.closed(), null, 'no model was held');
+  assert.strictEqual(pieces.asked.closed, closedBefore + 1, 'the face search\'s page is closed');
+}));
+
+check('window, own image: his file on a card is a pick where the card is (checked against YouTube\'s rules, read in place, never moved), refused at once when too small; a report with no story still saves it', () => withWorld({}, async (world) => {
   const { job, itemId, window, rec } = await windowOver(world);
-  const first = rec.pairs[0].default.render.file;
-  await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 1 }]);
-  const noText = await window.renderPair(job.jobId, itemId, { pair: 1, phrase: null });
-  const p1 = noText.record.pairs[0];
-  assert.deepStrictEqual([p1.default.phrase, p1.default.kind], [null, null]);
-  assert.strictEqual(path.basename(p1.default.render.file), 'Pair 1 - Title one (3).png', 'a new file beside the old (the first drawing was (2))');
-  assert.ok(!fs.existsSync(first), 'the old file is removed once no pick points at it (the published file is the pick\'s copy)');
-  assert.strictEqual(noText.picks[0].pick.file, p1.default.render.file, 'the pick follows its pair');
-  assert.ok(fs.readFileSync(noText.publishFile).equals(fs.readFileSync(p1.default.render.file)), 'Pick 1 is the new drawing');
-  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().phrase, null, 'drawn with no words');
-  const typed = await window.renderPair(job.jobId, itemId, { pair: 1, phrase: 'my own words', kind: null });
-  assert.deepStrictEqual([typed.record.pairs[0].default.phrase, typed.record.pairs[0].default.kind], ['my own words', null]);
-  const photo = await window.renderPair(job.jobId, itemId, { pair: 3, photo: 'laugh' });
-  const d3 = photo.record.pairs[2];
-  assert.deepStrictEqual([d3.default.photo, d3.default.draw, d3.lines.includes(pipeline.NO_PHOTO_YET)], ['laugh', null, false], 'his photo, no draw, and the "no photo yet" line gone');
-  assert.deepStrictEqual(world.renders.filter((r) => r !== 'closed').pop().photo.name, 'laugh', 'drawn with his photo');
-  const noPhoto = await window.renderPair(job.jobId, itemId, { pair: 3, photo: null, logo: false });
-  assert.deepStrictEqual([noPhoto.record.pairs[2].default.photo, noPhoto.record.pairs[2].default.logo], [null, false]);
-  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().photo, null, 'drawn with no photo');
-  assert.ok(/no reaction photo "draw"/.test((await rejection(window.renderPair(job.jobId, itemId, { pair: 2, photo: 'draw' }))).message), 'the model\'s draw is gone');
-  const other = rec.frames.find((f) => f.id !== rec.pairs[0].default.frameId);
-  const moved = await window.renderPair(job.jobId, itemId, { pair: 1, frameId: other.id });
-  assert.deepStrictEqual([moved.record.pairs[0].default.frameId, moved.record.pairs[0].default.scene], [other.id, other.scene]);
-  assert.ok(/not among this report's candidate frames/.test((await rejection(window.renderPair(job.jobId, itemId, { pair: 1, frameId: 'f999999' }))).message));
-  assert.ok(/no reaction photo "nobody"/.test((await rejection(window.renderPair(job.jobId, itemId, { pair: 1, photo: 'nobody' }))).message));
-  // A story pair with no frame yet is drawn only with its frame picked: refused by name otherwise, and rewrite is refused before any model call.
-  const bare = await windowOver(world, { draw: false });
-  const calls = world.plainCalls.length;
-  assert.ok(/Thumbnail 2 has no frame yet: pick its frame in the grid above/.test((await rejection(bare.window.renderPair(bare.job.jobId, bare.itemId, { pair: 2, phrase: null }))).message));
-  assert.ok(/Thumbnail 2 has no frame yet/.test((await rejection(bare.window.pairTitle(bare.job.jobId, bare.itemId, 2, 'Title four'))).message));
-  assert.strictEqual(world.plainCalls.length, calls, 'no words were written for a pair with no frame');
-  const picked = await bare.window.renderPair(bare.job.jobId, bare.itemId, { pair: 2, frameId: bare.rec.frames[0].id });
-  const p2 = picked.record.pairs[1];
-  assert.deepStrictEqual([p2.default.frameId, p2.default.scene, p2.default.render.ok, p2.lines.includes(pipeline.NO_FRAME_YET), p2.lines.includes(pipeline.NO_PHOTO_YET)],
-    [bare.rec.frames[0].id, bare.rec.frames[0].scene, true, false, true], 'drawn on his frame; the "no frame" line gone, the "no photo" line kept');
-}));
-
-check('window, own image: Owen\'s file is a pick (checked against YouTube\'s rules, read in place, never moved); a too-small image is refused by the thumbnail door', () => withWorld({}, async (world) => {
-  const { job, itemId, window } = await windowOver(world);
   const { root } = world;
   const mine = picture(path.join(root, 'Desktop', 'my thumbnail.png'), '1280x720');
   const before = fs.readFileSync(mine);
-  const v = await window.savePicks(job.jobId, itemId, [{ kind: 'own', file: mine }, { kind: 'made', pair: 3 }]);
-  assert.deepStrictEqual(v.picks.map((p) => p.pick.kind), ['own', 'made']);
+  assert.deepStrictEqual(window.ownImage(mine), { file: mine, picture: 'picture of my thumbnail.png at 640' });
+  const v = await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ own: mine }, null, { frame: rec.frames[0].id }]));
+  assert.deepStrictEqual(v.picks.map((p) => [p.pick.kind, p.pick.kind === 'own' ? p.pick.card : p.pick.pair]), [['own', 1], ['made', 3]], 'his image on card 1, card 3 after it');
   assert.ok(fs.readFileSync(v.publishFile).equals(before), 'his image is pick 1, and it is what is published');
   assert.ok(fs.readFileSync(mine).equals(before) && fs.existsSync(mine), 'his file is only read');
+  assert.strictEqual(v.record.pairs[0].default.frameId, rec.pairs[0].default.frameId, 'the pair under his image is left as it was');
   const small = picture(path.join(root, 'Desktop', 'tiny.png'), '320x180');
-  const err = await rejection(window.savePicks(job.jobId, itemId, [{ kind: 'own', file: small }]));
-  assert.ok(/320x180/.test(err.message), err.message);
-  // The only pick, on a report with no story (no folder yet): the picks get one.
+  assert.throws(() => window.ownImage(small), /320x180/);
+  assert.ok(/320x180/.test((await rejection(window.saveCards(job.jobId, itemId, cardsFor(rec, [{ own: small }])))).message));
+  assert.throws(() => window.ownImage('relative.png'), /must be a file on this Mac/);
+  // A report with no story (no pairs, no folder yet): his image is saved, in a folder made for it.
   const bare = await windowOver(world, { noStory: true });
-  const only = await bare.window.savePicks(bare.job.jobId, bare.itemId, [{ kind: 'own', file: mine }]);
+  const only = await bare.window.saveCards(bare.job.jobId, bare.itemId, cardsFor(bare.rec, [null, { own: mine }, null]));
   assert.strictEqual(only.record.state, 'no-story');
+  assert.deepStrictEqual(only.picks.map((p) => [p.n, p.pick.card]), [[1, 2]], 'Pick 1, on card 2');
   assert.ok(only.publishFile.startsWith(path.join(bare.job.txtFolder, 'thumbnails', `${bare.job.jobId}-${bare.itemId}`)), only.publishFile);
+  const drawOnBare = [{ card: 1, kind: 'made', frameId: 'f1', phrase: null, textKind: null, wordsFor: null, photo: null, adjust: {} }, { card: 2, kind: 'empty' }, { card: 3, kind: 'empty' }];
+  assert.ok(/There are no thumbnails to change/.test((await rejection(bare.window.saveCards(bare.job.jobId, bare.itemId, drawOnBare))).message), 'no frames to draw on a report with no story');
 }));
 
-check('window, rewrite words for a title: one words call carrying the title on ONE held load of the 27B, no decide; the pair keeps its photo; the pair and its pick follow; a second action while one runs is refused; the hold is given back', () => withWorld({}, async (world) => {
-  const { job, itemId, window } = await windowOver(world);
+check('window, rewrite words for a title: one words call carrying the title on ONE held load of the 27B, no decide; pair n takes the title and the new words and answers the words to put on card n; nothing is drawn and the saved card and picks are left as they are; a second action while one runs is refused; the hold is given back', () => withWorld({}, async (world) => {
+  const { job, itemId, window, rec } = await windowOver(world);
   const { server, plainCalls } = world;
-  await window.renderPair(job.jobId, itemId, { pair: 2, photo: 'oh please' });
-  await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 2 }]);
   const leasesBefore = server.leases.taken.length;
   const callsBefore = plainCalls.length;
   const decidesBefore = server.decideBodies().length;
-  const running = window.pairTitle(job.jobId, itemId, 2, 'Title four');
-  const busy = await rejection(window.renderPair(job.jobId, itemId, { pair: 1, phrase: null }));
+  const drawsBefore = drawsOf(world).length;
+  const picksBefore = window.view(job.jobId, itemId).picks.map((p) => p.pick);
+  const running = window.pairTitle(job.jobId, itemId, 2, 'Title four', 'stakes');
+  const busy = await rejection(window.saveCards(job.jobId, itemId, cardsFor(rec, [null, null, null])));
   assert.ok(/^Still writing words for this report/.test(busy.message), busy.message);
-  const v = await running;
+  const { view: v, text } = await running;
   const words = plainCalls.slice(callsBefore);
   assert.strictEqual(words.length, 1, 'one words call');
   assert.ok(words[0].prompt.includes('\nTitle four\n'), 'carrying the new title');
   assert.ok(words[0].job !== undefined, 'under the window\'s held job');
   assert.strictEqual(server.decideBodies().length - decidesBefore, 0, 'no tone or photo question');
-  // The fake keeps a model in memory after its lease goes back, so a reload shows as a second lease.
-  const leases = server.leases.taken.slice(leasesBefore);
-  assert.deepStrictEqual(leases.map((l) => l.model), ['qwen3.8-27b-8bit'], 'one lease on the 27B for the words');
+  assert.deepStrictEqual(server.leases.taken.slice(leasesBefore).map((l) => l.model), ['qwen3.8-27b-8bit'], 'one lease on the 27B for the words');
+  assert.deepStrictEqual(text, { kind: 'stakes', phrase: 'MAYBE TOMORROW', wordsFor: 'Title four' }, 'the words for card 2, of the kind it had');
   const p2 = v.record.pairs[1];
-  assert.deepStrictEqual([p2.title, p2.default.kind, p2.default.phrase, p2.default.photo, p2.photos.length], ['Title four', 'stakes', 'MAYBE TOMORROW', 'oh please', 0], 'his photo is kept');
-  assert.deepStrictEqual([v.picks[0].pick.pair, v.picks[0].pick.wordsFor, v.picks[0].pick.file], [2, 'Title four', p2.default.render.file], 'the pick follows, now written for its title');
+  assert.deepStrictEqual([p2.title, p2.words.stakes.includes('MAYBE TOMORROW')], ['Title four', true]);
+  assert.deepStrictEqual(p2.default, rec.pairs[1].default, 'the saved card is left as it was');
+  assert.strictEqual(drawsOf(world).length, drawsBefore, 'nothing drawn');
+  assert.deepStrictEqual(v.picks.map((p) => p.pick), picksBefore, 'the picks as they were');
+  assert.ok(/"shout" is not a kind of words/.test((await rejection(window.pairTitle(job.jobId, itemId, 2, 'Title four', 'shout'))).message));
   assert.strictEqual(window.heldModel(), 'qwen3.8-27b-8bit');
   const released = server.leases.released.length;
   assert.strictEqual(await window.releaseHold('the window closed'), 'qwen3.8-27b-8bit');
@@ -716,12 +848,12 @@ check('window, rewrite words for a title: one words call carrying the title on O
   assert.strictEqual(await window.releaseHold('again'), null);
 }));
 
-check('window, no story: 2 screenshots make 2 pairs for the 2 titles given, a non-16:9 one cut to 16:9 and said; own picks kept; a report whose pairs came from its story refuses screenshots', () => withWorld({}, async (world) => {
-  const { job, itemId, window } = await windowOver(world, { noStory: true });
+check('window, no story: 2 screenshots make 2 pairs for the 2 titles given (they become the frames), a non-16:9 one cut to 16:9 and said; own picks kept; a third card can only hold his image; a report whose pairs came from its story refuses screenshots', () => withWorld({}, async (world) => {
+  const { job, itemId, window, rec } = await windowOver(world, { noStory: true });
   const { root } = world;
   const { plainCalls } = world;
   const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
-  await window.savePicks(job.jobId, itemId, [{ kind: 'own', file: mine }]);
+  await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ own: mine }]));
   const wide = picture(path.join(root, 'Desktop', 'Screenshot wide.png'), '1440x900');
   const exact = picture(path.join(root, 'Desktop', 'Screenshot exact.png'), '1280x720');
   const callsBefore = plainCalls.length;
@@ -729,6 +861,7 @@ check('window, no story: 2 screenshots make 2 pairs for the 2 titles given, a no
   const r = v.record;
   assert.strictEqual(r.state, 'made', r.line);
   assert.deepStrictEqual(r.pairs.map((p) => [p.pair, p.title, p.default.frameId]), [[1, 'Title two', 'shot1'], [2, 'Title one', 'shot2']]);
+  assert.deepStrictEqual(r.frames.map((x) => x.id), ['shot1', 'shot2'], 'the screenshots are the frames');
   assert.strictEqual(r.source.video, null);
   assert.ok(r.source.lines.some((l) => /Screenshot wide\.png is 1440x900, not 16:9, so its middle was cut to 16:9/.test(l)), r.source.lines.join(' | '));
   assert.ok(r.source.lines.some((l) => /Screenshot exact\.png \(1280x720\) is used whole/.test(l)), r.source.lines.join(' | '));
@@ -736,10 +869,12 @@ check('window, no story: 2 screenshots make 2 pairs for the 2 titles given, a no
   assert.strictEqual(r.story.state, 'none', 'the story (and why there is none) is kept');
   const probe = JSON.parse(execFileSync(FFPROBE, ['-v', 'error', '-show_entries', 'stream=width,height', '-of', 'json', path.join(r.folder, 'full', 'shot1.png')]).toString()).streams[0];
   assert.deepStrictEqual([probe.width, probe.height], [1920, 1080], 'written 16:9 at 1920x1080');
-  assert.ok(r.pairs.every((p) => p.default.render.ok && fs.existsSync(p.default.render.file)));
+  assert.ok(r.pairs.every((p) => p.default.render.ok && fs.existsSync(p.default.render.file) && p.default.adjust === undefined));
   assert.deepStrictEqual(v.picks.map((p) => p.pick.kind), ['own'], 'his own pick stays');
   assert.strictEqual(r.line, '2 title and thumbnail pairs are ready to pick from; no photo picked yet.');
   assert.ok(r.pairs.every((p) => p.default.photo === null), 'no photo until he picks one');
+  const third = await rejection(window.saveCards(job.jobId, itemId, cardsFor(r, [null, null, { frame: 'shot1', phrase: null }])));
+  assert.ok(/There is no title and thumbnail pair 3 to draw card 3 into: this report has 2\./.test(third.message), third.message);
   assert.ok(/1 to 3 screenshots/.test((await rejection(window.useScreenshots(job.jobId, itemId, [wide, exact, wide, exact], ['a', 'b', 'c', 'd']))).message));
   assert.ok(/needs a title/.test((await rejection(window.useScreenshots(job.jobId, itemId, [wide], []))).message));
   await window.releaseHold('the check moves on');
@@ -769,15 +904,22 @@ check('delete: deleting an item removes its thumbnails folder (and the empty thu
   assert.ok(!fs.existsSync(kept));
 }));
 
-// ── 2026-09-29: the window rebuilt as one flow (frames, text, photos, thumbnails) ──
+// ── the window's card rules (frontend thumbnails-compose.ts) ──────────────────
 
-/** The window's picking rules (frontend thumbnails-compose.ts), transpiled: it has only type imports. */
+/** The compiled shared layout, handed to the window's rules for './thumbnail-shared' (what the app's build resolves). */
+const shared = { ...require(path.join(DIST, 'shared', 'thumbnail-layout.js')), ...require(path.join(DIST, 'shared', 'thumbnail-draw.js')) };
+
+/** The window's card rules (frontend thumbnails-compose.ts), transpiled; its one runtime import is the shared layout. */
 const compose = (() => {
   const ts = require('typescript');
   const src = path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-compose.ts');
   const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }, fileName: src });
   const mod = { exports: {} };
-  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, require);
+  const req = (name) => {
+    if (name === './thumbnail-shared') return shared;
+    throw new Error(`thumbnails-compose.ts imports ${name} at run time; the keeper hands it only the shared layout`);
+  };
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, req);
   return mod.exports;
 })();
 
@@ -797,12 +939,13 @@ function stoppedAtTonePhotos(rec) {
     p.default.photo = null;
     p.default.draw = null;
     p.default.render = { ok: false, reason: 'Not drawn yet.' };
+    delete p.default.adjust;
     p.lines = p.lines.filter((l) => l !== pipeline.NO_PHOTO_YET);
   }
   return old;
 }
 
-check('errors reach the window: a record stopped at a removed stage (tone-photos, scoring) is read and shown as not finished, the step unnamed; with no Crucible server Finish is blocked with the reason and refused before any model call; a failed action becomes a banner line naming it; every window call goes through the runner and every channel answers { ok, error }', () => withWorld({}, async (world) => {
+check('errors reach the window: a record stopped at a removed stage (tone-photos, scoring) is read and shown as not finished, the step unnamed; with no Crucible server preparing is blocked with the reason and refused before any model call; a failed action becomes a banner line naming it; every window call goes through the runner and every channel answers { ok, error }', () => withWorld({}, async (world) => {
   const { server, plainCalls } = world;
   const made = await windowOver(world);
   const old = stoppedAtTonePhotos(made.rec);
@@ -811,10 +954,10 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   const v = window.view(job.jobId, itemId);
   assert.deepStrictEqual([v.finish.stage, v.finish.keep, v.finish.run, v.finish.blocked], ['tone-photos', ['story', 'frames', 'words'], ['render'], null]);
   assert.ok(v.finish.reason === null && v.finish.retired === true, 'a removed stage is not named, and its old reason is not shown');
-  // The draw Owen's clicks sent (the phase-2 log line): refused in words, and those words are the banner.
-  const drawErr = await rejection(window.renderPair(job.jobId, itemId, { pair: 1, phrase: null }));
+  // A card saved on it: refused in words, and those words are the banner.
+  const drawErr = await rejection(window.saveCards(job.jobId, itemId, cardsFor(old, [{ frame: old.frames[0].id }, null, null])));
   assert.ok(/There are no thumbnails to change: The thumbnails stopped at the tone-photos stage/.test(drawErr.message), drawErr.message);
-  // Stopped at the scoring with no Crucible server: Finish says why it cannot run, and is refused before any model call.
+  // Stopped at the scoring with no Crucible server: preparing says why it cannot run, and is refused before any model call.
   const atScoring = JSON.parse(JSON.stringify(old));
   Object.assign(atScoring, { failure: { stage: 'scoring', reason: '"mac" cannot show pictures yet' }, line: 'The thumbnails stopped at the scoring stage.', scoring: null, pairs: [], titles: null });
   const noServer = await windowOver(world, { record: atScoring, gpuVenue: () => ({ server: null, reason: 'no Crucible server is selected in Settings' }) });
@@ -828,34 +971,38 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   assert.deepStrictEqual([plainCalls.length, server.decideBodies().length, server.leases.taken.length], before, 'refused before any model was called or leased');
   const seen = { busy: [], failed: [] };
   const runner = new compose.ActionRunner({ busy: (b) => seen.busy.push(b && b.what), failed: (line) => seen.failed.push(line) }, () => 1000);
-  const [a, b] = await Promise.all([runner.run('Drawing thumbnail 1', async () => { throw drawErr; }), runner.run('Saving your picks', async () => 'saved')]);
-  assert.deepStrictEqual([a, b], [null, 'saved']);
-  assert.deepStrictEqual(seen.failed, [`Drawing thumbnail 1 failed: ${drawErr.message}`], 'the failure is a line naming what failed, with the main process\'s sentence');
-  assert.deepStrictEqual(seen.busy, ['Drawing thumbnail 1', null, 'Saving your picks', null], 'one action at a time, in order, the busy line cleared after each');
+  const [a, b] = await Promise.all([runner.run('Saving the thumbnails', async () => { throw drawErr; }), runner.run('Reading the thumbnails', async () => 'read')]);
+  assert.deepStrictEqual([a, b], [null, 'read']);
+  assert.deepStrictEqual(seen.failed, [`Saving the thumbnails failed: ${drawErr.message}`], 'the failure is a line naming what failed, with the main process\'s sentence');
+  assert.deepStrictEqual(seen.busy, ['Saving the thumbnails', null, 'Reading the thumbnails', null], 'one action at a time, in order, the busy line cleared after each');
   assert.strictEqual(compose.clockOf(83_400), '1:23');
-  // Every call the window makes goes through the runner (act() is the runner), except giving the model back as it closes.
+  // Every call the window makes goes through the runner (act() is the runner), except telling the main process it closed.
   const win = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.ts'), 'utf8');
   const calls = win.split('\n').filter((l) => /this\.electron\.thumbnails[A-Z]/.test(l));
   assert.ok(calls.length >= 10, `${calls.length} calls found`);
-  for (const l of calls) assert.ok(/this\.act\(|this\.runner\.run\(/.test(l) || /thumbnailsReleaseModel/.test(l), `a window call outside the runner: ${l.trim()}`);
+  for (const l of calls) assert.ok(/this\.act\(|this\.runner\.run\(/.test(l) || /thumbnailsClosed/.test(l), `a window call outside the runner: ${l.trim()}`);
+  // The preview's own fetches fail onto the card that asked (paint catches, the card says why).
+  const win2 = win.slice(win.indexOf('private async paint('), win.indexOf('private async act('));
+  assert.ok(/catch \(err\) \{\s*set\(this\.cardError, \(err as Error\)\.message\);/.test(win2), 'a preview that cannot be drawn says why on its card');
   const html = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.html'), 'utf8');
   assert.ok(/@if \(failure\(\); as f\)/.test(html) && /class="status"/.test(html) && /elapsed\(\)/.test(html), 'the sticky status shows the failure, the running step and its clock');
   assert.ok(/fin\.blocked/.test(html) && /Try again/.test(html) && !/Finish making thumbnails/.test(html) && !/again from scratch/.test(html), 'the not-ready banner says why it cannot be prepared and offers Try again; no Finish, no from scratch');
   assert.ok(/view\.finish !== null && view\.finish\.blocked === null\) await this\.prepare\(\)/.test(win), 'a video that is not ready is prepared on opening');
-  assert.ok(/Pick frames, text and photos in the order 1, 2, 3, then press Generate thumbnails at the bottom\./.test(html), 'the one line saying what to do');
+  assert.ok(/Click a thumbnail, then click a frame, text and photo below to put them on it\. Click one again to take it off\./.test(html), 'the one line saying what to do');
+  assert.ok(/This thumbnail cannot be drawn: \{\{ e \}\}/.test(html) && /saveFailed\(\)\[n\]/.test(html), 'a card says when it cannot be drawn, and when its save failed');
   const ipc = fs.readFileSync(path.join(REPO, 'electron/services/thumbnails/thumbnails-ipc.ts'), 'utf8');
   const handlers = ipc.split(/\n\s*ipcMain\.handle\(/).slice(1);
   assert.ok(handlers.length >= 20);
   for (const h of handlers) assert.ok(/answer\(/.test(h.split(/\n\s*\/\/ /)[0]), `a thumbnails channel that does not answer { ok, error }: ${h.slice(0, 60)}`);
 }));
 
-check('finish: a record stopped at the removed tone-photos stage is finished from what it stores (no word written, no decide, no lease), its story pairs left without the frames the old ranking gave them; made; own picks stay; a screenshots record stopped at render draws only; the plans', () => withWorld({}, async (world) => {
+check('finish: a record stopped at the removed tone-photos stage is prepared from what it stores (no word written, no decide, no lease), its story pairs left without the frames the old ranking gave them; made; own picks stay; a screenshots record stopped at render draws only; the plans', () => withWorld({}, async (world) => {
   const { server, plainCalls, root } = world;
   const made = await windowOver(world);
   const old = stoppedAtTonePhotos(made.rec);
   const { job, itemId, window, rec } = await windowOver(world, { record: old });
   const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
-  await window.savePicks(job.jobId, itemId, [{ kind: 'own', file: mine }]);
+  await window.saveCards(job.jobId, itemId, cardsFor(old, [{ own: mine }, null, null]));
   const before = { plain: plainCalls.length, decides: server.decideBodies().length, loads: loadsOf(server).length, leases: server.leases.taken.length };
   const drawsBefore = world.renders.length;
   const v = await window.finish(job.jobId, itemId);
@@ -869,7 +1016,7 @@ check('finish: a record stopped at the removed tone-photos stage is finished fro
   assert.ok(r.pairs.every((p) => p.default.frameId === null && !p.default.render.ok && p.default.photo === null && p.lines.includes(pipeline.NO_FRAME_YET) && p.lines.includes(pipeline.NO_PHOTO_YET)), 'no frame, not drawn, no photo, said');
   assert.ok(r.lines.some((l) => l === 'Finished in the Thumbnails window after stopping at the tone-photos stage: story, frames, words kept as stored; render run.'), r.lines.join(' | '));
   assert.deepStrictEqual(r.timings.map((t) => t.stage), ['story', 'frames', 'words', 'tone-photos', 'render'], 'the stopped attempt\'s timings, then the render stage');
-  assert.deepStrictEqual([v.finish, v.picks.map((p) => p.pick.kind)], [null, ['own']], 'nothing left to finish; his own pick stays');
+  assert.deepStrictEqual([v.finish, v.picks.map((p) => p.pick.kind)], [null, ['own']], 'nothing left to prepare; his own pick stays');
   assert.ok(/Nothing stopped/.test((await rejection(window.finish(job.jobId, itemId))).message));
   // A screenshots record stopped at the render: only the drawing runs, no model at all.
   const bare = await windowOver(world, { noStory: true });
@@ -897,182 +1044,187 @@ check('finish: a record stopped at the removed tone-photos stage is finished fro
   assert.deepStrictEqual(pipeline.resumePlan(r, exists), { keep: ['story', 'frames', 'words', 'render'], run: [] }, 'a story record with no frame picked is complete: nothing to draw until Owen picks');
 }));
 
-check('from scratch: every thumbnail stage runs again for the item (the frames sampled, the words written, no decide), on one held job given back after; own picks stay, pair picks go', () => withWorld({}, async (world) => {
-  const { server, plainCalls, root } = world;
-  const { job, itemId, window, rec } = await windowOver(world);
-  const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
-  await window.savePicks(job.jobId, itemId, [{ kind: 'made', pair: 1 }, { kind: 'own', file: mine }]);
-  const before = { plain: plainCalls.length, decides: server.decideBodies().length, leases: server.leases.taken.length };
-  const v = await window.remake(job.jobId, itemId);
-  assert.strictEqual(v.record.state, 'made', v.record.line);
-  assert.strictEqual(v.record.folder, rec.folder, 'into the same folder');
-  assert.ok(v.record.lines.includes('Made again from scratch in the Thumbnails window.') && v.record.lines.some((l) => /were removed to make them again from scratch/.test(l)), v.record.lines.join(' | '));
-  assert.strictEqual(server.decideBodies().length - before.decides, 0, 'no frame is scored: no decide');
-  assert.ok(v.record.frames.length >= 3 && v.record.pairs.every((p) => p.default.frameId === null), 'a fresh grid; the pairs wait for his frame picks');
-  assert.strictEqual(plainCalls.length - before.plain, 3, 'the words written again, one call per title');
-  const taken = server.leases.taken.slice(before.leases);
-  assert.deepStrictEqual(taken.map((l) => l.model), ['qwen3.8-27b-8bit'], 'the 27B, the job\'s only model');
-  assert.ok(taken.every((l) => server.leases.released.includes(l.leaseId)), 'given back');
-  assert.deepStrictEqual(v.picks.map((p) => p.pick.kind), ['own']);
-}));
-
-check('picking: frames (one flat list in time order, every candidate), texts and photos in click order (out and close up; a fourth refused); "No photo" twice, taken out on its badge; Generate is gated until a frame and a text are picked; it draws each place as picked; the picks are the places in order; reopening reads them back; his own image takes a place', () => withWorld({}, async (world) => {
+check('cards: a click puts a frame, text or photo on the ACTIVE card (replacing what it had) and a second click takes it off; the same item on several cards (the tray\'s badges); a new frame starts unzoomed, a new photo keeps the place, words and photo taken off drop their edits; his own image replaces a card and a tray click brings frames back; the editor\'s edits are checked', () => {
   const c = compose;
-  const id = (x) => x;
-  let t = c.togglePick([], 'a', id, 'frames');
-  t = c.togglePick(t.list, 'b', id, 'frames');
-  t = c.togglePick(t.list, 'c', id, 'frames');
-  assert.deepStrictEqual(t.list, ['a', 'b', 'c']);
-  const fourth = c.togglePick(t.list, 'd', id, 'frames');
-  assert.deepStrictEqual([fourth.list, /^Up to 3 frames can be picked\. Click a picked one to take it out first\.$/.test(fourth.refused)], [['a', 'b', 'c'], true]);
-  assert.deepStrictEqual(c.togglePick(t.list, 'a', id, 'frames').list, ['b', 'c'], 'out, and the rest close up');
-  assert.deepStrictEqual(c.togglePick(['b', 'c'], 'a', id, 'frames').list, ['b', 'c', 'a'], 'back in, last');
-  assert.throws(() => c.typedText('   '), /Type the words first/);
-  // FRAMES can be picked more than once (the same frame on all three), each place out on its own badge.
-  let fr = c.addFrame([], 'a').list;
-  fr = c.addFrame(fr, 'b').list;
-  fr = c.addFrame(fr, 'a').list;
-  assert.deepStrictEqual([fr, c.frameNumbers(fr, 'a'), c.frameNumbers(fr, 'b')], [['a', 'b', 'a'], [1, 3], [2]]);
-  assert.ok(/^Up to 3 frames can be picked\. Click a number on a picked frame/.test(c.addFrame(fr, 'a').refused), 'a fourth refused');
-  assert.deepStrictEqual(c.removeFrameAt(fr, 0), ['b', 'a'], 'pick 1 out on its badge, the rest close up');
-
-  // PHOTOS: one row, clicked 1, 2, 3; "No photo" can be picked twice and each is taken out on its badge.
-  let ph = c.addNoPhoto([]).list;
-  ph = c.togglePhoto(ph, 'laugh').list;
-  ph = c.addNoPhoto(ph).list;
-  assert.deepStrictEqual(ph.map((p) => p.name), [null, 'laugh', null]);
-  assert.deepStrictEqual([c.photoNumbers(ph, null), c.photoNumbers(ph, 'laugh')], [[1, 3], [2]]);
-  assert.ok(/^Up to 3 photos can be picked/.test(c.togglePhoto(ph, 'ooh').refused) && /^Up to 3 photos can be picked/.test(c.addNoPhoto(ph).refused), 'a fourth refused');
-  assert.deepStrictEqual(c.togglePhoto(ph, 'laugh').list.map((p) => p.name), [null, null], 'laugh out, the rest close up');
-  assert.deepStrictEqual(c.removePhotoAt(ph, 0).map((p) => p.name), ['laugh', null], 'the first No photo out on its badge');
-
-  const { job, itemId, window, rec, runRec } = await windowOver(world);
-  // FRAMES: one flat list, no scenes: every candidate (at most two a scene), in time order.
-  const list = c.frameList(rec);
-  const byT = [...rec.frames].sort((a, b) => a.t - b.t);
-  assert.deepStrictEqual(list, byT.map((f) => f.id), 'every candidate, in time order');
-  assert.strictEqual(new Set(list).size, list.length, 'no frame twice');
-  assert.deepStrictEqual(c.frameList({ frames: [{ id: 'shot2', t: 0 }, { id: 'shot1', t: 0 }] }), ['shot2', 'shot1'], 'screenshots keep their own order');
-  assert.deepStrictEqual(c.frameList(null), []);
-  // The run's pairs have no frame: every place differs until Generate, and "Start from the suggested words" fills the texts only.
-  assert.ok(runRec.pairs.every((p) => p.default.frameId === null));
-  const suggested = c.suggestedTexts(runRec.pairs);
-  assert.deepStrictEqual(suggested.map((t) => [t.phrase, t.kind, t.wordsFor]), runRec.pairs.map((p) => [p.default.phrase, p.default.kind, p.title]), 'pair n\'s default words as text n');
-  const undrawn = c.planSlots({ pairs: runRec.pairs, frames: [list[0]], texts: suggested, photos: [], own: {} });
-  assert.deepStrictEqual(undrawn.map((s) => [s.frameId, s.missing]), [[list[0], null], [null, 'Pick frame 2 above.'], [null, 'Pick frame 3 above.']], 'a place is drawn only once its frame is picked');
-  assert.deepStrictEqual(c.wantedChange(undrawn[0], runRec.pairs, false).frameId, list[0], 'the picked frame is what Generate sends');
-  assert.throws(() => c.selectionFromPicks([{ n: 1, pick: { kind: 'made', pair: 1, file: '/x.png', wordsFor: 'Title one' }, copy: '', picture: '' }], runRec.pairs), /Pick 1 is thumbnail 1, which has no frame/);
-  const options = c.textOptions(rec.pairs);
-  assert.ok(options.every((o) => o.kind !== null && typeof o.wordsFor === 'string'), 'every generated line says its kind and its title');
-  const fromTitleTwo = options.find((o) => o.wordsFor === 'Title two' && o.phrase === 'MAYBE TOMORROW');
-  const frames = [list[2], list[0], list[1]];
-  const texts = [fromTitleTwo, c.NO_TEXT, c.typedText(' MY OWN WORDS ')];
-  const photos = c.togglePhoto(c.addNoPhoto([]).list, 'laugh').list;
-  const plan = (pairs, over = {}) => c.planSlots({ pairs, frames, texts, photos, own: {}, ...over });
-
-  // GENERATE is gated: nothing picked, or a frame with no text, says what to pick; a record that cannot be drawn says why.
-  const nothing = c.planSlots({ pairs: rec.pairs, frames: [], texts: [], photos: [], own: {} });
-  assert.strictEqual(c.generateBlocked(nothing, null), 'Pick at least one frame and one line of text (or “No text”) above.');
-  assert.strictEqual(c.generateBlocked(c.planSlots({ pairs: rec.pairs, frames: [frames[0]], texts: [], photos: [], own: {} }), null), 'Pick at least one frame and one line of text (or “No text”) above.');
-  assert.strictEqual(c.generateBlocked(c.planSlots({ pairs: rec.pairs, frames: [frames[0]], texts: [c.NO_TEXT], photos: [], own: {} }), null), null, 'one frame and No text is enough');
-  assert.strictEqual(c.generateBlocked(nothing, 'The thumbnails stopped.'), 'The thumbnails stopped.');
-  assert.strictEqual(c.generateBlocked(c.planSlots({ pairs: rec.pairs, frames: [], texts: [], photos: [], own: { 1: '/mine.png' } }), 'The thumbnails stopped.'), null, 'his own image can still be saved');
-
-  const slots = plan(rec.pairs);
-  assert.deepStrictEqual(slots.map((s) => [s.n, s.frameId, s.text.key, s.photo, s.photoPicked, s.missing]), [
-    [1, frames[0], fromTitleTwo.key, null, true, null], [2, frames[1], 'none', 'laugh', true, null], [3, frames[2], 'typed|MY OWN WORDS', null, false, null],
-  ], 'photo n goes on thumbnail n; thumbnail 3 has no photo picked');
-  assert.ok(slots.every((s) => c.wantedChange(s, rec.pairs, false) !== null), 'nothing is drawn by picking: every card still differs until Generate');
-  // Generate: every ready place drawn as picked.
-  let view = window.view(job.jobId, itemId);
-  for (const s of slots.filter(c.ready)) view = await window.renderPair(job.jobId, itemId, c.drawChange(s, false));
-  const pairs = view.record.pairs;
-  const drawn = plan(pairs);
-  assert.deepStrictEqual(drawn.map((s) => c.wantedChange(s, pairs, false)), [null, null, null], 'each thumbnail shows what was picked');
-  assert.deepStrictEqual(pairs.map((p) => [p.default.frameId, p.default.phrase, p.default.wordsFor ?? null, p.default.photo, p.default.draw]),
-    [[frames[0], 'MAYBE TOMORROW', 'Title two', null, null], [frames[1], null, null, 'laugh', null], [frames[2], 'MY OWN WORDS', null, null, null]]);
-  const requests = c.pickRequests(drawn, pairs, false);
-  assert.deepStrictEqual(requests, [{ kind: 'made', pair: 1 }, { kind: 'made', pair: 2 }, { kind: 'made', pair: 3 }], 'the places in order');
-  const saved = await window.savePicks(job.jobId, itemId, requests);
-  assert.ok(c.samePicks(requests, saved.picks));
-  assert.deepStrictEqual(saved.picks.map((p) => [p.n, p.pick.pair, p.pick.wordsFor]), [[1, 1, 'Title two'], [2, 2, 'Title two'], [3, 3, 'Title three']], 'pick 1 says its words were written for title 2');
-  assert.strictEqual(saved.publishFile, path.join(saved.record.folder, 'picks', 'Pick 1.png'), 'thumbnail 1 is what is published');
-  const reopened = c.selectionFromPicks(saved.picks, saved.record.pairs);
-  assert.deepStrictEqual([reopened.frames, reopened.texts.map((x) => x.key), reopened.photos.map((p) => p.name)], [frames, texts.map((x) => x.key), [null, 'laugh']], 'reopening reads the same picks back (a trailing No photo is the same as none)');
-  // A changed pick after Generate: the card says so (not drawn until Generate again).
-  const changedText = c.planSlots({ pairs, frames, texts: [c.NO_TEXT, texts[1], texts[2]].slice(0, 3), photos, own: {} });
-  assert.ok(c.wantedChange(changedText[0], pairs, false) !== null && c.pickRequests(changedText, pairs, false) === null, 'a changed pick is not saved until drawn');
-  // Unpick frame 1: the rest close up; thumbnail 3 now misses its frame.
-  const fewer = c.planSlots({ pairs, frames: c.togglePick(frames, frames[0], id, 'frames').list, texts, photos, own: {} });
-  assert.deepStrictEqual(fewer.map((s) => s.frameId), [frames[1], frames[2], null]);
-  assert.strictEqual(fewer[2].missing, 'Pick frame 3 above.');
-  assert.throws(() => c.drawChange(fewer[2], false), /Thumbnail 3 cannot be drawn: Pick frame 3 above\./);
-  // His own image in place 2: the frames, texts and photos fill places 1 and 3.
-  const withOwn = c.planSlots({ pairs, frames, texts, photos, own: { 2: '/Users/owen/Desktop/mine.png' } });
-  assert.deepStrictEqual(withOwn.map((s) => [s.n, s.own, s.frameId, s.pickIndex, s.photo]), [[1, null, frames[0], 0, null], [2, '/Users/owen/Desktop/mine.png', null, null, null], [3, null, frames[1], 1, 'laugh']]);
-  // The replaced renders went: one current render per pair is left in the folder.
-  const renders = fs.readdirSync(saved.record.folder).filter((f) => /^Pair \d/.test(f));
-  assert.deepStrictEqual(renders.sort(), pairs.map((p) => path.basename(p.default.render.file)).sort(), renders.join(', '));
-  // THE SAME FRAME ON ALL THREE: each drawn with its own text, saved as three picks, read back.
-  const one = [list[0], list[0], list[0]];
-  const sameTexts = [texts[0], texts[2], c.NO_TEXT];
-  const same = c.planSlots({ pairs, frames: one, texts: sameTexts, photos: [], own: {} });
-  let sv = window.view(job.jobId, itemId);
-  for (const s of same.filter(c.ready)) sv = await window.renderPair(job.jobId, itemId, c.drawChange(s, false));
-  assert.deepStrictEqual(sv.record.pairs.map((p) => p.default.frameId), one, 'one frame under all three');
-  const sameReq = c.pickRequests(c.planSlots({ pairs: sv.record.pairs, frames: one, texts: sameTexts, photos: [], own: {} }), sv.record.pairs, false);
-  const sameSaved = await window.savePicks(job.jobId, itemId, sameReq);
-  assert.deepStrictEqual(c.selectionFromPicks(sameSaved.picks, sameSaved.record.pairs).frames, one, 'reopening reads the same frame three times');
-}));
-
-check('the window\'s shape: frames (one flat list, no scene labels), text as a list, photos in one row with No photo and no percentages, then Generate thumbnails, then the results; nothing drawn on a click', () => {
-  const html = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.html'), 'utf8');
-  const at = (re) => { const m = html.search(re); assert.ok(m >= 0, `missing ${re}`); return m; };
-  const order = [at(/<span class="step">1<\/span> Frames/), at(/<span class="step">2<\/span> Text/), at(/<span class="step">3<\/span> Photos/), at(/>Generate thumbnails<\/button>/), at(/<h3>Your thumbnails<\/h3>/)];
-  assert.deepStrictEqual([...order].sort((a, b) => a - b), order, 'frames, text, photos, Generate, then the results');
-  assert.ok(/\[disabled\]="generateWhy\(\) !== null"/.test(html) && /@if \(generateWhy\(\); as why\)/.test(html), 'Generate is disabled with its reason written beside it');
-  assert.ok(!/sceneLabel|Scene \d|scene-label/.test(html), 'no scene labels');
-  assert.ok(!/Show more|toggleShowMore/.test(html), 'no Show more: every candidate is in the grid');
-  assert.ok(/in time order: the sharpest of each shot/.test(html) && /Start from the suggested words/.test(html), 'the grid says what it is; the suggestion is the words only');
-  assert.ok(!/percent\(|%<\/span>|\bpct\b/.test(html), 'no percentages');
-  assert.ok(/No photo/.test(html) && /removeNoPhoto\(k\)/.test(html), 'No photo, taken out on its badge');
-  assert.ok(/\(click\)="addFrame\(id\)"/.test(html) && /removeFrame\(k, \$event\)/.test(html), 'a frame click adds it (again, if picked); its numbers take a place out');
-  const scss = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.scss'), 'utf8');
-  assert.ok(/\.texts \{ display: flex; flex-direction: column;/.test(scss), 'the text is a vertical list');
-  const win = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.ts'), 'utf8');
-  const changed = win.slice(win.indexOf('private changed(): void {'), win.indexOf('async generate(): Promise<void> {'));
-  assert.ok(!/renderPair|savePicks|sync\(/.test(changed), 'a change to the picks draws nothing and saves nothing');
-  assert.ok(/async generate\(\)[\s\S]*thumbnailsRenderPair[\s\S]*thumbnailsSavePicks/.test(win), 'Generate draws, then saves the picks');
+  const text = (phrase, wordsFor = 'Title one', kind = 'claim') => ({ key: `for|${wordsFor}|${phrase}`, phrase, kind, wordsFor, pair: 1 });
+  let cards = c.emptyCards();
+  assert.deepStrictEqual(cards.map((x) => x.n), [1, 2, 3]);
+  cards = c.toggleFrame(cards, 1, 'f1');
+  cards = c.toggleText(cards, 1, text('A'));
+  cards = c.togglePhoto(cards, 1, 'laugh');
+  assert.deepStrictEqual([cards[0].frameId, cards[0].text.phrase, cards[0].photo, cards[1].frameId], ['f1', 'A', 'laugh', null], 'on card 1 only');
+  cards = c.toggleFrame(cards, 2, 'f1');
+  cards = c.toggleText(cards, 3, text('A'));
+  assert.deepStrictEqual([c.cardsUsing(cards, (x) => x.frameId === 'f1'), c.cardsUsing(cards, (x) => x.text?.key === text('A').key), c.cardsUsing(cards, (x) => x.photo === 'laugh')], [[1, 2], [1, 3], [1]], 'one frame and one line on two cards');
+  assert.strictEqual(c.toggleFrame(cards, 1, 'f1')[0].frameId, null, 'clicking what the card has takes it off');
+  assert.strictEqual(c.toggleText(cards, 1, text('A'))[0].text, null);
+  assert.strictEqual(c.togglePhoto(cards, 1, 'laugh')[0].photo, null);
+  assert.strictEqual(c.toggleText(cards, 1, text('B'))[0].text.phrase, 'B', 'another line replaces it');
+  // Edits follow the pieces.
+  cards = c.setAdjust(cards, 1, { frame: { x: -0.2, y: -0.1, scale: 1.5 }, text: { x: 0.1, y: 0.1, w: 0.4, h: 0.2 }, photo: { cx: 0.2, cy: 0.7, h: 0.4 } });
+  assert.deepStrictEqual(Object.keys(c.toggleFrame(cards, 1, 'f2')[0].adjust).sort(), ['photo', 'text'], 'a new frame starts unzoomed');
+  assert.deepStrictEqual(Object.keys(c.togglePhoto(cards, 1, 'ooh')[0].adjust).sort(), ['frame', 'photo', 'text'], 'another photo keeps the place');
+  assert.deepStrictEqual(Object.keys(c.togglePhoto(cards, 1, 'laugh')[0].adjust).sort(), ['frame', 'text'], 'the photo off: its place goes');
+  assert.deepStrictEqual(Object.keys(c.toggleText(cards, 1, text('A'))[0].adjust).sort(), ['frame', 'photo'], 'the words off: their box goes');
+  assert.deepStrictEqual(Object.keys(c.toggleText(cards, 1, text('C'))[0].adjust).sort(), ['frame', 'photo', 'text'], 'other words keep the box');
+  assert.throws(() => c.setAdjust(cards, 2, { photo: { cx: 0.5, cy: 0.5, h: 0.4 } }), /Thumbnail 2 has no photo to place/);
+  assert.throws(() => c.setAdjust(cards, 3, { frame: { x: 0, y: 0, scale: 1 } }), /Thumbnail 3 has no frame to zoom/);
+  assert.throws(() => c.setAdjust(cards, 1, { frame: { x: 0, y: 0, scale: 50 } }), /Thumbnail 1: the frame's zoom is 50/);
+  // His own image.
+  const own = c.setOwn(cards, 2, { file: '/Users/owen/mine.png', picture: 'pic' });
+  assert.deepStrictEqual([own[1].own.file, own[1].frameId, own[1].text, own[1].adjust], ['/Users/owen/mine.png', null, null, {}], 'it replaces the card\'s content');
+  assert.deepStrictEqual(c.cardsUsing(own, (x) => x.frameId === 'f1'), [1], 'a card with his image uses no frame');
+  const back = c.toggleFrame(own, 2, 'f3');
+  assert.deepStrictEqual([back[1].own, back[1].frameId], [null, 'f3'], 'a tray click puts it back to frames');
+  assert.deepStrictEqual(c.clearCard(cards, 1)[0], c.emptyCard(1));
+  assert.throws(() => c.toggleFrame(cards, 4, 'f1'), /There is no thumbnail 4/);
+  // The editor's arithmetic keeps within the limits a save accepts.
+  const zoomed = c.zoomFrame({ x: 0, y: 0, scale: 1 }, 2, 0.5, 0.5);
+  assert.deepStrictEqual(zoomed, { scale: 2, x: -0.5, y: -0.5 }, 'zoomed about the point under the pointer');
+  assert.deepStrictEqual(c.zoomFrame(zoomed, 100, 0.5, 0.5).scale, shared.FRAME_SCALE_MAX);
+  assert.deepStrictEqual(c.clampFrame({ x: 5, y: -9, scale: 1 }), { scale: 1, x: 1 - shared.FRAME_MIN_COVER, y: shared.FRAME_MIN_COVER - 1 });
+  assert.deepStrictEqual(c.scaleBox({ x: 0.1, y: 0.1, w: 0.2, h: 0.2 }, 2), { w: 0.4, h: 0.4, x: 0, y: 0 });
+  assert.deepStrictEqual(c.clampBox({ x: 0.9, y: 0.95, w: 0.5, h: 0.2 }), { w: 0.5, h: 0.2, x: 0.5, y: 0.8 });
+  assert.deepStrictEqual(c.clampPhoto({ cx: -1, cy: 2, h: 9 }), { cx: 0, cy: 1, h: shared.PHOTO_HEIGHT_MAX });
+  for (const a of [zoomed, c.clampFrame({ x: 5, y: -9, scale: 1 })]) shared.validateAdjust({ frame: a }, 'keeper');
 });
 
-check('the border: drawPair hands the renderer the kept border when the look has it on; none when the look has it off or none is kept; the run says which', () => withWorld({}, async (world) => {
+check('cards saved and read back: a card with a frame is saved, his image too, a card with no frame is left out (said) and the rest close up (pick k goes with title k, chosen titles first); the cards the window sends are what the main process stores, and read back equal (nothing unsaved); a change is unsaved; old picks (an own image by position) are read where they sat; two picks on one card refused; the words\' title mismatch offered only against a chosen title', () => withWorld({}, async (world) => {
+  const c = compose;
+  const { job, itemId, window, rec, runRec } = await windowOver(world, { draw: false });
+  const pairs = rec.pairs;
+  // A report opened for the first time: the run's suggested words on frameless pairs are not a card's content.
+  assert.deepStrictEqual(c.cardsFromView(window.view(job.jobId, itemId)), c.emptyCards(), 'the cards start empty');
+  const options = c.textOptions(pairs);
+  assert.ok(options.every((o) => o.kind !== null && typeof o.wordsFor === 'string'), 'every generated line says its kind and its title');
+  const fromTitleTwo = options.find((o) => o.wordsFor === 'Title two' && o.phrase === 'MAYBE TOMORROW');
+  const list = c.frameList(rec);
+  assert.deepStrictEqual(list, [...rec.frames].sort((a, b) => a.t - b.t).map((f) => f.id), 'every candidate, in time order');
+  assert.deepStrictEqual(c.frameList({ frames: [{ id: 'shot2', t: 0 }, { id: 'shot1', t: 0 }] }), ['shot2', 'shot1'], 'screenshots keep their own order');
+  let cards = c.emptyCards();
+  cards = c.toggleFrame(cards, 1, list[2]);
+  cards = c.toggleText(cards, 1, fromTitleTwo);
+  cards = c.togglePhoto(cards, 1, 'laugh');
+  cards = c.setAdjust(cards, 1, { text: { x: 0.05, y: 0.05, w: 0.5, h: 0.3 }, photo: { cx: 0.25, cy: 0.7, h: 0.4 } });
+  cards = c.toggleText(cards, 2, c.typedText(' MY OWN WORDS '));
+  cards = c.togglePhoto(cards, 2, 'ooh');
+  cards = c.toggleFrame(cards, 3, list[0]);
+  const plans = c.planCards(cards, pairs);
+  assert.deepStrictEqual(plans.map((p) => [p.n, p.saved, p.position]), [[1, 'made', 1], [2, null, null], [3, 'made', 2]], 'card 2 (no frame) left out; card 3 is pick 2');
+  assert.strictEqual(plans[1].why, 'It has no frame yet, so it is left out when you save. Pick a frame for it.');
+  assert.strictEqual(c.planCards(c.emptyCards(), pairs)[0].why, 'Empty: it is left out when you save.');
+  assert.strictEqual(c.saveBlocked(c.emptyCards(), pairs, 0), 'Put a frame (or your own image) on at least one thumbnail first.');
+  assert.strictEqual(c.saveBlocked(c.emptyCards(), pairs, 2), null, 'emptying every card of saved picks can be saved');
+  assert.strictEqual(c.noPairFor(3, pairs.slice(0, 2)), 'This report has 2 title and thumbnail pairs, so thumbnail 3 can only hold your own image.');
+  assert.deepStrictEqual(c.titleOf(2, ['Chosen A'], ['Title one', 'Title two']), { title: 'Title one', chosen: false }, 'his chosen titles first, then the generated ones, said which');
+  assert.deepStrictEqual(c.titleOf(1, ['Chosen A'], ['Title one']), { title: 'Chosen A', chosen: true });
+  assert.strictEqual(c.titleOf(null, ['Chosen A'], []), null);
+  assert.strictEqual(c.wordsMismatch(cards[0], { title: 'Chosen A', chosen: true }), 'Title two', 'words written for another chosen title: offered a rewrite');
+  assert.strictEqual(c.wordsMismatch(cards[0], { title: 'Title one', chosen: false }), null, 'not against a title he has not picked');
+  // Saved as the window sends them, then read back.
+  const requests = c.cardRequests(cards, pairs);
+  assert.deepStrictEqual(requests.map((r) => r.kind), ['made', 'empty', 'made']);
+  assert.deepStrictEqual(requests[0], { card: 1, kind: 'made', frameId: list[2], phrase: 'MAYBE TOMORROW', textKind: 'stakes', wordsFor: 'Title two', photo: 'laugh', adjust: cards[0].adjust });
+  const v = await window.saveCards(job.jobId, itemId, requests);
+  assert.deepStrictEqual(v.picks.map((p) => [p.n, p.pick.pair, p.pick.wordsFor]), [[1, 1, 'Title two'], [2, 3, 'Title three']], 'pick 1 says its words were written for title 2');
+  const read = c.cardsFromView(v);
+  const expected = cards.map((x) => (x.n === 2 ? c.emptyCard(2) : x));
+  assert.deepStrictEqual(read.map((x, i) => c.sameCard(x, expected[i])), [true, true, true], 'read back as sent (the frameless card empty)');
+  assert.deepStrictEqual(c.unsavedCards(read, read), []);
+  assert.deepStrictEqual(c.unsavedCards(c.toggleFrame(read, 3, list[1]), read), [3], 'a change is unsaved on its card');
+  assert.deepStrictEqual(c.unsavedCards(c.setAdjust(read, 3, { frame: { x: 0, y: 0, scale: 1.2 } }), read), [3], 'an edit is a change');
+  // His own image on card 2, saved and read back on card 2.
+  const withOwn = c.setOwn(read, 2, { file: picture(path.join(world.root, 'Desktop', 'own.png'), '1280x720'), picture: 'chosen picture' });
+  const v2 = await window.saveCards(job.jobId, itemId, c.cardRequests(withOwn, v.record.pairs));
+  assert.deepStrictEqual(v2.picks.map((p) => [p.n, p.pick.kind, p.pick.kind === 'own' ? p.pick.card : p.pick.pair]), [[1, 'made', 1], [2, 'own', 2], [3, 'made', 3]]);
+  const read2 = c.cardsFromView(v2);
+  assert.deepStrictEqual(c.unsavedCards(read2, withOwn), [], 'his image read back on its card (compared by file)');
+  // Old picks from before the card editor: an own image with no card sat on the card of its position.
+  const oldView = { record: v2.record, picks: [{ n: 1, pick: { kind: 'made', pair: 1, file: '/r1.png', wordsFor: 'Title one' }, copy: '', picture: '' }, { n: 2, pick: { kind: 'own', file: '/mine.png' }, copy: '', picture: 'p' }] };
+  assert.strictEqual(c.cardsFromView(oldView)[1].own.file, '/mine.png');
+  const clash = { record: v2.record, picks: [{ n: 1, pick: { kind: 'made', pair: 1, file: '/r1.png', wordsFor: 'Title one' }, copy: '', picture: '' }, { n: 2, pick: { kind: 'own', file: '/mine.png', card: 1 }, copy: '', picture: 'p' }] };
+  assert.throws(() => c.cardsFromView(clash), /Pick 1 and Pick 2 \(your own image\) are both saved on thumbnail 1: the saved picks and the record disagree\./);
+  const onPair = { record: v2.record, picks: [{ n: 1, pick: { kind: 'own', file: '/mine.png' }, copy: '', picture: 'p' }] };
+  assert.strictEqual(c.cardsFromView(onPair)[0].own.file, '/mine.png', 'an old own pick on card 1 is his image there, whatever pair 1 was drawn with');
+  assert.throws(() => c.cardsFromView({ record: runRec, picks: [{ n: 1, pick: { kind: 'made', pair: 1, file: '/x.png', wordsFor: 'Title one' }, copy: '', picture: '' }] }), /Pick 1 is thumbnail 1, which has no frame/);
+}));
+
+check('the window\'s shape: the three cards (live previews, Save thumbnails, Edit, Clear, Use my own image) above the trays (frames, text, photos); no pick lists, no Generate, no suggested words, no Clear picks, no logo switch, no No text / No photo; a click draws in the window and asks the main process nothing; the preview uses the shared layout and drawing; closing asks in the window; no teal', () => {
+  const dir = path.join(REPO, 'frontend/src/app/components/thumbnails-window');
+  const html = fs.readFileSync(path.join(dir, 'thumbnails-window.html'), 'utf8');
+  const at = (re) => { const m = html.search(re); assert.ok(m >= 0, `missing ${re}`); return m; };
+  const order = [at(/<h3>Your thumbnails<\/h3>/), at(/>Save thumbnails<\/button>/), at(/<h3>Frames<\/h3>/), at(/<h3>Text<\/h3>/), at(/<h3>Photos<\/h3>/)];
+  assert.deepStrictEqual([...order].sort((a, b) => a - b), order, 'cards and Save first, then frames, text and photos');
+  assert.ok(/#cardCanvas/.test(html) && /\(click\)="selectCard\(n\)"/.test(html) && /\[class\.active\]="active\(\) === n"/.test(html), 'three cards, one active, a click makes it active');
+  assert.ok(/\(click\)="clickFrame\(id\)"/.test(html) && /\(click\)="clickText\(o\)"/.test(html) && /\(click\)="clickPhoto\(p\.name\)"/.test(html), 'a tray click goes on the active card');
+  assert.ok(/frameCards\(id\)/.test(html) && /textCards\(o\)/.test(html) && /photoCards\(p\.name\)/.test(html) && /\[class\.mine\]="k === active\(\)"/.test(html), 'the badges say which cards use an item');
+  assert.ok(/edit\(n, \$event\)/.test(html) && /clear\(n, \$event\)/.test(html) && /Use my own image…/.test(html) && /Rewrite words for this title/.test(html), 'per card: Edit, Clear, own image, rewrite');
+  assert.ok(/\[disabled\]="saveWhy\(\) !== null"/.test(html) && /@if \(saveWhy\(\); as why\)/.test(html), 'Save is disabled with its reason written beside it');
+  assert.ok(/Close without saving/.test(html) && /Save and close/.test(html) && /Keep editing/.test(html), 'closing with changes asks in the window');
+  for (const gone of [/Generate thumbnails/, /Start from the suggested words/, /Clear picks/, />No photo</, />No text</, /type="checkbox"/, /setLogo\(/, /removeFrame\(/, /addNoPhoto\(/, /sceneLabel|Scene \d/, /Show more/, /%<\/span>/]) {
+    assert.ok(!gone.test(html), `the old window's ${gone} is still there`);
+  }
+  const win = fs.readFileSync(path.join(dir, 'thumbnails-window.ts'), 'utf8');
+  assert.ok(/this\.ref\.disableClose = true/.test(win) && /backdropClick\(\)\.subscribe\(\(\) => this\.requestClose\(\)\)/.test(win), 'the dialog does not close behind his back');
+  assert.ok(!/\bconfirm\(|\balert\(|window\.confirm/.test(win + html), 'no browser dialogs');
+  for (const name of ['clickFrame', 'clickText', 'clickPhoto', 'clear', 'undo', 'selectCard']) {
+    const body = win.slice(win.indexOf(`${name}(`), win.indexOf('\n  }\n', win.indexOf(`${name}(`)));
+    assert.ok(!/this\.electron\./.test(body), `${name} asks the main process: a click is drawn in the window`);
+  }
+  assert.ok(/async save\(\)[\s\S]*thumbnailsSaveCards/.test(win), 'Save thumbnails saves the cards');
+  for (const gone of ['thumbnailsRenderPair', 'thumbnailsSavePicks', 'thumbnailsRemake', 'thumbnailsReleaseModel', 'planSlots', 'drawChange', 'wantedChange', 'pickRequests', 'suggestedTexts', 'selectionFromPicks', 'generateBlocked']) {
+    assert.ok(!win.includes(gone), `the window still names ${gone}`);
+  }
+  const composeSrc = fs.readFileSync(path.join(dir, 'thumbnails-compose.ts'), 'utf8');
+  for (const gone of ['planSlots', 'drawChange', 'wantedChange', 'pickRequests', 'suggestedTexts', 'selectionFromPicks', 'generateBlocked', 'addNoPhoto', 'NO_TEXT']) {
+    assert.ok(!new RegExp(`\\b${gone}\\b`).test(composeSrc), `thumbnails-compose.ts still has ${gone}`);
+  }
+  // The preview draws with the render's own layout and drawing, through the shared module.
+  const preview = fs.readFileSync(path.join(dir, 'thumbnail-preview.ts'), 'utf8');
+  assert.ok(/composeThumbnail\(/.test(preview) && /paintThumbnail\(/.test(preview) && /measurePhrase\(/.test(preview) && /from '\.\/thumbnail-shared'/.test(preview), 'the preview uses the shared layout and drawing');
+  assert.ok(!/fillText|strokeText|planText\(|placeReaction\(|placeLogo\(/.test(preview), 'the preview places and draws nothing of its own');
+  const sharedTs = fs.readFileSync(path.join(dir, 'thumbnail-shared.ts'), 'utf8');
+  assert.ok(/export \* from '\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/electron\/shared\/thumbnail-layout'/.test(sharedTs) && /export \* from '\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/electron\/shared\/thumbnail-draw'/.test(sharedTs), 'the frontend re-exports the one shared copy');
+  const page = fs.readFileSync(path.join(REPO, 'electron/services/thumbnails/canvas-page.ts'), 'utf8');
+  assert.ok(/import \{ measurePhrase, paintThumbnail \} from '\.\.\/\.\.\/shared\/thumbnail-draw'/.test(page) && !/function pageDraw|function pageMeasure/.test(page), 'the render page runs the same shared functions');
+  const renderer = fs.readFileSync(path.join(REPO, 'electron/services/thumbnails/renderer.ts'), 'utf8');
+  assert.ok(/composeThumbnail\(/.test(renderer) && !/planText\(|placeReaction\(|placeLogo\(/.test(renderer), 'the render places with the same composeThumbnail');
+  const editor = fs.readFileSync(path.join(dir, 'thumbnail-card-editor.ts'), 'utf8');
+  assert.ok(/drawCard\(/.test(editor) && /\(wheel\)="wheel\(\$event\)"/.test(editor) && /type="range"/.test(editor) && /class="handle"/.test(editor) && /reset\(selected\(\)\)/.test(editor), 'the editor: the same drawing, wheel, slider, corner handle, reset');
+  assert.ok(!/'logo'|'border'/.test(editor.slice(editor.indexOf('type Piece'), editor.indexOf(';', editor.indexOf('type Piece')))), 'the logo and border are not editable pieces');
+  const styles = ['thumbnails-window.scss', 'thumbnail-card-editor.ts'].map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
+  assert.ok(!/teal|#008080|rgb\(\s*0\s*,\s*128\s*,\s*128\s*\)/i.test(styles), 'no teal');
+  assert.ok(/var\(--primary-orange\)/.test(styles), 'the app\'s orange is the accent');
+});
+
+check('the border: drawPair hands the renderer the kept border when the look has it on; none when the look has it off or none is kept; the run says which; the shared drawing draws frame, border, words, photo, logo in that order', () => withWorld({}, async (world) => {
   const { job, itemId, window, rec } = await windowOver(world);
   const { userData, root, setup } = world;
   const borderFile = path.join(root, 'Downloads', 'thumbnail-border.png');
   fs.mkdirSync(path.dirname(borderFile), { recursive: true });
   fs.writeFileSync(borderFile, PNG_BYTES);
   const kept = library.setLibraryBorder(userData, borderFile, () => {});
-  await window.renderPair(job.jobId, itemId, { pair: 1, phrase: null });
-  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().borderFile, kept, 'the kept border, under the words');
+  await window.saveCards(job.jobId, itemId, cardsFor(rec, [{ frame: rec.frames[0].id, phrase: null }, null, null]));
+  assert.strictEqual(drawsOf(world).pop().borderFile, kept, 'the kept border, under the words');
   const off = { ...setup, style: { ...setup.style, border: false } };
   const renderer = off.openRenderer();
   const frame = rec.frames.find((f) => f.id === rec.pairs[0].default.frameId);
-  await pipeline.drawPair({ renderer, ffmpeg: FFMPEG, video: rec.source.video, folder: rec.folder, frame: { id: frame.id, t: frame.t }, phrase: 'X', photo: null, logo: false, style: off.style, userDataPath: userData, outStem: path.join(rec.folder, 'border off') });
-  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().borderFile, null, 'switched off in the look: none');
+  await pipeline.drawPair({ renderer, ffmpeg: FFMPEG, video: rec.source.video, folder: rec.folder, frame: { id: frame.id, t: frame.t }, phrase: 'X', photo: null, logo: false, style: off.style, userDataPath: userData, outStem: path.join(rec.folder, 'border off'), adjust: null });
+  assert.strictEqual(drawsOf(world).pop().borderFile, null, 'switched off in the look: none');
   fs.rmSync(library.borderDir(userData), { recursive: true });
-  await pipeline.drawPair({ renderer, ffmpeg: FFMPEG, video: rec.source.video, folder: rec.folder, frame: { id: frame.id, t: frame.t }, phrase: 'X', photo: null, logo: false, style: setup.style, userDataPath: userData, outStem: path.join(rec.folder, 'no border kept') });
-  assert.strictEqual(world.renders.filter((r) => r !== 'closed').pop().borderFile, null, 'none kept: none');
-  // The drawing order is the page's: frame, border, patch and words, photo, logo.
-  const page = fs.readFileSync(path.join(REPO, 'electron/services/thumbnails/canvas-page.ts'), 'utf8');
-  const draw = page.slice(page.indexOf('async function pageDraw'), page.indexOf('// ── in the main process'));
+  await pipeline.drawPair({ renderer, ffmpeg: FFMPEG, video: rec.source.video, folder: rec.folder, frame: { id: frame.id, t: frame.t }, phrase: 'X', photo: null, logo: false, style: setup.style, userDataPath: userData, outStem: path.join(rec.folder, 'no border kept'), adjust: null });
+  assert.strictEqual(drawsOf(world).pop().borderFile, null, 'none kept: none');
+  // The drawing order is the shared drawing's (the render page and the window's preview run it): frame, border, patch and words, photo, logo.
+  const drawSrc = fs.readFileSync(path.join(REPO, 'electron/shared/thumbnail-draw.ts'), 'utf8');
+  const draw = drawSrc.slice(drawSrc.indexOf('export async function paintThumbnail'));
   const idx = ['ctx.drawImage(img, 0, 0, W, H)', 'ctx.drawImage(border, 0, 0, W, H)', 'ctx.fillText(line.text', 'ctx.drawImage(photo, r.x', 'ctx.drawImage(logo, l.x'].map((s) => draw.indexOf(s));
   assert.ok(idx.every((i) => i > 0) && idx.every((i, k) => k === 0 || i > idx[k - 1]), `frame, border, words, photo, logo in that order (${idx})`);
   assert.ok(!/vignette/.test(draw), 'the procedural vignette is gone');
 }));
 
-check('the tab is gone and nothing dangles: no route, sidebar entry, component, lab service, combine or thumbs: channel; every thumbnails: channel offered has a handler and the reverse; no THUMBNAIL TEXT OPTIONS section; pick 1 is published through the publish door', () => {
+check('the tab is gone and nothing dangles: no route, sidebar entry, component, lab service, combine or thumbs: channel; every thumbnails: channel offered has a handler and the reverse; the old draw/pick/remake channels are gone; no THUMBNAIL TEXT OPTIONS section; pick 1 is published through the publish door', () => {
   const read = (rel) => fs.readFileSync(path.join(REPO, rel), 'utf8');
-  for (const gone of ['electron/services/thumbnails/lab-service.ts', 'electron/services/thumbnails/thumbnail-lab-ipc.ts', 'electron/services/thumbnails/combine.ts', 'frontend/src/app/components/thumbnails']) {
+  for (const gone of ['electron/services/thumbnails/lab-service.ts', 'electron/services/thumbnails/thumbnail-lab-ipc.ts', 'electron/services/thumbnails/combine.ts', 'frontend/src/app/components/thumbnails', 'electron/services/thumbnails/layout.ts']) {
     assert.ok(!fs.existsSync(path.join(REPO, gone)), `${gone} is still there`);
   }
   assert.ok(!/path: 'thumbnails'/.test(read('frontend/src/app/app.routes.ts')), 'the route is gone');
@@ -1087,6 +1239,12 @@ check('the tab is gone and nothing dangles: no route, sidebar entry, component, 
   const handled = new Set([...ipc.matchAll(/ipcMain\.handle\('(thumbnails:[a-z-]+)'/g)].map((m) => m[1]));
   handled.add('thumbnails:progress'); // pushed by main, listened to by the preload
   assert.deepStrictEqual([...offered].sort(), [...handled].sort(), 'the preload and the handlers name the same channels');
+  for (const gone of ['thumbnails:render-pair', 'thumbnails:save-picks', 'thumbnails:remake', 'thumbnails:release-model']) assert.ok(!offered.has(gone) && !handled.has(gone), `${gone} is still offered`);
+  for (const now of ['thumbnails:save-cards', 'thumbnails:frame-detail', 'thumbnails:photo-detail', 'thumbnails:closed']) assert.ok(offered.has(now), `${now} is not offered`);
+  assert.ok(!/thumbnailsRenderPair|thumbnailsSavePicks|thumbnailsRemake|thumbnailsReleaseModel|PairChange|PickRequest/.test(bridge), 'the bridge names no removed call');
+  const report = read('electron/services/thumbnails/report-thumbnails.ts');
+  assert.ok(!/renderPair\(|savePicks\(|remake\(|PairChange/.test(report), 'the main process keeps no removed action');
+  assert.ok(!/again\?: \{ folder/.test(read('electron/services/thumbnails/pipeline.ts')), 'no "from scratch" path left in the run');
   const html = read('frontend/src/app/components/metadata-reports/metadata-reports.html');
   assert.ok(!/thumbnail_text|Thumbnail text/.test(html), 'no THUMBNAIL TEXT OPTIONS section on the reports page');
   assert.ok(/openThumbnails\(\)/.test(html), 'the reports page opens the Thumbnails window');
@@ -1109,7 +1267,7 @@ check('the tab is gone and nothing dangles: no route, sidebar entry, component, 
     assert.ok(!/scoreFrames|decideItems|'thumbnail_frames'|from '\.\/frame-scorer'|from '\.\/frame-ranking'/.test(src), `${file} still scores frames`);
   }
   assert.ok(!/thumbnail_frames'|id: 'thumbnail_frames'/.test(read('electron/services/metadata/metadata-routing.ts').replace(/REMOVED_ROUTING_TASKS[\s\S]*?\n};/, '')), 'no thumbnail_frames row');
-  assert.ok(!/'thumbnails:frames'|thumbnailsFrames/.test(preload + ipc + bridge), 'no frames channel (Show more is gone)');
+  assert.ok(!/'thumbnails:frames'|thumbnailsFrames\b/.test(preload + ipc + bridge), 'no frames channel (Show more is gone)');
 });
 
-run('thumbnails in the metadata run and the reports page\'s window: the story link, stage order and the grid, words per title, no story, failures, off, storage, ordered picks, swaps, own image, rewrite for a title, screenshots, delete, finish, picking and Generate, the window\'s shape, the border, the tab, the judge and the frame scoring gone');
+run('thumbnails in the metadata run and the reports page\'s window: the story link, stage order and the grid, words per title, no story, failures, off, storage, Save thumbnails, card edits, the preview\'s pieces, own image, rewrite for a title, screenshots, delete, finish, the card rules, the window\'s shape, the border, the tab, the judge and the frame scoring gone');

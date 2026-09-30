@@ -14,7 +14,7 @@
  */
 import * as log from 'electron-log';
 import { PythonService } from '../editor/python-service';
-import { DEFAULT_STYLE, readStoredStyle } from './layout';
+import { DEFAULT_STYLE, readStoredStyle } from '../../shared/thumbnail-layout';
 import { STYLE_STORE_KEY } from './look';
 import type { ThumbnailRunChoice } from './pipeline';
 import { electronThumbnailRenderer } from './pipeline-electron';

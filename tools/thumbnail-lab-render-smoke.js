@@ -21,6 +21,13 @@
  * output (the corners black, the middle untouched), and a missing, non-16:9, fully transparent or
  * fully opaque border is refused naming the file. Its text size: the default draws 15% smaller.
  *
+ * The card editor (2026-09-29): Owen's stored edits change the drawing where they should, on
+ * synthetic pictures: a frame of four coloured quarters zoomed in shows one quarter, panned shows
+ * another, zoomed out sits on black; the words go in his box and not in the automatic place; the
+ * photo is drawn where he moved it and not in its space; an empty edit draws byte for byte what no
+ * edit draws. And the window's live preview draws the same pixels: the shared paintThumbnail handed
+ * decoded pictures (as the card does) equals the render page handed data URLs.
+ *
  * The library (2026-09-28): a real PNG cut-out and logo are copied into a scratch userData's
  * `thumbnail-lab/` (never Owen's), read back from there by ThumbnailLook (look.ts), and an
  * unreadable logo is refused before anything is copied. "TAKE YOUR CLOTHES OFF" is rendered on the
@@ -38,9 +45,9 @@ const os = require('os');
 
 const ROOT = path.join(__dirname, '..', 'dist', 'main');
 const REPO = path.join(__dirname, '..');
-const { ThumbnailCanvas, canvasPagePath } = require(path.join(ROOT, 'services/thumbnails/canvas-page.js'));
+const { ThumbnailCanvas, canvasPagePath, dataUrlOf } = require(path.join(ROOT, 'services/thumbnails/canvas-page.js'));
 const { renderThumbnail, OUTPUT_WIDTH, OUTPUT_HEIGHT } = require(path.join(ROOT, 'services/thumbnails/renderer.js'));
-const layout = require(path.join(ROOT, 'services/thumbnails/layout.js'));
+const layout = require(path.join(ROOT, 'shared/thumbnail-layout.js'));
 const tv = require(path.join(ROOT, 'services/publish/thumbnail-validate.js'));
 const photos = require(path.join(ROOT, 'services/thumbnails/reaction-photos.js'));
 const logos = require(path.join(ROOT, 'services/thumbnails/logo.js'));
@@ -261,6 +268,106 @@ app.whenReady().then(async () => {
       assert(none.ok && none.logo === null, 'no logo file: none drawn');
     } finally {
       renderer.close();
+    }
+  });
+
+  await check('card edits (the card editor): the frame zoomed in shows a crop and zoomed out sits on black, the words drawn in Owen\'s box and not in the automatic place, the photo drawn where he moved it and not in its space; no edit draws byte for byte what an empty edit draws', async () => {
+    const px = (file, x, y) => { const b = nativeImage.createFromPath(file).toBitmap(); const i = (Math.round(y) * OUTPUT_WIDTH + Math.round(x)) * 4; return [b[i + 2], b[i + 1], b[i]]; };
+    const near = (a, b, t = 12) => a.every((v, k) => Math.abs(v - b[k]) <= t);
+    // A frame of four coloured quarters: red top-left, green top-right, blue bottom-left, white bottom-right.
+    const qb = Buffer.alloc(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const [r, g, b] = y < H / 2 ? (x < W / 2 ? [220, 20, 20] : [20, 200, 20]) : (x < W / 2 ? [20, 20, 220] : [240, 240, 240]);
+      qb[i] = b; qb[i + 1] = g; qb[i + 2] = r; qb[i + 3] = 255;
+    }
+    const quarters = path.join(scratch, 'quarters.png');
+    fs.writeFileSync(quarters, nativeImage.createFromBitmap(qb, { width: W, height: H }).toPNG());
+    const base = await renderThumbnail({ canvas, border: null, frame: quarters, phrase: null, style, photo: null, logo: null, adjust: null, outStem: path.join(scratch, 'edit base') });
+    assert(near(px(base.path, 1000, 600), [240, 240, 240]) && near(px(base.path, 320, 180), [220, 20, 20]), 'the plain frame: white bottom-right, red top-left');
+    const empty = await renderThumbnail({ canvas, border: null, frame: quarters, phrase: null, style, photo: null, logo: null, adjust: {}, outStem: path.join(scratch, 'edit empty') });
+    assert(fs.readFileSync(empty.path).equals(fs.readFileSync(base.path)), 'an empty edit is no edit');
+    const zoomIn = await renderThumbnail({ canvas, border: null, frame: quarters, phrase: null, style, photo: null, logo: null, adjust: { frame: { x: 0, y: 0, scale: 2 } }, outStem: path.join(scratch, 'edit zoom in') });
+    assert(near(px(zoomIn.path, 1000, 600), [220, 20, 20]) && near(px(zoomIn.path, 40, 40), [220, 20, 20]), `zoomed 2x on the top-left: all red (${px(zoomIn.path, 1000, 600)})`);
+    const panned = await renderThumbnail({ canvas, border: null, frame: quarters, phrase: null, style, photo: null, logo: null, adjust: { frame: { x: -1, y: -1, scale: 2 } }, outStem: path.join(scratch, 'edit panned') });
+    assert(near(px(panned.path, 640, 360), [240, 240, 240]), `panned to the bottom-right quarter: white (${px(panned.path, 640, 360)})`);
+    const zoomOut = await renderThumbnail({ canvas, border: null, frame: quarters, phrase: null, style, photo: null, logo: null, adjust: { frame: { x: 0.25, y: 0.25, scale: 0.5 } }, outStem: path.join(scratch, 'edit zoom out') });
+    assert(near(px(zoomOut.path, 5, 5), [0, 0, 0], 3) && near(px(zoomOut.path, 400, 250), [220, 20, 20]) && near(px(zoomOut.path, 900, 500), [240, 240, 240]), `zoomed out: the frame smaller on black (${px(zoomOut.path, 5, 5)})`);
+    tv.validateThumbnailFile(zoomOut.path);
+    // The words: a flat grey frame, orange letters counted by region.
+    const gb = Buffer.alloc(W * H * 4);
+    for (let i = 0; i < W * H; i++) { gb[i * 4] = 70; gb[i * 4 + 1] = 70; gb[i * 4 + 2] = 70; gb[i * 4 + 3] = 255; }
+    const grey = path.join(scratch, 'grey.png');
+    fs.writeFileSync(grey, nativeImage.createFromBitmap(gb, { width: W, height: H }).toPNG());
+    const orangeIn = (file, r) => {
+      const b = nativeImage.createFromPath(file).toBitmap();
+      let n = 0;
+      for (let y = Math.max(0, Math.floor(r.y)); y < Math.min(OUTPUT_HEIGHT, r.y + r.h); y++) for (let x = Math.max(0, Math.floor(r.x)); x < Math.min(OUTPUT_WIDTH, r.x + r.w); x++) {
+        const i = (y * OUTPUT_WIDTH + x) * 4;
+        if (b[i + 2] > 220 && b[i + 1] > 100 && b[i + 1] < 160 && b[i] < 60) n++;
+      }
+      return n;
+    };
+    const auto = await renderThumbnail({ canvas, border: null, frame: grey, phrase: 'maybe tomorrow', style, photo: null, logo: null, adjust: null, outStem: path.join(scratch, 'edit words auto') });
+    const box = { x: 0.5, y: 0.08, w: 0.4, h: 0.3 };
+    const boxPx = { x: box.x * OUTPUT_WIDTH, y: box.y * OUTPUT_HEIGHT, w: box.w * OUTPUT_WIDTH, h: box.h * OUTPUT_HEIGHT };
+    const placed = await renderThumbnail({ canvas, border: null, frame: grey, phrase: 'maybe tomorrow', style, photo: null, logo: null, adjust: { text: box }, outStem: path.join(scratch, 'edit words box') });
+    const autoPatch = auto.plan.patch;
+    assert(orangeIn(auto.path, autoPatch) > 500 && orangeIn(auto.path, boxPx) === 0, `the automatic words bottom-left (${orangeIn(auto.path, autoPatch)} orange there)`);
+    assert(orangeIn(placed.path, boxPx) > 500 && orangeIn(placed.path, autoPatch) === 0, `his box holds the words, the automatic place none (${orangeIn(placed.path, boxPx)} / ${orangeIn(placed.path, autoPatch)})`);
+    const p = placed.plan.patch;
+    assert(p.x >= boxPx.x - 0.01 && p.y >= boxPx.y - 0.01 && p.x + p.w <= boxPx.x + boxPx.w + 0.01 && p.y + p.h <= boxPx.y + boxPx.h + 0.01, `inside the box: ${JSON.stringify(p)}`);
+    assert(placed.notes.every((n) => !/face/.test(n)), 'no face search for words he placed');
+    // The photo moved to the left: drawn where he put it, not in its space.
+    const t = photos.trimmedPhoto(listIn(cutDir)[0]);
+    const inSpace = await renderThumbnail({ canvas, border: null, frame: grey, phrase: null, style, photo: t, logo: null, adjust: null, outStem: path.join(scratch, 'edit photo space') });
+    const moved = await renderThumbnail({ canvas, border: null, frame: grey, phrase: null, style, photo: t, logo: null, adjust: { photo: { cx: 0.2, cy: 0.5, h: 0.5 } }, outStem: path.join(scratch, 'edit photo moved') });
+    const home = { x: inSpace.reaction.x + inSpace.reaction.w / 2, y: inSpace.reaction.y + inSpace.reaction.h * 0.4 };
+    const red = (c) => c[0] > 150 && c[1] < 100 && c[2] < 90;
+    assert(red(px(inSpace.path, home.x, home.y)) && !red(px(inSpace.path, 256, 360)), 'the photo in its space by default');
+    assert(red(px(moved.path, 256, 360)) && !red(px(moved.path, home.x, home.y)), `moved: at his centre, gone from its space (${px(moved.path, 256, 360)})`);
+    assert(Math.abs(moved.reaction.h - 360) < 1e-6 && Math.abs(moved.reaction.x + moved.reaction.w / 2 - 256) < 1e-6, JSON.stringify(moved.reaction));
+    tv.validateThumbnailFile(moved.path);
+  });
+
+  await check('the window\'s live preview draws the same pixels as the saved thumbnail: the shared paintThumbnail handed pictures already decoded (as the card preview does) equals the render page handed data URLs', async () => {
+    const { BrowserWindow } = require('electron');
+    const { paintThumbnail } = require(path.join(ROOT, 'shared/thumbnail-draw.js'));
+    const t = photos.trimmedPhoto(listIn(cutDir)[0]);
+    const measured = await canvas.measure(style.font, ['MAYBE', 'TOMORROW'], layout.REFERENCE_SIZE);
+    const placed = layout.composeThumbnail({
+      width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, frameSize: { width: W, height: H }, faces: [], style,
+      adjust: { frame: { x: -0.1, y: -0.05, scale: 1.3 }, photo: { cx: 0.25, cy: 0.6, h: 0.5 } },
+      metrics: { words: ['MAYBE', 'TOMORROW'], ...measured }, photo: { width: t.width, height: t.height }, logo: null,
+    });
+    const arg = {
+      image: dataUrlOf(synthetic), frame: placed.frame, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT,
+      style: { font: style.font, fill: style.fill, stroke: style.stroke, patch: style.patch, patchDarken: style.patchDarken },
+      border: null,
+      plan: { size: placed.plan.size, capPx: placed.plan.capPx, strokePx: placed.plan.strokePx, lines: placed.plan.lines, patches: placed.plan.linePatches },
+      reaction: { image: `data:image/png;base64,${t.png.toString('base64')}`, x: placed.reaction.x, y: placed.reaction.y, w: placed.reaction.w, h: placed.reaction.h, outlinePx: placed.reaction.outlinePx },
+      logo: null,
+    };
+    const fromPage = await canvas.draw({ ...arg, style, plan: placed.plan, jpegQuality: null });
+    const win = new BrowserWindow({ show: false, width: 320, height: 180, webPreferences: { offscreen: true, sandbox: true, contextIsolation: true } });
+    try {
+      await win.loadFile(canvasPagePath(REPO));
+      const script = `(async () => {
+        const paint = (${paintThumbnail.toString()});
+        const load = async (src) => { const i = new Image(); i.src = src; await i.decode(); return i; };
+        const arg = ${JSON.stringify(arg)};
+        arg.image = await load(arg.image);
+        arg.reaction.image = await load(arg.reaction.image);
+        return (await paint(arg)).toDataURL('image/png');
+      })()`;
+      const fromWindow = await win.webContents.executeJavaScript(script, true);
+      const a = nativeImage.createFromDataURL(fromPage).toBitmap();
+      const b = nativeImage.createFromDataURL(fromWindow).toBitmap();
+      let differ = 0;
+      for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 2) differ++;
+      assert(a.length === b.length && differ === 0, `${differ} channel values differ`);
+    } finally {
+      win.destroy();
     }
   });
 

@@ -34,6 +34,20 @@
  *
  * Measurements are taken ONCE by the page at REFERENCE_SIZE (canvas `measureText`) and scaled
  * linearly, so this module needs no canvas and tools/thumbnail-lab-checks.js runs it in plain Node.
+ *
+ * SHARED BY BOTH PROCESSES (2026-09-29, the Thumbnails window's card editor). It lives under
+ * electron/shared/ (it was services/thumbnails/layout.ts) and the window's
+ * frontend/src/app/components/thumbnails-window/thumbnail-shared.ts re-exports it, because the
+ * window draws each card's LIVE preview itself with the same placement (`composeThumbnail`) and
+ * the same drawing (thumbnail-draw.ts `paintThumbnail`) the final render uses, so the preview
+ * cannot drift from the saved PNG (LEDGER law 10). It must stay free of imports on both sides: no
+ * Angular, no Node, no Electron.
+ *
+ * OWEN'S EDITS (`CardAdjust`, the card editor; Owen 2026-09-29: "i should be able to hit a zoom
+ * button on a frame and resize (zoom/shrink) or reposition any of the three elements"): the
+ * frame's place and size, a box the words are fitted into, and the reaction photo's centre and
+ * height, all in fractions of the picture. Each is optional; a card with none is laid out exactly
+ * as before (`composeThumbnail` with no adjust is the old renderer's arithmetic, step for step).
  */
 
 export interface Rect {
@@ -507,6 +521,11 @@ export function planText(
   reactionAvoid: Rect | null = null,
   /** The logo's drawn bounds (placeLogo); null keeps the whole logo space clear where it reaches the box. */
   logoAvoid: Rect | null = null,
+  /**
+   * A photo Owen moved (CardAdjust.photo): the box is then the whole picture inside the margins, and
+   * the photo's drawn bounds are one more thing kept clear, since it no longer sits in its space.
+   */
+  movedPhotoAvoid: Rect | null = null,
 ): PlanResult {
   if (metrics.words.length === 0) throw new Error('planText: the phrase has no words.');
   if (metrics.wordWidths.length !== metrics.words.length) throw new Error('planText: the page measured a different number of words than the phrase has.');
@@ -514,10 +533,12 @@ export function planText(
   const capPerSize = metrics.capHeight / REFERENCE_SIZE;
   const minCap = style.minCapFraction * height;
   const maxSize = (style.maxCapFraction * height) / capPerSize;
-  const box = textBox(style, width, height, reactionAvoid);
+  const m = MARGIN_FRACTION * height;
+  const box = movedPhotoAvoid === null ? textBox(style, width, height, reactionAvoid) : { x: m, y: m, w: width - 2 * m, h: height - 2 * m };
   const obstacles = [
     ...faces.map((f) => paddedFace(f, width, height)),
     logoAvoid ?? slotRect(style.logoSlot, width, height),
+    ...(movedPhotoAvoid === null ? [] : [movedPhotoAvoid]),
   ].filter((o) => overlaps(o, box));
   let best: { fit: Fit; space: Rect } | null = null;
   for (const space of clearSpaces(box, obstacles)) {
@@ -559,4 +580,218 @@ export function phraseWords(phrase: string): string[] {
   const words = phrase.toUpperCase().split(/\s+/).filter((w) => w.length > 0);
   if (words.length === 0) throw new Error('The thumbnail text is empty.');
   return words;
+}
+
+// ── Owen's edits to one card (the card editor, 2026-09-29) ─────────────────────
+
+/**
+ * Where the frame is drawn, in fractions of the picture: its top-left corner at (x * width,
+ * y * height), `scale` times the picture's size (the frame keeps 16:9). { x: 0, y: 0, scale: 1 }
+ * fills the picture as before; a scale above 1 zooms in (the picture shows a crop of the frame),
+ * below 1 zooms out (the frame is smaller, on black).
+ */
+export interface FrameView {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/** The box the words are fitted into (the largest size that fits, one or two lines), in fractions of the picture. */
+export interface TextBoxEdit {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The reaction photo's centre and height, in fractions of the picture (its width follows its own shape). */
+export interface PhotoPlaceEdit {
+  cx: number;
+  cy: number;
+  h: number;
+}
+
+/** Owen's edits to one card. Each is optional; none is the automatic layout. The logo and the border are never edited. */
+export interface CardAdjust {
+  frame?: FrameView;
+  text?: TextBoxEdit;
+  photo?: PhotoPlaceEdit;
+}
+
+/** The editor's limits, and what a stored value must keep to. */
+export const FRAME_SCALE_MIN = 0.25;
+export const FRAME_SCALE_MAX = 5;
+/** A moved frame still covers at least this much of the picture's width and of its height. */
+export const FRAME_MIN_COVER = 0.05;
+export const TEXT_BOX_MIN = 0.03;
+export const PHOTO_HEIGHT_MIN = 0.05;
+export const PHOTO_HEIGHT_MAX = 2;
+
+function adjustNum(value: unknown, what: string, where: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min - 1e-9 || value > max + 1e-9) {
+    throw new Error(`${where}: the ${what} is ${JSON.stringify(value)}; it must be a number from ${+min.toFixed(4)} to ${+max.toFixed(4)}.`);
+  }
+  return value;
+}
+
+function onlyKeys(value: object, keys: readonly string[], what: string, where: string): void {
+  const extra = Object.keys(value).filter((k) => !keys.includes(k));
+  if (extra.length > 0) throw new Error(`${where}: the ${what} has ${extra.map((k) => `"${k}"`).join(', ')}, which this build does not know.`);
+}
+
+function part(value: unknown, what: string, where: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${where}: the ${what} must be an object, got ${JSON.stringify(value)}.`);
+  return value as Record<string, unknown>;
+}
+
+/**
+ * A stored or sent CardAdjust, checked field by field. Anything off is refused naming it, never
+ * clamped or dropped: a value the editor could not have made means something else is wrong.
+ */
+export function validateAdjust(value: unknown, where: string): CardAdjust {
+  const v = part(value, "card's edits", where);
+  onlyKeys(v, ['frame', 'text', 'photo'], "card's edits", where);
+  const out: CardAdjust = {};
+  if (v['frame'] !== undefined) {
+    const f = part(v['frame'], "frame's place", where);
+    onlyKeys(f, ['x', 'y', 'scale'], "frame's place", where);
+    const scale = adjustNum(f['scale'], "frame's zoom", where, FRAME_SCALE_MIN, FRAME_SCALE_MAX);
+    out.frame = {
+      x: adjustNum(f['x'], "frame's left edge", where, FRAME_MIN_COVER - scale, 1 - FRAME_MIN_COVER),
+      y: adjustNum(f['y'], "frame's top edge", where, FRAME_MIN_COVER - scale, 1 - FRAME_MIN_COVER),
+      scale,
+    };
+  }
+  if (v['text'] !== undefined) {
+    const t = part(v['text'], 'text box', where);
+    onlyKeys(t, ['x', 'y', 'w', 'h'], 'text box', where);
+    const w = adjustNum(t['w'], 'text box width', where, TEXT_BOX_MIN, 1);
+    const h = adjustNum(t['h'], 'text box height', where, TEXT_BOX_MIN, 1);
+    out.text = { x: adjustNum(t['x'], 'text box left edge', where, 0, 1 - w), y: adjustNum(t['y'], 'text box top edge', where, 0, 1 - h), w, h };
+  }
+  if (v['photo'] !== undefined) {
+    const p = part(v['photo'], "photo's place", where);
+    onlyKeys(p, ['cx', 'cy', 'h'], "photo's place", where);
+    out.photo = {
+      cx: adjustNum(p['cx'], "photo's centre (across)", where, 0, 1),
+      cy: adjustNum(p['cy'], "photo's centre (down)", where, 0, 1),
+      h: adjustNum(p['h'], "photo's height", where, PHOTO_HEIGHT_MIN, PHOTO_HEIGHT_MAX),
+    };
+  }
+  return out;
+}
+
+/** True when a card has no edit at all (what old records and untouched cards have). */
+export function noAdjust(adjust: CardAdjust | null | undefined): boolean {
+  return adjust === null || adjust === undefined || (adjust.frame === undefined && adjust.text === undefined && adjust.photo === undefined);
+}
+
+/** Where the frame is drawn in output pixels: the whole picture, or where Owen moved it. */
+export function frameRect(frame: FrameView | undefined, width: number, height: number): Rect {
+  if (frame === undefined) return { x: 0, y: 0, w: width, h: height };
+  return { x: frame.x * width, y: frame.y * height, w: frame.scale * width, h: frame.scale * height };
+}
+
+/** A photo Owen moved: drawn `h` of the picture's height tall, in its own shape, centred at (cx, cy). */
+export function placeMovedPhoto(photoW: number, photoH: number, edit: PhotoPlaceEdit, style: ThumbnailStyle, width: number, height: number): ReactionPlacement {
+  if (!(photoW > 0 && photoH > 0)) throw new Error(`placeMovedPhoto: a ${photoW}x${photoH} photo has nothing to place.`);
+  const h = edit.h * height;
+  const w = (photoW / photoH) * h;
+  const x = edit.cx * width - w / 2;
+  const y = edit.cy * height - h / 2;
+  const outlinePx = (style.reactionOutlinePx * height) / 1080;
+  const ax = Math.max(0, x - outlinePx);
+  const ay = Math.max(0, y - outlinePx);
+  const avoid = { x: ax, y: ay, w: Math.max(0, Math.min(width, x + w + outlinePx) - ax), h: Math.max(0, Math.min(height, y + h + outlinePx) - ay) };
+  return { x, y, w, h, outlinePx, avoid };
+}
+
+/**
+ * The words fitted into Owen's own box: the largest size at which they fit it (one or two lines,
+ * outline and patch pad included), against its top-left corner. The look's text size is not
+ * applied (the box is the size he chose) and faces are not avoided (he placed it).
+ */
+export function planTextIn(metrics: PhraseMetrics, style: ThumbnailStyle, box: Rect): TextPlan {
+  if (metrics.words.length === 0) throw new Error('planTextIn: the phrase has no words.');
+  if (metrics.wordWidths.length !== metrics.words.length) throw new Error('planTextIn: the page measured a different number of words than the phrase has.');
+  if (!(metrics.capHeight > 0)) throw new Error(`planTextIn: the font's capital height measured ${metrics.capHeight}; the font did not load.`);
+  const fit = fitPhrase(metrics, style, box.w, box.h, Number.POSITIVE_INFINITY);
+  if (fit === null) throw new Error(`planTextIn: "${metrics.words.join(' ')}" fits no size in a ${Math.round(box.w)}x${Math.round(box.h)} px box.`);
+  return placeFit(metrics, style, fit, box, box, 'top', 'clear');
+}
+
+/** A text plan's outer bounds as a TextBoxEdit: the editor turns the automatic place into Owen's own box with it. */
+export function textBoxOf(plan: TextPlan, width: number, height: number): TextBoxEdit {
+  const p = plan.patch;
+  const x = Math.min(1 - TEXT_BOX_MIN, Math.max(0, p.x / width));
+  const y = Math.min(1 - TEXT_BOX_MIN, Math.max(0, p.y / height));
+  return { x, y, w: Math.max(TEXT_BOX_MIN, Math.min(1 - x, p.w / width)), h: Math.max(TEXT_BOX_MIN, Math.min(1 - y, p.h / height)) };
+}
+
+/** Everything placed on one thumbnail, in output pixels: what the drawing draws, and the editor's handles. */
+export interface Composition {
+  /** Where the frame is drawn; null: over the whole picture, exactly as before the editor. */
+  frame: Rect | null;
+  /** The detector's faces moved with the frame, in output pixels (unpadded). */
+  faces: Rect[];
+  reaction: ReactionPlacement | null;
+  logo: Rect | null;
+  plan: TextPlan | null;
+  /** A plain note when the automatic words could not be kept off the faces. */
+  note: string | null;
+}
+
+/**
+ * THE ONE LAYOUT of a thumbnail, used by the final render (renderer.ts) and by the Thumbnails
+ * window's live preview alike. `faces` are the detector's boxes in the FRAME's own pixels
+ * (`frameSize`); `metrics` null means no words; `photo` and `logo` are the trimmed photo's and the
+ * visible logo's sizes, or null for none. With no adjust this is exactly the arithmetic the
+ * renderer did before the editor: faces scaled to the output, the photo in its space, the logo in
+ * its space, the words by planText.
+ */
+export function composeThumbnail(input: {
+  width: number;
+  height: number;
+  frameSize: { width: number; height: number };
+  faces: readonly Rect[];
+  style: ThumbnailStyle;
+  adjust: CardAdjust | null;
+  metrics: PhraseMetrics | null;
+  photo: { width: number; height: number } | null;
+  logo: { width: number; height: number } | null;
+}): Composition {
+  const { width: W, height: H, style } = input;
+  const adjust: CardAdjust = input.adjust ?? {};
+  const moved = adjust.frame !== undefined;
+  let faces: Rect[];
+  if (!moved) {
+    // As the renderer always did: one scale, the output's width over the frame's.
+    const scale = W / input.frameSize.width;
+    faces = input.faces.map((f) => ({ x: f.x * scale, y: f.y * scale, w: f.w * scale, h: f.h * scale }));
+  } else {
+    const at = frameRect(adjust.frame, W, H);
+    const sx = at.w / input.frameSize.width;
+    const sy = at.h / input.frameSize.height;
+    faces = input.faces
+      .map((f) => ({ x: at.x + f.x * sx, y: at.y + f.y * sy, w: f.w * sx, h: f.h * sy }))
+      .filter((f) => f.x < W && f.y < H && f.x + f.w > 0 && f.y + f.h > 0);
+  }
+  const reaction = input.photo === null ? null
+    : adjust.photo === undefined ? placeReaction(input.photo.width, input.photo.height, style, W, H)
+    : placeMovedPhoto(input.photo.width, input.photo.height, adjust.photo, style, W, H);
+  const logo = input.logo === null ? null : placeLogo(input.logo.width, input.logo.height, style, W, H);
+  let plan: TextPlan | null = null;
+  let note: string | null = null;
+  if (input.metrics !== null) {
+    if (adjust.text !== undefined) {
+      plan = planTextIn(input.metrics, style, { x: adjust.text.x * W, y: adjust.text.y * H, w: adjust.text.w * W, h: adjust.text.h * H });
+    } else {
+      const placed = adjust.photo !== undefined && reaction !== null
+        ? planText(input.metrics, faces, style, W, H, null, logo, reaction.avoid)
+        : planText(input.metrics, faces, style, W, H, reaction?.avoid ?? null, logo);
+      plan = placed.plan;
+      note = placed.note;
+    }
+  }
+  return { frame: moved ? frameRect(adjust.frame, W, H) : null, faces, reaction, logo, plan, note };
 }

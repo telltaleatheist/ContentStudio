@@ -30,6 +30,7 @@ export function electronThumbnailRenderer(appRoot: string): ThumbnailRenderer {
         photo,
         logo: logo === null ? null : { width: logo.width, height: logo.height, at: (w, h) => logoAt(logo, w, h) },
         outStem: input.outStem,
+        adjust: input.adjust,
       });
     },
     close() {

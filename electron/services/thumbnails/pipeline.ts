@@ -19,7 +19,7 @@
  *   render       CPU  the pairs that have a frame are drawn, with NO reaction photo. Only pairs made
  *                     from Owen's screenshots have one (pair n on screenshot n); a story's pairs get
  *                     none, so nothing is drawn until he picks frames 1, 2 and 3 in the Thumbnails
- *                     window and presses Generate thumbnails.
+ *                     window and presses Save thumbnails (the card editor, 2026-09-29).
  *
  * WHAT OWEN PICKS HIMSELF (2026-09-29). The photos: "just let me pick the image of myself that goes
  * in the corner instead of letting the model pick it. itll be faster" (the `tone-photos` stage and
@@ -53,7 +53,7 @@ import type { JobLeases } from '../../crucible/lease';
 import { filterFrames } from './frame-metrics';
 import { GRID_PER_SCENE, distinctFrames, gridFrames, groupScenes } from './frame-scenes';
 import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel } from './frame-sampler';
-import type { ThumbnailStyle } from './layout';
+import type { CardAdjust, ThumbnailStyle } from '../../shared/thumbnail-layout';
 import { libraryBorder, libraryLogo, libraryPhotos } from './photo-library';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName, type RenderResult } from './renderer';
@@ -85,6 +85,8 @@ export interface ThumbnailRenderer {
     /** Owen's border overlay (the app's border file), or null: none kept, or switched off in the look. */
     borderFile: string | null;
     outStem: string;
+    /** Owen's edits to the card (the card editor); null draws exactly as before the editor. */
+    adjust: CardAdjust | null;
   }): Promise<RenderResult>;
   close(): void;
 }
@@ -93,11 +95,25 @@ export interface ThumbnailRenderer {
 export type DrawnRender = Extract<StoredRender, { ok: true }>;
 
 /**
- * Draw one pair's thumbnail: the frame at full size (extracted from the screen recording into
- * `<folder>/full/` the first time; a screenshot is already there), the app's border overlay when
+ * A frame at full size, `<folder>/full/<id>.png`: extracted from the screen recording the first
+ * time (a screenshot is already there). Used by the drawing and by the Thumbnails window's live
+ * preview, which asks for the same file so its faces and picture are the render's.
+ */
+export async function fullFrame(input: { ffmpeg: string; video: string | null; folder: string; frame: { id: string; t: number }; signal?: AbortSignal }): Promise<string> {
+  const full = path.join(input.folder, 'full', `${input.frame.id}.png`);
+  if (!fs.existsSync(full)) {
+    if (input.video === null) throw new Error(`The background ${input.frame.id} is not in ${path.dirname(full)} any more, and there is no screen recording to take it from again.`);
+    await extractFullFrame(input.ffmpeg, input.video, input.frame.t, full, input.signal);
+  }
+  return full;
+}
+
+/**
+ * Draw one pair's thumbnail: the frame at full size (`fullFrame`), the app's border overlay when
  * the look has it on and one is kept, the words, the photo from the app's library and the app's
- * logo when `logo` is on. Used by the render stage and by the reports
- * page's Thumbnails window (report-thumbnails.ts), so both draw the same way.
+ * logo when `logo` is on, with Owen's edits to the card (`adjust`, the card editor). Used by the
+ * render stage and by the reports page's Thumbnails window (report-thumbnails.ts), so both draw
+ * the same way.
  */
 export async function drawPair(input: {
   renderer: ThumbnailRenderer;
@@ -112,13 +128,10 @@ export async function drawPair(input: {
   style: ThumbnailStyle;
   userDataPath: string;
   outStem: string;
+  adjust: CardAdjust | null;
   signal?: AbortSignal;
 }): Promise<DrawnRender> {
-  const full = path.join(input.folder, 'full', `${input.frame.id}.png`);
-  if (!fs.existsSync(full)) {
-    if (input.video === null) throw new Error(`The background ${input.frame.id} is not in ${path.dirname(full)} any more, and there is no screen recording to take it from again.`);
-    await extractFullFrame(input.ffmpeg, input.video, input.frame.t, full, input.signal);
-  }
+  const full = await fullFrame(input);
   let photo: { name: string; file: string } | null = null;
   if (input.photo !== null) {
     const file = libraryPhotos(input.userDataPath).find((p) => p.name === input.photo)?.file;
@@ -131,7 +144,7 @@ export async function drawPair(input: {
     if (logoFile === null) throw new Error('The logo is switched on for this thumbnail, and the app keeps no logo. Add one in Thumbnail look, or switch the logo off.');
   }
   const borderFile = input.style.border ? libraryBorder(input.userDataPath) : null;
-  const r = await input.renderer.render({ frame: full, phrase: input.phrase, style: input.style, photo, logoFile, borderFile, outStem: input.outStem });
+  const r = await input.renderer.render({ frame: full, phrase: input.phrase, style: input.style, photo, logoFile, borderFile, outStem: input.outStem, adjust: input.adjust });
   return { ok: true, file: r.path, format: r.format, bytes: r.bytes, notes: r.notes };
 }
 
@@ -288,8 +301,6 @@ export class ItemThumbnailRun {
   private stopped: boolean;
   /** Stages a resumed run keeps as stored (ItemThumbnailRun.resume): they do not run again. */
   private skip = new Set<ThumbnailStage>();
-  /** What the frames stage says when it replaces an existing folder. */
-  private replacingLine: (folder: string) => string = (folder) => `An earlier attempt of this job left thumbnail files in ${folder}; they were replaced.`;
   private video: string | null = null;
   private frameFiles = new Map<string, { t: number; large: string }>();
   /**
@@ -308,12 +319,8 @@ export class ItemThumbnailRun {
     this.stopped = rec.state !== 'made';
   }
 
-  /**
-   * The run for one item, or a record that already says why there are none. `again` is the
-   * Thumbnails window's "Make thumbnails again from scratch": the item's existing folder (which the
-   * frames stage replaces, said in the record's lines).
-   */
-  static start(choice: ThumbnailRunChoice | undefined, item: ThumbnailItemInput, doors: ThumbnailJobDoors, again?: { folder: string }): ItemThumbnailRun {
+  /** The run for one item, or a record that already says why there are none. */
+  static start(choice: ThumbnailRunChoice | undefined, item: ThumbnailItemInput, doors: ThumbnailJobDoors): ItemThumbnailRun {
     const off = (line: string) => new ItemThumbnailRun(null, item, doors, offRecord(line));
     if (choice === undefined) return off('This run was started without the thumbnail setup (the test CLI, or a caller from before the thumbnails pipeline), so no thumbnails were made.');
     if (choice.mode === 'off') return off(choice.reason);
@@ -323,15 +330,10 @@ export class ItemThumbnailRun {
     if (item.channel.thumbnails === false) return off(`The channel "${item.channel.name}" makes no thumbnails.`);
     const rec = offRecord('Thumbnails are being made.');
     rec.state = 'made';
-    rec.folder = again?.folder ?? path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);
+    rec.folder = path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);
     rec.look = choice.setup.style;
     rec.lines.push(...lookLines(choice.setup));
-    const run = new ItemThumbnailRun(choice.setup, item, doors, rec);
-    if (again !== undefined) {
-      rec.lines.push('Made again from scratch in the Thumbnails window.');
-      run.replacingLine = (folder) => `The earlier thumbnails in ${folder} were removed to make them again from scratch.`;
-    }
-    return run;
+    return new ItemThumbnailRun(choice.setup, item, doors, rec);
   }
 
   /**
@@ -379,6 +381,7 @@ export class ItemThumbnailRun {
       if (!shots) {
         p.default.frameId = null;
         p.default.scene = null;
+        delete p.default.adjust;
         p.lines.push(NO_FRAME_YET);
       }
       p.lines.push(NO_PHOTO_YET);
@@ -502,7 +505,7 @@ export class ItemThumbnailRun {
       // Only an earlier attempt of THIS job writes here (the folder is named by the job id), and
       // starting the job again rewrote its report without that attempt's items.
       fs.rmSync(folder, { recursive: true, force: true });
-      this.rec.lines.push(this.replacingLine(folder));
+      this.rec.lines.push(`An earlier attempt of this job left thumbnail files in ${folder}; they were replaced.`);
     }
     this.doors.progress('Thumbnails: finding frames in the story\'s screen recording...');
     const source = await resolveStorySource(story.ref, {
@@ -640,6 +643,8 @@ export class ItemThumbnailRun {
           style: setup.style,
           userDataPath: setup.userDataPath,
           outStem: path.join(folder, `Pair ${p.pair} - ${safeFileName(p.title)}`),
+          // A screenshot pair Owen edited in the card editor keeps his edits when it is drawn again.
+          adjust: d.adjust ?? null,
           ...(this.doors.signal === undefined ? {} : { signal: this.doors.signal }),
         });
         d.logo = logoFile !== null;

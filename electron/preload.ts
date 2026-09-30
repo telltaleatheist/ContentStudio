@@ -699,16 +699,17 @@ const api = {
   // tab's `thumbs:*` channels are gone). Each answers { ok, value } or { ok: false, error }.
   thumbnailsSummary: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:summary', jobId, itemId),
   thumbnailsItem: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:item', jobId, itemId),
-  thumbnailsRenderPair: (jobId: string, itemId: string, change: unknown) => ipcRenderer.invoke('thumbnails:render-pair', jobId, itemId, change),
-  thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string) => ipcRenderer.invoke('thumbnails:pair-title', jobId, itemId, pair, title),
-  thumbnailsSavePicks: (jobId: string, itemId: string, picks: unknown) => ipcRenderer.invoke('thumbnails:save-picks', jobId, itemId, picks),
+  thumbnailsFrameDetail: (jobId: string, itemId: string, frameId: string) => ipcRenderer.invoke('thumbnails:frame-detail', jobId, itemId, frameId),
+  thumbnailsPhotoDetail: (name: string) => ipcRenderer.invoke('thumbnails:photo-detail', name),
+  thumbnailsSaveCards: (jobId: string, itemId: string, cards: unknown) => ipcRenderer.invoke('thumbnails:save-cards', jobId, itemId, cards),
+  thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string, kind: string | null) =>
+    ipcRenderer.invoke('thumbnails:pair-title', jobId, itemId, pair, title, kind),
   thumbnailsFinish: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:finish', jobId, itemId),
-  thumbnailsRemake: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:remake', jobId, itemId),
   thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) =>
     ipcRenderer.invoke('thumbnails:screenshots', jobId, itemId, files, titles),
   thumbnailsChooseOwn: () => ipcRenderer.invoke('thumbnails:choose-own'),
   thumbnailsChooseScreenshots: () => ipcRenderer.invoke('thumbnails:choose-screenshots'),
-  thumbnailsReleaseModel: () => ipcRenderer.invoke('thumbnails:release-model'),
+  thumbnailsClosed: () => ipcRenderer.invoke('thumbnails:closed'),
   thumbnailsShowFolder: (folder: string) => ipcRenderer.invoke('thumbnails:show-folder', folder),
   thumbnailsGetStyle: () => ipcRenderer.invoke('thumbnails:get-style'),
   thumbnailsSetStyle: (style: unknown) => ipcRenderer.invoke('thumbnails:set-style', style),

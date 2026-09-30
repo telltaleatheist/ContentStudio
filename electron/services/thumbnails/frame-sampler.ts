@@ -290,11 +290,21 @@ function samplePass(
   });
 }
 
-/** One full-size frame at `t` seconds, as PNG, for the render. */
+/**
+ * One full-size frame at `t` seconds, as PNG, for the render and the Thumbnails window's preview.
+ * Written beside its name and moved into place when whole, so a reader that finds the file never
+ * finds half of it (the preview and a save can ask for the same frame at once).
+ */
 export async function extractFullFrame(ffmpeg: string, video: string, t: number, outPng: string, signal?: AbortSignal): Promise<void> {
   fs.mkdirSync(path.dirname(outPng), { recursive: true });
-  await run(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-ss', t.toFixed(3), '-i', video, '-frames:v', '1', '-y', outPng], signal);
-  if (!fs.existsSync(outPng) || fs.statSync(outPng).size === 0) throw new Error(`ffmpeg wrote no frame at ${clock(t)} of ${path.basename(video)}.`);
+  const partial = path.join(path.dirname(outPng), `.${path.basename(outPng, '.png')}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  try {
+    await run(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-ss', t.toFixed(3), '-i', video, '-frames:v', '1', '-y', partial], signal);
+    if (!fs.existsSync(partial) || fs.statSync(partial).size === 0) throw new Error(`ffmpeg wrote no frame at ${clock(t)} of ${path.basename(video)}.`);
+    fs.renameSync(partial, outPng);
+  } finally {
+    if (fs.existsSync(partial)) fs.rmSync(partial);
+  }
 }
 
 /** The size a screenshot background is written at: 16:9, the renderer scales it to 1280x720. */

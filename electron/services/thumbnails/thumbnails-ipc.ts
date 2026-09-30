@@ -6,6 +6,10 @@
  *
  * Replaces the retired Thumbnails test tab's `thumbs:*` channels. Progress goes to the window that
  * asked, on `thumbnails:progress`.
+ *
+ * The card editor's live preview (2026-09-29) is drawn in the window; what only the main process can
+ * make for it (a frame at full size and its faces, a photo trimmed, the logo at its drawn size, the
+ * border) comes from `previewPieces` below, with the render's own readers.
  */
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import * as fs from 'fs';
@@ -15,9 +19,57 @@ import type Store from 'electron-store';
 import type { CrucibleContext } from '../../crucible/context';
 import { getRuntimePaths } from '../../lib/bridges/runtime-paths';
 import { AIManagerService } from '../metadata/ai-manager.service';
+import { readBorder } from './border';
+import { ThumbnailCanvas, canvasPagePath, dataUrlOf } from './canvas-page';
+import { logoAt, readLogo } from './logo';
 import { ThumbnailLook } from './look';
 import { thumbnailRunChoice } from './pipeline-setup';
-import { IMAGE_EXTENSIONS, ReportThumbnails } from './report-thumbnails';
+import { trimmedPhoto } from './reaction-photos';
+import { OUTPUT_WIDTH } from './renderer';
+import { IMAGE_EXTENSIONS, ReportThumbnails, type PreviewPieces } from './report-thumbnails';
+
+/** The tallest a photo's preview picture is sent (it is drawn at most about this tall on a 1280x720 card). */
+const PHOTO_PREVIEW_HEIGHT = 900;
+
+/**
+ * The live preview's pieces, made with the render's own readers: the frame file the render draws
+ * (at the output's width for the window), Apple Vision's faces on that same file (a hidden canvas
+ * page, made on first use and closed with the window), the photo trimmed as the render trims it,
+ * the logo downscaled exactly as the render downscales it, the border checked as the render checks it.
+ */
+function previewPieces(appRoot: string): PreviewPieces {
+  let canvas: ThumbnailCanvas | null = null;
+  return {
+    framePicture(file) {
+      const image = nativeImage.createFromPath(file);
+      if (image.isEmpty()) throw new Error(`The frame ${file} could not be read.`);
+      const { width, height } = image.getSize();
+      const shown = width > OUTPUT_WIDTH ? image.resize({ width: OUTPUT_WIDTH, quality: 'best' }) : image;
+      return { picture: `data:image/jpeg;base64,${shown.toJPEG(92).toString('base64')}`, width, height };
+    },
+    async faces(file) {
+      canvas ??= new ThumbnailCanvas(canvasPagePath(appRoot));
+      return canvas.detectFaces(dataUrlOf(file));
+    },
+    photo(name, file) {
+      const t = trimmedPhoto({ name, file });
+      const image = nativeImage.createFromBuffer(t.png);
+      const shown = t.height > PHOTO_PREVIEW_HEIGHT ? image.resize({ height: PHOTO_PREVIEW_HEIGHT, quality: 'best' }) : image;
+      return { image: shown.toDataURL(), width: t.width, height: t.height };
+    },
+    logo(file) {
+      const logo = readLogo(file);
+      return { width: logo.width, height: logo.height, at: (w, h) => `data:image/png;base64,${logoAt(logo, w, h).toString('base64')}` };
+    },
+    border(file) {
+      return `data:image/png;base64,${readBorder(file).png.toString('base64')}`;
+    },
+    close() {
+      canvas?.close();
+      canvas = null;
+    },
+  };
+}
 
 type Answer<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -70,42 +122,45 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     aiManager: () => new AIManagerService({ promptSetsDir: path.join(app.getPath('userData'), 'prompt_sets') }),
     picture,
     photoList: () => look.photos().photos.map((p) => ({ name: p.name, preview: p.preview })),
+    pieces: previewPieces(app.getAppPath()),
     progress: (event) => {
       if (progressTo !== null && !progressTo.isDestroyed()) progressTo.send('thumbnails:progress', event);
     },
     gpuVenue: () => crucible.lanes.gpuVenue(),
   });
   app.on('before-quit', () => {
-    void report.releaseHold('the app is quitting');
+    void report.closed();
   });
 
   // ── the window ──────────────────────────────────────────────────────────────
   ipcMain.handle('thumbnails:summary', (_e, jobId: string, itemId: string) => answer('reading the thumbnails', () => report.summary(jobId, itemId)));
   ipcMain.handle('thumbnails:item', (_e, jobId: string, itemId: string) => answer('reading the thumbnails', () => report.view(jobId, itemId)));
-  ipcMain.handle('thumbnails:render-pair', (event, jobId: string, itemId: string, change) => {
+  ipcMain.handle('thumbnails:frame-detail', (_e, jobId: string, itemId: string, frameId: string) => answer('reading a frame', () => report.frameDetail(jobId, itemId, frameId)));
+  ipcMain.handle('thumbnails:photo-detail', (_e, name: string) => answer('reading a reaction photo', () => report.photoDetail(name)));
+  ipcMain.handle('thumbnails:save-cards', (event, jobId: string, itemId: string, cards: unknown) => {
     progressTo = event.sender;
-    return answer('drawing a thumbnail', () => report.renderPair(jobId, itemId, change));
+    return answer('saving the thumbnails', () => report.saveCards(jobId, itemId, cards));
   });
-  ipcMain.handle('thumbnails:pair-title', (event, jobId: string, itemId: string, pair: number, title: string) => {
+  ipcMain.handle('thumbnails:pair-title', (event, jobId: string, itemId: string, pair: number, title: string, kind) => {
     progressTo = event.sender;
-    return answer('rewriting the words', () => report.pairTitle(jobId, itemId, pair, title));
+    return answer('rewriting the words', () => report.pairTitle(jobId, itemId, pair, title, kind));
   });
   ipcMain.handle('thumbnails:finish', (event, jobId: string, itemId: string) => {
     progressTo = event.sender;
-    return answer('finishing the thumbnails', () => report.finish(jobId, itemId));
+    return answer('preparing the frames and text', () => report.finish(jobId, itemId));
   });
-  ipcMain.handle('thumbnails:remake', (event, jobId: string, itemId: string) => {
-    progressTo = event.sender;
-    return answer('making the thumbnails again', () => report.remake(jobId, itemId));
-  });
-  ipcMain.handle('thumbnails:save-picks', (_e, jobId: string, itemId: string, picks) => answer('saving the picks', () => report.savePicks(jobId, itemId, picks)));
   ipcMain.handle('thumbnails:screenshots', (event, jobId: string, itemId: string, files: string[], titles: string[]) => {
     progressTo = event.sender;
     return answer('making thumbnails from screenshots', () => report.useScreenshots(jobId, itemId, files, titles));
   });
-  ipcMain.handle('thumbnails:choose-own', (event) => answer('choosing your image', async () => (await chooseFiles(event, false))?.[0] ?? null));
+  ipcMain.handle('thumbnails:choose-own', (event) =>
+    answer('choosing your image', async () => {
+      const file = (await chooseFiles(event, false))?.[0] ?? null;
+      return file === null ? null : report.ownImage(file);
+    }),
+  );
   ipcMain.handle('thumbnails:choose-screenshots', (event) => answer('choosing screenshots', () => chooseFiles(event, true)));
-  ipcMain.handle('thumbnails:release-model', () => answer('releasing the text model', () => report.releaseHold('the Thumbnails window was closed')));
+  ipcMain.handle('thumbnails:closed', () => answer('closing the Thumbnails window', () => report.closed()));
   ipcMain.handle('thumbnails:show-folder', (_e, folder: string) =>
     answer('opening the folder', async () => {
       if (typeof folder !== 'string' || !fs.existsSync(folder)) throw new Error(`The folder is not there: ${folder}`);

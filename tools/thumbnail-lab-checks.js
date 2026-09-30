@@ -60,7 +60,7 @@ const services = (name) => require(path.join(DIST, 'services', name));
 services('metadata/prompt-assets.js').initPromptAssets(path.join(REPO, 'electron', 'assets', 'prompts'));
 const metrics = services('thumbnails/frame-metrics.js');
 const scenes = services('thumbnails/frame-scenes.js');
-const layout = services('thumbnails/layout.js');
+const layout = require(path.join(DIST, 'shared', 'thumbnail-layout.js'));
 const prompts = services('thumbnails/prompts.js');
 const sampler = services('thumbnails/frame-sampler.js');
 
@@ -538,6 +538,63 @@ check('photos: fitted into the reaction space, right side anchored, running off 
   assert.ok(withPhoto.plan.box.w > withSpace.plan.box.w, 'wider than the whole reaction space allows');
   assert.ok(!overlaps(withPhoto.plan.patch, narrow.avoid), 'the text clears the photo');
   assert.throws(() => layout.validateStyle({ ...layout.DEFAULT_STYLE, reactionOutlinePx: 99 }), /photo outline/);
+});
+
+// ── the card editor's layout (2026-09-29): one composeThumbnail for the render and the preview ──
+
+check('card edits: with none, composeThumbnail is the old arithmetic step for step (faces scaled, photo and logo in their spaces, planText); a moved frame moves the faces with it; words go in Owen\'s box at the largest size it holds; a moved photo is avoided anywhere; the automatic place round-trips into a box at the same size; bad edits are refused by name', () => {
+  const frameSize = { width: 1920, height: 1080 };
+  const faces = [{ x: 772, y: 246, w: 354, h: 354 }];
+  const phrase = metricsFor('DON\'T STAND UNDER A ROOF');
+  const photo = { width: 606, height: 883 };
+  const logoSize = { width: 400, height: 400 };
+  // No edit: exactly what renderer.ts computed before the editor.
+  const none = layout.composeThumbnail({ width: FW, height: FH, frameSize, faces, style: STYLE, adjust: null, metrics: phrase, photo, logo: logoSize });
+  const scale = FW / frameSize.width;
+  const facesOut = faces.map((f) => ({ x: f.x * scale, y: f.y * scale, w: f.w * scale, h: f.h * scale }));
+  const reaction = layout.placeReaction(photo.width, photo.height, STYLE, FW, FH);
+  const logo = layout.placeLogo(logoSize.width, logoSize.height, STYLE, FW, FH);
+  const old = layout.planText(phrase, facesOut, STYLE, FW, FH, reaction.avoid, logo);
+  assert.deepStrictEqual([none.frame, none.faces, none.reaction, none.logo, none.plan, none.note], [null, facesOut, reaction, logo, old.plan, old.note], 'no edit: the old layout');
+  assert.deepStrictEqual(layout.composeThumbnail({ width: FW, height: FH, frameSize, faces, style: STYLE, adjust: {}, metrics: phrase, photo, logo: logoSize }), none, 'an empty edit is no edit');
+  assert.ok(layout.noAdjust(null) && layout.noAdjust({}) && !layout.noAdjust({ photo: { cx: 0.5, cy: 0.5, h: 0.4 } }));
+  // The frame zoomed 2x on its top-left quarter: drawn at twice the size, the face moves and grows with it.
+  const zoomed = layout.composeThumbnail({ width: FW, height: FH, frameSize, faces, style: STYLE, adjust: { frame: { x: -0.5, y: -0.5, scale: 2 } }, metrics: phrase, photo: null, logo: null });
+  assert.deepStrictEqual(zoomed.frame, { x: -640, y: -360, w: 2560, h: 1440 });
+  const f0 = zoomed.faces[0];
+  assert.ok(Math.abs(f0.x - (-640 + 772 * 2560 / 1920)) < 1e-9 && Math.abs(f0.w - 354 * 2560 / 1920) < 1e-9, JSON.stringify(f0));
+  const off = layout.composeThumbnail({ width: FW, height: FH, frameSize, faces, style: STYLE, adjust: { frame: { x: 0.9, y: 0.9, scale: 0.3 } }, metrics: null, photo: null, logo: null });
+  assert.deepStrictEqual(off.faces, [], 'a face moved off the picture is not avoided');
+  // Words in his own box: inside it, against its top-left, larger than the automatic place when the box is larger; faces ignored.
+  const box = { x: 0.05, y: 0.1, w: 0.6, h: 0.5 };
+  const mine = layout.composeThumbnail({ width: FW, height: FH, frameSize, faces, style: STYLE, adjust: { text: box }, metrics: phrase, photo: null, logo: null });
+  const px = { x: box.x * FW, y: box.y * FH, w: box.w * FW, h: box.h * FH };
+  assert.ok(insideBox(mine.plan.patch, px), `inside his box: ${JSON.stringify(mine.plan.patch)}`);
+  assert.ok(Math.abs(mine.plan.patch.x - px.x) < 1e-6 && Math.abs(mine.plan.patch.y - px.y) < 1e-6, 'against its top-left corner');
+  assert.ok(Math.abs(mine.plan.patch.w - px.w) < 1e-6 || Math.abs(mine.plan.patch.h - px.h) < 1e-6, 'as large as the box holds');
+  assert.ok(mine.plan.size > none.plan.size && mine.note === null);
+  // The automatic place turned into a box (the editor's first touch) draws the same size and lines.
+  const asBox = layout.textBoxOf(none.plan, FW, FH);
+  const same = layout.composeThumbnail({ width: FW, height: FH, frameSize, faces, style: STYLE, adjust: { text: asBox }, metrics: phrase, photo, logo: logoSize });
+  assert.ok(Math.abs(same.plan.size - none.plan.size) < 1e-6 && same.plan.lines.map((l) => l.text).join('|') === none.plan.lines.map((l) => l.text).join('|'), `same size and lines (${same.plan.size} vs ${none.plan.size})`);
+  assert.ok(same.plan.lines.every((l, i) => Math.abs(l.x - none.plan.lines[i].x) < 1e-6 && Math.abs(l.y - none.plan.lines[i].y) < 1e-6), 'and the same place');
+  // The photo moved to the left: centred where he put it, its own shape, and the automatic words keep clear of it.
+  const moved = layout.composeThumbnail({ width: FW, height: FH, frameSize, faces: [], style: STYLE, adjust: { photo: { cx: 0.2, cy: 0.6, h: 0.5 } }, metrics: phrase, photo, logo: null });
+  const r = moved.reaction;
+  assert.ok(Math.abs(r.h - 360) < 1e-9 && Math.abs(r.w - 360 * 606 / 883) < 1e-9 && Math.abs(r.x + r.w / 2 - 256) < 1e-9 && Math.abs(r.y + r.h / 2 - 432) < 1e-9, JSON.stringify(r));
+  assert.ok(!overlaps(moved.plan.patch, r.avoid), 'the words clear the moved photo');
+  assert.ok(moved.plan.patch.x + moved.plan.patch.w > layout.slotRect(STYLE.reactionSlot, FW, FH).x, 'and may use the space the photo left');
+  // Edits are refused by name, never clamped.
+  assert.deepStrictEqual(layout.validateAdjust({ frame: { x: -0.5, y: 0, scale: 2 }, text: box, photo: { cx: 0.2, cy: 0.6, h: 0.5 } }, 'k'), { frame: { x: -0.5, y: 0, scale: 2 }, text: box, photo: { cx: 0.2, cy: 0.6, h: 0.5 } });
+  for (const [bad, re] of [
+    [{ frame: { x: 0, y: 0, scale: 9 } }, /frame's zoom is 9/],
+    [{ frame: { x: 0.99, y: 0, scale: 1 } }, /frame's left edge is 0.99/],
+    [{ text: { x: 0.8, y: 0, w: 0.5, h: 0.2 } }, /text box left edge is 0.8/],
+    [{ photo: { cx: 0.5, cy: 0.5, h: 0 } }, /photo's height is 0/],
+    [{ photo: { cx: 0.5, cy: 0.5 } }, /photo's height is undefined/],
+    [{ zoom: 2 }, /"zoom", which this build does not know/],
+    [null, /must be an object/],
+  ]) assert.throws(() => layout.validateAdjust(bad, 'Card 2'), (e) => /^Card 2: /.test(e.message) && re.test(e.message), JSON.stringify(bad));
 });
 
 // ── the story source: regions minus cuts, the segment table, the alignment (2026-09-28) ──────────
