@@ -959,6 +959,19 @@ const thumbnailFiller: Filler = {
         reason: 'This ContentStudio is older than the thumbnail step — update the app',
       };
     }
+    // A "Title and thumbnail" test's row 1 IS the video's thumbnail, and the A/B action puts
+    // Pick 1 there. Setting it here as well puts a new thumbnail and a thumbnail test in one
+    // Save, and Studio refuses that save ("Sorry, we were not able to save your video", and
+    // the test is lost): reproduced live 2026-09-30, twice, where the A/B action alone saved.
+    const ab = planAbTest(ctx.titles.length, ctx.abThumbnails);
+    if (ab.kind === 'fill' && ab.mode === 'titles-and-thumbnails') {
+      return {
+        available: false,
+        reason:
+          'Pick 1 goes in through the A/B test (its first row is the video\'s thumbnail); ' +
+          'setting it here too makes Studio refuse the save',
+      };
+    }
     if (!ctx.hasThumbnail) {
       return {
         available: false,
