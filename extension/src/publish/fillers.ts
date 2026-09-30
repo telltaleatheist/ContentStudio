@@ -522,40 +522,16 @@ function abRows(scope: HTMLElement, slots: HTMLElement[]): HTMLElement[] {
   return rows;
 }
 
-/** Every data: picture shown in a row now — the uploader's preview is one of these. */
-function rowPreviews(row: HTMLElement): Set<string> {
-  return new Set(
-    [...row.querySelectorAll<HTMLImageElement>('img')]
-      .map((img) => img.getAttribute('src') || '')
-      .filter((src) => src.startsWith('data:image/')),
-  );
-}
-
 /**
- * Put Pick n into row n's uploader and confirm the row's preview changed to a new picture (a
- * `data:image/…` src Studio makes from the file, seen within 1-2 s live): that is the proof the
- * uploader took it. The input itself is not read back as proof, because these uploaders empty
- * it once they have the file (live 2026-09-30: the fill stopped after row 1 on "dropped
- * straight back out" while row 1 showed Pick 1).
+ * Put Pick n into row n's uploader; thumbnail.ts setThumbnailOnInput proves Studio took it (the
+ * uploader's transfer flag on and off, then a picture made from the file), which holds even when
+ * the row already showed that same picture (row 1 right after the Thumbnail action).
  */
 async function setRowThumbnail(row: HTMLElement, n: number, thumbnail: PublishThumbnail): Promise<void> {
   const uploader = row.querySelector<HTMLElement>(SEL.uploader);
   const input = uploader?.querySelector<HTMLInputElement>(SEL.uploaderInput);
   if (!input) throw new FillError(`A/B row ${n} has no thumbnail file input`);
-
-  const before = rowPreviews(row);
-  await setThumbnailOnInput(input, thumbnail, `A/B row ${n}'s thumbnail input`, true);
-  await waitFor(
-    () => [...rowPreviews(row)].some((src) => !before.has(src)),
-    `thumbnail ${n}'s picture to appear in A/B row ${n}`,
-    8000,
-  ).catch(() => {
-    throw new FillError(
-      `Thumbnail ${n} went into A/B row ${n} but the row's picture did not change. If that row ` +
-        `already showed this same picture from an earlier fill, it is set; otherwise Studio ` +
-        `did not take it.`,
-    );
-  });
+  await setThumbnailOnInput(input, thumbnail, `A/B row ${n}'s thumbnail input`);
 }
 
 /**

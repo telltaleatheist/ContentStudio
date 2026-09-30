@@ -36,7 +36,7 @@
 // find. There is no branch that reports success without having read the file back off the
 // input.
 
-import { FillError, sleep } from './dom';
+import { FillError, waitFor } from './dom';
 import type { PublishThumbnail } from './publish-client';
 
 /**
@@ -154,64 +154,88 @@ export async function setStudioThumbnail(thumbnail: PublishThumbnail): Promise<s
 }
 
 /**
- * Put one thumbnail into a GIVEN file input, and confirm the input holds it.
+ * How long Studio gets to take a file: its uploader turns `is-ongoing-transfer` on while it reads
+ * the file and off when the picture is in (about a second live), so this is a generous ceiling.
+ */
+const TAKE_MS = 15_000;
+
+/**
+ * Put one thumbnail into a GIVEN file input, and confirm Studio's uploader took it.
  *
  * The mechanism both callers share: the video's own thumbnail above, and each row of the
  * A/B dialog's "Title and thumbnail" test (fillers.ts), which finds its inputs itself —
- * strictly inside that dialog — and adds its own check that the row's preview changed.
- * `what` names the input in every error, so a failure says which one it was.
+ * strictly inside that dialog. `what` names the input in every error, so a failure says
+ * which one it was.
+ *
+ * THE PROOF, as seen live 2026-09-30. Studio's uploaders EMPTY their input once they have the
+ * file, so the input is no proof at all (reading it back failed every fill after the first
+ * picture: "dropped straight back out", with the picture on screen). And the picture changing
+ * is no proof either: putting in the same picture a row already shows (Fill everything sets
+ * the video's thumbnail, which is A/B row 1, just before the A/B action) changes nothing on
+ * screen. What Studio does every time, same picture or not, is turn the uploader's
+ * `is-ongoing-transfer` on while it takes the file and off when it is done. So: that flag
+ * seen on and then off, and the uploader then showing a picture made from a file (`data:`).
  */
 export async function setThumbnailOnInput(
   input: HTMLInputElement,
   thumbnail: PublishThumbnail,
   what: string,
-  /**
-   * The A/B dialog's uploaders EMPTY their input once they have taken the file (seen live
-   * 2026-09-30: row 1 showed Pick 1 while its input held nothing), so there an empty input is
-   * not a refusal and the caller proves the image landed by the row's picture changing. Any
-   * OTHER file left in the input is still refused.
-   */
-  emptiedOnTake = false,
 ): Promise<string> {
   if (input.disabled) {
     throw new FillError(`${what} is disabled, so ${thumbnail.filename} could not be put into it.`);
+  }
+  const uploader = input.closest<HTMLElement>('ytcp-thumbnail-uploader');
+  if (!uploader) {
+    throw new FillError(
+      `${what} is not inside Studio's thumbnail uploader (ytcp-thumbnail-uploader), so there is ` +
+        `no way to see whether it took ${thumbnail.filename}. Nothing was set.`,
+    );
   }
 
   const bytes = decodeBase64(thumbnail);
   const file = new File([bytes], thumbnail.filename, { type: thumbnail.mime });
 
-  // A DataTransfer is the only object whose `files` a FileList can be built from, and
-  // `input.files` is the only way a file gets into a file input from script. Assigning
-  // `input.value` throws; there is no third option and nothing here falls back to one.
-  const transfer = new DataTransfer();
-  transfer.items.add(file);
-  input.files = transfer.files;
+  // Watched from BEFORE the file goes in: the flag can go on and off again within one tick.
+  let started = false;
+  let finished = false;
+  const observer = new MutationObserver(() => {
+    if (uploader.hasAttribute('is-ongoing-transfer')) started = true;
+    else if (started) finished = true;
+  });
+  observer.observe(uploader, { attributes: true, attributeFilter: ['is-ongoing-transfer'] });
 
-  // Both events, in this order, because Studio's uploader is Polymer: `input` is what a
-  // two-way binding listens for and `change` is what a plain listener does, and which one
-  // this particular element uses is not something to be confident about from outside.
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
+  try {
+    // A DataTransfer is the only object whose `files` a FileList can be built from, and
+    // `input.files` is the only way a file gets into a file input from script. Assigning
+    // `input.value` throws; there is no third option and nothing here falls back to one.
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
 
-  // The same 300ms the monetization step waits before reading its radio back: long enough
-  // for Polymer's microtask flush and the uploader's own handler, short enough that a
-  // failure is reported while the operator is still looking at the page.
-  await sleep(300);
+    // Both events, in this order, because Studio's uploader is Polymer: `input` is what a
+    // two-way binding listens for and `change` is what a plain listener does, and which one
+    // this particular element uses is not something to be confident about from outside.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
 
-  const landed = input.files?.[0];
-  if (!landed && emptiedOnTake) return thumbnail.filename;
-  if (!landed) {
+    await waitFor(() => started || null, `Studio to start taking ${thumbnail.filename} (${what})`, TAKE_MS).catch(() => {
+      throw new FillError(`Studio never started taking ${thumbnail.filename} from ${what}. The image was not set.`);
+    });
+    await waitFor(() => finished || null, `Studio to finish taking ${thumbnail.filename} (${what})`, TAKE_MS).catch(() => {
+      throw new FillError(`Studio started taking ${thumbnail.filename} from ${what} but did not finish within ${TAKE_MS / 1000} s. Check the picture before saving.`);
+    });
+  } finally {
+    observer.disconnect();
+  }
+
+  const shown = [...uploader.querySelectorAll<HTMLImageElement>('img')].some((img) =>
+    (img.getAttribute('src') || '').startsWith('data:image/'),
+  );
+  if (!shown) {
     throw new FillError(
-      `Studio dropped ${thumbnail.filename} straight back out of ${what}. ` +
-        `The image was not set.`,
+      `Studio took ${thumbnail.filename} from ${what} but shows no picture made from it. ` +
+        `It may have refused the image; check the picture before saving.`,
     );
   }
-  if (landed.name !== thumbnail.filename || landed.size !== thumbnail.bytes) {
-    throw new FillError(
-      `${what} holds ${landed.name} (${landed.size} bytes) rather than ` +
-        `${thumbnail.filename} (${thumbnail.bytes} bytes). Something else wrote to it; ` +
-        `check the image before saving.`,
-    );
-  }
-  return landed.name;
+  return thumbnail.filename;
 }
