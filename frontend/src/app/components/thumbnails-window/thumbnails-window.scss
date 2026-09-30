@@ -55,7 +55,21 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 }
 
 /* ── the cards ── */
-.cards-sec { border-top: none; margin-top: 8px; }
+.cards-sec {
+  border-top: none; margin-top: 8px;
+  /* Sticky below the status line (top set from its height); shrinks to pictures only once scrolled past. */
+  position: sticky; z-index: 1; background: var(--bg-primary); padding-bottom: 8px;
+  box-shadow: 0 6px 8px -8px rgba(0, 0, 0, 0.35);
+  .cards { transition: max-width 0.15s ease; max-width: 100%; }
+  &.compact {
+    padding-top: 4px; padding-bottom: 6px;
+    .sec-head { margin-bottom: 6px; }
+    .sec-head > .hint, .why { display: none; }
+    .cards { max-width: 720px; gap: 10px; }
+    .card { padding: 5px; gap: 4px; }
+    .card-lines, .card-acts, .role { display: none; }
+  }
+}
 .save { font-size: 14px; padding: 0 20px; height: 38px; }
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .card {

@@ -1,9 +1,9 @@
 <h2 mat-dialog-title>Thumbnails{{ view() ? ' · ' + view()!.title : '' }}</h2>
-<mat-dialog-content class="tw">
+<mat-dialog-content class="tw" (scroll)="onScroll($event)">
   <!-- ═════ WHAT TO DO, WHAT IS RUNNING, WHAT FAILED ═════ Sticky, so a line is seen wherever the
        click was. Every action goes through one runner: spinner and clock while it runs, a banner
        naming what failed when it fails. -->
-  <div class="status">
+  <div class="status" #status>
     <div class="howto">
       <p class="lead">Click a thumbnail, then click a frame, text and photo below to put them on it. Click one again to take it off.</p>
       <div class="top-acts">
@@ -74,7 +74,7 @@
   @for (l of lookLines(); track $index) { <p class="hint look-line">{{ l }}</p> }
 
   <!-- ═════ THE CARDS ═════ Three live previews; the active one is filled from the trays below. -->
-  <section class="cards-sec">
+  <section class="cards-sec" #cardsSec [class.compact]="compact()" [style.top.px]="statusHeight()">
     <div class="sec-head">
       <h3>Your thumbnails</h3>
       <span class="hint">The first one saved is the video's thumbnail; with an A/B test, the others go with titles 2 and 3. Your logo and border are added for you.</span>

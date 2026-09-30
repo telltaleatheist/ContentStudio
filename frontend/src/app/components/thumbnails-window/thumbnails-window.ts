@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChildren } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChild, viewChildren } from '@angular/core';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -115,6 +115,39 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   readonly shots = signal<string[]>([]);
 
   private readonly canvases = viewChildren<ElementRef<HTMLCanvasElement>>('cardCanvas');
+
+  // ── the cards stay at the top (Owen 2026-09-29: "stickied to the top. as we scroll down, they
+  // shrink a bit so i can still select them") ─────────────────────────────────────────────────
+  private readonly statusEl = viewChild<ElementRef<HTMLElement>>('status');
+  private readonly cardsSecEl = viewChild<ElementRef<HTMLElement>>('cardsSec');
+  /** The sticky status line's height: the cards stick just below it. */
+  readonly statusHeight = signal(0);
+  /** Scrolled past the cards: they shrink to pictures only. */
+  readonly compact = signal(false);
+  private statusObserver: ResizeObserver | null = null;
+  private readonly watchStatus = effect(() => {
+    const el = this.statusEl()?.nativeElement;
+    this.statusObserver?.disconnect();
+    if (el === undefined) return;
+    this.statusObserver = new ResizeObserver(() => this.statusHeight.set(el.offsetHeight));
+    this.statusObserver.observe(el);
+  });
+
+  /** Shrink once the cards' own top has scrolled under the status line; grow back near the top (a gap so the change in height cannot flicker). */
+  onScroll(event: Event): void {
+    const sec = this.cardsSecEl()?.nativeElement;
+    if (sec === undefined) return;
+    const scrolled = (event.target as HTMLElement).scrollTop;
+    const stuckAt = this.naturalTop(sec) - this.statusHeight();
+    if (!this.compact() && scrolled > stuckAt + 40) this.compact.set(true);
+    else if (this.compact() && scrolled < stuckAt + 4) this.compact.set(false);
+  }
+
+  /** The section's top in the scrolling content when not stuck: the element before it, which does not move. */
+  private naturalTop(sec: HTMLElement): number {
+    const prev = sec.previousElementSibling as HTMLElement | null;
+    return prev === null ? 0 : prev.offsetTop + prev.offsetHeight;
+  }
   private pieces: PreviewPieces;
   private readonly redrawers = new Map<HTMLCanvasElement, { redrawer: Redrawer; shape: string }>();
 
@@ -246,6 +279,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.statusObserver?.disconnect();
     this.unsubscribe?.();
     if (this.clock !== null) clearInterval(this.clock);
     // The window is gone, so there is nowhere to show a failure: the main process never refuses
