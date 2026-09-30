@@ -16,10 +16,11 @@
  *   ...the chapters and the metadata fields run here (the titles now exist)...
  *   words        GPU  the `thumbnail_words` row: for each of the three titles, the words that go
  *                     beside it (claim, stakes, reaction; several each).
- *   render       CPU  the pairs that have a frame are drawn, with NO reaction photo. Only pairs made
- *                     from Owen's screenshots have one (pair n on screenshot n); a story's pairs get
- *                     none, so nothing is drawn until he picks frames 1, 2 and 3 in the Thumbnails
- *                     window and presses Save thumbnails (the card editor, 2026-09-29).
+ *   render       CPU  the pairs that have a frame are drawn, with NO reaction photo. A story's pairs
+ *                     get none, so nothing is drawn until he picks frames 1, 2 and 3 in the
+ *                     Thumbnails window and presses Save thumbnails (the card editor, 2026-09-29).
+ *                     Only a record made from his screenshots (the since-removed screenshots path,
+ *                     2026-09-28 to 2026-09-30) has pairs with frames: pair n on screenshot n.
  *
  * WHAT OWEN PICKS HIMSELF (2026-09-29). The photos: "just let me pick the image of myself that goes
  * in the corner instead of letting the model pick it. itll be faster" (the `tone-photos` stage and
@@ -254,6 +255,31 @@ export function pairSubjects(fields: GeneratedFields): { order: 'gate ranking' |
   return { order: 'as written', subjects: titles.slice(0, PAIR_COUNT) };
 }
 
+/**
+ * THE CARDS OF A REPORT WITH NO STORY (Owen 2026-09-30, a report made from a subject for a video
+ * not recorded yet: "it should let me type it and pick the thumbnail background and foreground
+ * myself"). One pair per title (`pairSubjects`' titles, in its order), with no words, no frame and
+ * no photo, so card n has pair n to be drawn into from his images, his words and a photo. None
+ * when the item has no titles: the window then says no thumbnail has a title to go with.
+ */
+export function noStoryPairs(fields: GeneratedFields): { titles: ItemThumbnails['titles']; pairs: StoredPair[] } {
+  const hasTitle = Array.isArray(fields.titles) && (fields.titles as unknown[]).some((t) => typeof t === 'string' && t.trim() !== '');
+  if (!hasTitle) return { titles: null, pairs: [] };
+  const titles = pairSubjects(fields);
+  return {
+    titles,
+    pairs: titles.subjects.map((title, i) => ({
+      pair: i + 1,
+      title,
+      // No words written: `model` is empty until New options writes some.
+      words: { claim: [], stakes: [], reaction: [], warnings: [], model: '' },
+      photos: [],
+      default: { frameId: null, scene: null, kind: null, phrase: null, photo: null, draw: null, logo: false, render: { ok: false, reason: 'Not drawn yet.' } },
+      lines: [],
+    })),
+  };
+}
+
 /** A pair's default words: the first option of its kind, or of the next kind that has one (said). */
 export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind): { kind: WordKind; phrase: string; line: string | null } | null {
   if (words[kind].length > 0) return { kind, phrase: words[kind][0], line: null };
@@ -262,7 +288,10 @@ export function defaultWords(words: Record<WordKind, string[]>, kind: WordKind):
   return { kind: other, phrase: words[other][0], line: `The model wrote no ${kind} words, so this pair starts on its first ${other} option.` };
 }
 
-/** The backgrounds are Owen's screenshots (pair n on screenshot n), not a story's frames. */
+/**
+ * The backgrounds are Owen's screenshots (pair n on screenshot n), not a story's frames: a record
+ * made by the screenshots path, removed 2026-09-30 (his images are added as frames now), still read.
+ */
 function fromScreenshots(r: Pick<ItemThumbnails, 'source' | 'frames'>): boolean {
   return r.source !== null && r.source.video === null && r.frames.some((f) => f.origin !== 'added');
 }
@@ -415,36 +444,6 @@ export class ItemThumbnailRun {
     for (const f of rec.frames) run.frameFiles.set(f.id, { t: f.t, large: f.large, ...(f.origin === undefined ? {} : { origin: f.origin }) });
     // Pair n goes on screenshot n: the images Owen added are frames to pick, never a pair's screenshot.
     if (shots) run.pairFrames = rec.frames.filter((f) => f.origin !== 'added').map((f) => ({ id: f.id, scene: f.scene }));
-    return run;
-  }
-
-  /**
-   * THE NO-STORY PATH (phase 2, Owen 2026-09-28): the backgrounds are Owen's own screenshots, one
-   * pair per screenshot (1 to 3), for the titles the Thumbnails window names. Each screenshot is
-   * already a 16:9 PNG in `<folder>/full/<id>.png` (report-thumbnails.ts prepared it); the record's
-   * frames and scenes are the screenshots, pair n is drawn on screenshot n, and `afterFields` then writes the words and draws
-   * (no photo until Owen picks one), exactly as the metadata run does. `rec` is the record to replace (its story
-   * is kept, so "no story" and why stay said).
-   */
-  static fromScreenshots(
-    setup: ThumbnailRunSetup,
-    item: ThumbnailItemInput,
-    doors: ThumbnailJobDoors,
-    base: { story: ItemThumbnails['story']; folder: string },
-    shots: ReadonlyArray<{ id: string; full: string; lines: string[] }>,
-  ): ItemThumbnailRun {
-    if (shots.length < 1 || shots.length > PAIR_COUNT) throw new Error(`Screenshots make 1 to ${PAIR_COUNT} thumbnails; ${shots.length} were given.`);
-    const rec = offRecord('Thumbnails are being made from your screenshots.', base.story);
-    rec.state = 'made';
-    rec.folder = base.folder;
-    rec.look = setup.style;
-    rec.lines.push(...lookLines(setup));
-    rec.source = { video: null, lines: [`Backgrounds: your ${shots.length} screenshot${shots.length === 1 ? '' : 's'}.`, ...shots.flatMap((s) => s.lines)] };
-    rec.scenes = shots.map((s, i) => ({ number: i + 1, seconds: 0, label: `Screenshot ${i + 1}`, kept: 1, shown: 1 }));
-    rec.frames = shots.map((s, i) => ({ id: s.id, t: 0, clock: '', scene: i + 1, large: s.full, small: s.full }));
-    const run = new ItemThumbnailRun(setup, item, doors, rec);
-    for (const s of shots) run.frameFiles.set(s.id, { t: 0, large: s.full });
-    run.pairFrames = rec.frames.map((f) => ({ id: f.id, scene: f.scene }));
     return run;
   }
 

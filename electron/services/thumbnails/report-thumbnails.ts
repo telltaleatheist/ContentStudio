@@ -28,9 +28,12 @@
  *     moment the model answers (Owen, 2026-09-29: "that should be kept even if i leave the modal");
  *   - adds his own images as frames (`addFrames`: dropped on a card or the Frames tray, or "Add an
  *     image…"): each cut to fill 16:9 around its centre and kept in the record's folder;
- *   - for a report with NO STORY (or whose stages failed), gives 1 to 3 of his own screenshots
- *     (`useScreenshots`): that many pairs are made from them, the words by the model as in the run
- *     (pipeline.ts ItemThumbnailRun.fromScreenshots);
+ *   - for a report with NO STORY (a subject for a video not recorded yet, or a video no story
+ *     matched), fills the cards the same way from his images, his words and a photo (2026-09-30,
+ *     Owen: "it should let me type it and pick the thumbnail background and foreground myself"): the
+ *     record reads with one pair per title (`locate`, pipeline.ts noStoryPairs), written into it on
+ *     the window's first write. It replaced the screenshots path (1 to 3 screenshots made that many
+ *     pairs with the model's words), whose records are still read;
  *   - for a report whose thumbnail stages STOPPED, the window prepares what is missing on opening
  *     (`finish`): the stages it stores are kept (frames, words) and only the missing ones run
  *     (pipeline.ts resumePlan / ItemThumbnailRun.resume).
@@ -70,6 +73,7 @@ import {
   fullFrame,
   NO_FRAME_YET,
   NO_PHOTO_YET,
+  noStoryPairs,
   resumePlan,
   type DrawnRender,
   type ThumbnailItemInput,
@@ -104,11 +108,19 @@ import { writeThumbnailWords } from './words-writer';
 export const TEXT_HOLD_IDLE_MS = 5 * 60_000;
 
 /**
- * The file types Owen can give as a screenshot or as an image to use as a frame (and that an old
- * own-image pick was). PNG and JPEG only: the app's ffmpeg reads both; it cannot read HEIC, and
+ * The file types Owen can give as an image to use as a frame (and that an old own-image pick was). PNG and JPEG only: the app's ffmpeg reads both; it cannot read HEIC, and
  * WebP was not checked, so neither is taken.
  */
 export const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg'] as const;
+
+/** What the reports page and the window say about a report with no story (the record keeps why). */
+export const NO_STORY_LINE = 'No frames were taken for this one: make its thumbnails from your own images.';
+
+/**
+ * Why New options and More options cannot run for a report made from a subject: the words are
+ * written from the video's transcript, and a subject has none.
+ */
+export const NO_TRANSCRIPT_WORDS = 'This one was made from a subject, not a video, so there is no transcript to write text from. Type your own words.';
 
 /** Where an added image's two grid pictures are kept, under the record's folder (its full size is in `full/`). */
 export const ADDED_FOLDER = 'added';
@@ -191,7 +203,7 @@ export interface ThumbnailsSummary {
   /** Null: the report was made before thumbnails were made in the metadata run. */
   state: ItemThumbnails['state'] | null;
   line: string | null;
-  /** True when the window has something to do: pairs to pick from, or screenshots to give. */
+  /** True when the window has something to do: cards to fill (from the story's frames or his own images). */
   canOpen: boolean;
   picks: PickView[];
   picksFolder: string | null;
@@ -268,6 +280,8 @@ export interface ThumbnailsView extends ThumbnailsSummary {
    * step started from an earlier one runs says so and waits for it (`running`).
    */
   running: string | null;
+  /** Why New options and More options cannot write text for this report (no transcript), or null. */
+  wordsBlocked: string | null;
 }
 
 /** Images added as frames: the view, the new frames' ids in the order given, and one plain line each. */
@@ -325,24 +339,6 @@ export function abTestPickFiles(outputDir: string, jobId: string, itemId: string
   return pickCopies(record).map(({ n, file }) => ({ n, file }));
 }
 
-/**
- * Empty a record's folder for new screenshots, keeping the images Owen added (`<id>.png` in
- * `full/` and the whole `added/` folder). Nothing outside the folder is touched.
- */
-function clearFolderKeeping(folder: string, addedIds: readonly string[]): void {
-  if (!fs.existsSync(folder)) return;
-  const keepFull = new Set(addedIds.map((id) => `${id}.png`));
-  for (const entry of fs.readdirSync(folder)) {
-    const at = path.join(folder, entry);
-    if (entry === ADDED_FOLDER && addedIds.length > 0) continue;
-    if (entry === 'full' && addedIds.length > 0 && fs.statSync(at).isDirectory()) {
-      for (const f of fs.readdirSync(at)) if (!keepFull.has(f)) fs.rmSync(path.join(at, f), { recursive: true, force: true });
-      continue;
-    }
-    fs.rmSync(at, { recursive: true, force: true });
-  }
-}
-
 function linesOfCount(words: { claim: string[]; stakes: string[]; reaction: string[] }): number {
   return words.claim.length + words.stakes.length + words.reaction.length;
 }
@@ -375,7 +371,18 @@ export class ReportThumbnails {
   }
 
   private locate(jobId: string, itemId: string): Located {
-    return locateItem(this.outputDir(), jobId, itemId);
+    const located = locateItem(this.outputDir(), jobId, itemId);
+    return { ...located, record: this.withCards(located.record, located.item) };
+  }
+
+  /**
+   * A record with no story holds no pairs as the run wrote it: it is read with one pair per title
+   * (pipeline.ts noStoryPairs), so its cards fill like any other; the window's first write stores
+   * them. Every other record is read as it is.
+   */
+  private withCards(record: ItemThumbnails | null, item: any): ItemThumbnails | null {
+    if (record === null || record.state !== 'no-story' || record.pairs.length > 0) return record;
+    return { ...record, ...noStoryPairs(this.fieldsOf(item)) };
   }
 
   /** Run `fn` as the one action on this item, refusing a second while it runs. */
@@ -521,7 +528,8 @@ export class ReportThumbnails {
     ));
     return {
       state: record.state,
-      line: record.line,
+      // The record's line says why no frames were taken, in the pipeline's terms; Owen reads this.
+      line: record.state === 'no-story' ? NO_STORY_LINE : record.line,
       canOpen: record.state === 'made' || record.state === 'no-story' || record.state === 'failed',
       picks,
       picksFolder: this.picksFolder(record),
@@ -585,7 +593,13 @@ export class ReportThumbnails {
       heldModel: this.heldModel(),
       finish: this.finishView(record),
       running: this.running(jobId, itemId),
+      wordsBlocked: this.hasTranscript(item) ? null : NO_TRANSCRIPT_WORDS,
     };
+  }
+
+  /** Whether the item was made from a video or a transcript file (a subject records no source). */
+  private hasTranscript(item: any): boolean {
+    return typeof item.source_path === 'string' && item.source_path !== '';
   }
 
   /** A frame file at full size, extracted once even when asked for twice at once. */
@@ -727,9 +741,12 @@ export class ReportThumbnails {
   }
 
   private pairOf(record: ItemThumbnails, n: number): StoredPair {
-    if (record.state !== 'made') throw new Error(`There are no thumbnails to change: ${record.line}`);
+    if (record.state !== 'made' && record.state !== 'no-story') throw new Error(`There are no thumbnails to change: ${record.line}`);
     const pair = record.pairs.find((p) => p.pair === n);
-    if (pair === undefined) throw new Error(`There is no title and thumbnail pair ${n} to draw card ${n} into: this report has ${record.pairs.length}.`);
+    if (pair === undefined) {
+      if (record.pairs.length === 0) throw new Error(`Thumbnail ${n} has no title to go with: this report has no titles.`);
+      throw new Error(`There is no title and thumbnail pair ${n} to draw card ${n} into: this report has ${record.pairs.length}.`);
+    }
     return pair;
   }
 
@@ -792,7 +809,7 @@ export class ReportThumbnails {
       const made = asked.filter((c): c is Extract<CardRequest, { kind: 'made' }> => c.kind === 'made');
       let folder = record.folder;
       if (folder === null) {
-        // A report with no story and only Owen's own images: the picks still need their folder.
+        // A report with no story whose cards hold only an old own-image pick: the picks still need their folder.
         const txtFolder = loc.job.txt_folder;
         if (typeof txtFolder !== 'string' || txtFolder === '') throw new Error('The report records no folder, so there is nowhere to put the picks.');
         folder = path.join(txtFolder, THUMBNAILS_FOLDER, `${jobId}-${itemId}`);
@@ -887,7 +904,7 @@ export class ReportThumbnails {
   /** The item's transcript lines, channel and creator: what the words read. */
   private itemContext(loc: Located): { transcript: string[]; channel: ReturnType<ReturnType<typeof promptAssets>['channel']>; creator: string; segments: any[] } {
     const sourcePath = loc.item.source_path;
-    if (typeof sourcePath !== 'string' || sourcePath === '') throw new Error('This report has lost track of the video it was made from, so there is no transcript to write words from.');
+    if (!this.hasTranscript(loc.item)) throw new Error(NO_TRANSCRIPT_WORDS);
     const promptSet = typeof loc.item._prompt_set === 'string' ? loc.item._prompt_set : null;
     if (promptSet === null) throw new Error('This report names no prompt set, so nothing says whose channel it is.');
     const channel = promptAssets().channel(promptSet);
@@ -1030,8 +1047,8 @@ export class ReportThumbnails {
    * and written at 1920x1080 into `<folder>/full/<id>.png` (prepareStill, its line logged and kept
    * on the record), with the grid's two JPEGs beside the sampler's in `<folder>/added/`. His file is
    * only read. They are listed first in the Frames tray; the words, photo, logo and border go on top
-   * as on any frame, and Edit zooms or moves them. A report with no folder yet gets the one
-   * screenshots would get. One that is not ready (failed) is refused: it is prepared first. If one
+   * as on any frame, and Edit zooms or moves them. A report with no folder yet (one with no
+   * story) gets `<report folder>/thumbnails/<jobId>-<itemId>/`, and its cards' pairs are stored. One that is not ready (failed) is refused: it is prepared first. If one
    * file cannot be read, nothing is added and the file is named.
    */
   addFrames(jobId: string, itemId: string, files: unknown): Promise<AddedFrames> {
@@ -1092,104 +1109,6 @@ export class ReportThumbnails {
         throw err;
       }
       return { view: this.view(jobId, itemId), added: frames.map((f) => f.id), lines };
-    });
-  }
-
-  /**
-   * NO STORY: 1 to 3 of Owen's screenshots become that many pairs, for `titles` (the page sends his
-   * chosen titles first, then the generated ones, one per screenshot). His files are only read; each
-   * is cut to 16:9 around its centre if it is another shape (said) and written into `full/`. The
-   * words run on the routing table's row, as in the metadata run (no photo until he picks); the record's story
-   * (and why there was none) is kept. His own-image picks stay; pair picks are cleared (new pairs).
-   */
-  useScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
-    return this.exclusive(jobId, itemId, 'making thumbnails from your screenshots', async () => {
-      if (!Array.isArray(files) || files.length < 1 || files.length > PAIR_COUNT) throw new Error(`Give 1 to ${PAIR_COUNT} screenshots; ${Array.isArray(files) ? files.length : 'none'} were given.`);
-      for (const f of files) {
-        if (typeof f !== 'string' || !path.isAbsolute(f) || !fs.existsSync(f)) throw new Error(`The screenshot is not a file on this Mac: ${JSON.stringify(f)}.`);
-        if (!(IMAGE_EXTENSIONS as readonly string[]).includes(path.extname(f).toLowerCase())) throw new Error(`${path.basename(f)} is not a PNG or JPEG.`);
-      }
-      if (!Array.isArray(titles) || titles.length !== files.length || titles.some((t) => typeof t !== 'string' || t.trim() === '')) {
-        throw new Error(`Each screenshot needs a title to write its words for: ${files.length} screenshot(s), ${Array.isArray(titles) ? titles.length : 0} title(s).`);
-      }
-      if (new Set(titles.map((t) => t.trim())).size !== titles.length) throw new Error('One title is named twice; each screenshot gets its own title.');
-      const loc = this.locate(jobId, itemId);
-      const record = this.actionable(loc, 'make');
-      const fromShots = record.state === 'made' && record.source !== null && record.source.video === null;
-      if (record.state === 'made' && !fromShots) throw new Error('This report already has thumbnails from its story; screenshots are for a report with no story.');
-      const txtFolder = loc.job.txt_folder;
-      if (typeof txtFolder !== 'string' || txtFolder === '') throw new Error('The report records no folder, so there is nowhere to put the thumbnails.');
-      const parent = path.join(txtFolder, THUMBNAILS_FOLDER);
-      const folder = record.folder ?? path.join(parent, `${jobId}-${itemId}`);
-      if (path.dirname(path.resolve(folder)) !== path.resolve(parent)) throw new Error(`The record's folder ${folder} is not in this report's ${THUMBNAILS_FOLDER} folder, so it is not replaced.`);
-      const setup = this.setup();
-      const ctx = this.itemContext(loc);
-      // A failed run's frames, or earlier screenshots, are replaced; the picks folder is rewritten.
-      // The images Owen added as frames stay (their full size in full/, their grid pictures in added/).
-      const added = record.frames.filter((f) => f.origin === 'added');
-      clearFolderKeeping(folder, added.map((f) => f.id));
-      this.facesCache.clear();
-      const shots: Array<{ id: string; full: string; lines: string[] }> = [];
-      for (const [i, file] of files.entries()) {
-        const id = `shot${i + 1}`;
-        const full = path.join(folder, 'full', `${id}.png`);
-        const still = await prepareStill(setup.ffmpeg, this.deps.ffprobe, file, full);
-        shots.push({ id, full, lines: [`Screenshot ${i + 1}: ${still.line}`] });
-      }
-      // The words on the window's held model when the row is local; a cloud or `claude -p` row
-      // holds no card, and its run gets a job of its own (nothing is leased on it), given back after.
-      const words = await this.routed('thumbnail_words', 'Thumbnails from your screenshots');
-      await this.textStep(words.option, async (held) => {
-        const own = held === undefined ? this.deps.holdJob('Thumbnails from your screenshots') : null;
-        const leases = held ?? own!;
-        const ai = this.deps.aiManager();
-        try {
-          const run = ItemThumbnailRun.fromScreenshots(
-            setup,
-            {
-              jobId,
-              itemIndex: 0,
-              sourceLabel: String(loc.item._title ?? itemId),
-              contentType: 'video',
-              videoPath: typeof loc.item.source_path === 'string' ? loc.item.source_path : null,
-              operatorRef: null,
-              segments: ctx.segments,
-              reportFolder: txtFolder,
-              channel: ctx.channel,
-            },
-            {
-              leases,
-              aiManager: ai,
-              routing: words.routing,
-              models: words.models,
-              cancelled: () => false,
-              progress: (line) => this.deps.progress({ jobId, itemId, line }),
-            },
-            { story: record.story, folder },
-            shots,
-          );
-          await run.afterFields({ titles: titles.map((t) => t.trim()), reroll_gate: null });
-          const made = run.record();
-          if (made.state === 'failed' && held !== undefined) this.releaseAfterSteps ??= 'a screenshots step failed';
-          const ownPicks = record.picks.filter((p) => p.kind === 'own');
-          // The words the replaced pairs had are kept as earlier options, and his added images stay frames.
-          const next: ItemThumbnails = {
-            ...made,
-            frames: [...made.frames, ...added],
-            earlierWords: keepEarlier(record, record.pairs.map((p) => ({ ...p.words, title: p.title }))),
-            picks: ownPicks,
-          };
-          await this.write(loc, jobId, itemId, next);
-          log.info(`[Thumbnails] ${loc.where}: ${files.length} screenshot(s): ${made.line}`);
-        } finally {
-          ai.cleanup?.();
-          if (own !== null) {
-            const lost = await own.releaseAll();
-            for (const line of lost) log.error(`[Thumbnails] the screenshots run lost its lease on ${line} before it was given back`);
-          }
-        }
-      });
-      return this.view(jobId, itemId);
     });
   }
 

@@ -158,12 +158,7 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     progressTo = event.sender;
     return answer('preparing the frames and text', () => report.finish(jobId, itemId));
   });
-  ipcMain.handle('thumbnails:screenshots', (event, jobId: string, itemId: string, files: string[], titles: string[]) => {
-    progressTo = event.sender;
-    return answer('making thumbnails from screenshots', () => report.useScreenshots(jobId, itemId, files, titles));
-  });
   ipcMain.handle('thumbnails:choose-frames', (event) => answer('choosing images', () => chooseFiles(event, true)));
-  ipcMain.handle('thumbnails:choose-screenshots', (event) => answer('choosing screenshots', () => chooseFiles(event, true)));
   ipcMain.handle('thumbnails:closed', () => answer('closing the Thumbnails window', () => report.closed()));
   ipcMain.handle('thumbnails:show-folder', (_e, folder: string) =>
     answer('opening the folder', async () => {

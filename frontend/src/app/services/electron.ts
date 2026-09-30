@@ -1112,12 +1112,10 @@ declare global {
       thumbnailsSaveCards: (jobId: string, itemId: string, cards: CardRequest[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsPairTitle: (jobId: string, itemId: string, pair: number, title: string, kind: WordKind | null) => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; text: { kind: WordKind; phrase: string; wordsFor: string } }>>;
       thumbnailsFinish: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
-      thumbnailsScreenshots: (jobId: string, itemId: string, files: string[], titles: string[]) => Promise<ThumbnailsAnswer<ThumbnailsView>>;
       thumbnailsWords: (jobId: string, itemId: string, pair: number, mode: 'new' | 'more') => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; line: string }>>;
       thumbnailsRunning: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsAddFrames: (jobId: string, itemId: string, files: string[]) => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; added: string[]; lines: string[] }>>;
       thumbnailsChooseFrames: () => Promise<ThumbnailsAnswer<string[] | null>>;
-      thumbnailsChooseScreenshots: () => Promise<ThumbnailsAnswer<string[] | null>>;
       thumbnailsClosed: () => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsShowFolder: (folder: string) => Promise<ThumbnailsAnswer<void>>;
       thumbnailsGetStyle: () => Promise<ThumbnailsAnswer<{ style: LookStyle; stored: boolean; line: string | null }>>;
@@ -2624,9 +2622,6 @@ export class ElectronService {
   thumbnailsFinish(jobId: string, itemId: string): Promise<ThumbnailsView> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsFinish(jobId, itemId));
   }
-  thumbnailsScreenshots(jobId: string, itemId: string, files: string[], titles: string[]): Promise<ThumbnailsView> {
-    return this.thumbnails(this.thumbnailsBridge.thumbnailsScreenshots(jobId, itemId, files, titles));
-  }
   /** "New options" (a fresh set first, the earlier ones kept) or "More options" (added, none twice) for pair n's title. */
   thumbnailsWords(jobId: string, itemId: string, pair: number, mode: 'new' | 'more'): Promise<{ view: ThumbnailsView; line: string }> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsWords(jobId, itemId, pair, mode));
@@ -2638,7 +2633,6 @@ export class ElectronService {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsAddFrames(jobId, itemId, files));
   }
   thumbnailsChooseFrames(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseFrames()); }
-  thumbnailsChooseScreenshots(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseScreenshots()); }
   thumbnailsClosed(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsClosed()); }
   thumbnailsShowFolder(folder: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsShowFolder(folder)); }
   thumbnailsGetStyle(): Promise<{ style: LookStyle; stored: boolean; line: string | null }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsGetStyle()); }

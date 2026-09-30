@@ -71,6 +71,10 @@ export interface ThumbnailsWindowData {
  *     slot"): an image file dropped from Finder on a card becomes that card's frame at once (cut to
  *     fill 16:9; Edit zooms or moves it), dropped on the Frames tray or chosen with "Add an image…"
  *     it joins the tray. They are kept in the report, listed first.
+ *   - A REPORT WITH NO STORY (2026-09-30, Owen, a report made from a subject for a video not
+ *     recorded yet: "it should let me type it and pick the thumbnail background and foreground
+ *     myself"): the same cards, filled from the images he adds, words he types and a photo. Text
+ *     is written for it only when it has a transcript (`wordsBlocked` says why not).
  *   - THE WORDS ARE KEPT (2026-09-29, Owen: "that should be kept even if i leave the modal"): each
  *     title's group in the Text tray has New options (a fresh set first, the earlier ones kept
  *     below) and More options (added to them, none twice). The main process writes every set into
@@ -125,7 +129,6 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Closing was asked with changes not saved: the in-window question is showing. */
   readonly closeAsked = signal(false);
   readonly typed = signal('');
-  readonly shots = signal<string[]>([]);
   /** Where files are being dragged over: a card, the Frames tray, or nowhere. */
   readonly dropOver = signal<number | 'tray' | null>(null);
   private destroyed = false;
@@ -240,8 +243,16 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Every set of words since followed by a newer one (kept, shown under "Earlier options"). */
   readonly earlierWords = computed(() => this.record()?.earlierWords ?? []);
   readonly options = computed(() => textOptions(this.pairs(), this.earlierWords()));
-  /** The Text tray: one group per title, with its New options / More options. */
-  readonly textGroups = computed<TextGroup[]>(() => textGroups(this.pairs(), this.earlierWords()));
+  /**
+   * The Text tray: one group per title, with its New options / More options. When no text can be
+   * written for this report (made from a subject), a title with no lines has nothing to show.
+   */
+  readonly textGroups = computed<TextGroup[]>(() => {
+    const groups = textGroups(this.pairs(), this.earlierWords());
+    return this.wordsBlocked() === null ? groups : groups.filter((g) => g.current.length + g.earlier.length > 0);
+  });
+  /** Why no text can be written for this report (made from a subject: no transcript), or null. */
+  readonly wordsBlocked = computed(() => this.view()?.wordsBlocked ?? null);
   /**
    * The grid. Empty while the frames are to be prepared again (an old record's up-to-120 scoring
    * frames): the stored ones are about to be replaced, look-alikes dropped, so they are not offered.
@@ -272,7 +283,6 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     const own = this.ownBlocked();
     if (own !== null || r === null) return own;
     if (r.state === 'failed') return 'The frames and text for this video are not ready yet.';
-    if (r.state === 'no-story') return 'This report has no story to take frames from. Make thumbnails from your screenshots below, or use your own image on a card.';
     if (composeError(v.compose) !== null) return `The thumbnails cannot be drawn: ${composeError(v.compose)}`;
     return null;
   });
@@ -509,7 +519,10 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
 
   // ── his own images as frames ──────────────────────────────────────────────
 
-  /** Whether the Frames tray is shown: a report with thumbnails made or with no story (images can be added to both). */
+  /**
+   * Whether the Frames tray is shown: a report with thumbnails made, or with no story (its frames are
+   * only the images he adds; its cards fill like any other, 2026-09-30).
+   */
   readonly framesShown = computed(() => {
     const r = this.record();
     return r !== null && this.ownBlocked() === null && (r.state === 'made' || r.state === 'no-story');
@@ -761,7 +774,7 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** Why "Rewrite words for this title", New options or More options cannot run now, or null. */
   rewriteBlocked(): string | null {
     if (this.busy() !== null) return `Wait: ${this.busy()!.what.toLowerCase()} is running.`;
-    return null;
+    return this.wordsBlocked();
   }
 
   /** New words for card n's title (pair n's words are written again for it); they go on card n, not saved yet. */
@@ -822,39 +835,6 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   /** What is missing, in Owen's terms. */
   missingOf(run: readonly string[]): string {
     return run.includes('frames') ? 'the frames and text' : run.includes('words') ? 'the text' : 'the drawings';
-  }
-
-  // ── no story: screenshots ─────────────────────────────────────────────────
-
-  readonly canScreenshots = computed(() => {
-    const r = this.record();
-    return r !== null && (r.state === 'no-story' || (r.state === 'failed' && r.story?.state !== 'linked') || (r.state === 'made' && r.source?.video === null));
-  });
-
-  /** Every title the words can be written for: the chosen ones first, then the generated ones. */
-  readonly titleChoices = computed(() => [...new Set([...this.chosenTitles(), ...(this.view()?.titles ?? [])])]);
-  readonly shotTitles = computed(() => this.titleChoices().slice(0, this.shots().length));
-
-  async chooseShots(): Promise<void> {
-    this.failure.set(null);
-    const files = await this.runner.run('Choosing screenshots', () => this.electron.thumbnailsChooseScreenshots());
-    if (files === null) return;
-    if (files.length > CARD_COUNT) {
-      this.notice.set(`Pick 1 to 3 screenshots; ${files.length} were chosen.`);
-      return;
-    }
-    this.shots.set(files);
-  }
-
-  /** Screenshots make that many pairs; each card then shows its screenshot with the words written for its title. */
-  async makeFromShots(): Promise<void> {
-    const files = this.shots();
-    const titles = this.shotTitles();
-    if (files.length === 0) return;
-    this.failure.set(null);
-    this.pieces.forgetFrames();
-    const what = `Making ${files.length} thumbnail${files.length === 1 ? '' : 's'} from your screenshots`;
-    if (await this.act(what, () => this.electron.thumbnailsScreenshots(this.data.jobId, this.data.itemId, files, titles), true)) this.shots.set([]);
   }
 
   // ── elsewhere ─────────────────────────────────────────────────────────────

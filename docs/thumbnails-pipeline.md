@@ -4,7 +4,8 @@ Phase 1 built 2026-09-28 (LEDGER #240): the metadata job makes the thumbnails wh
 loaded, so the report opens with **three title and thumbnail pairs** ready for YouTube's Test &
 Compare ("title and thumbnail" mode takes up to 3 pairs). Phase 2 built the same day (LEDGER #241):
 the reports page's **Thumbnails window** (ordered picks, swaps, rewriting words for a title, own
-images, screenshots for a report with no story), publishing pick 1, the one **Thumbnail look**, the
+images, screenshots for a report with no story (replaced 2026-09-30 by his images and words, see the
+end)), publishing pick 1, the one **Thumbnail look**, the
 new text rules, deleting a report's thumbnails with it, and the Thumbnails test tab removed
 (docs/thumbnails-lab.md is kept, marked retired). Phase 2 is described in its own section below.
 
@@ -286,9 +287,11 @@ the render's notes say so. Nothing is refused and nothing is cut. (Until phase 2
 not keep the 7% floor clear of the faces was refused, and the text could sit anywhere on up to three
 lines.)
 
-### No story: screenshots
+### No story: screenshots (removed 2026-09-30)
 
-For a report whose record is `no-story` or `failed` (or made from screenshots before), the window
+Superseded by "A report with no story: his images, his words" at the end of this file (LEDGER #251):
+the window, IPC and `useScreenshots` / `ItemThumbnailRun.fromScreenshots` are gone; records it made
+are still read and finished. As it was: for a report whose record is `no-story` or `failed` (or made from screenshots before), the window
 takes 1, 2 or 3 of Owen's screenshots (PNG or JPEG) and makes that many pairs, one per title (his
 chosen titles first, then the generated ones): each screenshot is cut to 16:9 around its centre when
 it is another shape and scaled to 1920x1080 (said per screenshot), the words, tone and photos run on
@@ -923,3 +926,49 @@ browser image (should be refused by name); New options and More options on a tit
 options fold; closing the window while New options runs, reopening it (the "Still writing" line) and
 seeing the new options arrive. Live: the model's answer to the `more` paragraph (whether it avoids
 near-repeats, not just exact ones) is unmeasured.
+
+## A report with no story: his images, his words (2026-09-30, LEDGER #251)
+
+Owen, on a report made from a single subject for an upcoming video (no recording yet): "i drag/dropped
+a thumbnail frame into it, but it said this: 'This report has no story to take frames from. Make
+thumbnails from your screenshots below, or use your own image on a card.' ... it should let me type
+it and pick the thumbnail background and foreground myself if i want", and "only one thumbnail if i
+choose, too. it shouldnt lock me into 3."
+
+- **The cards work as in any report.** A `no-story` record holds no pairs as the run wrote it; the
+  window reads it with one pair per title (`pipeline.ts noStoryPairs`: `pairSubjects`' titles and
+  order, no words, no frame, no photo; none with no titles), done in `ReportThumbnails.locate`
+  (`withCards`) so every read and write sees the same pairs. Reading writes nothing; the first write
+  (adding an image, New options, Save thumbnails) stores them. The state stays `no-story`. `pairOf`
+  accepts `made` and `no-story`. The Frames tray holds only his added images (drop on a card or the
+  tray, or Add an image…; the folder `<report folder>/thumbnails/<jobId>-<item id>/` is made by the
+  first add), the Text tray takes typed words, the Photos tray, the edits, the logo and border are as
+  anywhere. Save thumbnails with ONE card saves one pick and one `picks/Pick 1.png` (the other cards
+  are sent as `empty`); nothing asks for two or three.
+- **Text**: the words are written from the transcript (`thumbnails.yml` "Below is the transcript";
+  `buildWordsPrompt` refuses an empty one), and a subject item records no source and no transcript.
+  So for a subject the view's `wordsBlocked` says why ("This one was made from a subject, not a
+  video, so there is no transcript to write text from. Type your own words."), the window disables
+  New options / More options / Rewrite with it and hides titles with no lines, and `itemContext`
+  refuses the same sentence before any model call. A video with no story has its saved transcript:
+  New options and More options write for its titles as in any report.
+- **Plain words**: the reports page and the window say "No frames were taken for this one: make its
+  thumbnails from your own images." (`NO_STORY_LINE`) instead of the record's line (which keeps the
+  pipeline's reason). The empty Frames tray reads "Drop your images here, or choose them with Add an
+  image…" in a dashed drop area. A card beyond the titles says "There are 2 titles, so thumbnail 3
+  has no title to go with."
+- **Removed**: the screenshots path (window section, `canScreenshots` / `chooseShots` /
+  `makeFromShots` / `shots`, the `thumbnails:screenshots` and `thumbnails:choose-screenshots`
+  channels and their preload and bridge methods, `ReportThumbnails.useScreenshots`,
+  `clearFolderKeeping`, `ItemThumbnailRun.fromScreenshots`). Kept: `fromScreenshots(record)` in
+  pipeline.ts, so a record it made is still finished (pair n on screenshot n) and its Frames tray
+  still says "Your screenshots".
+- **Keeper** (thumbnail-pipeline-checks.js): a subject report read with three empty pairs and the
+  plain line, nothing written by reading; New options refused by name with no model call; an image
+  added (folder made, pairs stored); one card with his image, typed words and a photo saved alone:
+  one draw, Pick 1 only, `picks/` holding exactly `Pick 1.png`, read back with nothing unsaved; a
+  video with no story writes text for pair 2's title; the screenshots channels, methods and window
+  section gone. The finish check builds a screenshots record by hand (`screenshotsRecord`).
+- **Not verified**: nobody has opened a subject report's window. Try: open Make thumbnails… on a
+  subject report, drop an image on a card, type words, pick a photo, Save thumbnails with one card;
+  the report's Thumbnails block should show one pick.

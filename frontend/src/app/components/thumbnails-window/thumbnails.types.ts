@@ -177,6 +177,8 @@ export interface ThumbnailsView extends ThumbnailsSummary {
   finish: FinishView | null;
   /** What is running for this item now (a step started from an earlier window), or null. */
   running: string | null;
+  /** Why New options and More options cannot write text for this report (made from a subject: no transcript), or null. */
+  wordsBlocked: string | null;
 }
 
 /** A frame at full size for the preview, and the faces the final render will find in it (or why not). */
