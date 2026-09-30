@@ -532,10 +532,11 @@ function rowPreviews(row: HTMLElement): Set<string> {
 }
 
 /**
- * Put Pick n into row n's uploader and confirm BOTH that the input holds it and that the
- * row's preview changed to a new picture (a `data:image/…` src Studio makes from the file,
- * seen within 1-2 s live). The first proves the file went in; only the second proves the
- * uploader took it.
+ * Put Pick n into row n's uploader and confirm the row's preview changed to a new picture (a
+ * `data:image/…` src Studio makes from the file, seen within 1-2 s live): that is the proof the
+ * uploader took it. The input itself is not read back as proof, because these uploaders empty
+ * it once they have the file (live 2026-09-30: the fill stopped after row 1 on "dropped
+ * straight back out" while row 1 showed Pick 1).
  */
 async function setRowThumbnail(row: HTMLElement, n: number, thumbnail: PublishThumbnail): Promise<void> {
   const uploader = row.querySelector<HTMLElement>(SEL.uploader);
@@ -543,7 +544,7 @@ async function setRowThumbnail(row: HTMLElement, n: number, thumbnail: PublishTh
   if (!input) throw new FillError(`A/B row ${n} has no thumbnail file input`);
 
   const before = rowPreviews(row);
-  await setThumbnailOnInput(input, thumbnail, `A/B row ${n}'s thumbnail input`);
+  await setThumbnailOnInput(input, thumbnail, `A/B row ${n}'s thumbnail input`, true);
   await waitFor(
     () => [...rowPreviews(row)].some((src) => !before.has(src)),
     `thumbnail ${n}'s picture to appear in A/B row ${n}`,

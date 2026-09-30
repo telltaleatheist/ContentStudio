@@ -165,6 +165,13 @@ export async function setThumbnailOnInput(
   input: HTMLInputElement,
   thumbnail: PublishThumbnail,
   what: string,
+  /**
+   * The A/B dialog's uploaders EMPTY their input once they have taken the file (seen live
+   * 2026-09-30: row 1 showed Pick 1 while its input held nothing), so there an empty input is
+   * not a refusal and the caller proves the image landed by the row's picture changing. Any
+   * OTHER file left in the input is still refused.
+   */
+  emptiedOnTake = false,
 ): Promise<string> {
   if (input.disabled) {
     throw new FillError(`${what} is disabled, so ${thumbnail.filename} could not be put into it.`);
@@ -192,6 +199,7 @@ export async function setThumbnailOnInput(
   await sleep(300);
 
   const landed = input.files?.[0];
+  if (!landed && emptiedOnTake) return thumbnail.filename;
   if (!landed) {
     throw new FillError(
       `Studio dropped ${thumbnail.filename} straight back out of ${what}. ` +
