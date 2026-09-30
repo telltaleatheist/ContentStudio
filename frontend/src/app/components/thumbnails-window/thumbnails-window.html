@@ -61,7 +61,7 @@
     }
   } @else if (record(); as r) {
     @if (r.state === 'no-story') {
-      <p class="line">{{ r.line }}</p>
+      <p class="line">{{ view()!.line }}</p>
     } @else if (r.state === 'off') {
       <div class="banner warn"><span>{{ r.line }}</span></div>
     }
@@ -153,13 +153,17 @@
              (dragover)="dragOver($event, 'tray')" (dragleave)="dragLeave($event, 'tray')" (drop)="dropOnTray($event)">
       <div class="sec-head">
         <h3>Frames</h3>
-        <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots' : record()!.state === 'made' ? 'From the story, in time order: the sharpest of each shot' : 'Your images' }}, and any image you drop here or on a thumbnail (it is cut to fill the thumbnail; Edit zooms or moves it). Putting one on thumbnail {{ active() }}.</span>
+        @if (record()!.state === 'no-story') {
+          <span class="hint">Your images: drop them here or on a thumbnail (each is cut to fill the thumbnail; Edit zooms or moves it). Putting one on thumbnail {{ active() }}.</span>
+        } @else {
+          <span class="hint">{{ record()!.source?.video === null ? 'Your screenshots' : 'From the video, in time order: the sharpest of each shot' }}, and any image you drop here or on a thumbnail (it is cut to fill the thumbnail; Edit zooms or moves it). Putting one on thumbnail {{ active() }}.</span>
+        }
         <span class="spacer"></span>
         <button mat-stroked-button (click)="chooseImages()" [disabled]="busy() !== null"
                 [title]="busy() !== null ? 'Wait for the running step' : 'Add one or more of your own images (PNG or JPEG) to the frames'">Add an image…</button>
       </div>
       @if (frameIds().length === 0) {
-        <p class="hint">No frames yet. Drop your own images here or on a thumbnail, or use Add an image….</p>
+        <p class="drop-empty">Drop your images here, or choose them with Add an image….</p>
       }
       <div class="frames">
         @for (id of frameIds(); track id) {
@@ -178,9 +182,13 @@
     <section>
       <div class="sec-head">
         <h3>Text</h3>
-        <span class="hint">Putting it on thumbnail {{ active() }}. Everything written is kept: New options puts a fresh set first, More options adds to them. Either keeps going if you close this window.</span>
+        @if (wordsBlocked(); as why) {
+          <span class="hint">Putting it on thumbnail {{ active() }}. {{ why }}</span>
+        } @else {
+          <span class="hint">Putting it on thumbnail {{ active() }}. Everything written is kept: New options puts a fresh set first, More options adds to them. Either keeps going if you close this window.</span>
+        }
       </div>
-      @if (textGroups().length === 0) {
+      @if (textGroups().length === 0 && wordsBlocked() === null) {
         <p class="hint">No suggested text yet. You can still type your own.</p>
       }
       @for (g of textGroups(); track g.title) {
@@ -263,22 +271,6 @@
     </section>
   }
 
-  <!-- ═════ NO STORY: SCREENSHOTS ═════ They become the Frames above. -->
-  @if (canScreenshots()) {
-    <section class="shots">
-      <h3>{{ record()!.state === 'made' ? 'Use other screenshots' : 'Make thumbnails from your screenshots' }}</h3>
-      <p class="hint">Give 1, 2 or 3 screenshots; they become the frames above, one thumbnail each, with words written from the transcript for each title (your picked titles first; the words model, about a minute).</p>
-      <div class="row">
-        <button mat-stroked-button (click)="chooseShots()" [disabled]="busy() !== null" [title]="busy() !== null ? 'Wait for the running step' : ''">Choose screenshots…</button>
-        @if (shots().length > 0) {
-          <button mat-flat-button color="primary" (click)="makeFromShots()" [disabled]="busy() !== null">Use {{ shots().length }} screenshot{{ shots().length === 1 ? '' : 's' }}</button>
-        }
-      </div>
-      @for (file of shots(); track file; let i = $index) {
-        <p class="line">{{ i + 1 }}. {{ fileName(file) }} → {{ shotTitles()[i] ?? 'no title left for it' }}</p>
-      }
-    </section>
-  }
 
 </mat-dialog-content>
 <mat-dialog-actions align="end">

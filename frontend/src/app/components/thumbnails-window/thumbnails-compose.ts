@@ -253,12 +253,15 @@ export interface CardPlan {
   position: number | null;
 }
 
-/** Why a card cannot hold frames and text: the report has no pair n to draw it into. Null when it can. */
+/**
+ * Why a card cannot hold frames and text: the report has no pair n (one per title, at most three)
+ * to draw it into. Null when it can.
+ */
 export function noPairFor(n: number, pairs: readonly StoredPair[]): string | null {
   if (pairs.some((p) => p.pair === n)) return null;
   return pairs.length === 0
-    ? `There are no title and thumbnail pairs to draw into yet, so thumbnail ${n} can only hold your own image.`
-    : `This report has ${pairs.length} title and thumbnail pair${pairs.length === 1 ? '' : 's'}, so thumbnail ${n} can only hold your own image.`;
+    ? `Thumbnail ${n} has no title to go with yet, so it cannot be filled.`
+    : `There ${pairs.length === 1 ? 'is 1 title' : `are ${pairs.length} titles`}, so thumbnail ${n} has no title to go with.`;
 }
 
 export function planCards(cards: readonly Card[], pairs: readonly StoredPair[]): CardPlan[] {
@@ -372,7 +375,7 @@ export function unsavedCards(cards: readonly Card[], saved: readonly Card[]): nu
 
 /**
  * The title a saved card goes with: pick k goes with title k, his chosen titles first, then the
- * generated ones (as the screenshots are titled). `chosen` false: that title is not picked on the
+ * generated ones. `chosen` false: that title is not picked on the
  * report yet, so the pairing may still change.
  */
 export function titleOf(position: number | null, chosen: readonly string[], generated: readonly string[]): { title: string; chosen: boolean } | null {

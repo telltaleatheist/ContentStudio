@@ -121,6 +121,11 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
   border-radius: 6px; transition: background-color 0.1s ease;
   &.drop-on { outline: 2px dashed var(--primary-orange); outline-offset: 2px; background: var(--bg-secondary); }
 }
+// No frames yet: the tray itself reads as the place to drop them.
+.drop-empty {
+  margin: 4px 0 0; padding: 22px 12px; text-align: center; font-size: 13px;
+  color: var(--text-secondary); border: 2px dashed var(--border-color); border-radius: 6px;
+}
 .card-pic .drop-here {
   position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; text-align: center;
   background: rgba(0, 0, 0, 0.55); color: #fff; font-weight: 600; font-size: 13px; pointer-events: none;
