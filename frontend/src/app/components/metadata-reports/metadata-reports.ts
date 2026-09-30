@@ -3615,7 +3615,10 @@ export class MetadataReports implements OnInit, OnDestroy {
     const open = this.selectedReport();
     if (!open?.jobId || !open.itemId) return;
     const data: ThumbnailsWindowData = { jobId: open.jobId, itemId: open.itemId };
-    const ref = this.dialog.open(ThumbnailsWindow, { data, width: '1240px', maxWidth: '96vw', maxHeight: '94vh', autoFocus: false });
+    // Almost the whole window, below the app's toolbar (64 px, drawn above dialogs): Owen 2026-09-30.
+    const ref = this.dialog.open(ThumbnailsWindow, {
+      data, width: '96vw', maxWidth: '96vw', height: 'calc(100vh - 88px)', maxHeight: 'calc(100vh - 88px)', position: { top: '76px' }, autoFocus: false,
+    });
     ref.afterClosed().subscribe(() => void this.refreshThumbnails(open.jobId, open.itemId));
   }
 

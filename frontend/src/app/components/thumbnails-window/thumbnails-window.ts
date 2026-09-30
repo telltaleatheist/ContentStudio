@@ -135,7 +135,8 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
   // ── the cards stay at the top (Owen 2026-09-29: "stickied to the top. as we scroll down, they
   // shrink a bit so i can still select them") ─────────────────────────────────────────────────
   private readonly statusEl = viewChild<ElementRef<HTMLElement>>('status');
-  private readonly cardsSecEl = viewChild<ElementRef<HTMLElement>>('cardsSec');
+  /** An empty marker just above the cards: it scrolls away while the cards stay, so it says how far past them the window is. */
+  private readonly cardsMarkEl = viewChild<ElementRef<HTMLElement>>('cardsMark');
   /** The sticky status line's height: the cards stick just below it. */
   readonly statusHeight = signal(0);
   /** Scrolled past the cards: they shrink to pictures only. */
@@ -149,20 +150,18 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.statusObserver.observe(el);
   });
 
-  /** Shrink once the cards' own top has scrolled under the status line; grow back near the top (a gap so the change in height cannot flicker). */
+  /**
+   * Shrink once the window has scrolled 40 px past where the cards stick (the marker above them has
+   * gone under the status line); grow back only when it is within 4 px again, so the change in the
+   * panel's height cannot flicker. Measured on screen, so nothing above the cards can throw it off.
+   */
   onScroll(event: Event): void {
-    const sec = this.cardsSecEl()?.nativeElement;
-    if (sec === undefined) return;
-    const scrolled = (event.target as HTMLElement).scrollTop;
-    const stuckAt = this.naturalTop(sec) - this.statusHeight();
-    if (!this.compact() && scrolled > stuckAt + 40) this.compact.set(true);
-    else if (this.compact() && scrolled < stuckAt + 4) this.compact.set(false);
-  }
-
-  /** The section's top in the scrolling content when not stuck: the element before it, which does not move. */
-  private naturalTop(sec: HTMLElement): number {
-    const prev = sec.previousElementSibling as HTMLElement | null;
-    return prev === null ? 0 : prev.offsetTop + prev.offsetHeight;
+    const mark = this.cardsMarkEl()?.nativeElement;
+    if (mark === undefined) return;
+    const line = (event.target as HTMLElement).getBoundingClientRect().top + this.statusHeight();
+    const past = line - mark.getBoundingClientRect().top;
+    if (!this.compact() && past > 40) this.compact.set(true);
+    else if (this.compact() && past < 4) this.compact.set(false);
   }
   private pieces: PreviewPieces;
   private readonly redrawers = new Map<HTMLCanvasElement, { redrawer: Redrawer; shape: string }>();

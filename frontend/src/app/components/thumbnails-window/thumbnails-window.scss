@@ -1,7 +1,13 @@
 /* Theme tokens only, so the window follows the app's light and dark themes; the accent is the app's
    orange. The smallest text is 12px, above the app's 11.5px legibility floor. The card editor
    (2026-09-29): three live cards across the top, the trays (frames, text, photos) below. */
+/* The window fills almost all of ContentStudio (96vw x 94vh, set where it opens): the title and the
+   Close row keep their height and the content takes the rest, instead of Material's 65vh cap. */
+:host { display: flex; flex-direction: column; height: 100%; }
+.mat-mdc-dialog-content.tw { max-height: none; flex: 1 1 auto; min-height: 0; }
 .tw {
+  /* One background for the window and its two sticky panels, so what scrolls under them is hidden. */
+  background: var(--bg-secondary);
   font-family: var(--font-family);
   font-size: 13px;
   color: var(--text-primary);
@@ -27,7 +33,8 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 
 /* ── status: sticky, so the line is seen wherever the click was ── */
 .status {
-  position: sticky; top: 0; z-index: 2; background: var(--bg-primary);
+  /* Above every tray control (Material's button labels carry z-index 1). */
+  position: sticky; top: 0; z-index: 20; background: var(--bg-secondary);
   padding-bottom: 6px; margin: 0 -2px; padding-left: 2px; padding-right: 2px;
 }
 .howto { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
@@ -55,10 +62,11 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 }
 
 /* ── the cards ── */
+.cards-mark { height: 0; }
 .cards-sec {
   border-top: none; margin-top: 8px;
   /* Sticky below the status line (top set from its height); shrinks to pictures only once scrolled past. */
-  position: sticky; z-index: 1; background: var(--bg-primary); padding-bottom: 8px;
+  position: sticky; z-index: 10; background: var(--bg-secondary); padding-bottom: 8px;
   box-shadow: 0 6px 8px -8px rgba(0, 0, 0, 0.35);
   .cards { transition: max-width 0.15s ease; max-width: 100%; }
   &.compact {
