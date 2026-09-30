@@ -674,6 +674,8 @@ export interface VoiceIsolationDeps {
 /** The parts of the Crucible context this door reads (electron/crucible/context.ts). */
 export interface VoiceIsolationContext {
   servers: { selected(): string };
+  /** The model routing's server, which every action uses when it names one (Owen 2026-09-29). */
+  routingServer(): string | null;
   factory: { clientFor(name: string, options?: { timeoutMs?: number }): Promise<DenoiseClient> };
   probes: { reach(name: string): Promise<{ probe: { outcome: string; message?: string; facts?: { busyLine: string | null } } }> };
 }
@@ -703,13 +705,13 @@ export function parkOnProbe(probes: VoiceIsolationContext['probes'], server: str
   };
 }
 
-/** Voice isolation over the app's Crucible context: always the SELECTED server (LEDGER #205). */
+/** Voice isolation over the app's Crucible context: the routing's server, else the selected one (LEDGER #205; Owen 2026-09-29). */
 export function crucibleVoiceIsolation(ctx: VoiceIsolationContext): VoiceIsolationDeps {
   return {
     async status() {
       let server: string;
       try {
-        server = ctx.servers.selected();
+        server = ctx.routingServer() ?? ctx.servers.selected();
       } catch (err) {
         return { available: false, reason: `Needs a Crucible with voice isolation: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -724,7 +726,7 @@ export function crucibleVoiceIsolation(ctx: VoiceIsolationContext): VoiceIsolati
       }
     },
     async open(onLog) {
-      const server = ctx.servers.selected();
+      const server = ctx.routingServer() ?? ctx.servers.selected();
       // A work client: no deadline, which would cut off the event stream.
       const client = await ctx.factory.clientFor(server);
       const isolator = new CrucibleVoiceIsolator({ server, client, park: parkOnProbe(ctx.probes, server), onLog });

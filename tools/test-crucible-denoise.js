@@ -331,16 +331,26 @@ check('the Denoise gate reads the server\'s capability row, with the reason on e
   try {
     const deps = denoise.crucibleVoiceIsolation({
       servers: { selected: () => 'crucible@fake' },
+      routingServer: () => null,
       factory: { clientFor: async () => rawDenoiseClient({ url: server.url, token: server.token }) },
       probes: { reach: async () => ({ probe: { outcome: 'ok', facts: { busyLine: null } } }) },
     });
     assert.deepStrictEqual(await deps.status(), { available: true, reason: 'Runs on the Crucible on crucible@fake.' });
     const none = denoise.crucibleVoiceIsolation({
       servers: { selected: () => { throw new Error('No Crucible server is selected.'); } },
+      routingServer: () => null,
       factory: { clientFor: async () => { throw new Error('unreachable'); } },
       probes: { reach: async () => { throw new Error('unreachable'); } },
     });
     assert.deepStrictEqual(await none.status(), { available: false, reason: 'Needs a Crucible with voice isolation: No Crucible server is selected.' });
+    // The model routing's server wins over the selection (Owen 2026-09-29: every action uses it).
+    const routed = denoise.crucibleVoiceIsolation({
+      servers: { selected: () => 'crucible@elsewhere' },
+      routingServer: () => 'crucible@fake',
+      factory: { clientFor: async (name) => { assert.strictEqual(name, 'crucible@fake'); return rawDenoiseClient({ url: server.url, token: server.token }); } },
+      probes: { reach: async () => ({ probe: { outcome: 'ok', facts: { busyLine: null } } }) },
+    });
+    assert.deepStrictEqual(await routed.status(), { available: true, reason: 'Runs on the Crucible on crucible@fake.' });
   } finally {
     await server.close();
   }

@@ -157,12 +157,19 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   const settings = new CrucibleSettingsBridge(factory);
   // The choice the lanes and the door read: the registry's own, or a CLI's `--server` over it.
   const override = deps.serverOverride;
-  const choice = override === undefined ? servers : {
+  // THE ROUTING'S SERVER IS EVERY ACTION'S SERVER (Owen 2026-09-29: "whatever crucible server i
+  // have selected in model routing is the one that should be used for every action"; his
+  // thumbnails had waited on a busy Mac while the routing named WSL). Without a CLI override,
+  // "the selected server" every door reads (lanes, transport, ASR) is the routing's server when
+  // it names one, else the registry's selection.
+  const routingServer = (): string | null => deps.routingServer(servers.names());
+  const choice = {
     names: () => servers.names(),
     routingView: () => servers.routingView(),
     fastServer: () => servers.fastServer(),
     onChange: (listener: Parameters<CrucibleServers['onChange']>[0]) => servers.onChange(listener),
     selected: (): string => {
+      if (override === undefined) return routingServer() ?? servers.selected();
       if (!servers.names().includes(override)) {
         throw new CrucibleRoutingError('unknown_server', `"${override}" is not a registered Crucible server (registered: ${servers.names().join(', ') || 'none'}).`);
       }
@@ -238,7 +245,6 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   const readiness = new CrucibleReadiness(servers, probes, local, push.readiness);
   readinessRef = readiness;
   const ledger = InFlightLedger.inDir(deps.stateDir, (line) => log.warn(`[crucible] ${line}`), deps.ledgerFile);
-  const routingServer = (): string | null => deps.routingServer(servers.names());
   const lanes = new CrucibleLanes({
     servers: choice,
     routingServer,
