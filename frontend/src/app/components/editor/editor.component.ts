@@ -5744,8 +5744,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const t = this.transcript;
     const fs = this.manifest?.frameSeconds;
     if (!t || !fs || this.transcriptState !== 'ready') { this.strayFillers = []; return; }
-    const isCut = (start: number, end: number): boolean =>
-      this.cuts.some(c => c.startFrame * fs <= start + EPS && c.endFrame * fs >= end - EPS);
+    const cuts = this.cuts.map(c => ({ start: c.startFrame * fs, end: c.endFrame * fs }));
     const found: StrayFiller[] = [];
     for (const tr of t.tracks) {
       const blob = `${tr.label || ''} ${tr.file || ''}`.toLowerCase();
@@ -5754,7 +5753,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       for (const list of this.originalSegsByTrack.values()) {
         for (const seg of list) if (seg.file === tr.file) segs.push(seg);
       }
-      found.push(...findStrayFillers(segs, tr.id, t.words, isCut));
+      found.push(...findStrayFillers(segs, tr.id, t.words, cuts));
     }
     this.strayFillers = found.sort((a, b) => a.start - b.start);
   }

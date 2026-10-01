@@ -67,6 +67,13 @@ export function isFiller(text: string): boolean {
 }
 
 /**
+ * A word must reach this far into a piece to count as IN it. Below this it is a sliver of a
+ * neighbouring word that a hand-placed cut left behind (a few frames of "Period." beside a lone
+ * "Um."), not speech the piece carries; well under one short syllable.
+ */
+const MIN_TOUCH_SECONDS = 0.05;
+
+/**
  * Two neighbouring pieces are CONNECTED — no cut between them — when the second sits right
  * after the first on the timeline and carries on in the file where the first stopped. `tol`
  * absorbs float noise from the manifest's seconds (it is far below one frame).
@@ -78,21 +85,51 @@ function connected(a: FillerSegment, b: FillerSegment, tol: number): boolean {
 }
 
 /**
+ * The pieces as they PLAY now: each auto-editor piece with Owen's cuts taken out of it. A cut
+ * inside a piece splits it in two (the halves no longer connect: the timeline jumps), and a
+ * piece wholly cut is gone. This is what makes a filler stray "after his edits" (2026-09-30:
+ * a lone "Um." his own cuts had isolated inside one piece was not offered).
+ */
+function playingPieces(
+  segments: readonly FillerSegment[],
+  cuts: readonly { start: number; end: number }[],
+  tol: number,
+): FillerSegment[] {
+  const sortedCuts = [...cuts].sort((a, b) => a.start - b.start);
+  const out: FillerSegment[] = [];
+  for (const seg of [...segments].sort((a, b) => a.timelineStart - b.timelineStart)) {
+    let from = seg.timelineStart;
+    const end = seg.timelineStart + seg.duration;
+    const keep = (s: number, e: number) => {
+      if (e - s > tol) out.push({ timelineStart: s, duration: e - s, sourceStart: seg.sourceStart + (s - seg.timelineStart) });
+    };
+    for (const c of sortedCuts) {
+      if (c.end <= from + tol) continue;
+      if (c.start >= end - tol) break;
+      keep(from, Math.max(from, c.start));
+      from = Math.max(from, c.end);
+    }
+    keep(from, end);
+  }
+  return out;
+}
+
+/**
  * The stray fillers on one mic track.
  *
- * @param segments  that mic track's pieces (any order)
+ * @param segments  that mic track's pieces as auto-editor made them (any order)
  * @param micTrackId the transcript track id of that mic
  * @param words     EVERY transcript word, all tracks
- * @param isCut     true when an ORIGINAL-seconds span is already wholly removed
+ * @param cuts      Owen's cuts, in ORIGINAL seconds: the pieces are judged as they play after them
  */
 export function findStrayFillers(
   segments: readonly FillerSegment[],
   micTrackId: string,
   words: readonly FillerWord[],
-  isCut: (start: number, end: number) => boolean,
+  cuts: readonly { start: number; end: number }[],
   tol = 1e-4,
 ): StrayFiller[] {
-  const segs = [...segments].sort((a, b) => a.timelineStart - b.timelineStart);
+  const segs = playingPieces(segments, cuts, tol);
   const byStart = [...words].sort((a, b) => a.timelineStart - b.timelineStart);
   const out: StrayFiller[] = [];
   for (let i = 1; i < segs.length - 1; i++) {
@@ -100,19 +137,19 @@ export function findStrayFillers(
     const start = seg.timelineStart;
     const end = start + seg.duration;
     if (connected(segs[i - 1], seg, tol) || connected(seg, segs[i + 1], tol)) continue;
-    // Every word touching the piece, from any track. A word straddling an edge counts: it is
-    // speech the cut would take half of.
+    // Every word reaching into the piece, from any track. A word straddling an edge counts: it
+    // is speech the cut would take part of. Only a sliver under MIN_TOUCH_SECONDS does not.
     const inside: FillerWord[] = [];
     for (let k = firstFrom(byStart, start - MAX_WORD_SECONDS); k < byStart.length; k++) {
       const w = byStart[k];
       if (w.timelineStart >= end - tol) break;
-      if (w.timelineEnd > start + tol) inside.push(w);
+      const overlap = Math.min(end, w.timelineEnd) - Math.max(start, w.timelineStart);
+      if (overlap >= MIN_TOUCH_SECONDS || (overlap > tol && w.timelineEnd - w.timelineStart < MIN_TOUCH_SECONDS)) inside.push(w);
       if (inside.length > 1) break;
     }
     if (inside.length !== 1) continue;
     const only = inside[0];
     if (only.track !== micTrackId || !isFiller(only.text)) continue;
-    if (isCut(start, end)) continue;
     out.push({ start, end, word: only.text });
   }
   return out;
