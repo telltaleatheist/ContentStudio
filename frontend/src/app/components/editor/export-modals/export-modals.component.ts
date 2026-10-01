@@ -51,6 +51,12 @@ export class ExportModalsComponent {
   @Input() muteMic = true;
   @Output() muteMicChange = new EventEmitter<boolean>();
 
+  /** Cut every stray um/uh before exporting (on by default); the shell keeps it with the edits. */
+  @Input() cutStrayUms = true;
+  @Output() cutStrayUmsChange = new EventEmitter<boolean>();
+  /** Stray ums THIS export cut; null when none were looked for. 0 is meaningful. */
+  @Input() strayUmsCut: number | null = null;
+
   @Output() chooserClosed = new EventEmitter<void>();
   @Output() choice = new EventEmitter<'fcpxml' | 'transcripts'>();
   @Output() showInFolder = new EventEmitter<void>();

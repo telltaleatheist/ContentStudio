@@ -62,6 +62,21 @@
         </span>
       </span>
     </label>
+    <!-- Stray ums (LEDGER #254): cut in the editor, as one undo step, before the export runs. -->
+    <label class="chooser-toggle" [class.disabled]="!transcriptReady"
+           title="Before exporting, cuts every lone um or uh that sits in a piece of its own with a cut on each side (the same pieces the top bar's Stray ums button counts). Done on the timeline as one step: ⌘Z brings them back.">
+      <input type="checkbox" [ngModel]="cutStrayUms" (ngModelChange)="cutStrayUmsChange.emit($event)"
+             [disabled]="!transcriptReady" />
+      <span class="chooser-toggle-text">
+        <span class="chooser-toggle-title">Cut stray ums</span>
+        <span class="chooser-toggle-desc" *ngIf="transcriptReady">
+          Every lone um or uh with a cut on each side is cut first — ⌘Z brings them back
+        </span>
+        <span class="chooser-toggle-desc" *ngIf="!transcriptReady">
+          Transcribe the session first — the ums are found from the transcript
+        </span>
+      </span>
+    </label>
     <!-- Mute words applies to every FCPXML export; its choice is set per project (right-click
          the project ▸ Mute words…). Said here so an export never mutes by surprise. -->
     <div class="chooser-mute" *ngIf="muteSummary">{{ muteSummary }}</div>
@@ -80,6 +95,9 @@
       <div class="modal-path">{{ resultPath }}</div>
       <!-- Reported whenever the mic-mute pass ran, INCLUDING zero: "the host talked over
            everything" is a real answer and the user should see it, not silence. -->
+      <div class="modal-note" *ngIf="strayUmsCut !== null">
+        {{ strayUmsCut === 0 ? 'No stray ums to cut' : 'Cut ' + strayUmsCut + ' stray ' + (strayUmsCut === 1 ? 'um' : 'ums') + ' before exporting (⌘Z in the editor brings them back)' }}
+      </div>
       <div class="modal-note" *ngIf="micMuteBlocks !== null">
         {{ micMuteBlocks }} mic
         {{ micMuteBlocks === 1 ? 'block' : 'blocks' }} disabled under screen audio<ng-container

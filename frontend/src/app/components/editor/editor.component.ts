@@ -395,6 +395,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // transcript sidecar — the export fails loudly (never quietly skips) without one, so the
   // checkbox is disabled until transcription has run.
   muteMicDuringScreen = true;
+  /**
+   * Cut every stray um/uh (model/stray-fillers.ts) when exporting — on by default (Owen,
+   * 2026-09-30: "make it automatically remove ums. the checkbox should automatically be
+   * checked"). Done in the editor as one undo step just before the export, so the cut is seen
+   * on the timeline and kept in the edits; strays his later cuts create are caught too.
+   */
+  cutStrayUmsOnExport = true;
+  /** Stray ums cut by THIS export; null when none were looked for (switched off, no transcript). */
+  exportStrayUmsCut: number | null = null;
   // Top-bar File menu (Export / Open) open/closed state.
   menuOpen = false;
 
@@ -810,6 +819,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Back to the default (mute armed) — an "off" choice is per-session state and is
     // restored from the new session's sidecar, never carried over from the previous one.
     this.muteMicDuringScreen = true;
+    this.cutStrayUmsOnExport = true;
+    this.exportStrayUmsCut = null;
     this.menuOpen = false;
     // Stories are per-session and NOT persisted (v1) — a re-init starts with none.
     this.stories = [];
@@ -2733,6 +2744,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (e.muteMicDuringScreen !== undefined && typeof e.muteMicDuringScreen !== 'boolean') {
       throw new Error(`edit-state sidecar field 'muteMicDuringScreen' is not a boolean — fix or delete the file`);
     }
+    if (e.cutStrayUms !== undefined && typeof e.cutStrayUms !== 'boolean') {
+      throw new Error(`edit-state sidecar field 'cutStrayUms' is not a boolean — fix or delete the file`);
+    }
     // Snapshot `stories` is optional under the SAME rule: a sidecar written before stories were
     // undoable has snapshots without it, and applyEditSnapshot reads that absence as "leave the
     // current stories alone". Present-but-not-an-array is a corrupt file, not an old one, and is
@@ -2748,6 +2762,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       this.cuts = e.cuts;
       this.muteMicDuringScreen = e.muteMicDuringScreen !== false;
+      this.cutStrayUmsOnExport = e.cutStrayUms !== false;
       this.bladeBoundaries = e.bladeBoundaries;
       this.sequence = (Array.isArray(e.sequence) && e.sequence.length > 0) ? e.sequence : null;
       this.stories = e.stories;
@@ -2782,6 +2797,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         // is what every sidecar written before this switch existed already says by saying
         // nothing.
         ...(this.muteMicDuringScreen ? {} : { muteMicDuringScreen: false }),
+        // Same rule: only "off" is written; absent means the default, cut on export.
+        ...(this.cutStrayUmsOnExport ? {} : { cutStrayUms: false }),
         stories: this.stories,
         storyIdCounter: this.storyIdCounter,
         undoStack: this.undoStack,
@@ -2938,6 +2955,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.scheduleEditsSave();
   }
 
+  /** The export chooser's "Cut stray ums" box: kept with the project's edits. */
+  setCutStrayUmsOnExport(on: boolean): void {
+    this.cutStrayUmsOnExport = on;
+    this.scheduleEditsSave();
+  }
+
   /** Chooser modal choice → run that export. */
   onExportChoice(kind: 'fcpxml' | 'transcripts'): void {
     this.exportChooserOpen = false;
@@ -2962,6 +2985,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportTranscripts = null;
     this.exportTranscriptsDir = null;
     this.exportWordMutes = null;
+    this.exportStrayUmsCut = null;
+    // The stray ums go first, in the editor, as one undo step: what is exported below is
+    // this.cuts with them in, and the timeline shows the same thing.
+    if (this.cutStrayUmsOnExport && this.transcriptState === 'ready') {
+      const n = this.strayFillers.length;
+      if (n > 0) this.cutStrayFillers();
+      this.exportStrayUmsCut = n;
+    }
     this.cdr.detectChanges();
     try {
       const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
@@ -3049,6 +3080,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** Dismiss the export result/error modal. */
   closeExportModal(): void {
+    this.exportStrayUmsCut = null;
     this.exportResultPath = null;
     this.exportError = null;
     this.exportWordMutes = null;
