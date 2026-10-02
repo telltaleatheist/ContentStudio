@@ -3,7 +3,7 @@
  * the server admits a job or opens a queue session, read back by the startup
  * sweep that GPU admission waits for, by the quit sweep under its deadline, and
  * by a dropped stream's per-server sweep. Since Crucible 1.0.76 (LEDGER #255) a
- * session row is ENDED (`DELETE /v1/queue/{id}`), which settles the card on the
+ * session row is CLOSED (`DELETE /v1/queue/sessions/{id}`), which settles the card on the
  * server, so the sweep never asks for an unload of its own.
  */
 const fs = require('fs');
@@ -70,8 +70,8 @@ check('a killed run\'s open session is ended by the next start\'s sweep, and GPU
     const original = relaunch.factory.clientFor.bind(relaunch.factory);
     relaunch.factory.clientFor = async (name, opts) => {
       const c = await original(name, opts);
-      const remove = c.removeFromQueue.bind(c);
-      c.removeFromQueue = async (id) => { order.push(`end ${id}`); return remove(id); };
+      const close = c.closeSession.bind(c);
+      c.closeSession = async (id) => { order.push(`end ${id}`); return close(id); };
       return c;
     };
     const swept = relaunch.sweepAtStartup();
@@ -82,7 +82,7 @@ check('a killed run\'s open session is ended by the next start\'s sweep, and GPU
     assert.deepStrictEqual(order, [`end ${session.id}`, 'job-new ran'], 'the sweep finished before the job was admitted');
     assert.deepStrictEqual(report.rows.map((row) => row.outcome), ['closed']);
     assert.strictEqual(server.openSession(), null);
-    assert.strictEqual(server.sessions[0].reason, 'operator', 'ended through DELETE /v1/queue/{id}');
+    assert.strictEqual(server.sessions[0].reason, 'client', 'closed through DELETE /v1/queue/sessions/{id}');
     assert.deepStrictEqual(relaunch.ledger.read(), []);
     assert.strictEqual(server.requestsTo('/v1/jobs', 'POST').filter((r) => r.body && r.body.type === 'unload-model').length, 0, 'no unload of its own: closing settles the card');
     relaunch.lanes.stop();

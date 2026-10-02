@@ -17,9 +17,10 @@
  *   JOB     a stall (stream-stall.ts) or a Stop gives back that job's rows only.
  *   SERVER  a dropped stream sweeps that server (plan section 13.4).
  *
- * A JOB ROW IS CANCELLED (`DELETE /v1/jobs/{id}`); A SESSION ROW IS ENDED
- * (`DELETE /v1/queue/{id}`, the SDK's `removeFromQueue`: given an open session's
- * id it closes it). Ending the session IS the model kill since Crucible 1.0.76
+ * A JOB ROW IS CANCELLED (`DELETE /v1/jobs/{id}`); A SESSION ROW IS CLOSED
+ * (`DELETE /v1/queue/sessions/{id}`, the SDK's `closeSession`, Crucible 1.0.77:
+ * the server records reason `client`, this app closing its own session, where
+ * `removeFromQueue` would record `operator`; one already closed answers its state). Ending the session IS the model kill since Crucible 1.0.76
  * (LEDGER #255): "when a session closes ... the card is settled: unloaded unless
  * something else holds it" (docs/QUEUE.md). So the pass that read `/v1/activity`
  * until our jobs left the lane and then asked for an `unload-model` itself is
@@ -75,8 +76,8 @@ export interface SweepReport {
 async function giveBack(client: CrucibleClient, row: CrucibleInFlightEntry): Promise<Omit<SweptRow, 'entry'>> {
   try {
     if (row.kind === 'session') {
-      const result = await client.removeFromQueue(row.id);
-      return { outcome: 'closed', detail: `session ${row.id} is ${result.status}` };
+      const state = await client.closeSession(row.id);
+      return { outcome: 'closed', detail: `session ${row.id} is ${state.status}` };
     }
     const result = await client.cancel(row.id);
     return { outcome: 'cancelled', detail: `job ${row.id} is ${result.status}` };
