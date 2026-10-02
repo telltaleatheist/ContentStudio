@@ -7,15 +7,17 @@
  * CrucibleClient, so both satisfy the injected seam. What the plan holds P7 to:
  * a 44.1 kHz input is asserted (before any upload); the stem path round trip
  * (the door alone, and voice_separation.py's whole stdin/stdout exchange with
- * main); a failed job aborts the run; a busy lane parks with the holder line;
- * cancel is a DELETE; the params exactly as documented. And the refusals by
- * name that stand in for the local env it never falls back to.
+ * main); a failed job aborts the run; the pass runs in ONE queue session (Crucible
+ * 1.0.76, LEDGER #255), which waits in the server's line behind another app and
+ * says where it stands, and whose end under the pass aborts it by name; cancel is
+ * a DELETE; the params exactly as documented. And the refusals by name that stand
+ * in for the local env it never falls back to.
  */
 const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { assert, crucible, fake, tempDir, check, run, rejection, until, REPO } = require('./_crucible-keeper');
-const { rawDenoiseClient } = require('./crucible-raw-denoise-client');
+const { rawDenoiseClient, rawDenoiseSession } = require('./crucible-raw-denoise-client');
 const { CrucibleClient } = require('@crucible/client');
 
 const denoise = crucible('denoise');
@@ -55,17 +57,17 @@ function writeWav(file, { rate = 44100, seconds = 1, channels = 2, silentFrom = 
 
 /** A fake stocked for voice isolation, and a started isolator on it. */
 async function setup(options = {}) {
-  const server = await fake.startFakeCrucible({ version: '1.0.34', ...fake.stockedForContentStudio(), ...options });
+  const server = await fake.startFakeCrucible({ version: '1.0.76', ...fake.stockedForContentStudio(), ...options });
   const client = rawDenoiseClient({ url: server.url, token: server.token });
-  const parked = [];
   const logs = [];
-  let releasePark = null;
-  const park = options.park ?? ((line) => {
-    parked.push(line);
-    return new Promise((resolve) => { releasePark = resolve; });
-  });
-  const isolator = new CrucibleVoiceIsolator({ server: 'crucible@fake', client, park, onLog: (l) => logs.push(l) });
-  return { server, client, isolator, parked, logs, releasePark: () => releasePark?.(), dir: tempDir('cs-p7-') };
+  const opened = [];
+  const session = async ({ onQueue, signal }) => {
+    const held = await rawDenoiseSession({ url: server.url, token: server.token, onQueue, signal });
+    opened.push(held);
+    return held;
+  };
+  const isolator = new CrucibleVoiceIsolator({ server: 'crucible@fake', client, session, onLog: (l) => logs.push(l) });
+  return { server, client, isolator, logs, opened, dir: tempDir('cs-p7-') };
 }
 
 const jobPosts = (server) => server.requests.filter((r) => r.method === 'POST' && r.path === '/v1/jobs');
@@ -183,42 +185,41 @@ check('a failed job aborts the run with the server\'s message, and no stem is le
   }
 });
 
-check('a busy lane parks with the holder line, submits nothing while parked, and asks once more when released', async () => {
+check('another app\'s session holds the server: the pass waits in its line (said as in_line), submits nothing, and runs once it closes', async () => {
   const t = await setup();
   try {
     await t.isolator.start();
-    t.server.inject({ serverBusy: { client: 'bookforge', type: 'tts', progress: 0.62 } });
+    const holder = t.server.holdAsOther('bookforge/1.0', 'tts');
     const progress = [];
     const chunk = writeWav(path.join(t.dir, 'chunk.wav'));
     const pending = t.isolator.separate(chunk, path.join(t.dir, 'out.wav'), { onProgress: (p) => progress.push(p) });
-    await until(() => t.parked.length === 1);
-    assert.strictEqual(t.parked[0], 'busy: bookforge, tts, 62% done');
-    assert.ok(progress.some((p) => p.kind === 'parked' && p.holderLine === 'busy: bookforge, tts, 62% done'));
-    await new Promise((r) => setTimeout(r, 100));
-    assert.strictEqual(jobPosts(t.server).length, 1, 'no second submit while parked: nothing loops');
-    t.server.inject({});
-    t.releasePark();
+    await until(() => progress.some((p) => p.kind === 'in_line'));
+    assert.deepStrictEqual(progress.find((p) => p.kind === 'in_line'), { kind: 'in_line', position: 1, of: 1 });
+    assert.strictEqual(jobPosts(t.server).length, 0, 'nothing submitted while it waits');
+    assert.match(protocol.separationProgress({ wav: '/w', out: '/o', chunk: 1, chunks: 2, track: 'mic 1' }, { kind: 'in_line', position: 1, of: 1 }, 'mac').message, /waits in the Crucible on mac's line \(1 of 1\)/);
+    t.server.endSession(holder, 'client');
     const done = await pending;
     assert.ok(fs.existsSync(done.stem));
-    assert.strictEqual(jobPosts(t.server).length, 2);
-    // The blob was not re-sent: a refused submission never consumes its input.
-    assert.strictEqual(t.server.uploads.length, 1);
+    assert.strictEqual(jobPosts(t.server).length, 1);
+    assert.strictEqual(t.server.uploads.length, 1, 'uploaded once, before the wait');
+    await t.isolator.dispose();
   } finally {
     await t.server.close();
   }
 });
 
-check('a card leased to another client parks with the leased line', async () => {
+check('a session the server ends under the pass aborts its next chunk by name (session_closed), and no new session is opened', async () => {
   const t = await setup();
   try {
     await t.isolator.start();
-    t.server.leaseAsOther('qwen3.5-9b', 'contentstudio-chaptering-run');
-    const pending = t.isolator.separate(writeWav(path.join(t.dir, 'chunk.wav')), path.join(t.dir, 'out.wav'));
-    await until(() => t.parked.length === 1);
-    assert.match(t.parked[0], /^leased: contentstudio-chaptering-run, translate, until /);
-    t.server.expireLease();
-    t.releasePark();
-    await pending;
+    await t.isolator.separate(writeWav(path.join(t.dir, 'a.wav')), path.join(t.dir, 'a_out.wav'));
+    t.server.endSession(t.server.sessions[0].id, 'idle', 'nothing arrived for 900 s');
+    const err = await rejection(t.isolator.separate(writeWav(path.join(t.dir, 'b.wav')), path.join(t.dir, 'b_out.wav')));
+    assert.ok(err instanceof VoiceIsolationRefused);
+    assert.strictEqual(err.code, 'session_closed');
+    assert.match(err.message, /idle/);
+    assert.strictEqual(t.server.sessions.length, 1, 'nothing reopened a session to carry on');
+    assert.strictEqual(jobPosts(t.server).filter((r) => r.body.client_ref?.includes('b.wav')).length, 1, 'refused at the door, by name');
   } finally {
     await t.server.close();
   }
@@ -280,36 +281,45 @@ check('a missing env is the server\'s 409 env_missing at the submit, relayed wit
   }
 });
 
-check('one lease for the pass: taken after the first chunk, heartbeated before the next, released on dispose', async () => {
+check('one queue session for the pass: asked for by the first chunk (act denoise), the separator stays resident in it, closed on dispose', async () => {
   const t = await setup();
   try {
     await t.isolator.start();
     const first = await t.isolator.separate(writeWav(path.join(t.dir, 'a.wav')), path.join(t.dir, 'a_out.wav'));
-    assert.deepStrictEqual(t.server.leases.taken.map((l) => [l.model, l.act, l.ttlSeconds]), [[VOICE_ISOLATION_MODEL, 'denoise', 300]]);
     const second = await t.isolator.separate(writeWav(path.join(t.dir, 'b.wav')), path.join(t.dir, 'b_out.wav'));
+    assert.deepStrictEqual(t.server.sessions.map((row) => [row.act, row.idleS]), [['denoise', 900]], 'one session, idle_s 900');
     assert.strictEqual(first.loadSeconds, 1.5);
     assert.strictEqual(second.loadSeconds, 0, 'the second chunk reuses the resident separator');
-    assert.strictEqual(t.server.requestsTo('/v1/leases/', 'POST').length, 1, 'one heartbeat, before the second chunk');
+    assert.ok(jobPosts(t.server).every((r) => r.headers['x-crucible-session'] === t.server.sessions[0].id), 'every job is an item of it');
+    assert.ok(!t.server.requests.some((r) => /lease/.test(r.path)), 'no lease route: leases are gone');
     await t.isolator.dispose();
     await t.isolator.dispose();
-    assert.deepStrictEqual(t.server.leases.released, [t.server.leases.taken[0].leaseId]);
-    assert.strictEqual(t.server.openLease(), null);
+    assert.strictEqual(t.server.openSession(), null);
+    assert.deepStrictEqual(t.server.sessions.map((row) => row.reason), ['client']);
   } finally {
     await t.server.close();
   }
 });
 
 check('the SDK\'s own CrucibleClient fills the same seam (the app\'s client today)', async () => {
-  const server = await fake.startFakeCrucible({ version: '1.0.34', ...fake.stockedForContentStudio() });
+  const server = await fake.startFakeCrucible({ version: '1.0.76', ...fake.stockedForContentStudio() });
   const dir = tempDir('cs-p7-sdk-');
   try {
     const client = new CrucibleClient({ url: server.url, token: server.token, clientName: 'contentstudio' });
-    const isolator = new CrucibleVoiceIsolator({ server: 'crucible@fake', client, park: async () => { throw new Error('unexpected park'); } });
+    const isolator = new CrucibleVoiceIsolator({
+      server: 'crucible@fake',
+      client,
+      // The SDK's own session, as lanes.ts hands it to the app's door.
+      session: async ({ onQueue, signal }) => {
+        const session = await client.session({ act: 'denoise', idleS: 900, onQueue, ...(signal === undefined ? {} : { signal }) });
+        return { client: session, release: async () => { await session.close(); } };
+      },
+    });
     await isolator.start();
     const done = await isolator.separate(writeWav(path.join(dir, 'c.wav')), path.join(dir, 'o.wav'));
     assert.strictEqual(readWavFormat(done.stem).sampleRate, 44100);
     await isolator.dispose();
-    assert.strictEqual(server.openLease(), null);
+    assert.strictEqual(server.openSession(), null);
   } finally {
     await server.close();
   }
@@ -327,20 +337,20 @@ check('the Denoise gate reads the server\'s capability row, with the reason on e
   assert.strictEqual(voiceIsolationAvailability(info(true, ['asr']), 'mac').code, 'voice_isolation_not_offered');
 
   // Over the app's context: the selected server, and a named "no" when none is selected.
-  const server = await fake.startFakeCrucible({ version: '1.0.34', ...fake.stockedForContentStudio() });
+  const server = await fake.startFakeCrucible({ version: '1.0.76', ...fake.stockedForContentStudio() });
   try {
     const deps = denoise.crucibleVoiceIsolation({
       servers: { selected: () => 'crucible@fake' },
       routingServer: () => null,
       factory: { clientFor: async () => rawDenoiseClient({ url: server.url, token: server.token }) },
-      probes: { reach: async () => ({ probe: { outcome: 'ok', facts: { busyLine: null } } }) },
+      lanes: { sessionOn: async () => { throw new Error('status() opens no session'); } },
     });
     assert.deepStrictEqual(await deps.status(), { available: true, reason: 'Runs on the Crucible on crucible@fake.' });
     const none = denoise.crucibleVoiceIsolation({
       servers: { selected: () => { throw new Error('No Crucible server is selected.'); } },
       routingServer: () => null,
       factory: { clientFor: async () => { throw new Error('unreachable'); } },
-      probes: { reach: async () => { throw new Error('unreachable'); } },
+      lanes: { sessionOn: async () => { throw new Error('status() opens no session'); } },
     });
     assert.deepStrictEqual(await none.status(), { available: false, reason: 'Needs a Crucible with voice isolation: No Crucible server is selected.' });
     // The model routing's server wins over the selection (Owen 2026-09-29: every action uses it).
@@ -348,23 +358,12 @@ check('the Denoise gate reads the server\'s capability row, with the reason on e
       servers: { selected: () => 'crucible@elsewhere' },
       routingServer: () => 'crucible@fake',
       factory: { clientFor: async (name) => { assert.strictEqual(name, 'crucible@fake'); return rawDenoiseClient({ url: server.url, token: server.token }); } },
-      probes: { reach: async () => ({ probe: { outcome: 'ok', facts: { busyLine: null } } }) },
+      lanes: { sessionOn: async () => { throw new Error('status() opens no session'); } },
     });
     assert.deepStrictEqual(await routed.status(), { available: true, reason: 'Runs on the Crucible on crucible@fake.' });
   } finally {
     await server.close();
   }
-});
-
-check('the interim park re-reads the probe until the lane is free, and stops on abort', async () => {
-  let reads = 0;
-  const probes = { reach: async () => { reads += 1; return { probe: { outcome: 'ok', facts: { busyLine: reads < 3 ? 'busy: bookforge, tts' : null } } }; } };
-  await denoise.parkOnProbe(probes, 'mac', 5)('busy: bookforge, tts');
-  assert.strictEqual(reads, 3);
-  const controller = new AbortController();
-  const waiting = denoise.parkOnProbe({ reach: async () => ({ probe: { outcome: 'ok', facts: { busyLine: 'busy' } } }) }, 'mac', 5)('busy', controller.signal);
-  setTimeout(() => controller.abort(), 20);
-  await assert.rejects(waiting, /cancelled while waiting for the lane/);
 });
 
 check('the protocol answers every request: a malformed one and a missing handler are errors, never silence', async () => {
@@ -430,7 +429,7 @@ for (const [label, denoiseScript] of [['16-bit WAV stems (Crucible 1.0.39+)', {}
     const made = readWavFormat(output);
     assert.strictEqual(made.sampleRate, 48000);
     assert.ok(Math.abs(made.frames / 48000 - 13) < 0.05, `the output is ${made.frames / 48000} s`);
-    assert.strictEqual(t.server.openLease(), null, 'the release gave the card back');
+    assert.strictEqual(t.server.openSession(), null, 'the release closed the pass\'s session');
   } finally {
     await t.server.close();
   }

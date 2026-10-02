@@ -7,7 +7,11 @@ chaptering service), `P8b.md` (chaptering wired into the pipeline, the editor's 
 in-queue split), `P8c.md` (stories by 45-second junctions, #212; the chapters | stories pick, #213),
 `P4.md` (low context: one sizing rule, answer-sized budgets, the digest as a declared policy, the
 capability question before a load; #209, #214, #217), `stories-and-tags.md` (#205's two rulings), `P10.md` (removal: Ollama, whisper.cpp,
-voice-separator-env and the SDKs; the one-time retired-file cleanup). `reference/` holds the Python the snap chaptering port
+voice-separator-env and the SDKs; the one-time retired-file cleanup). Crucible 1.0.76 replaced every
+lease in these notes with ONE queue session per job per server (LEDGER #255): the design is in
+`electron/crucible/session.ts`'s header and lanes.ts's; where a phase note says lease, heartbeat,
+`lease_lost` or parking on a busy card, read the session, its `idle_s`, `session_closed` and the
+server's line. `reference/` holds the Python the snap chaptering port
 was checked against, and `chapter-splitter.ts`, the stories grain's method spec (read-only).
 
 ## Launching the app in development without touching Owen's data

@@ -59,7 +59,7 @@ export interface DecideResponse {
   answers: Record<string, DecideAnswer>;
 }
 
-/** One decision. The binding adds the model, the act, the lane and the lease, and throws on failure. */
+/** One decision. The binding adds the model, the act, the lane and the session, and throws on failure. */
 export type DecideFn = (request: DecideRequest, options: { what: string; signal?: AbortSignal }) => Promise<DecideResponse>;
 
 // --------------------------------------------------------------------------- the fields

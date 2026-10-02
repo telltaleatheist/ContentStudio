@@ -10,16 +10,18 @@
  * Crucible" suite boots the real services with no server at all).
  *
  * Nothing in here touches the network. `start()` begins auto-connect and
- * readiness's first derivation, fire-and-forget; readiness and the lanes' 15 s
- * preflight then run on a timer only while work is queued (readiness.ts
+ * readiness's first derivation, fire-and-forget; readiness's timer and the
+ * lanes' event streams then run only while work is queued (readiness.ts
  * `needsPolling`, LEDGER #234). `stop()` ends them on quit. None is ever
  * awaited by `app.whenReady`.
  *
  * P3 adds the queue's layer over the same state directory: the in-flight
- * ledger (`<userData>/crucible-in-flight.json`), the lanes, and the two sweeps.
- * `sweepAtStartup()` gives back what a kill left behind and GATES GPU
- * admission until it settles (plan section 13.4); `quit()` aborts the running
- * jobs, lets them unwind, then sweeps under the quit deadline.
+ * ledger (`<userData>/crucible-in-flight.json`), the queue sessions this install
+ * holds (session.ts, LEDGER #255: one per server, joined, never doubled), the
+ * lanes, and the two sweeps. `sweepAtStartup()` gives back what a kill left
+ * behind and GATES GPU admission until it settles (plan section 13.4); `quit()`
+ * aborts the running jobs, lets them unwind, closes the sessions still open,
+ * then sweeps under the quit deadline.
  */
 import type { Runner } from '@crucible/bootstrap';
 import * as log from 'electron-log';
@@ -43,7 +45,8 @@ import { migrateLegacyKeys } from './key-migration';
 import { CrucibleTransport, type TransportHost } from './transport';
 import { crucibleAsrVenue } from './asr-venue';
 import type { AsrVenue } from './asr';
-import type { LeaseTimings } from './lease';
+import { ServerSessions, type CardTimings } from './session';
+import type { QueuePosition } from '@crucible/client';
 import type { CrucibleInstallProgress, CrucibleLanesView, CrucibleReadinessView, CrucibleServersChangedPayload, KeyMigrationOutcome } from './wire';
 
 export interface CrucibleContextDeps {
@@ -58,14 +61,16 @@ export interface CrucibleContextDeps {
    * Absent: no migration runs (a keeper that is not about keys).
    */
   legacyKeys?: { file: string; record: { get(): string | null; set(server: string): void } };
-  /** Only a keeper passes this: short clocks for the lease heartbeat and the load stream. */
-  leaseTimings?: Partial<LeaseTimings>;
+  /** Only a keeper passes this: a short `idle_s` and short clocks for the load stream's reconnect. */
+  sessionTimings?: Partial<CardTimings> & { idleS?: number };
   /** Pushes to every renderer window. Default: nothing (a keeper). */
   push?: {
     serversChanged?: (change: CrucibleServersChangedPayload) => void;
     readiness?: (view: CrucibleReadinessView) => void;
     installProgress?: (event: CrucibleInstallProgress) => void;
     lanes?: (view: CrucibleLanesView) => void;
+    /** A queue job's session moved in its server's line (`position`), or opened (null): its row says so. */
+    inLine?: (jobId: string, server: string, position: QueuePosition | null) => void;
   };
   /**
    * A CLI's `--server`: this process sends its work to that registered server instead of the
@@ -83,7 +88,7 @@ export interface CrucibleContextDeps {
   /** The ledger's file name under `stateDir`. Default `crucible-in-flight.json`; a CLI names its own. */
   ledgerFile?: string;
   /** The lanes' clocks, replaceable by a keeper. */
-  lanes?: { now?: () => number; stallMs?: number; preflightEveryMs?: number };
+  lanes?: { now?: () => number; stallMs?: number; watchRetryMs?: number; touchEveryMs?: number };
   /** The install seam, injectable so a keeper never installs, spawns or reads GitHub. Default: the real machine. */
   local?: Partial<LocalEngineDeps>;
 }
@@ -108,6 +113,8 @@ export interface CrucibleContext {
   };
   pairingHost: PairingFileHost;
   ledger: InFlightLedger;
+  /** Every queue session this install holds, one per server (session.ts). */
+  sessions: ServerSessions;
   lanes: CrucibleLanes;
   /** The model routing's server as the lanes read it (LEDGER #222), for the Settings pane's view. */
   routingServer(): string | null;
@@ -116,7 +123,7 @@ export interface CrucibleContext {
    * startup deadline. GPU admission waits for it; call it once, at boot.
    */
   sweepAtStartup(): Promise<SweepReport>;
-  /** Quit: abort the running jobs, let them unwind ~2 s, sweep the ledger; 30 s in all. Never throws. */
+  /** Quit: abort the running jobs, let them unwind ~2 s, close the sessions still open, sweep the ledger; 30 s in all. Never throws. */
   quit(): Promise<SweepReport>;
   /** Begin the background loops. Never awaited. */
   start(): void;
@@ -176,7 +183,7 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
       return override;
     },
   };
-  const transport = new CrucibleTransport({ servers: choice, factory, probes } satisfies TransportHost, deps.leaseTimings ?? {});
+  const transport = new CrucibleTransport({ servers: choice, factory, probes } satisfies TransportHost);
 
   // THE KEY MOVE, once (plan 6.6). Only into the Crucible the pairing file on
   // THIS computer names, never a remote one; repeated at every start (and on
@@ -245,6 +252,13 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   const readiness = new CrucibleReadiness(servers, probes, local, push.readiness);
   readinessRef = readiness;
   const ledger = InFlightLedger.inDir(deps.stateDir, (line) => log.warn(`[crucible] ${line}`), deps.ledgerFile);
+  const { idleS, ...cardTimings } = deps.sessionTimings ?? {};
+  const sessions = new ServerSessions({
+    client: (name) => factory.clientFor(name),
+    ledger,
+    timings: cardTimings,
+    ...(idleS === undefined ? {} : { idleS }),
+  });
   const lanes = new CrucibleLanes({
     servers: choice,
     routingServer,
@@ -254,9 +268,11 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
       return { reach: answer.reach, message: answer.probe.outcome === 'ok' ? answer.probe.facts.busyLine : answer.probe.message };
     },
     ledger,
+    sessions,
     push: push.lanes,
+    ...(push.inLine === undefined ? {} : { onInLine: push.inLine }),
     // THE POLLING RULE's wiring (readiness.ts `needsPolling`, LEDGER #234): the lanes' work
-    // feeds it, and it switches the lanes' preflight. Admission asks readiness for a fresh answer.
+    // feeds it, and it switches the lanes' event streams. Admission asks readiness for a fresh answer.
     onWorkChange: () => readiness.pollingMayHaveChanged(),
     beforeAdmit: () => readiness.freshCheck(),
     ...deps.lanes,
@@ -276,10 +292,11 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     local,
     readiness,
     transport,
-    asrVenue: crucibleAsrVenue({ servers: choice, factory, ledger }),
+    asrVenue: crucibleAsrVenue({ servers: choice, factory, ledger, sessions: lanes }),
     keys: { migrate: migrateKeys, last: () => lastKeys },
     pairingHost,
     ledger,
+    sessions,
     lanes,
     routingServer,
     sweepAtStartup() {

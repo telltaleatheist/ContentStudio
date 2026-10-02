@@ -21,9 +21,9 @@
  *   key (plan section 0 #20): inside a job, the routing's server, else the
  *   selected one ({@link upstreamServerFor}). The fast pin does not move it.
  *
- * "Who is free right now" is NOT asked here. That is the door's question: a
- * `409 server_busy`/`leased` at submit, or a load refused for free VRAM, parks
- * the item (parking.ts), and the 15 s preflight says when to ask again.
+ * "Who is free right now" is NOT asked here, and since Crucible 1.0.76 it is not
+ * asked at all: the job's queue session waits its turn in the server's own line
+ * (session.ts, LEDGER #255).
  *
  * Three answers, and the queue does something different with each:
  *

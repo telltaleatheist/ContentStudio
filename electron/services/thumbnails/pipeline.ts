@@ -28,8 +28,8 @@
  * stage (the vision model on the `thumbnail_frames` row, which ranked the frames and chose each
  * pair's default frame) is gone too; no Crucible call is made for frames.
  *
- * THE 27B IS NOT LOADED AGAIN when routing names it for the fields and for the words: every call here runs on the metadata job's own leases (`JobLeases`: one hold per
- * server; the same model on the same server is the same hold; a different model replaces it).
+ * THE 27B IS NOT LOADED AGAIN when routing names it for the fields and for the words: every call here runs in the metadata job's own queue session (`JobSessions`: one
+ * session per server; the same model on the same server stays resident; a different model replaces it).
  *
  * FAILURES follow the job's conventions for a stage that is not the item (the chapters' and the
  * scrub's, LEDGER #148 and #223): the item is still generated and saved, and the record says which
@@ -50,7 +50,7 @@ import type { AIManagerService } from '../metadata/ai-manager.service';
 import type { ChannelData } from '../metadata/prompt-assets';
 import type { SRTSegment } from '../metadata/transcription.service';
 import { routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting, type RoutingModels } from '../metadata/metadata-routing';
-import type { JobLeases } from '../../crucible/lease';
+import type { JobSessions } from '../../crucible/session';
 import { filterFrames } from './frame-metrics';
 import { GRID_PER_SCENE, distinctFrames, gridFrames, groupScenes } from './frame-scenes';
 import { clock, extractFullFrame, frameId, probeVideo, sampleFrames, sceneLabel } from './frame-sampler';
@@ -201,7 +201,7 @@ export interface ThumbnailItemInput {
 
 /** The metadata job's doors, for this item. */
 export interface ThumbnailJobDoors {
-  leases: JobLeases;
+  sessions: JobSessions;
   aiManager: Pick<AIManagerService, 'runPlainRequest'>;
   routing: ResolvedMetadataRouting;
   /** The job's routed options bound to its server (metadata-routing.ts RoutingModels): the words' model comes from it. */
@@ -645,7 +645,7 @@ export class ItemThumbnailRun {
       const result = await writeThumbnailWords({
         aiManager: this.doors.aiManager,
         option,
-        job: this.doors.leases,
+        job: this.doors.sessions,
         channel: this.item.channel.name,
         creator,
         title,

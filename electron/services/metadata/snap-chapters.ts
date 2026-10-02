@@ -8,7 +8,7 @@
  *
  *   outline + decide  CHAPTER_SCORER_MODEL (the 9B), a fixed role declared in metadata-routing.ts,
  *                     always on a Crucible server: decide needs a distribution and no upstream
- *                     returns one. Loaded under the job's lease at the smallest step that
+ *                     returns one. Loaded under the job's session at the smallest step that
  *                     fits the call (loadContextFor, LEDGER #209).
  *   titles            the CHAPTERS routing row: a local model (the 27B) through the transport at
  *                     the step that holds the prompt plus its 16,384 thinking budget, or a cloud row (Anthropic through Crucible, or claude -p
@@ -18,19 +18,19 @@
  * EVERY LOCAL CALL TAKES ITS LANE ITSELF (queueAITask, P3), call by call, as the field calls do:
  * a caller never wraps a whole run in a lane step, because a claude -p title inside a held GPU
  * slot would hold the card for nothing, and a GPU call nested inside another deadlocks the slot.
- * The job's lease (one per server per job, plan 13.3) keeps the model resident between them.
+ * The job's queue session (one per server per job, LEDGER #255) keeps the model resident between them.
  *
  * THE TWO DECLARED READINGS OF THE DOOR'S REFUSALS (Law 10: by code, never by sentence):
  *   - `truncated` on a title is a run-out of its budget: the service ships that chapter with its
  *     outline label and a warning (Law 3), so the door's refusal is handed back as `length`;
  *   - `truncated` on an outline is the same `length`, which outline.ts refuses by name.
- * Every other refusal (busy, over_context, lease_lost, decide_not_served…) passes through as itself.
+ * Every other refusal (busy, over_context, session_closed, decide_not_served…) passes through as itself.
  */
 
 import * as log from 'electron-log';
 import { crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
 import { isCrucibleCallError } from '../../crucible/errors';
-import type { JobLeases } from '../../crucible/lease';
+import type { JobSessions } from '../../crucible/session';
 import { gpuCall, queueAITask } from '../queue-manager.service';
 import { stripThinking } from './plain-call';
 import type { MetadataRoutingOption, SnapChapterModels } from './metadata-routing';
@@ -55,8 +55,8 @@ export type CloudPlain = (prompt: string, model: string, what: string, shape: { 
 export interface SnapTitleDeps {
   /** The chapters routing row: it writes every title and summary. */
   titles: MetadataRoutingOption;
-  /** The job's leases (the pipeline's JobModelLifecycle.leases, or one the caller releases). Required for a local row. */
-  job?: JobLeases;
+  /** The job's sessions (the pipeline's JobModelLifecycle.sessions, or one the caller releases). Required for a local row. */
+  job?: JobSessions;
   /** Where every call records itself (Law 8); null for a caller with no run trace. */
   trace: PromptTraceRecord[] | null;
   /** Required when the chapters row is cloud. */
@@ -70,16 +70,16 @@ export interface SnapTitleDeps {
 
 export interface SnapTransportDeps extends Omit<SnapTitleDeps, 'titles' | 'job'> {
   models: SnapChapterModels;
-  /** The job's leases: the scorer is always local, so a snap run always has one. */
-  job: JobLeases;
+  /** The job's sessions: the scorer is always local, so a snap run always has one. */
+  job: JobSessions;
 }
 
 /** The sampling keys the title call must have had honoured as sent (the Crucible agent's check, 1.0.38). */
 const REQUESTED_KEYS = [['thinking', 'enable_thinking'], ['max_tokens']] as const;
 
-/** One local chat on its lane, under the job's lease; a run-out comes back as `length` (the header's reading). */
+/** One local chat on its lane, under the job's session; a run-out comes back as `length` (the header's reading). */
 async function localChat(
-  deps: Omit<SnapTitleDeps, 'titles' | 'cloudPlain' | 'job'> & { job: JobLeases },
+  deps: Omit<SnapTitleDeps, 'titles' | 'cloudPlain' | 'job'> & { job: JobSessions },
   model: string,
   prompt: string,
   o: ChatOptions,
@@ -138,7 +138,7 @@ export function titleChat(deps: SnapTitleDeps): ChatFn {
   return async (prompt, o) => {
     if (o.role !== 'summarize') throw new Error(`the title door was asked for the ${o.role} role (${o.what})`);
     if (deps.titles.kind === 'local') {
-      if (deps.job === undefined) throw new Error(`the chapters row is the local ${deps.titles.model}, and no job lease was handed to the snap wiring`);
+      if (deps.job === undefined) throw new Error(`the chapters row is the local ${deps.titles.model}, and no job session was handed to the snap wiring`);
       return localChat({ ...deps, job: deps.job }, deps.titles.model, prompt, o, onSampling);
     }
     try {

@@ -182,9 +182,11 @@ export function parkedText(venue: string | null | undefined, line: string | null
  */
 export function laneBusyText(busyLine: string | null): string {
   if (busyLine === null) return 'Busy';
-  const own = busyLine.match(/^busy: contentstudio\b,?\s*(.*)$/i);
+  if (/^held: contentstudio's session\b/i.test(busyLine)) return 'Busy with other ContentStudio work';
+  // This install is named "contentstudio"; another install keeps its host ("contentstudio@pc") and is another app.
+  const own = busyLine.match(/^busy: contentstudio(?:,\s*(.*))?$/i);
   if (own === null) return busyLine;
-  const what = own[1].replace(/^asr\b/, 'transcription').trim();
+  const what = (own[1] ?? '').replace(/^asr\b/, 'transcription').trim();
   return `Busy with other ContentStudio work${what ? ` (${what})` : ''}`;
 }
 
@@ -212,9 +214,9 @@ const JOB_TYPE_WORDS: Record<string, string> = {
   'unload-model': 'a model unload',
 };
 
-/** Another client's hold on a card, as main's lane chip carries it (wire.ts `CardHolder`). */
+/** Another client's hold on a server, as main's lane chip carries it (wire.ts `CardHolder`). */
 export interface HolderFacts {
-  kind: 'job' | 'lease' | 'claim' | 'card';
+  kind: 'job' | 'session';
   client: string | null;
   what: string | null;
   model: string | null;
@@ -257,30 +259,30 @@ export function holderWaitLine(server: string, holder: HolderFacts): string {
       doing = `${who ?? 'Another app'} is running ${what}`;
       break;
     }
-    case 'lease':
-      doing = `${who ?? 'Another app'} has ${holder.model ?? 'the model'} reserved${holder.what ? ` for ${holder.what} work` : ''}`;
+    case 'session':
+      doing = `${who ?? 'Another app'} has the server to itself${holder.what ? ` for ${holder.what} work` : ''}${holder.model ? ` (${holder.model})` : ''}`;
       break;
-    case 'claim':
-      doing = `${who ?? 'Another app'} is holding the card for a live session`;
-      break;
-    default:
-      doing = 'the card is not taking work, and the server does not say who has it';
   }
   const pct = holder.progress === null ? '' : ` — ${Math.round(holder.progress * 100)}%`;
   return `Waiting for ${server}: ${doing}${pct} · ${timeLeftText(holder.secondsLeft, holder.leftUnknown)}`;
 }
 
 /**
- * The waiting-its-turn rows: one per server that a PARKED job of this queue waits on while
- * another client holds its card. None while nothing is parked, and none for a card our own work
- * holds (main leaves `holder` null there: that is the running row).
+ * The waiting-its-turn rows: one per server that a job of this queue waits on while another
+ * client holds it: a job PARKED on that server, or a running job whose queue session is in the
+ * server's line (`inLine`, LEDGER #255). None while nothing waits, and none for a server our own
+ * work holds (main leaves `holder` null there: that is the running row).
  */
 export function waitingTurnRows(
   jobs: ReadonlyArray<{ status: string; venue?: string | null }>,
-  lanes: ReadonlyArray<{ server: string; holder: HolderFacts | null }>,
+  lanes: ReadonlyArray<{ server: string; holder: HolderFacts | null; inLine?: { jobId: string; position: number; of: number } | null }>,
 ): Array<{ server: string; line: string }> {
   const waitedOn = new Set(jobs.filter((job) => job.status === 'parked' && job.venue).map((job) => job.venue as string));
   return lanes
-    .filter((lane) => lane.holder !== null && waitedOn.has(lane.server))
-    .map((lane) => ({ server: lane.server, line: holderWaitLine(lane.server, lane.holder as HolderFacts) }));
+    .filter((lane) => lane.holder !== null && (waitedOn.has(lane.server) || (lane.inLine ?? null) !== null))
+    .map((lane) => {
+      const line = holderWaitLine(lane.server, lane.holder as HolderFacts);
+      const place = lane.inLine ? `In line ${lane.inLine.position} of ${lane.inLine.of} · ` : '';
+      return { server: lane.server, line: `${place}${line}` };
+    });
 }

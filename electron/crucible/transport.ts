@@ -6,7 +6,7 @@
  *   chat({model, prompt, act, thinking, maxTokens, temperature?, responseFormat?, signal, what})
  *       -> {text, finishReason, usage, server}
  *   decide({model, state, questions, missing?, signal, what})         act `decide`, POST /v1/decide
- *   withJobLease(server, model, fn)                                    one lease per job per local model
+ *   withJobSession(server, model, fn)                                  the job's queue session, model resident
  *
  * THE FRAME (Owen, 2026-09-25): "follow the bookforge model, where bookforge
  * has all these settings (which model to use, etc) but it's really about how it
@@ -25,32 +25,34 @@
  * stated on every call, cloud included, where Crucible drops it and says so in
  * `X-Crucible-Sampling` (the 27B manifest states no default, so an unstated
  * `thinking` would be two models behaving differently for one call, plan 1).
- * Residency and the lease are lease.ts (BookForge's lease.ts, Briefcase's
- * residency).
+ * Residency happens inside the job's queue session (session.ts, LEDGER #255;
+ * BookForge's and Briefcase's residency before it).
  *
  * THE LANE IS THE VENUE (P3, docs/crucible/P3.md "What transport.ts must call").
  * Every call runs inside `queueAITask` and reads the step's hooks
  * (`crucibleStepHooks()`): a GPU call runs on `hooks.server` and nowhere else
  * (the job's venue: the fast pin's server or the selected one, LEDGER #205); a
  * cloud call has no lane and goes to the SELECTED server, the one whose key the
- * routing dialog judged Claude against (plan 0 #20). Every load and lease is
- * written to the in-flight ledger the moment the server admits it, settled when
- * it ends, and a hook's abort signal (Stop, a park, a stall, quit) is handed to
- * every fetch. A busy card is NOT retried here: the SDK's refusal travels up as
- * the `cause` of the door's own, and the lane parks the job on it.
+ * routing dialog judged Claude against (plan 0 #20). Every GPU call runs inside
+ * a queue session (the job's, or this install's open one joined, or one held for
+ * the call): its requests carry `X-Crucible-Session`, so a session the server
+ * ended answers `409 session_closed` and the stage fails naming the reason. Every
+ * load is written to the in-flight ledger the moment the server admits it,
+ * settled when it ends, and a hook's abort signal (Stop, a stall, quit) is handed
+ * to every fetch. Nothing is retried here.
  *
  * WHAT THE DOOR DOES ON EVERY CALL:
  *   - records itself in the caller's `promptTrace` with the server that runs it,
  *     BEFORE sending (Law 8: a request that fails was still sent);
  *   - names its act per server: `generate` where the capability record lists
  *     it, else `analysis`, logged once per server per session (plan 6.4);
- *   - on a local model: holds it under the job's lease, then checks the prompt
+ *   - on a local model: makes it resident in the job's session, then checks the prompt
  *     plus `maxTokens` against the loaded context and throws BEFORE sending
  *     when it does not fit (context-check.ts; the old middle-truncation is gone);
  *   - `finish_reason: length` is a hard failure (LEDGER #112): nothing is returned;
- *   - `409 model_not_resident` re-ensures the model ONCE and resends (someone
- *     else's load evicted it; the model never read the prompt, so this is not a
- *     re-ask under Law 3);
+ *   - `409 model_not_resident` re-ensures the model ONCE and resends (another
+ *     item of the session loaded something else; the model never read the
+ *     prompt, so this is not a re-ask under Law 3);
  *   - every other refusal passes through with the server's code and status
  *     (a 429 is a 429), never retried here: queues belong to clients (P3).
  */
@@ -72,7 +74,7 @@ import { checkBeforeSending, estimateTokens, loadedContextOf, tokensNeeded } fro
 import { CrucibleCallError } from './errors';
 import { crucibleStepHooks, type CrucibleStepHooks } from './lanes';
 import { upstreamServerFor } from './venue-decision';
-import { JobLeases, callRefusalOf, withJobLeases, type LeaseHost, type LeaseTimings } from './lease';
+import { JobSessions, callRefusalOf, withJobSessions, type CardSession } from './session';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -154,8 +156,8 @@ export interface ChatRequest {
   responseFormat?: { type: 'json_object' };
   /** Local only: the context to load the model at when this job loads it (today's num_ctx, LEDGER #111). */
   loadContext?: number;
-  /** The job's leases. Absent: this call is a one-call job, leased and released around itself. */
-  job?: JobLeases;
+  /** The job's sessions. Absent: this call is a one-call job, its session held around itself. */
+  job?: JobSessions;
   signal?: AbortSignal;
   /** A wall clock on the answer, when the caller has one (the old per-call timeouts). */
   timeoutMs?: number;
@@ -208,7 +210,7 @@ export interface DecideRequest {
    * default, which on 1.0.24+ is 8k and refuses a snap state over it before sending.
    */
   loadContext?: number;
-  job?: JobLeases;
+  job?: JobSessions;
   signal?: AbortSignal;
   what: string;
   trace: PromptTraceRecord[] | null;
@@ -246,37 +248,31 @@ function anySignal(...signals: Array<AbortSignal | null | undefined>): AbortSign
 export class CrucibleTransport {
   /** Servers already told they get `analysis` this session (plan 6.4: one line per server). */
   private readonly analysisNoted = new Set<string>();
-  private readonly leaseHost: LeaseHost;
   private readonly hooksOf: () => CrucibleStepHooks;
 
-  constructor(
-    private readonly host: TransportHost,
-    /** Only a keeper passes this: short clocks for the heartbeat and the stream retry. */
-    private readonly timings: Partial<LeaseTimings> = {},
-  ) {
-    this.leaseHost = { client: (server, options) => host.factory.clientFor(server, options) };
+  constructor(private readonly host: TransportHost) {
     this.hooksOf = host.hooks ?? crucibleStepHooks;
   }
 
-  /** A new job's leases. The caller releases it once, in its `finally` (model-lifecycle.ts does). */
-  job(what: string): JobLeases {
-    return new JobLeases(this.leaseHost, what, this.timings);
+  /** A new job's sessions. The caller lets go of them once, in its `finally` (model-lifecycle.ts does). */
+  job(what: string): JobSessions {
+    return new JobSessions(what);
   }
 
   /**
-   * Hold `model` on `server` for the whole of `fn` (plan 13.3), released on
-   * every way out. `fn` is handed the job, to pass to each call it makes. Runs
-   * inside a lane like every call; `server` must be the lane's (a GPU step never
-   * runs anywhere else, P3).
+   * Hold `model` resident in the job's queue session on `server` for the whole
+   * of `fn`, let go of on every way out. `fn` is handed the job, to pass to each
+   * call it makes. Runs inside a lane like every call; `server` must be the
+   * lane's (a GPU step never runs anywhere else, P3).
    */
-  async withJobLease<T>(
+  async withJobSession<T>(
     server: string,
     model: string,
-    fn: (job: JobLeases) => Promise<T>,
+    fn: (job: JobSessions) => Promise<T>,
     options: { what: string; act?: 'generate' | 'decide'; loadContext?: number; signal?: AbortSignal },
   ): Promise<T> {
     const job = this.job(options.what);
-    return withJobLeases(job, async () => {
+    return withJobSessions(job, async () => {
       if (!isUpstreamModelId(model)) {
         const hooks = this.hooksOf();
         const onLane = this.gpuServer(hooks, job, options.what);
@@ -348,20 +344,20 @@ export class CrucibleTransport {
 
       let reensured = false;
       for (;;) {
+        let card: CardSession | null = null;
         if (!upstream) {
-          await job.hold(server, model, { act: venue.act, need, loadContext: request.loadContext, signal, hooks });
-          job.assertHeld(server, model);
-          await this.checkContext(job, server, model, request);
+          card = await job.hold(server, model, { act: venue.act, need, loadContext: request.loadContext, signal, hooks });
+          await this.checkContext(card, server, model, request);
         }
         try {
-          const answer = await this.send(server, model, venue.act, request, signal, hooks);
+          const answer = await this.send(server, model, venue.act, request, signal, hooks, card);
           hooks.beat();
           return this.readAnswer(answer, server, model, venue.act, request);
         } catch (err) {
-          if (!upstream && !reensured && err instanceof CrucibleRefused && err.code === 'model_not_resident') {
+          if (card !== null && !reensured && err instanceof CrucibleRefused && err.code === 'model_not_resident') {
             reensured = true;
             log.warn(`[crucible] ${request.what}: ${model} is no longer resident on "${server}" (${err.serverMessage}); making it resident again, once`);
-            job.forget(server, model);
+            card.forget(model);
             continue;
           }
           throw this.refusal(err, server, model, request.what, signal);
@@ -383,6 +379,8 @@ export class CrucibleTransport {
     request: ChatRequest,
     signal: AbortSignal | undefined,
     hooks: CrucibleStepHooks,
+    /** The session a local call is an item of; null for an upstream call, which holds no session. */
+    card: CardSession | null,
   ): Promise<StreamedChat & { sampling: Record<string, string> | null }> {
     const upstream = isUpstreamModelId(model);
     const clock = request.timeoutMs === undefined ? undefined : AbortSignal.timeout(request.timeoutMs);
@@ -415,6 +413,7 @@ export class CrucibleTransport {
         headers,
         body: bytes,
         ...(combined === undefined ? {} : { signal: combined }),
+        ...(card === null ? {} : { session: card.id }),
       });
       if (!response.ok) throw await refusalOf(response, url);
       let last = 0;
@@ -457,8 +456,8 @@ export class CrucibleTransport {
   }
 
   /** The check before sending, against what the server states the model is loaded with. */
-  private async checkContext(job: JobLeases, server: string, model: string, request: ChatRequest): Promise<void> {
-    const facts = job.contextFacts(server, model);
+  private async checkContext(card: CardSession, server: string, model: string, request: ChatRequest): Promise<void> {
+    const facts = card.contextFacts(model);
     let ceiling: number | null = null;
     if (facts.maxModelLen === null && facts.loadedAt === null) ceiling = await this.ceilingFor(server, model);
     checkBeforeSending({
@@ -506,7 +505,7 @@ export class CrucibleTransport {
 
   /**
    * The items form (Crucible 1.0.55 `decideItems`): one request, many choice questions about one
-   * state, answers in item order. The same door as decide: the same model rules, lane, lease,
+   * state, answers in item order. The same door as decide: the same model rules, lane, session,
    * context check, re-ensure and refusals; only the body and the reply differ.
    */
   async decideItems(request: DecideItemsRequest): Promise<DecideItemsResponse> {
@@ -527,7 +526,7 @@ export class CrucibleTransport {
   private async decideDoor<T>(
     request: Omit<DecideRequest, 'questions'>,
     asked: readonly string[],
-    send: (client: Awaited<ReturnType<TransportHost['factory']['clientFor']>>, signal: AbortSignal | undefined) => Promise<T>,
+    send: (client: CardSession['session'], signal: AbortSignal | undefined) => Promise<T>,
   ): Promise<T> {
     const model = this.requireCrucibleModel(request.model, request.what);
     if (isUpstreamModelId(model)) {
@@ -562,22 +561,21 @@ export class CrucibleTransport {
       const need = estimateTokens(state.length) + images.length * DECIDE_IMAGE_TOKENS;
       let reensured = false;
       for (;;) {
-        await job.hold(server, model, { act: 'decide', need, loadContext: request.loadContext, signal, hooks });
-        job.assertHeld(server, model);
-        const facts = job.contextFacts(server, model);
+        const card = await job.hold(server, model, { act: 'decide', need, loadContext: request.loadContext, signal, hooks });
+        const facts = card.contextFacts(model);
         checkBeforeSending({
           model, server, what: request.what, promptChars: state.length, maxTokens: 0,
           loaded: loadedContextOf({ ...facts, ceiling: null }),
         });
         try {
-          const client = await this.host.factory.clientFor(server);
-          const answer = await send(client, signal);
+          // The session's own client: every decision is an item of it (X-Crucible-Session).
+          const answer = await send(card.session, signal);
           hooks.beat();
           return answer;
         } catch (err) {
           if (!reensured && err instanceof CrucibleRefused && err.code === 'model_not_resident') {
             reensured = true;
-            job.forget(server, model);
+            card.forget(model);
             continue;
           }
           if (err instanceof CrucibleServerError && err.code === 'decide_not_served') {
@@ -598,7 +596,7 @@ export class CrucibleTransport {
    * already holds a server keeps it; a lane that says otherwise is refused by
    * name rather than followed onto a second card.
    */
-  private gpuServer(hooks: CrucibleStepHooks, job: JobLeases, what: string): string {
+  private gpuServer(hooks: CrucibleStepHooks, job: JobSessions, what: string): string {
     if (hooks.lane !== 'gpu' || hooks.server === null) {
       throw new CrucibleCallError('refused', `${what} is a local model call, and it reached the door on a ${hooks.lane} lane with no server; a GPU call runs on its server's lane (P3).`);
     }

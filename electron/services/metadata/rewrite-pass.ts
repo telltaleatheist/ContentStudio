@@ -229,7 +229,7 @@ export const REWRITE_NUM_PREDICT = 16384;
  * ONE DOOR for every kind of model (P2). Thinking ON, as plan 6.3 states for scrub and Soften:
  * a register rewrite that must carry every fact through was measured thinking-on. A local model
  * states the rewrite budget ({@link REWRITE_NUM_PREDICT}) and the load context this prompt plus
- * that budget needs; a one-call job leases it around the call.
+ * that budget needs; a one-call job holds a session around the call.
  */
 export async function askToRewrite(
   pass: RewritePassIdentity,

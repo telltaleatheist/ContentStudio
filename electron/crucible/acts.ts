@@ -41,7 +41,7 @@ export type CallerAct = 'generate' | 'decide';
  * tells a chat request apart from a local model id; a local model id never
  * contains `/`" (the server checks it at manifest load,
  * `manifest_model_id_slash`). BookForge's rule, copied: an upstream model is
- * never leased (`lease_not_needed`), never loaded, and takes no GPU lane.
+ * never resident (`upstream_never_resident`), never loaded, and takes no GPU lane.
  */
 export function isUpstreamModelId(model: string): boolean {
   return model.includes('/');

@@ -62,8 +62,8 @@ export function tokensNeeded(promptChars: number, maxTokens: number): number {
 /**
  * The step every load context is a multiple of (LEDGER #209: 8,192 -> 16,384 -> 24,576 ...).
  * Crucible 1.0.24+ loads a model at the context the load states (`params.context`); a coarse
- * step means two calls of nearly the same size ask for the same load, so the lease's
- * grow-only rule (lease.ts) reloads a model at most once per step crossed.
+ * step means two calls of nearly the same size ask for the same load, so the session's
+ * grow-only rule (session.ts) reloads a model at most once per step crossed.
  */
 export const LOAD_CONTEXT_STEP = 8192;
 
@@ -82,7 +82,7 @@ export const LOAD_CONTEXT_MARGIN = 512;
  * sized here never fails that check on the window it asked for.
  *
  * Nothing here is a floor: no other call, stage or job raises it. A job whose later call needs
- * more asks for more and the lease grows the load once (lease.ts, "growth is legitimate"); a
+ * more asks for more and the session's residency grows the load once (session.ts, "growth is legitimate"); a
  * later call that needs less runs on the larger window already loaded, because a smaller one
  * would be a reload that buys nothing. The server refuses a size above its own ceiling by name
  * (`context_over_limit`), so there is no app-side maximum to guess.

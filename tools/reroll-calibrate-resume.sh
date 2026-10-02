@@ -16,7 +16,7 @@ keep() {
   git add "$CAL/$1"
   git commit -q -m "P9 calibration: $2
 
-Readings from the Mac's 9B through transport.decide, one process, a lease per batch
+Readings from the Mac's 9B through transport.decide, one process, a queue session per batch
 (docs/crucible/P9.md). $3
 
 $TRAILER" || true

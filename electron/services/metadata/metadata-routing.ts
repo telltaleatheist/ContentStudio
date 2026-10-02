@@ -72,7 +72,7 @@ export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
  */
 export interface MetadataRoutingOptionDef {
   /**
-   * 'local' is a model a Crucible server holds on its card: loaded, leased, and checked
+   * 'local' is a model a Crucible server holds on its card: loaded inside a queue session, and checked
    * against its loaded context (electron/crucible/transport.ts). 'cloud' is everything else:
    * an Anthropic upstream the server forwards, or `claude -p` outside Crucible.
    */

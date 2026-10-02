@@ -102,10 +102,18 @@ export type CrucibleCallErrorCode =
   | 'model_not_installed'
   /** The server states it cannot run this model on its backend. */
   | 'unsupported_model'
-  /** The card is someone else's right now: a job on the lane, or their lease. P3 parks on it. */
+  /**
+   * The server is someone else's right now: another client's queue session holds it, or a job
+   * sent without `queue` met a busy lane. Every ContentStudio GPU call runs inside our own queue
+   * session (session.ts), so this reaches a caller only from a door that is not one of those.
+   */
   | 'busy'
-  /** Our lease on the model was lost mid-job (`unknown_lease` on a heartbeat): the run is unprotected (plan 13.3). */
-  | 'lease_lost'
+  /**
+   * Our queue session on the server ended under the work (`idle`, `operator`, `max_hold`,
+   * `server_restart`, or it never opened: `expired`, `load_failed`). The stage fails naming the
+   * reason; nothing reopens a session and carries on (LEDGER #255).
+   */
+  | 'session_closed'
   /** The server's capability record could not be read, so the act to send cannot be chosen (plan 6.4). */
   | 'act_undecided'
   /** The server is paused in Settings; its work waits (P1's Running/Paused switch, #205). */
@@ -138,13 +146,9 @@ export class CrucibleCallError extends Error {
     readonly status: number | null = null,
     /** The server's own error code, never renamed in transit. */
     readonly serverCode: string | null = null,
-    /** The holder's sentence for `busy` ("busy: bookforge, tts 62% done"), for P3's parked line. */
+    /** The holder's sentence for `busy` ("held: foundry's session for translate, since …"). */
     readonly busyLine: string | null = null,
-    /**
-     * The SDK's own refusal this one names, unchanged. P3's lanes read it by TYPE through the
-     * `cause` chain (parking.ts `parkRefusalOf`: CrucibleBusy, CrucibleLeased, engine_in_use...),
-     * so a busy card parks the job rather than failing it (docs/crucible/P3.md).
-     */
+    /** The SDK's own refusal this one names, unchanged, for a caller that reads it by TYPE. */
     readonly cause: unknown = undefined,
   ) {
     super(`${code}: ${message}`);

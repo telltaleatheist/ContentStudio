@@ -4993,10 +4993,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // A stop is not an error — the user asked for it.
       this.analyzeError = this.isStopError(err) ? null : (err?.message || String(err));
     } finally {
-      // Released the moment the run ends — finished, failed or stopped. The titling loop's
-      // Crucible lease would otherwise pin the local model until its ttl, and nothing here needs
-      // it again; a cloud selection holds nothing and the call is a no-op. The chapter path
-      // releases its own lease in the main process; a second release is harmless.
+      // Let go of the moment the run ends — finished, failed or stopped. The titling loop's
+      // Crucible queue session would otherwise hold the whole server (no other app runs while it
+      // is open) until it idles out, and nothing here needs it again; a cloud selection holds
+      // nothing and the call is a no-op. The chapter path lets go of its own session in the main
+      // process; a second let-go is harmless.
       await this.host.unloadStoryModel().catch(() => { /* housekeeping only */ });
       this.analyzing = false;
       this.analyzeStopRequested = false;

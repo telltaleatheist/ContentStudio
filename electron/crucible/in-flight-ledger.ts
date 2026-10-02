@@ -3,21 +3,30 @@
  *
  * Ported from Briefcase's backend/src/crucible/in-flight-ledger.ts (BookForge's
  * electron/crucible/in-flight-ledger.ts before it; plan section 13.4). A
- * Crucible job or lease is not a process: nothing this machine does to itself
- * reaches it. A hard kill (a crash, `kill -9`, a force-quit) loses the handle,
- * and the card stays held for an app that no longer exists. So:
+ * Crucible job or queue session is not a process: nothing this machine does to
+ * itself reaches it. A hard kill (a crash, `kill -9`, a force-quit) loses the
+ * handle, and the server stays held for an app that no longer exists (an open
+ * session lets nobody else run until it idles out). So:
  *
- *   one row per job this app submitted and per lease it took,
+ *   one row per job this app submitted and per queue session it opened,
  *   written synchronously IMMEDIATELY AFTER the server admitted it,
  *   removed when it settles.
  *
  *   <userData>/crucible-in-flight.json
- *   { "rows": [{ server, kind: 'job'|'lease', id, jobType, model, jobId, lastEventId, at }] }
+ *   { "rows": [{ server, kind: 'job'|'session', id, jobType, model, jobId, lastEventId, at }] }
  *
  * `jobId` is ContentStudio's queue job id (the plan's field name), so a stall or
  * a Stop can give back exactly one job's holds, and a log line sits next to a
  * row a person can see. `lastEventId` is the SSE cursor a reconnect resumes
- * from (P5's asr, P7's denoise); null for a lease or a job not yet streamed.
+ * from (P5's asr, P7's denoise); null for a session or a job not yet streamed.
+ * A session row's `jobId` is empty: a session is the server's turn for this
+ * install, joined by whoever needs the server while it is open (session.ts), so
+ * it belongs to no one job; it is closed when its last holder lets go, by the
+ * quit, or by the next start's sweep.
+ *
+ * Crucible 1.0.76 removed leases (LEDGER #255). A `lease` row an older
+ * ContentStudio left behind names something no server holds any more: it is
+ * dropped on reading, said in the log, never sent anywhere.
  *
  * The quit sweep and the startup sweep (in-flight-sweep.ts) read it and give
  * back whatever is still listed. They touch ONLY what is listed here: a shared
@@ -29,7 +38,8 @@
  * section 7.5): a row written before the submit names an id nobody has minted
  * yet. The window between the server's answer and this write is a few
  * microseconds of synchronous code, which is why transport.ts calls
- * `CrucibleStepHooks.submitted`/`leased` before its next `await`.
+ * `CrucibleStepHooks.submitted` (and session.ts its session row) before its
+ * next `await`.
  *
  * Why synchronous: an async write racing a kill is the loss this exists to
  * prevent. Temp-and-rename, like every other record in userData.
@@ -45,16 +55,16 @@ import * as path from 'path';
 
 export const CRUCIBLE_IN_FLIGHT_FILE = 'crucible-in-flight.json';
 
-export type InFlightKind = 'job' | 'lease';
+export type InFlightKind = 'job' | 'session';
 
 export interface CrucibleInFlightEntry {
   /** The registry NAME, never a URL: the sweep resolves it as the door did. */
   readonly server: string;
-  /** `job` is cancelled with `DELETE /v1/jobs/{id}`; `lease` is released. */
+  /** `job` is cancelled with `DELETE /v1/jobs/{id}`; `session` is ended with `DELETE /v1/queue/{id}`. */
   readonly kind: InFlightKind;
-  /** Crucible's own id: the job id or the lease id. */
+  /** Crucible's own id: the job id or the session id (`ses-…`). */
   readonly id: string;
-  /** The job type (`load-model`, `asr`, …) or `lease`. */
+  /** The job type (`load-model`, `asr`, …) or `session`. */
   readonly jobType: string;
   /** The model the row is about, or null. An unload may only ever name one of these. */
   readonly model: string | null;
@@ -71,7 +81,7 @@ export function parseInFlightLedger(text: string, onWarn: (line: string) => void
   try {
     raw = JSON.parse(text);
   } catch (err) {
-    onWarn(`the Crucible in-flight ledger does not parse (${(err as Error).message}); reading it as empty, so a hold a kill left behind cannot be given back until its ttl runs out`);
+    onWarn(`the Crucible in-flight ledger does not parse (${(err as Error).message}); reading it as empty, so a hold a kill left behind cannot be given back until the server ends it itself`);
     return [];
   }
   const rows = (raw as { rows?: unknown } | null)?.rows;
@@ -82,8 +92,12 @@ export function parseInFlightLedger(text: string, onWarn: (line: string) => void
   const kept: CrucibleInFlightEntry[] = [];
   for (const row of rows) {
     const entry = row as Partial<CrucibleInFlightEntry> | null;
+    if ((entry as { kind?: unknown } | null)?.kind === 'lease') {
+      onWarn(`dropping a lease row from before Crucible 1.0.76 (leases no longer exist on any server, so there is nothing to give back): ${JSON.stringify(row)}`);
+      continue;
+    }
     if (typeof entry?.server !== 'string' || entry.server === ''
-      || (entry.kind !== 'job' && entry.kind !== 'lease')
+      || (entry.kind !== 'job' && entry.kind !== 'session')
       || typeof entry.id !== 'string' || entry.id === '') {
       onWarn(`dropping a Crucible in-flight row with no server/kind/id: ${JSON.stringify(row)}`);
       continue;
@@ -146,7 +160,7 @@ export class InFlightLedger {
     return parseInFlightLedger(text, this.warn);
   }
 
-  /** Record a job or lease the server has just admitted. Synchronous; never throws. */
+  /** Record a job the server has just admitted, or a session it has just opened. Synchronous; never throws. */
   record(entry: InFlightRecord): void {
     this.write(ledgerWith(this.read(), {
       ...entry,
@@ -175,7 +189,7 @@ export class InFlightLedger {
     return this.read().filter((row) => row.jobId === jobId);
   }
 
-  /** Ids this app recorded on `server` (every kind): what the sweep and the preflight may call ours. */
+  /** Ids this app recorded on `server` (every kind): what the sweep and the lanes strip may call ours. */
   idsOn(server: string): Set<string> {
     return new Set(this.read().filter((row) => row.server === server).map((row) => row.id));
   }

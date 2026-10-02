@@ -9,9 +9,9 @@
  * P4 (LEDGER #209, Owen: "we should only be using as much context (8k vs 16k) as necessary")
  * replaced it with the rule in crucible/context-check.ts: every local call asks for the smallest
  * 8,192 step that holds ITS OWN prompt, its own answer budget and a 512-token margin, by the
- * estimate the door checks it with. Reloads are still real, and still bounded, by the lease
- * rather than by a floor: a later call that needs more grows the load once, and one that needs
- * less runs on the larger window already loaded (lease.ts "growth is legitimate, shrinkage
+ * estimate the door checks it with. Reloads are still real, and still bounded, by the session's
+ * residency rather than by a floor: a later call that needs more grows the load once, and one that needs
+ * less runs on the larger window already loaded (session.ts "growth is legitimate, shrinkage
  * never is"). The server refuses a size above its own ceiling by name, so there is no app-side
  * maximum here any more.
  *

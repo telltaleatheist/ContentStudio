@@ -6,21 +6,23 @@
  * implementation that shares no code with the SDK, and says in one short file
  * exactly what the real client has to do on the wire.
  *
- *   const { rawDenoiseClient } = require('./crucible-raw-denoise-client');
- *   const client = rawDenoiseClient({ url, token, clientName: 'contentstudio' });
+ *   const { rawDenoiseClient, rawDenoiseSession } = require('./crucible-raw-denoise-client');
+ *   const client = rawDenoiseClient({ url, token, clientName });
+ *   const session = await rawDenoiseSession({ url, token, clientName, onQueue });   // {client, release}
  *
  * Every request carries the bearer token, `X-Crucible-Api: 1` and
- * `X-Crucible-Client` (what `/v1/activity` names as the holder). Answers are
- * turned into the SDK's shapes (camelCase, a done frame's other keys under
- * `extra`), and a refusal is thrown as the SDK's own error class, because
- * those classes are how the door tells a wait (`CrucibleBusy`,
- * `CrucibleLeased`: park with the holder's line) from everything else.
+ * `X-Crucible-Client` (what `/v1/activity` names as the holder), and a session's
+ * client `X-Crucible-Session` (Crucible 1.0.76 queue sessions, LEDGER #255).
+ * Answers are turned into the SDK's shapes (camelCase, a done frame's other keys
+ * under `extra`), and a refusal is thrown as the SDK's own error class
+ * (`CrucibleSessionClosed` for an ended session, which the door names).
  */
 'use strict';
 const {
   CrucibleBusy,
-  CrucibleLeased,
   CrucibleRefused,
+  CrucibleSessionClosed,
+  CrucibleSessionHeld,
   CrucibleServerError,
   CrucibleProtocolError,
   CrucibleUnreachable,
@@ -46,10 +48,15 @@ async function refusalOf(response, where) {
       jobStatus: opt(d.status), since: opt(d.since), progress: opt(d.progress), jobMessage: opt(d.message),
     });
   }
-  if (code === 'leased') {
-    return new CrucibleLeased(response.status, code, message, details, {
-      leaseId: opt(d.lease_id), kind: opt(d.kind), holder: opt(d.client), act: opt(d.act),
-      since: opt(d.since), expiresAt: opt(d.expires_at),
+  if (code === 'session_closed') {
+    return new CrucibleSessionClosed(response.status, message, details, {
+      sessionId: opt(d.session_id ?? d.queue_session_id), reason: opt(d.reason),
+    });
+  }
+  if (code === 'session_open') {
+    return new CrucibleSessionHeld(response.status, code, message, details, {
+      holder: opt(d.holder), sessionId: opt(d.session_id), act: opt(d.act), model: opt(d.model),
+      sessionStatus: opt(d.status), since: opt(d.since),
     });
   }
   return new CrucibleRefused(response.status, code, message, details);
@@ -75,9 +82,12 @@ function eventOf(id, event, data) {
   }
 }
 
-function rawDenoiseClient({ url, token, clientName = 'contentstudio' }) {
+function rawDenoiseClient({ url, token, clientName = 'contentstudio', session }) {
   const base = url.replace(/\/+$/, '');
-  const headers = { Authorization: `Bearer ${token}`, 'X-Crucible-Api': '1', 'X-Crucible-Client': clientName };
+  const headers = {
+    Authorization: `Bearer ${token}`, 'X-Crucible-Api': '1', 'X-Crucible-Client': clientName,
+    ...(session === undefined ? {} : { 'X-Crucible-Session': session }),
+  };
   const call = async (path, init, where) => {
     let response;
     try {
@@ -158,19 +168,51 @@ function rawDenoiseClient({ url, token, clientName = 'contentstudio' }) {
     async cancel(jobId) {
       return json(`/v1/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }, 'cancel');
     },
-    async lease(subject, { act, ttlSeconds }) {
-      const body = await json(`/v1/models/${encodeURIComponent(subject)}/lease`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ act, ttl_seconds: ttlSeconds }),
-      }, 'lease');
-      return { leaseId: body.lease_id };
-    },
-    async heartbeat(leaseId) {
-      return json(`/v1/leases/${encodeURIComponent(leaseId)}/heartbeat`, { method: 'POST' }, 'heartbeat');
-    },
-    async release(leaseId) {
-      await call(`/v1/leases/${encodeURIComponent(leaseId)}`, { method: 'DELETE' }, 'release');
-    },
   };
 }
 
-module.exports = { rawDenoiseClient };
+/**
+ * A queue session over raw fetch (`POST /v1/queue/sessions`, act `denoise`, idle_s 900): its
+ * state is read every second while it waits in the line (reading it is presence), `onQueue`
+ * hears its place, and it resolves once open with a client that names it on every request.
+ * `release` closes it (`DELETE /v1/queue/sessions/{id}`).
+ */
+async function rawDenoiseSession({ url, token, clientName = 'contentstudio', onQueue, signal, idleS = 900 }) {
+  const base = url.replace(/\/+$/, '');
+  const headers = { Authorization: `Bearer ${token}`, 'X-Crucible-Api': '1', 'X-Crucible-Client': clientName };
+  const json = async (path, init, where) => {
+    let response;
+    try {
+      response = await fetch(`${base}${path}`, { ...init, headers: { ...headers, ...(init.headers ?? {}) } });
+    } catch (err) {
+      throw new CrucibleUnreachable(base, `${where}: ${err.message}`, err);
+    }
+    if (!response.ok) throw await refusalOf(response, where);
+    return response.json();
+  };
+  let state = await json('/v1/queue/sessions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ act: 'denoise', idle_s: idleS }),
+  }, 'session');
+  const id = state.session_id;
+  const close = () => json(`/v1/queue/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }, 'session.close');
+  while (state.status === 'queued') {
+    if (signal?.aborted) {
+      await close().catch(() => undefined);
+      throw signal.reason ?? new Error('cancelled while waiting in the line');
+    }
+    if (typeof state.position === 'number') onQueue?.({ position: state.position, of: state.position });
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    state = await json(`/v1/queue/sessions/${encodeURIComponent(id)}`, { method: 'GET' }, 'session.state');
+  }
+  if (state.status !== 'open') {
+    throw new CrucibleSessionClosed(409, state.message ?? 'the session never opened', { session_id: id, reason: state.reason }, {
+      sessionId: id, reason: state.reason ?? 'unknown',
+    });
+  }
+  return {
+    client: rawDenoiseClient({ url, token, clientName, session: id }),
+    release: async () => { await close().catch(() => undefined); },
+  };
+}
+
+module.exports = { rawDenoiseClient, rawDenoiseSession };

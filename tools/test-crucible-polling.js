@@ -8,14 +8,17 @@
  * the app's own wiring (context.ts) to it:
  *
  *   idle        one check at start, then no request at all however long it sits
- *   queued      a window's count above zero turns both timers on; zero turns them off
- *   parked      a job parked behind another app's work polls on the interval until it
- *               starts, then everything stops
+ *   queued      a window's count above zero turns readiness's timer on and the lanes' event
+ *               streams (`GET /v1/events`, Crucible 1.0.76, LEDGER #255) open; zero turns both off
+ *   in line     a job whose queue session waits behind another app's session keeps the stream
+ *               followed, the chip shows the holder from the stream's own events (no activity
+ *               polling), then everything stops once the job has run
  *   admitted    right before a job is admitted, an answer older than a few seconds is
  *               checked again (one probe), and a fresh one is not
  *   asked       the renderer's refresh (the Servers pane, Re-check) is one probe
  *
- * The intervals are shortened to tens of milliseconds; the fake counts every request.
+ * The intervals are shortened to tens of milliseconds; the fake counts every request. A server
+ * that does not list the `events` feature is said on its chip by name and never polled instead.
  * Also the card holder the queue's waiting row shows: who, what, how far, and the time left
  * measured between reads, following a new holder when another app gets the card first.
  */
@@ -30,12 +33,12 @@ const TICK_MS = 40;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** One fake server registered as `mac`, the app's loops wired with short intervals. */
-async function world() {
-  const server = await fake.startFakeCrucible({ name: 'crucible@mac', version: '1.0.34', resident: MODEL });
-  const made = context({ lanes: { preflightEveryMs: TICK_MS } });
+async function world(options = {}) {
+  const server = await fake.startFakeCrucible({ name: 'crucible@mac', version: '1.0.76', resident: MODEL, ...options });
+  const made = context({ lanes: { watchRetryMs: TICK_MS } });
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   made.ctx.readiness.refreshMs = { notReady: TICK_MS, ready: TICK_MS };
-  const counts = () => ({ pings: server.requestsTo('/v1/ping').length, reads: server.requestsTo('/v1/activity').length });
+  const counts = () => ({ pings: server.requestsTo('/v1/ping').length, reads: server.requestsTo('/v1/activity').length, streams: server.requestsTo('/v1/events').length });
   const close = async () => {
     made.ctx.stop();
     await server.close();
@@ -43,15 +46,19 @@ async function world() {
   return { ...made, server, counts, close };
 }
 
-/** The step transport.ts is: submit on the hooks' server, record the job at once, settle it. */
+/** The step transport.ts is: the step's session, a submit in it, the job recorded at once and settled. */
 function loadStep(ctx) {
   return ctx.lanes.aiCall(gpuCall(MODEL), 'a keeper load', async () => {
     const hooks = crucibleStepHooks();
-    const client = await ctx.factory.clientFor(hooks.server);
-    const id = await client.loadModel(MODEL);
-    hooks.submitted({ server: hooks.server, id, jobType: 'load-model', model: MODEL });
-    hooks.settled(hooks.server, 'job', id);
-    return id;
+    const hold = await hooks.session({ act: 'generate', what: 'a keeper load' });
+    try {
+      const id = await hold.card.session.loadModel(MODEL);
+      hooks.submitted({ server: hooks.server, id, jobType: 'load-model', model: MODEL });
+      hooks.settled(hooks.server, 'job', id);
+      return id;
+    } finally {
+      await hold.release();
+    }
   });
 }
 
@@ -76,9 +83,10 @@ check('idle: one check at start, then not one request to Crucible while nothing 
     await started(w);
     const first = w.counts();
     assert.ok(first.pings >= 1, 'the start answer was a real probe');
-    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.preflightRunning()], [false, false]);
+    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.watchRunning()], [false, false]);
     await sleep(TICK_MS * 10);
-    assert.deepStrictEqual(w.counts(), first, 'ten intervals idle: no probe, no activity read');
+    assert.deepStrictEqual(w.counts(), first, 'ten intervals idle: no probe, no activity read, no stream');
+    assert.strictEqual(first.streams, 0);
     assert.strictEqual(w.ctx.readiness.current().polling, false, 'the banner is told it is not live');
   } finally {
     await w.close();
@@ -93,13 +101,13 @@ check('a window\'s queue count turns both timers on, and back off at zero; one w
     // derivation's probe may be reused for, as the real 10-30 s ticks are.
     w.ctx.probes.now = () => Date.now() * 200;
     w.ctx.readiness.setQueued('window-1', 2);
-    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.preflightRunning()], [true, true]);
+    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.watchRunning()], [true, true]);
     const on = w.counts();
-    await until(() => w.counts().reads >= on.reads + 3 && w.counts().pings >= on.pings + 2);
+    await until(() => w.counts().streams === 1 && w.counts().pings >= on.pings + 2);
     w.ctx.readiness.setQueued('window-2', 0);
     assert.strictEqual(w.ctx.readiness.isPolling(), true, 'the editor window\'s empty queue does not stop the main window\'s');
     w.ctx.readiness.setQueued('window-1', 0);
-    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.preflightRunning()], [false, false]);
+    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.watchRunning()], [false, false]);
     await sleep(TICK_MS * 2);
     const off = w.counts();
     await sleep(TICK_MS * 8);
@@ -109,33 +117,48 @@ check('a window\'s queue count turns both timers on, and back off at zero; one w
   }
 });
 
-check('a job parked behind another app polls on the interval, shows the holder with its time left, then everything stops once it has run', async () => {
+check('a job waiting in the server\'s line keeps the stream followed, the chip shows the holder from its events (no activity polling), then everything stops once it has run', async () => {
   const w = await world();
   try {
-    w.server.inject({ serverBusy: { client: 'crucible-cli/1.0.43', type: 'rvc', progress: 0.4, jobId: 'job-a' } });
+    const holder = w.server.holdAsOther('crucible-cli/1.0.43', 'rvc');
     await started(w);
-    const parked = await w.ctx.lanes.runJob({ jobId: 'j1', fast: false, stage: 'transcribe' }, () => loadStep(w.ctx));
-    assert.deepStrictEqual([parked.kind, parked.result.code], ['parked', 'server_busy']);
-    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.preflightRunning()], [true, true], 'a parked job keeps it polling');
-    const before = w.counts();
-    await until(() => w.counts().reads >= before.reads + 3);
+    const job = w.ctx.lanes.runJob({ jobId: 'j1', fast: false, stage: 'transcribe' }, () => loadStep(w.ctx));
+    await until(() => w.pushed.inLine.length > 0);
+    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.watchRunning()], [true, true], 'a job in line keeps it followed');
     const chip = () => w.ctx.lanes.view().lanes[0];
-    await until(() => chip().holder !== null && chip().holder.id === 'job-a');
-    assert.deepStrictEqual(
-      [chip().holder.kind, chip().holder.client, chip().holder.what, chip().holder.progress],
-      ['job', 'crucible-cli/1.0.43', 'rvc', 0.4],
-    );
-    assert.strictEqual(chip().holder.leftUnknown, 'measuring', 'the progress has not moved between reads: no number yet');
-    // The holder finishes; the next read clears the park and the plan starts the job.
-    w.server.inject({});
-    await until(async () => (await w.ctx.lanes.plan([{ jobId: 'j1', fast: false }])).start.length === 1);
-    const done = await w.ctx.lanes.runJob({ jobId: 'j1', fast: false, stage: parked.result.stage }, () => loadStep(w.ctx));
+    await until(() => chip().holder !== null);
+    assert.deepStrictEqual([chip().holder.kind, chip().holder.client, chip().holder.what, chip().holder.leftUnknown], ['session', 'crucible-cli/1.0.43', 'rvc', 'no-progress']);
+    assert.deepStrictEqual(chip().inLine, { jobId: 'j1', position: 1, of: 1 });
+    const reads = w.counts().reads;
+    // The holder closes: the stream says so, the job's session opens and the job runs.
+    w.server.endSession(holder, 'client');
+    const done = await job;
     assert.strictEqual(done.kind, 'done');
-    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.preflightRunning()], [false, false], 'nothing left waiting: no timer');
+    await until(() => chip().holder === null);
+    assert.strictEqual(w.counts().reads - reads <= 1, true, 'the strip followed the stream, not /v1/activity (one read at most: readiness\'s probe before admission)');
+    assert.deepStrictEqual([w.ctx.readiness.isPolling(), w.ctx.lanes.watchRunning()], [false, false], 'nothing left waiting: no timer, no stream');
     await sleep(TICK_MS * 2);
     const after = w.counts();
     await sleep(TICK_MS * 8);
     assert.deepStrictEqual(w.counts(), after, 'after the job: not one more request');
+  } finally {
+    await w.close();
+  }
+});
+
+check('a server that does not offer the event stream is said by name on its chip, and never polled in its place', async () => {
+  const w = await world({ features: ['queue.jobs', 'queue.calls', 'queue.sessions'] });
+  try {
+    await started(w);
+    w.ctx.readiness.setQueued('window-1', 1);
+    const chip = () => w.ctx.lanes.view().lanes[0];
+    await until(() => chip().state === 'unreachable');
+    assert.match(chip().unreadReason, /does not offer the server event stream/);
+    const reads = w.counts().reads;
+    await sleep(TICK_MS * 6);
+    assert.strictEqual(w.counts().streams, 0);
+    assert.ok(w.counts().reads - reads <= 6, 'only readiness\'s own probes read activity; the strip does not poll');
+    w.ctx.readiness.setQueued('window-1', 0);
   } finally {
     await w.close();
   }
@@ -184,31 +207,24 @@ check('the renderer asking (the Servers pane opening, Re-check) is one probe, wi
 
 // ── the holder the waiting row shows ─────────────────────────────────────────
 
-/** A `/v1/activity` read, as the SDK hands it, with only what holderOf reads. */
-function activity({ running = [], lease = null, claim = null, streaming = null, acceptsWork = true, resident = MODEL } = {}) {
-  return {
-    running,
-    lease,
-    claim,
-    streaming,
-    resident: resident === null ? null : { id: resident },
-    slots: { accelerated: { acceptsWork } },
-  };
+/** What a server is doing, as the lanes strip reads it off the event stream (card-holder.ts CardView). */
+function view({ running = [], session = null, resident = MODEL } = {}) {
+  return { running, session, resident };
 }
 const job = (jobId, client, type, progress) => ({ jobId, client, type, model: null, progress });
+const OURS = crucible('client-factory').CRUCIBLE_CLIENT_NAME;
 
-check('the holder: another app\'s job, a lease, a live session, a card taking nothing; ContentStudio\'s own work is no holder', () => {
+check('the holder: another app\'s job, another app\'s queue session; this install\'s own work is no holder, another install\'s is', () => {
   const none = new Set();
-  assert.deepStrictEqual(holderOf(activity({ running: [job('a', 'crucible-cli/1.0.43', 'rvc', 0.43)], acceptsWork: false }), none),
+  assert.deepStrictEqual(holderOf(view({ running: [job('a', 'crucible-cli/1.0.43', 'rvc', 0.43)] }), none),
     { kind: 'job', client: 'crucible-cli/1.0.43', what: 'rvc', model: null, id: 'a', progress: 0.43 });
-  assert.strictEqual(holderOf(activity({ running: [job('ours', 'contentstudio/1.1.0', 'asr', 0.5)], acceptsWork: false }), none), null, 'our own job is the running row');
-  assert.strictEqual(holderOf(activity({ running: [job('x', null, 'asr', 0.5)], acceptsWork: false }), new Set(['x'])), null, 'a job the ledger holds is ours');
-  assert.deepStrictEqual(holderOf(activity({ lease: { leaseId: 'L1', client: 'foundry', act: 'translate', kind: 'llm', since: null, expiresAt: null } }), none),
-    { kind: 'lease', client: 'foundry', what: 'translate', model: MODEL, id: 'L1', progress: null });
-  assert.strictEqual(holderOf(activity({ lease: { leaseId: 'L1', client: 'foundry', act: 'translate', kind: 'llm', since: null, expiresAt: null } }), new Set(['L1'])), null);
-  assert.strictEqual(holderOf(activity({ claim: { heldBy: 'bookforge' }, streaming: { sessionId: 's1', client: 'bookforge/2.0' } }), none).kind, 'claim');
-  assert.strictEqual(holderOf(activity({ acceptsWork: false }), none).kind, 'card');
-  assert.strictEqual(holderOf(activity({}), none), null, 'a free card');
+  assert.strictEqual(holderOf(view({ running: [job('ours', OURS, 'asr', 0.5)] }), none), null, 'our own job is the running row');
+  assert.strictEqual(holderOf(view({ running: [job('x', null, 'asr', 0.5)] }), new Set(['x'])), null, 'a job the ledger holds is ours');
+  assert.deepStrictEqual(holderOf(view({ session: { id: 'ses-1', client: 'foundry', act: 'translate', model: null } }), none),
+    { kind: 'session', client: 'foundry', what: 'translate', model: MODEL, id: 'ses-1', progress: null });
+  assert.strictEqual(holderOf(view({ session: { id: 'ses-1', client: OURS, act: 'generate', model: null } }), none), null, 'our own session');
+  assert.strictEqual(holderOf(view({ session: { id: 'ses-1', client: 'contentstudio@another-host', act: 'generate', model: null } }), none).kind, 'session', 'another install is another app');
+  assert.strictEqual(holderOf(view({}), none), null, 'a free server');
 });
 
 check('time left is measured between reads of the same hold, never guessed; a new holder starts a new measurement', () => {
@@ -225,19 +241,19 @@ check('time left is measured between reads of the same hold, never guessed; a ne
   assert.deepStrictEqual([t.holder.id, t.holder.secondsLeft, t.holder.leftUnknown], ['b', null, 'measuring']);
   t = trackHolder(t.track, h('b', 0.3), 1_095_000);
   assert.deepStrictEqual([t.holder.id, t.holder.secondsLeft], ['b', 70]);
-  // A lease has no progress: time left is unknown, said as such.
-  const lease = trackHolder(null, { kind: 'lease', client: 'foundry', what: 'translate', model: MODEL, id: 'L1', progress: null }, 1);
-  assert.deepStrictEqual([lease.holder.secondsLeft, lease.holder.leftUnknown], [null, 'no-progress']);
+  // A session between its items has no progress: time left is unknown, said as such.
+  const session = trackHolder(null, { kind: 'session', client: 'foundry', what: 'translate', model: MODEL, id: 'ses-1', progress: null }, 1);
+  assert.deepStrictEqual([session.holder.secondsLeft, session.holder.leftUnknown], [null, 'no-progress']);
   assert.deepStrictEqual(trackHolder(t.track, null, 2), { track: null, holder: null }, 'the card came free');
   assert.deepStrictEqual(timeLeft({ key: 'k', firstAt: 0, firstProgress: 0.5, lastAt: 10, lastProgress: 0.4 }), { secondsLeft: null, leftUnknown: 'measuring' });
 });
 
-check('through the lanes: the chip follows the holder\'s progress and swaps to a new holder when another app gets the card first', async () => {
+check('through the lanes\' reads: the chip follows the holder\'s progress and swaps to a new holder when another app gets the card first', async () => {
   const w = await world();
   try {
     const clock = { t: 5_000_000 };
-    // A lanes clock the keeper drives: a context whose preflight never fires on its own.
-    const made = context({ lanes: { now: () => clock.t, preflightEveryMs: 3_600_000 } });
+    // A lanes clock the keeper drives, and one-shot reads (no stream: nothing is queued).
+    const made = context({ lanes: { now: () => clock.t } });
     made.ctx.servers.add({ name: 'mac', url: w.server.url, token: w.server.token });
     const chip = () => made.ctx.lanes.view().lanes[0];
     w.server.inject({ serverBusy: { client: 'crucible-cli/1.0.43', type: 'rvc', progress: 0.2, jobId: 'job-a' } });

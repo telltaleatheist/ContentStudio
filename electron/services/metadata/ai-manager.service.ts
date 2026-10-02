@@ -17,7 +17,7 @@ import * as os from 'os';
 import * as log from 'electron-log';
 import { ANTHROPIC_MAX_TOKENS, crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
 import { isUpstreamModelId } from '../../crucible/acts';
-import type { JobLeases } from '../../crucible/lease';
+import type { JobSessions } from '../../crucible/session';
 import { renderChapterList } from './chapter-digest';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
@@ -112,11 +112,11 @@ export interface AIConfig {
    */
   abortSignal?: AbortSignal;
   /**
-   * The JOB's Crucible leases (plan 13.3), for the local calls this service sends itself
+   * The JOB's Crucible sessions (LEDGER #255), for the local calls this service sends itself
    * (compilation summarizing and packaging). Absent: each such call is a one-call job,
-   * leased and released around itself.
+   * its session held around itself.
    */
-  jobLeases?: JobLeases;
+  jobSessions?: JobSessions;
 }
 
 /**
@@ -135,8 +135,8 @@ export interface PlainCallShape {
   loadContext?: number;
   /** Local only: the chapter stage's consensus samples. Refused on a cloud upstream (#194). */
   temperature?: number;
-  /** The job's leases, when the caller has a job; else the service's own, else a one-call job. */
-  job?: JobLeases;
+  /** The job's sessions, when the caller has a job; else the service's own, else a one-call job. */
+  job?: JobSessions;
   /** A wall clock on the answer (the old per-call timeouts). */
   timeoutMs?: number;
 }
@@ -1500,7 +1500,7 @@ export class AIManagerService {
           if (!cloud && shape.maxTokens === undefined) {
             throw new Error(`${what} on the local model ${model} stated no output budget; every local call states one.`);
           }
-          const job = shape.job ?? this.config.jobLeases;
+          const job = shape.job ?? this.config.jobSessions;
           const answer = await crucibleTransport().chat({
             model,
             prompt,

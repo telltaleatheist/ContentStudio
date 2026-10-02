@@ -43,7 +43,7 @@
  * given back when another model is needed, when the window closes, on quit, or after
  * TEXT_HOLD_IDLE_MS with no step. A words step that is running when the window closes (or the idle
  * clock runs out) runs to its end and saves what it wrote; the model is given back AFTER it
- * (2026-09-29: closing used to give the lease back under the running request). Only quitting the
+ * (2026-09-29: closing used to give the hold back under the running request). Only quitting the
  * app gives it back at once.
  *
  * ONE ACTION PER ITEM AT A TIME: a model step reads the record, waits a minute for the model and
@@ -54,7 +54,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
-import type { JobLeases } from '../../crucible/lease';
+import type { JobSessions } from '../../crucible/session';
 import type { AIManagerService } from '../metadata/ai-manager.service';
 import { migrateStoredRouting, resolveMetadataRouting, routingOption, type MetadataRoutingOption, type ResolvedMetadataRouting, type RoutingModels } from '../metadata/metadata-routing';
 import { readRoutingModels } from '../metadata/routing-models';
@@ -152,7 +152,7 @@ export interface ReportThumbnailsDeps {
   /** The run's setup read NOW (the saved look, the renderer): pipeline-setup.ts thumbnailRunChoice. */
   runChoice: () => ThumbnailRunChoice;
   /** A held Crucible job for the text steps (crucible.transport.job). */
-  holdJob: (what: string) => JobLeases;
+  holdJob: (what: string) => JobSessions;
   aiManager: () => Pick<AIManagerService, 'runPlainRequest'> & { cleanup?(): void };
   /** A picture of a file as a data URL, at most `width` pixels wide (Electron nativeImage in the app). */
   picture: (file: string, width: number) => string;
@@ -350,7 +350,7 @@ function frameRef(frame: StoredFrame): { id: string; t: number; origin?: 'added'
 
 export class ReportThumbnails {
   private readonly busy = new Map<string, string>();
-  private textHold: { job: JobLeases; model: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  private textHold: { job: JobSessions; model: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
   /** Words steps running on the held model now: the hold is never given back under one. */
   private textSteps = 0;
   /** Why the hold goes once the running words steps end (the window closed, the idle clock, a failure). */
@@ -423,7 +423,7 @@ export class ReportThumbnails {
    * The held job for a text step on `option`, or undefined for a cloud or `claude -p` option (which
    * holds no card). A different local model releases the old hold first; the idle clock restarts.
    */
-  private async textJob(option: MetadataRoutingOption): Promise<JobLeases | undefined> {
+  private async textJob(option: MetadataRoutingOption): Promise<JobSessions | undefined> {
     if (option.kind !== 'local' || option.crucibleModel === null) return undefined;
     const model = option.crucibleModel;
     if (this.textHold !== null && this.textHold.model !== model) {
@@ -447,7 +447,7 @@ export class ReportThumbnails {
    * closed, the idle clock) waits for the last running step to end. A failed step gives the model
    * back after it.
    */
-  private async textStep<T>(option: MetadataRoutingOption, fn: (job: JobLeases | undefined) => Promise<T>): Promise<T> {
+  private async textStep<T>(option: MetadataRoutingOption, fn: (job: JobSessions | undefined) => Promise<T>): Promise<T> {
     const job = await this.textJob(option);
     this.textSteps++;
     try {
@@ -466,7 +466,7 @@ export class ReportThumbnails {
   }
 
   /**
-   * Give the text model's lease back. Never throws: it is housekeeping. Returns the model released,
+   * Let go of the text model's session. Never throws: it is housekeeping. Returns the model released,
    * or null when none was held, or when a words step is running: then it is given back when the
    * step ends (said in the log).
    */
@@ -479,14 +479,13 @@ export class ReportThumbnails {
     return this.releaseNow(reason);
   }
 
-  /** Give the lease back now, whatever runs (quitting the app). Never throws. */
+  /** Let go of the held session now, whatever runs (quitting the app). Never throws. */
   private async releaseNow(reason: string): Promise<string | null> {
     const hold = this.textHold;
     this.textHold = null;
     if (hold === null) return null;
     if (hold.timer !== null) clearTimeout(hold.timer);
-    const lost = await hold.job.releaseAll();
-    for (const line of lost) log.error(`[Thumbnails] the window's text steps lost their lease on ${line} before it was given back`);
+    await hold.job.releaseAll();
     log.info(`[Thumbnails] released ${hold.model}: ${reason}`);
     return hold.model;
   }
@@ -1153,12 +1152,12 @@ export class ReportThumbnails {
    */
   private async stagesOnOneJob(jobId: string, itemId: string, what: string, make: (doors: import('./pipeline').ThumbnailJobDoors) => ItemThumbnailRun, fields: ReturnType<ReportThumbnails['fieldsOf']>): Promise<ItemThumbnails> {
     await this.releaseHold(`${what} takes the card`);
-    const leases = this.deps.holdJob(what);
+    const sessions = this.deps.holdJob(what);
     const ai = this.deps.aiManager();
     try {
       const routing = this.routing();
       const run = make({
-        leases,
+        sessions,
         aiManager: ai,
         routing,
         // Bound on the server these stages run on, from one catalog read, before anything is loaded.
@@ -1178,8 +1177,7 @@ export class ReportThumbnails {
       return run.record();
     } finally {
       ai.cleanup?.();
-      const lost = await leases.releaseAll();
-      for (const line of lost) log.error(`[Thumbnails] ${what} lost its lease on ${line} before it was given back`);
+      await sessions.releaseAll();
     }
   }
 

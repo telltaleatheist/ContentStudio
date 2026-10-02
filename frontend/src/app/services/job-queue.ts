@@ -22,9 +22,10 @@ export interface QueuedJob {
   // 'held' = transcribed and the prompt is assembled, waiting for the user to send
   // it to the AI (the "Transcribe only" two-stage flow). The backend holds the
   // transcript so sending reuses it without re-transcribing.
-  // 'parked' = its Crucible server is busy, paused or not there, and it WAITS for that
-  // server (LEDGER #205: never moved to another). It starts again by itself when main's
-  // preflight says the holder has gone (CRUCIBLE-MIGRATION-PLAN.md section 13.2).
+  // 'parked' = its Crucible server is paused, not there, or nothing is selected, and it WAITS
+  // for that server (LEDGER #205: never moved to another); main decides again at each plan.
+  // Another app on the server is not a park (LEDGER #255): the job runs, and its queue session
+  // waits in the server's line, said on its activity line.
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'held' | 'parked';
   /**
    * Pinned "fast": runs on the fast server (Settings › Crucible Servers), and only there.
@@ -33,7 +34,7 @@ export interface QueuedJob {
   fast: boolean;
   /** The server this job ran on, or waits for; null before it was first placed. */
   venue?: string | null;
-  /** Why it is parked, in the holder's words ("GPU busy: foundry, tts 62% done"). */
+  /** Why it is parked, in the venue's words ("… is paused, work waits"). */
   parkedLine?: string;
   /** Where it picks up when it runs again: a parked job skips what it already did. */
   resumeFrom?: ResumeStage;

@@ -275,7 +275,7 @@ export class MetadataGeneratorService {
      * each field unit, then the description unit — and the next stage, usually on the SAME
      * model, re-streamed ~17GB of weights into unified memory and froze the operator's machine
      * for the length of the load. The stages now hold their model under this job's Crucible
-     * lease (plan 13.3) and nothing releases anything until the job is over. It also carries
+     * session (LEDGER #255) and nothing releases anything until the job is over. It also carries
      * the load-context ratchet, so two stages sharing a model cannot reload it by sizing their
      * windows independently.
      */
@@ -376,10 +376,10 @@ export class MetadataGeneratorService {
         // insightsBlock is NOT set here: it is resolved right after construction, below,
         // because resolving it may spend the one distillation call on a routed transport.
         abortSignal: params.cancelSignal,
-        // The compilation summarizer and packaging run under the job's lease like every other
+        // The compilation summarizer and packaging run under the job's session like every other
         // local call of this job (plan 13.3); made on first use, so an all-cloud run needs none.
-        get jobLeases() {
-          return lifecycle.leases;
+        get jobSessions() {
+          return lifecycle.sessions;
         },
       };
 
@@ -915,7 +915,7 @@ export class MetadataGeneratorService {
           // THE THUMBNAILS' SECOND HALF (thumbnails/pipeline.ts): the titles are settled (after the
           // scrub and the gate, which may re-roll and rank them), so each of the three pairs gets its
           // words, and the three defaults are drawn (no photo: Owen picks them). On the job's
-          // own leases, so a 27B the fields left loaded is not loaded again. A stage failure is on the
+          // own sessions, so a 27B the fields left loaded is not loaded again. A stage failure is on the
           // record and in the run's warnings; the item is saved either way.
           const thumbnails = thumbnailRuns[i];
           await thumbnails.afterFields(metadata as any);
@@ -1347,16 +1347,16 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * The thumbnails stages' doors for one item: THIS JOB's leases (so the words' model is a hold of
+   * The thumbnails stages' doors for one item: THIS JOB's sessions (so the words' model is a hold of
    * the one job, and a model the fields left loaded is not loaded again), the
    * run's AI manager for the words, the routing table, the run's stop, and a progress line that is
    * also the job's sign of life (sampling and scene grouping are minutes of CPU with no model call).
-   * `leases` is read only when a stage calls a model, so a run that makes no thumbnails needs no server.
+   * `sessions` is read only when a stage calls a model, so a run that makes no thumbnails needs no server.
    */
   private static thumbnailDoors(params: GenerationParams, lifecycle: JobModelLifecycle, aiManager: AIManagerService, itemIndex: number): ThumbnailJobDoors {
     return {
-      get leases() {
-        return lifecycle.leases;
+      get sessions() {
+        return lifecycle.sessions;
       },
       aiManager,
       routing: this.routing(params),
@@ -1640,7 +1640,7 @@ export class MetadataGeneratorService {
 
     const transports = snapTransports({
       models,
-      job: lifecycle.leases,
+      job: lifecycle.sessions,
       trace: aiManager.promptTrace,
       ...(models.titles.kind === 'cloud'
         ? { cloudPlain: (prompt: string, model: string, what: string, shape: { thinking: boolean }) => aiManager.runPlainRequest(prompt, model, what, shape) }
@@ -1802,7 +1802,7 @@ export class MetadataGeneratorService {
       trace: aiManager.promptTrace,
       // The cloud path, exactly when the row resolved to a cloud option. `model` is then the
       // string runPlainRequest routes on, and the service's local machinery (context sizing,
-      // the lease) stands down — see the option's doc.
+      // the session) stands down — see the option's doc.
       cloudPlain:
         chapterOption.kind === 'cloud'
           ? (prompt: string, cloudModel: string, what: string, shape: { thinking: boolean }) =>

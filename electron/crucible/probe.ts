@@ -20,10 +20,13 @@
  * that says so.
  *
  * `ok` is not permission to submit. It says the address answers; whether the
- * lane is free is settled at the door by `POST /v1/jobs` (P3). `busyLine` is a
- * display, read from `/v1/activity`, which is a preflight and never a lock.
+ * server is free is the server's line's to settle (a job's queue session waits
+ * its turn, LEDGER #255). `busyLine` is a display, read once from
+ * `/v1/activity` as part of the probe, never a lock.
  */
 import * as log from 'electron-log';
+import { busyLineOfView, cardViewOf } from './card-holder';
+import { isOurClient } from './client-factory';
 import {
   CrucibleAuthError,
   CrucibleCapabilityUndecided,
@@ -136,21 +139,20 @@ export function failureOutcome(err: unknown, at: string, clockMs: number = PROBE
 }
 
 /**
- * The holder of the card, in one sentence, or null when the lane accepts work
- * and nothing else claims the engine. A claim by anything but ContentStudio is
- * busy even with the lane free: a streaming session, or Crucible's own
- * settlement clearing the card after a lapsed lease. The sentence is the
- * shape plan section 3.2 wants on a parked row: "busy: bookforge, tts 62% done".
+ * The holder of the server, in one sentence, or null when nothing holds it: the
+ * engine claimed by anything but this install ("busy: the card is held by …"),
+ * a job on its lane ("busy: bookforge, tts 62% done"), an open queue session
+ * ("held: foundry's session for translate"; while one is open nothing else
+ * runs, Crucible 1.0.76), else a lane that says it takes no work and names
+ * nothing. This install's own work is named "contentstudio" (card-holder.ts
+ * `busyLineOfView`), so readiness can say the work is ours.
  */
 export function busyLineOf(activity: Activity): string | null {
   const claim = activity.claim?.heldBy?.trim();
-  if (claim && !/^contentstudio\b/i.test(claim)) return `busy: the card is held by ${claim}`;
+  if (claim && !isOurClient(claim.split(/\s+/)[0])) return `busy: the card is held by ${claim}`;
+  const line = busyLineOfView(cardViewOf(activity));
+  if (line !== null) return line;
   if (activity.slots.accelerated.acceptsWork) return null;
-  const job = activity.running[0];
-  if (job !== undefined) {
-    const done = job.progress === null ? '' : ` ${Math.round(job.progress * 100)}% done`;
-    return `busy: ${job.client ?? 'another app'}, ${job.type}${done}`;
-  }
   return 'busy: the GPU is not accepting work right now';
 }
 

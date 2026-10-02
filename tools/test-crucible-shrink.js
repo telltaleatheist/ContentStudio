@@ -1,17 +1,17 @@
 /**
- * The cross-job shrink against the fake (LEDGER #220, #209): a model left resident by an earlier
- * job at a larger context than the next job needs is reloaded at the smaller one.
+ * The cross-job shrink against the fake (LEDGER #220, #209): a model already resident at a larger
+ * context than the job needs is reloaded at the smaller one.
  *
  * What is held:
- *  - job A loads the 27B at 24,576 and releases; job B, which needs only 8,192, reloads it at
- *    8,192 rather than running in the larger window, and the log calls the reload by its name;
- *  - another client's lease is never disturbed: when the resident model is leased by someone else,
- *    job B runs under their lease at their window, no reload, and the log says so;
+ *  - a model resident at 24,576 when the job's queue session opens (another app left it, or it
+ *    was loaded outside a session) is reloaded at 8,192 for a job that needs only that, and the log
+ *    calls the reload by its name; within the job the window then stays;
+ *  - closing a job's session settles the card (Crucible 1.0.76, LEDGER #255), so the next job loads
+ *    at its own size from an empty card: no shrink is needed between two of our jobs;
  *  - within ONE job the window still only grows (test-crucible-p4.js holds that side).
  *
  * No GPU, no model, no network beyond 127.0.0.1.
  */
-const { CrucibleClient } = require('@crucible/client');
 const { assert, fake, context, check, run, logged, crucible } = require('./_crucible-keeper');
 
 const { installCrucibleTransport } = crucible('transport');
@@ -22,8 +22,8 @@ const MODEL = 'qwen3.8-27b-4bit';
 const MODELS = [{ id: MODEL, paramsB: 27, installed: true, contextDefault: 98304 }];
 
 async function withDoor(options, fn) {
-  const server = await fake.startFakeCrucible({ version: '1.0.34', models: MODELS, ...options });
-  const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
+  const server = await fake.startFakeCrucible({ version: '1.0.76', models: MODELS, ...options });
+  const made = context();
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   installCrucibleTransport(made.ctx.transport);
   installLanes(made.ctx.lanes);
@@ -45,39 +45,28 @@ function asker(ctx, job) {
   }));
 }
 
-check('a model left resident at 24,576 by one job is reloaded at 8,192 for the next job that needs only that', () => withDoor({}, async (server, ctx) => {
-  const jobA = ctx.transport.job('job A (thinking)');
-  await asker(ctx, jobA)(3500, 16384, 'a thinking call');   // loads at 24,576
-  await jobA.releaseAll();
-
-  const jobB = ctx.transport.job('job B (fields)');
-  await asker(ctx, jobB)(3500, 2048, 'a field call');        // needs 8,192: reload smaller
-  await asker(ctx, jobB)(3500, 2048, 'another field call');  // same job, same window: no reload
-  await jobB.releaseAll();
-
-  assert.deepStrictEqual(loads(server).map((b) => b.params.context), [24576, 8192], 'two loads: the big one, then the shrink');
+check('a model resident at 24,576 when the job\'s session opens is reloaded at 8,192 for a job that needs only that; within the job it stays', () => withDoor({}, async (server, ctx) => {
+  server.setResident(MODEL, 24576);
+  const job = ctx.transport.job('job B (fields)');
+  await asker(ctx, job)(3500, 2048, 'a field call');        // needs 8,192: reload smaller
+  await asker(ctx, job)(3500, 2048, 'another field call');  // same job, same window: no reload
+  await job.releaseAll();
+  assert.deepStrictEqual(loads(server).map((b) => b.params.context), [8192], 'one load: the shrink');
   assert.ok(logged.some((l) => /needs only 8192; reloading it at 8192/.test(l.text)), 'the shrink is said by name');
-  const leaseRows = server.requests.filter((r) => r.method === 'POST' && /lease/.test(r.path) && !/release/.test(r.path));
-  assert.ok(leaseRows.length >= 1, `the shrink proved the card was free by taking a lease first (${server.requests.map((r) => r.path).join(', ')})`);
+  assert.strictEqual(server.sessions.length, 1, 'the reload ran inside the job\'s session');
 }));
 
-check('a resident model leased by another client is not reloaded smaller; the job runs under their lease and says so', () => withDoor({}, async (server, ctx) => {
+check('closing a job\'s session settles the card, so the next job loads at its own size from an empty card', () => withDoor({}, async (server, ctx) => {
   const jobA = ctx.transport.job('job A (thinking)');
   await asker(ctx, jobA)(3500, 16384, 'a thinking call');   // loads at 24,576
   await jobA.releaseAll();
-
-  // Another app takes the card, on the same model.
-  const other = new CrucibleClient({ url: server.url, token: server.token, clientName: 'bookforge' });
-  const theirs = await other.lease(MODEL, { act: 'generate', ttlSeconds: 60 });
-  try {
-    const jobB = ctx.transport.job('job B (fields)');
-    await asker(ctx, jobB)(3500, 2048, 'a field call');
-    await jobB.releaseAll();
-    assert.deepStrictEqual(loads(server).map((b) => b.params.context), [24576], 'no reload while the card is theirs');
-    assert.ok(logged.some((l) => /leased by .*not reloaded smaller/.test(l.text)), 'the skipped shrink is said');
-  } finally {
-    await other.release(theirs.leaseId).catch(() => undefined);
-  }
+  assert.strictEqual(server.resident(), null, 'the server settled the card when the session closed');
+  const before = logged.length;
+  const jobB = ctx.transport.job('job B (fields)');
+  await asker(ctx, jobB)(3500, 2048, 'a field call');
+  await jobB.releaseAll();
+  assert.deepStrictEqual(loads(server).map((b) => b.params.context), [24576, 8192]);
+  assert.ok(!logged.slice(before).some((l) => /reloading it at/.test(l.text)), 'a fresh load, not a reload');
 }));
 
-run();
+run('crucible: the cross-job shrink, inside queue sessions');

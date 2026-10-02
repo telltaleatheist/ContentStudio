@@ -312,6 +312,23 @@ function fakeClient({ info, script = [], failSubmit = null, transcript = null, l
   };
   return client;
 }
+/**
+ * A venue as asr-venue.ts builds it: the plain client, and the queue session a job runs in
+ * (Crucible 1.0.76, LEDGER #255), recorded so a check can see it was held and let go of.
+ */
+function venueOf(client) {
+  const venue = {
+    server: 'mac',
+    client,
+    sessions: { asked: 0, released: 0 },
+    async session() {
+      venue.sessions.asked += 1;
+      return { client, release: async () => { venue.sessions.released += 1; } };
+    },
+  };
+  venueOf.last = venue;
+  return venue;
+}
 const progressEv = (stage, processed, total) => ({ event: 'progress', data: { fraction: 0, message: null, extra: { stage, processed_s: processed, total_s: total } } });
 const FAST = { doorDelaysMs: [1, 1], streamDelaysMs: [1, 1], uploadTickMs: 5 };
 
@@ -319,7 +336,7 @@ section('the job (asr.ts) against a scripted Crucible');
 check('upload → submit (model, params exactly, one named input, a clientRef) → events → transcript.json', async () => {
   const client = fakeClient({ script: [{ event: 'queued', data: { position: 1 } }, progressEv('transcribing', 60, 120), progressEv('aligning', 120, 120), { event: 'done', data: {} }] });
   const seen = [];
-  const out = await asr.runAsrJob({ venue: { server: 'mac', client }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'contentstudio:test:1', onProgress: (p) => seen.push(p.kind), ...FAST });
+  const out = await asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'contentstudio:test:1', onProgress: (p) => seen.push(p.kind), ...FAST });
   const submit = client.calls.find((c) => c[0] === 'submit')[1];
   eq(submit, { type: 'asr', model: 'qwen3-asr-1.7b', params: { language: 'en', vad_filter: false, word_timestamps: true, context: 'C' }, inputs: { 'clip.flac': { blobId: 'blob-1' } }, clientRef: 'contentstudio:test:1' });
   eq(client.calls.map((c) => c[0]), ['upload', 'submit', 'events', 'artifact']);
@@ -329,7 +346,7 @@ check('upload → submit (model, params exactly, one named input, a clientRef) �
 check('cancel → DELETE on the server, and the job ends cancelled (never abandoned)', async () => {
   const client = fakeClient({ script: [progressEv('transcribing', 10, 100), 'hang'] });
   const abort = new AbortController();
-  const p = asr.runAsrJob({ venue: { server: 'mac', client }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', signal: abort.signal, ...FAST });
+  const p = asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', signal: abort.signal, ...FAST });
   setTimeout(() => abort.abort(), 20);
   const e = await rejects(p);
   eq([e.kind, e.jobId], ['cancelled', 'job-1']);
@@ -338,7 +355,7 @@ check('cancel → DELETE on the server, and the job ends cancelled (never abando
 check('a failed job fails with the SERVER\'s code and message, loop range included', async () => {
   const message = 'the piece at 3600.0-3780.0s (1:00:00-1:03:00) still loops after re-decoding at every window in the budget (180 s, 60 s, 20 s)';
   const client = fakeClient({ script: [{ event: 'failed', data: { error: { code: 'asr_decode_loop', message } } }] });
-  const e = await rejects(asr.runAsrJob({ venue: { server: 'mac', client }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
+  const e = await rejects(asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
   eq([e.kind, e.code], ['failed', 'asr_decode_loop']);
   ok(e.message.includes(message), e.message);
 });
@@ -351,15 +368,27 @@ check('a missing model or aligner refuses BY NAME before any upload (never whisp
   ok(/does not offer qwen3-asr-1\.7b/.test(e2.message), e2.message);
   eq([noAligner.calls.some((c) => c[0] === 'upload'), onlyMlx.calls.some((c) => c[0] === 'upload')], [false, false]);
 });
-check('a busy lane fails the item with the holder\'s line (P3 will park it)', async () => {
+check('a busy refusal (not met inside our own session) fails the item with the holder\'s line', async () => {
   const busy = new Error('409'); busy.name = 'CrucibleBusy'; busy.code = 'server_busy'; busy.busyLine = 'BookForge is narrating on mac (job j-9)';
-  const e = await rejects(asr.runAsrJob({ venue: { server: 'mac', client: fakeClient({ failSubmit: busy }) }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
+  const e = await rejects(asr.runAsrJob({ venue: venueOf(fakeClient({ failSubmit: busy })), inSession: async () => venueOf.last.client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
   eq(e.kind, 'busy');
   ok(e.message.includes('BookForge is narrating'), e.message);
 });
+check('the job runs in a queue session asked for AFTER the upload; a session the server ended fails the item by name', async () => {
+  const client = fakeClient({ script: [{ event: 'done', data: {} }] });
+  const order = [];
+  const realUpload = client.upload.bind(client);
+  client.upload = async (...a) => { order.push('upload'); return realUpload(...a); };
+  await asr.runAsrJob({ venue: venueOf(client), inSession: async () => { order.push('session'); return client; }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST });
+  eq(order, ['upload', 'session'], 'a blob waits for nobody\'s turn: the upload goes first');
+  const closed = new Error('409'); closed.name = 'CrucibleSessionClosed'; closed.code = 'session_closed'; closed.reason = 'idle';
+  const e = await rejects(asr.runAsrJob({ venue: venueOf(fakeClient({ failSubmit: closed })), inSession: async () => venueOf.last.client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
+  eq([e.kind, e.code], ['session', 'session_closed']);
+  ok(/\(idle\)/.test(e.message), e.message);
+});
 check('a submit whose answer was lost is found by its clientRef, not sent twice', async () => {
   const client = fakeClient({ loseFirstSubmitAnswer: true, script: [{ event: 'done', data: {} }] });
-  const out = await asr.runAsrJob({ venue: { server: 'mac', client }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'lost-1', ...FAST });
+  const out = await asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'lost-1', ...FAST });
   eq(out.jobId, 'job-1');
   eq(client.calls.filter((c) => c[0] === 'submit').length, 1, 'submits:');
 });
@@ -379,11 +408,13 @@ check('the door serializes this app\'s jobs per server and names the model cruci
   client.submit = async (req) => { live++; ok(live === 1, 'two jobs in flight on one server'); order.push(req.clientRef.split(':')[1]); return realSubmit(req); };
   const realArtifact = client.artifact.bind(client);
   client.artifact = async (...a) => { await new Promise((r) => setTimeout(r, 10)); live--; return realArtifact(...a); };
-  door.setAsrVenueResolver(() => ({ server: 'mac', client }));
+  const shared = venueOf(client);
+  door.setAsrVenueResolver(() => shared);
   const run = (n) => door.transcribeOnCrucible({ audioFile: AUDIO, context: 'C', clientRefStem: `n${n}`, tag: `n${n}`, band: { from: 0, to: 100 } });
   const outs = await Promise.all([run(1), run(2), run(3)]);
   eq(order, ['n1', 'n2', 'n3']);
   eq(outs[0].model, 'crucible:mac:qwen3-asr-1.7b');
+  eq(shared.sessions, { asked: 3, released: 3 }, 'each job held the venue\'s session and let go of it');
   door.setAsrVenueResolver(null);
 });
 
@@ -399,7 +430,7 @@ function editorPython() {
 /** Run the driver in `mode`, answering its asr_requests with the REAL responder over `client`. */
 function driveTranscribePy(mode, client) {
   return new Promise((resolve, reject) => {
-    door.setAsrVenueResolver(() => ({ server: 'mac', client }));
+    door.setAsrVenueResolver(() => venueOf(client));
     const child = spawn(editorPython(), [path.join(__dirname, 'asr-protocol-driver.py'), mode], { stdio: ['pipe', 'pipe', 'pipe'] });
     const requests = [];
     let result = null;

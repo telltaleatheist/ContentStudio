@@ -16,11 +16,12 @@
  * Crucible (its token read from ~/.crucible/pairing), so the app's userData is never read or
  * written.
  *
- * THE CARD IS SHARED. Work goes in BATCHES: each batch takes one lease on the scorer (the 9B),
- * asks its decisions and releases it, so another agent's job waits at most one batch for the card
- * and the card is never held idle. A batch that meets a card leased by someone else waits a minute
- * and tries again (a CLI waiting its turn; logged each time), up to an hour. Ctrl-C cancels,
- * releases and exits 130 (cli-lanes.ts).
+ * THE SERVER IS SHARED. Work goes in BATCHES: each batch holds one Crucible 1.0.76 queue session
+ * with the scorer (the 9B) resident in it, asks its decisions and closes it, so another agent's job
+ * waits at most one batch for the server and it is never held idle (LEDGER #255). The session
+ * waits in the server's line by itself; a batch whose session the server ends, or that meets a busy
+ * server, waits a minute and runs again in a new session (a CLI waiting its turn; logged each time),
+ * up to an hour. Ctrl-C cancels, closes the session and exits 130 (cli-lanes.ts).
  *
  * RESUMABLE. Every answered group is appended to <out>/<set>.jsonl as it finishes, and a rerun
  * skips the groups already there.
@@ -55,7 +56,7 @@ const { linkBlockIndex } = require(path.join(ROOT, 'services/metadata/descriptio
 
 const FIX = path.join(__dirname, 'fixtures', 'titlecheck');
 const SCORER = 'qwen3.5-9b';
-/** Groups per lease: ~a few minutes of work, then the card goes back. */
+/** Groups per session: ~a few minutes of work, then the server goes back. */
 const GROUPS_PER_BATCH = 12;
 /** The longest list one state carries: a 55-title podcast is cut into states of at most this many. */
 const MAX_UNITS_PER_STATE = 20;
@@ -203,27 +204,27 @@ async function liveLanes(serverUrl, log) {
   cli.context.servers.add({ name: 'mac', url: serverUrl, token: readToken() });
   const { queueAITask, gpuCall } = require(path.join(ROOT, 'services/queue-manager.service.js'));
   const transport = cli.context.transport;
-  /** One lease for the batch: `work(decide)` asks every decision of the batch under it, then it is released. */
+  /** One queue session for the batch: `work(decide)` asks every decision of the batch in it, then it is closed. */
   const batch = async (what, work) => {
     const started = Date.now();
     for (;;) {
       try {
         return await queueAITask(gpuCall(SCORER), `reroll-cal-${Date.now()}`, what, () =>
-          transport.withJobLease('mac', SCORER, (job) =>
+          transport.withJobSession('mac', SCORER, (job) =>
             work(async (request, o) => transport.decide({ model: SCORER, state: request.state, questions: request.questions, missing: 'report', job, signal: cli.signal, what: o.what, trace: null })),
           { what, act: 'decide', loadContext: 8192, signal: cli.signal }),
         );
       } catch (err) {
         const code = err && err.code;
-        // The card is shared: a busy card, or a model another client swapped out from under a
-        // lease we were running under (engine_unreachable, model_not_resident, lease_lost), waits
-        // its turn. The batch is re-run from its first unanswered group (runRules skips the rest).
-        const WAIT = ['busy', 'leased', 'server_busy', 'engine_in_use', 'unreachable', 'engine_unreachable', 'model_not_resident', 'lease_lost'];
+        // The server is shared: a busy server, or a session the server ended under the batch
+        // (session_closed: an operator, idle, a restart), waits its turn and runs in a new session.
+        // The batch is re-run from its first unanswered group (runRules skips the rest).
+        const WAIT = ['busy', 'server_busy', 'session_open', 'engine_in_use', 'unreachable', 'engine_unreachable', 'model_not_resident', 'session_closed'];
         // Node's fetch gives up on a response whose headers take over 300 s (undici's
         // headersTimeout): on a card other agents are queueing work on, a decide can wait that long.
         const busy = (err && err.name === 'TimeoutError') || WAIT.includes(code) || (err && err.cause && WAIT.includes(err.cause.code)) || (err && WAIT.includes(err.serverCode));
         if (!busy || Date.now() - started > 3_600_000) throw err;
-        log(`the card is taken or its model went away (${err.message.slice(0, 160)}); this batch waits a minute and asks again`);
+        log(`the server is taken or the batch's session ended (${err.message.slice(0, 160)}); this batch waits a minute and asks again`);
         await new Promise((r) => setTimeout(r, 60_000));
       }
     }

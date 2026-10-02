@@ -299,14 +299,23 @@ app.whenReady().then(async () => {
         readiness: (view) => pushToAllWindows('crucible:readiness', view),
         installProgress: (event) => pushToAllWindows('crucible:install-progress', event),
         lanes: (view) => pushToAllWindows('crucible:lanes', view),
+        // A queue job's session waiting in its server's line (LEDGER #255): the job's row says
+        // where it stands, as a progress line of its own phase; the next stage line replaces it.
+        inLine: (jobId, server, position) => pushToAllWindows('generation-progress', {
+          jobId,
+          phase: 'waiting',
+          message: position === null
+            ? `Crucible on ${server} is free; starting`
+            : `Waiting in line on ${server}: ${position.position} of ${position.of} (another app's work is ahead)`,
+        }),
       },
     });
 
-    // Give back what the last run left on a Crucible's card (a kill, a crash, a force-quit):
-    // the in-flight ledger names every job and lease this app held, and nothing else is
+    // Give back what the last run left on a Crucible (a kill, a crash, a force-quit): the
+    // in-flight ledger names every job and queue session this app held, and nothing else is
     // touched (plan section 13.4). GPU admission — `generate-metadata`, `send-held-prompt`,
     // the queue plan and every standalone local model call — waits for this to settle, so
-    // no new job can meet the old one's lease. It is NOT awaited here: a ledger row whose
+    // no new job queues behind the old run's session. It is NOT awaited here: a ledger row whose
     // server is asleep would otherwise hold the window for the whole 15 s deadline on every
     // launch, and nothing non-AI should wait for a Crucible (plan section 0a).
     void crucible.sweepAtStartup().then((report) => {
@@ -440,9 +449,10 @@ app.on('before-quit', (event) => {
   // here stops the local Crucible itself: it is an OS service shared with BookForge, Foundry
   // and Briefcase, and another app may be mid-run (plan section 5).
   crucible?.stop();
-  // No separate lease release here: the held quit above aborts every running job, whose
-  // `finally` hands its leases back (JobModelLifecycle / the one-call job), and then sweeps
-  // whatever the ledger still lists (P3).
+  // No separate session close here: the held quit above aborts every running job, whose
+  // `finally` lets go of its session, closes every session still open (session.ts `closeAll`:
+  // the editor's voice isolation, a held title loop), and then sweeps whatever the ledger
+  // still lists (P3, LEDGER #255).
 });
 
 // Handle uncaught exceptions

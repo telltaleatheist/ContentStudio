@@ -304,7 +304,7 @@ export const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'descr
  * difference here is four lines rather than a prompt shape. The prompts are identical, the
  * inputs are identical, and both go through the AI manager's plain door to Crucible (P2); the
  * only divergence is the shape of the call: the local branch states an output budget, the
- * run's pinned load context and the job's lease, and the cloud branch states none of them.
+ * run's pinned load context and the job's session, and the cloud branch states none of them.
  */
 export class DescriptionUnit implements MetadataUnit {
   readonly label: string;
@@ -317,7 +317,7 @@ export class DescriptionUnit implements MetadataUnit {
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly option: MetadataRoutingOption,
-    /** The job's leases. This unit never releases one: its calls share a model with the tags call. */
+    /** The job's sessions. This unit never releases one: its calls share a model with the tags call. */
     private readonly lifecycle: JobModelLifecycle
   ) {
     this.local = option.kind === 'local';
@@ -554,7 +554,7 @@ export class DescriptionUnit implements MetadataUnit {
     // Thinking off on both kinds (operator, 2026-08-30 evening): the old two-part layout
     // needed the reasoning pass, the one-paragraph contract does not (see NUM_PREDICT). The
     // local shape adds the budget, the load context this call's own prompt needs (LEDGER #209)
-    // and the job's lease.
+    // and the job's session.
     const text = await this.aiManager.runPlainRequest(
       prompt,
       this.option.model,
@@ -564,7 +564,7 @@ export class DescriptionUnit implements MetadataUnit {
             thinking: false,
             maxTokens: NUM_PREDICT,
             loadContext: loadContextFor(prompt.length, NUM_PREDICT),
-            job: this.lifecycle.leases,
+            job: this.lifecycle.sessions,
             timeoutMs: CALL_TIMEOUT_MS,
           }
         : { thinking: false }

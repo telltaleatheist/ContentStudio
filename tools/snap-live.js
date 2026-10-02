@@ -15,8 +15,8 @@
  *
  * Both run over the app's registry and routing, read-only, with this tool's own lanes and in-flight
  * ledger (electron/crucible/cli-lanes.ts, as scripts/generate-metadata-cli.js does); the chapters
- * row is the stored one unless --chapters names another option for this run. SIGINT/SIGTERM give
- * the leases back. `--edits` scores the result against Owen's own story edges and cut.
+ * row is the stored one unless --chapters names another option for this run. SIGINT/SIGTERM close
+ * its queue session (LEDGER #255). `--edits` scores the result against Owen's own story edges and cut.
  *
  * Needs the compiled main process: `npm run build:electron` first.
  */

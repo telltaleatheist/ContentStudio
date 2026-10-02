@@ -28,14 +28,30 @@
  *   `setupUrls` (below).
  *
  * WHAT IT ANSWERS (the typed original's `FakeCrucible`): url, token, name,
- * requests, faults, leases, settingsPuts, pairings, tasks, catalog,
+ * requests, faults, sessions, settingsPuts, pairings, tasks, catalog,
  * installedJobTypes, jobs, uploads; inject(named), decidePairing(id, allow),
  * expirePairings(), requestsTo(prefix, method?), resident(), setResident(),
- * expireLease(), openLease(), leaseAsOther(), chatBodies(), heldBlobs(),
+ * openSession(), holdAsOther(), endSession(), chatBodies(), heldBlobs(),
  * forgetBlobs(), setAsr(), setDecideProbs(), decideBodies(), residentContext(),
- * setOmit(), close(). The named faults `inject()` takes: serverBusy, leased,
+ * setOmit(), close(). The named faults `inject()` takes: serverBusy,
  * unauthorized, apiVersion2, stallMs, cardHeld, taskBusy, chatDelayMs and the
  * rest of `NamedFaults` in the original.
+ *
+ * CRUCIBLE 1.0.76 (ContentStudio, LEDGER #255): leases are gone, as on the real
+ * server. In their place, QUEUE SESSIONS as docs/QUEUE.md describes them:
+ * `POST /v1/queue/sessions` (open at once, or queued behind the open one, FIFO),
+ * the session's own event stream (`queued`/`moved`/`opened`/`closed`/`removed`,
+ * with ids), its state, `touch` and `DELETE` (reason `client`), `DELETE
+ * /v1/queue/{id}` (reason `operator`), the `X-Crucible-Session` header checked on
+ * every item (`unknown_queue_session`, `session_not_open`, `session_closed`,
+ * `session_not_yours`), same-client membership (a request from the open
+ * session's client is an item, header or not), and another client's open session
+ * refusing a job or call sent without `queue` (`server_busy` door `session`,
+ * `session_open`). Closing an open session settles the card (the resident model
+ * is unloaded), as the real server does. `GET /v1/events` streams a snapshot then
+ * `session.*`, `job.*` and `card.*` events; `/v1/info` lists `features`
+ * (`options.features` replaces the list, so a keeper can take `events` or
+ * `queue.sessions` away).
  *
  * ContentStudio adds, and nothing more yet (P2+ add what their seams need):
  *  - `legacyActs: true`, a server that predates 1.0.24: its `/v1/capability`
@@ -86,7 +102,7 @@ exports.unusedLoopbackUrl = unusedLoopbackUrl;
  *  - EVERY request is recorded (`fake.requests`) with its method, path,
  *    headers and parsed body, so a spec can assert what crossed and what did
  *    not;
- *  - one lease per server, refused `409 leased` for a second take;
+ *  - one open queue session per server, the rest queued behind it;
  *  - a key is write-only: settings keeps it and answers with `key_hint`;
  *  - the fault layer: `refuse`, `resetAfterBytes` and `connectDelay` rules,
  *    each `{match: {method?, path?}, times?}`, plus `inject()` for the named
@@ -102,8 +118,7 @@ exports.unusedLoopbackUrl = unusedLoopbackUrl;
  *
  * P3 adds the LLM side: `GET /v1/models` from a configurable list with ONE
  * resident model, `load-model` jobs (`POST /v1/jobs`, `GET /v1/jobs/{id}`, the
- * job SSE stream with ids, `DELETE /v1/jobs/{id}`) that make a model resident
- * and take a lease on load when asked, leases that need a resident model, and
+ * job SSE stream with ids, `DELETE /v1/jobs/{id}`) that make a model resident, and
  * `POST /v1/openai/chat/completions`: residency enforced for local models
  * (`409 model_not_resident`), upstream prefixes forwarded only when that
  * upstream is configured (`409 upstream_unconfigured`), canned replies per
@@ -410,9 +425,15 @@ async function startFakeCrucible(options = {}) {
     const requests = [];
     const faults = options.faults ?? {};
     let named = {};
-    const leases = { taken: [], released: [] };
-    let openLease = null;
-    let nextLease = 1;
+    // ── queue sessions (1.0.76) ──────────────────────────────────────────
+    /** Every session asked for, in order: {id, client, act, model, idleS, maxWaitS, status, ...}. */
+    const sessions = [];
+    const sessionListeners = new Map();
+    let nextSession = 1;
+    /** `GET /v1/events`: the id counter, the history a resume replays, and the open streams. */
+    let eventSeq = 0;
+    const serverHistory = [];
+    const serverListeners = new Set();
     const settingsPuts = [];
     const upstreams = JSON.parse(JSON.stringify(options.upstreams ?? {}));
     const routes = {};
@@ -485,6 +506,7 @@ async function startFakeCrucible(options = {}) {
                 request: { model: 'fake-pages', dpi: 150, max_pixels: 1048576, max_tokens: 4096, temperature: 0, prompt: '', dialect: 'fake', concurrency: 1, truncated_finish_reason: 'length' },
             },
         }),
+        features: options.features ?? ['queue.jobs', 'queue.calls', 'queue.sessions', 'events'],
         job_types: role === 'orchestrator' ? [] : [...installedJobTypes, 'load-model', 'unload-model'],
         capabilities: role === 'orchestrator' ? [] : installedJobTypes.map((jobType) => ({ job_type: jobType, models: jobType === 'asr' ? asrRows() : jobType === 'align' ? alignRows() : jobType === 'denoise' ? denoiseRows() : [] })),
     });
@@ -516,28 +538,21 @@ async function startFakeCrucible(options = {}) {
             server: { name, version: options.version ?? '1.0.24', api_version: apiVersion(), backend, uptime_s: Math.round((Date.now() - startedAt) / 1000) },
             resident: resident === null ? null : {
                 kind: 'llm', id: resident, since: '2026-09-23T01:00:00Z', memory_bytes_estimate: 2_523_719_636, engine_exit_code: null,
-                held_by: openLease === null ? null : {
-                    fact: 'a lease', who: openLease.client ?? 'unknown',
-                    details: { lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act, since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00' },
+                held_by: openSession() === null ? null : {
+                    fact: 'a session', who: openSession().client ?? 'unknown',
+                    details: { session_id: openSession().id, client: openSession().client, act: openSession().act },
                 },
-                unclaimed_since: openLease === null ? '2026-09-23T01:00:00Z' : null,
+                unclaimed_since: openSession() === null ? '2026-09-23T01:00:00Z' : null,
             },
             stopping: null,
             warming: null,
             claim: null,
             streaming: null,
-            lease: openLease === null ? null : {
-                lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act,
-                since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
-            },
+            session: openSession() === null ? null : sessionStateDoc(openSession()),
             chat: { in_flight: 0, max_in_flight: options.chatMaxInFlight ?? null, max_in_flight_basis: options.chatMaxInFlight === undefined ? null : 'set by the keeper', rows: [] },
             slots: {
                 accelerated: {
                     busy: job === null && ownRunning.length === 0 ? 0 : 1, of: 1, queue_depth: ownQueued.length,
-                    // ContentStudio (P3): a lease does NOT change accepts_work on a real server
-                    // (crucible v1.0.34 api.py: "It does NOT change `accepts_work` below. A lease
-                    // is not a reservation"), and the queue's leased-park waits on `lease`, not on
-                    // this. The typed original counted the lease here; that was a fake-only fact.
                     accepts_work: job === null && ownRunning.length === 0 && (named.cardHeld === undefined || named.cardHeld.times === 0),
                 },
             },
@@ -545,6 +560,202 @@ async function startFakeCrucible(options = {}) {
             queued: ownQueued,
         };
     };
+    // ── queue sessions (1.0.76, docs/QUEUE.md) ────────────────────────────
+    const isoNow = () => new Date().toISOString();
+    function openSession() {
+        return sessions.find((row) => row.status === 'open') ?? null;
+    }
+    const waitingSessions = () => sessions.filter((row) => row.status === 'queued');
+    function sessionStateDoc(row) {
+        const waiting = waitingSessions();
+        return {
+            session_id: row.id, status: row.status, act: row.act, client: row.client, model: row.model,
+            position: row.status === 'queued' ? waiting.indexOf(row) + 1 : null,
+            idle_s: row.idleS, max_wait_s: row.maxWaitS, created: row.created, opened_at: row.openedAt,
+            idle_deadline: null, max_hold_deadline: null, items_run: row.itemsRun, in_flight: [], stream_session: null,
+            load_job: null, closed_at: row.closedAt, reason: row.reason, message: row.message, error: null,
+        };
+    }
+    function pushServerEvent(event, data) {
+        eventSeq += 1;
+        const frame = { id: eventSeq, event, data: { at: isoNow(), ...data } };
+        serverHistory.push(frame);
+        for (const wake of serverListeners)
+            wake(frame);
+    }
+    /** Every `/v1/events` stream is told to draw the server again (a keeper's `inject`, `setResident`). */
+    function pushSnapshot() {
+        for (const wake of serverListeners)
+            wake(null);
+    }
+    function pushSessionEvent(row, event, data) {
+        row.events.push({ id: row.events.length + 1, event, data });
+        for (const wake of sessionListeners.get(row.id) ?? [])
+            wake();
+    }
+    function sessionServerData(row) {
+        return { session_id: row.id, client: row.client, act: row.act, model: row.model };
+    }
+    function placeWaiting(kind) {
+        const waiting = waitingSessions();
+        waiting.forEach((row, index) => {
+            pushSessionEvent(row, kind, { position: index + 1, of: waiting.length });
+        });
+    }
+    /** Open the next waiting session once nothing is open (first come, first served). */
+    function openNext() {
+        if (openSession() !== null)
+            return;
+        const next = waitingSessions()[0];
+        if (next === undefined)
+            return;
+        next.status = 'open';
+        next.openedAt = isoNow();
+        pushSessionEvent(next, 'opened', { opened_at: next.openedAt, model: next.model, load_job: null });
+        pushServerEvent('session.opened', sessionServerData(next));
+        placeWaiting('moved');
+    }
+    /** End a session: an open one closes (and settles the card), a waiting one leaves the line. */
+    function endSession(row, reason, message) {
+        if (row.status === 'closed')
+            return;
+        const wasOpen = row.status === 'open';
+        row.status = 'closed';
+        row.closedAt = isoNow();
+        row.reason = reason;
+        row.message = message;
+        if (wasOpen) {
+            pushSessionEvent(row, 'closed', { reason, message, items_run: row.itemsRun, held_s: 0 });
+            pushServerEvent('session.closed', { ...sessionServerData(row), reason, message });
+            // "the card is settled: unloaded unless something else holds it" (docs/QUEUE.md).
+            setCard(null);
+        }
+        else {
+            pushSessionEvent(row, 'removed', { reason, message });
+            pushServerEvent('session.removed', { ...sessionServerData(row), reason, message });
+            placeWaiting('moved');
+        }
+        openNext();
+    }
+    function askForSession(client, act, extra = {}) {
+        const row = {
+            id: `ses-${nextSession++}`, client, act, model: extra.model ?? null,
+            idleS: extra.idleS ?? 300, maxWaitS: extra.maxWaitS ?? 3600, status: 'queued',
+            created: isoNow(), openedAt: null, closedAt: null, reason: null, message: null, itemsRun: 0, touches: 0, events: [],
+        };
+        sessions.push(row);
+        const waiting = waitingSessions();
+        pushSessionEvent(row, 'queued', { position: waiting.indexOf(row) + 1, of: waiting.length });
+        pushServerEvent('session.queued', { ...sessionServerData(row), position: waiting.indexOf(row) + 1, of: waiting.length });
+        openNext();
+        return row;
+    }
+    /** The card changed: the resident model, and the `card.*` event that says so. */
+    function setCard(model, context = null) {
+        const before = resident;
+        if (before === model && residentCtx === context)
+            return;
+        resident = model;
+        residentCtx = context;
+        if (before !== null && before !== model)
+            pushServerEvent('card.unloaded', { subject: before, kind: 'llm', engine: 'mlx-lm', since: '2026-09-23T01:00:00Z', pids: [] });
+        if (model !== null)
+            pushServerEvent('card.loaded', { subject: model, kind: 'llm', engine: 'mlx-lm', memory_bytes_estimate: 2_523_719_636, since: isoNow() });
+    }
+    function sessionHeldDetails(row) {
+        return { door: 'session', holder: row.client, session_id: row.id, act: row.act, model: row.model, status: row.status, since: row.openedAt ?? row.created };
+    }
+    /**
+     * An item's gate (docs/QUEUE.md "Send its items"): the `X-Crucible-Session` header checked by
+     * name, and another client's open session refusing work sent without `queue`. False: refused.
+     */
+    function sessionGate(req, res, body, door) {
+        const client = req.headers['x-crucible-client'] ?? null;
+        const header = req.headers['x-crucible-session'];
+        const open = openSession();
+        if (typeof header === 'string') {
+            const row = sessions.find((candidate) => candidate.id === header);
+            if (row === undefined) {
+                refusal(res, 404, 'unknown_queue_session', `no queue session ${header}`, { session_id: header });
+                return false;
+            }
+            if (row.client !== client) {
+                refusal(res, 409, 'session_not_yours', `queue session ${header} is another client's`, { session_id: header });
+                return false;
+            }
+            if (row.status === 'queued') {
+                refusal(res, 409, 'session_not_open', `queue session ${header} is still waiting in the line`, { session_id: header });
+                return false;
+            }
+            if (row.status === 'closed') {
+                refusal(res, 409, 'session_closed', `queue session ${header} ended (${row.reason})`, { session_id: header, reason: row.reason });
+                return false;
+            }
+            row.itemsRun += 1;
+            return true;
+        }
+        if (open !== null && open.client === client) {
+            open.itemsRun += 1;
+            return true;
+        }
+        if (open !== null && body['queue'] === undefined) {
+            if (door === 'job')
+                refusal(res, 409, 'server_busy', `the server is held by ${open.client}'s session for ${open.act}`, sessionHeldDetails(open));
+            else
+                refusal(res, 409, 'session_open', `${open.client}'s queue session holds this server`, sessionHeldDetails(open));
+            return false;
+        }
+        return true;
+    }
+    function streamSession(req, res, id) {
+        const row = sessions.find((candidate) => candidate.id === id);
+        if (row === undefined) {
+            refusal(res, 404, 'unknown_queue_session', `no queue session ${id}`, { session_id: id });
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        let sent = Number(req.headers['last-event-id'] ?? 0) || 0;
+        const flush = () => {
+            while (sent < row.events.length) {
+                const ev = row.events[sent];
+                sent += 1;
+                res.write(`id: ${ev.id}\nevent: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+                if (ev.event === 'closed' || ev.event === 'removed') {
+                    sessionListeners.get(row.id)?.delete(flush);
+                    res.end();
+                    return;
+                }
+            }
+        };
+        if (!sessionListeners.has(row.id))
+            sessionListeners.set(row.id, new Set());
+        sessionListeners.get(row.id)?.add(flush);
+        res.on('close', () => sessionListeners.get(row.id)?.delete(flush));
+        flush();
+    }
+    function streamServer(req, res) {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        const writeFrame = (frame) => res.write(`id: ${frame.id}\nevent: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`);
+        const snapshot = (gap) => {
+            eventSeq += 1;
+            writeFrame({ id: eventSeq, event: 'snapshot', data: {
+                gap, topics: ['job', 'queue', 'session', 'card', 'chat', 'task', 'settings', 'server'],
+                activity: activityDoc(), queue: { items: [], depth: 0 }, tasks: [],
+            } });
+        };
+        const resume = Number(req.headers['last-event-id'] ?? 0) || 0;
+        const replay = resume > 0 ? serverHistory.filter((frame) => frame.id > resume) : null;
+        if (replay !== null && (serverHistory.length === 0 || serverHistory[0].id <= resume + 1)) {
+            for (const frame of replay)
+                writeFrame(frame);
+        }
+        else {
+            snapshot(resume > 0);
+        }
+        const wake = (frame) => (frame === null ? snapshot(true) : writeFrame(frame));
+        serverListeners.add(wake);
+        res.on('close', () => serverListeners.delete(wake));
+    }
     const settingsDoc = () => {
         const routeDoc = {};
         for (const c of LLM_CLASSES) {
@@ -838,7 +1049,6 @@ async function startFakeCrucible(options = {}) {
         created: '2026-09-23T01:00:00Z',
         started: job.status === 'queued' ? null : '2026-09-23T01:00:01Z',
         finished: job.status === 'done' || job.status === 'failed' || job.status === 'cancelled' ? '2026-09-23T01:00:02Z' : null,
-        lease_id: job.leaseId,
         client_ref: job.clientRef ?? null,
         interrupted_at: null,
         chunks_done: [],
@@ -854,6 +1064,17 @@ async function startFakeCrucible(options = {}) {
         job.events.push({ id: job.events.length + 1, event, data });
         for (const wake of jobListeners.get(job.jobId) ?? [])
             wake();
+        // `GET /v1/events`: the job's status changes, as `job.*` (1.0.76).
+        const change = { warming: 'job.running', done: 'job.done', failed: 'job.failed', cancelled: 'job.cancelled' }[event];
+        if (change !== undefined && !(change === 'job.running' && job.announcedRunning)) {
+            if (change === 'job.running')
+                job.announcedRunning = true;
+            pushServerEvent(change, {
+                job_id: job.jobId, type: job.type, model: job.model, client: job.client, client_ref: job.clientRef ?? null,
+                status: change.slice(4), started: '2026-09-23T01:00:01Z', artifacts: Object.keys(job.artifacts ?? {}),
+                ...(change === 'job.failed' ? { error: data?.error ?? { code: 'failed', message: '' } } : {}),
+            });
+        }
     };
     function streamJob(req, res, id) {
         const job = jobs.find((j) => j.jobId === id);
@@ -889,6 +1110,8 @@ async function startFakeCrucible(options = {}) {
     }
     function postJob(req, res, body) {
         const type = String(body['type'] ?? '');
+        if (!sessionGate(req, res, body, 'job'))
+            return;
         if (named.serverBusy !== undefined) {
             const busy = named.serverBusy;
             refusal(res, 409, 'server_busy', `the lane is busy with ${busy.client}'s ${busy.type}`, busyDetails(busy));
@@ -917,13 +1140,6 @@ async function startFakeCrucible(options = {}) {
                 refusal(res, 409, 'model_not_installed', `'${info.id}' is not installed`);
                 return;
             }
-            if (openLease !== null && openLease.model !== model) {
-                refusal(res, 409, 'leased', `'${openLease.model}' is leased by '${openLease.client}' for '${openLease.act}'`, {
-                    lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act,
-                    since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
-                });
-                return;
-            }
             const wanted = (body['params'] ?? {})['context'];
             if (wanted !== undefined) {
                 const ceiling = options.contextCeilings?.[info.id] ?? 131072;
@@ -940,7 +1156,7 @@ async function startFakeCrucible(options = {}) {
         const params = (body['params'] ?? {});
         const client = req.headers['x-crucible-client'] ?? null;
         const job = {
-            jobId: `job-${nextJob++}`, type, model, params, status: 'queued', leaseId: null, events: [], client,
+            jobId: `job-${nextJob++}`, type, model, params, status: 'queued', events: [], client,
             clientRef: typeof body['client_ref'] === 'string' ? body['client_ref'] : null,
         };
         jobs.push(job);
@@ -955,23 +1171,14 @@ async function startFakeCrucible(options = {}) {
                 return;
             }
             if (type === 'unload-model') {
-                resident = null;
-                residentCtx = null;
+                setCard(null);
                 job.status = 'done';
                 pushJobEvent(job, 'done', { resident: null });
                 return;
             }
-            resident = model;
-            residentCtx = typeof params['context'] === 'number' ? params['context'] : null;
-            const lease = params['lease'];
-            if (lease !== undefined) {
-                const leaseId = `lease-${nextLease++}`;
-                openLease = { leaseId, model: model, client, act: String(lease.act ?? '') };
-                leases.taken.push({ leaseId, model: model, act: lease.act, ttlSeconds: lease.ttl_seconds });
-                job.leaseId = leaseId;
-            }
+            setCard(model, typeof params['context'] === 'number' ? params['context'] : null);
             job.status = 'done';
-            pushJobEvent(job, 'done', { resident: model, ...(job.leaseId ? { lease_id: job.leaseId } : {}) });
+            pushJobEvent(job, 'done', { resident: model });
         };
         setTimeout(() => {
             if (job.status === 'cancelled')
@@ -1059,7 +1266,7 @@ async function startFakeCrucible(options = {}) {
         }
         const client = req.headers['x-crucible-client'] ?? null;
         const job = {
-            jobId: `job-${nextJob++}`, type: 'asr', model, params, status: 'queued', leaseId: null, events: [], client,
+            jobId: `job-${nextJob++}`, type: 'asr', model, params, status: 'queued', events: [], client,
             inputs: { [names[0]]: blobId },
             clientRef: typeof body['client_ref'] === 'string' ? body['client_ref'] : null,
         };
@@ -1135,12 +1342,13 @@ async function startFakeCrucible(options = {}) {
     // `preflight`, v1.0.34): the type, the model, `params` (`extra="forbid"`:
     // anything but `{}` is `invalid_params`), the env (`409 env_missing`, rvc's),
     // the two model files (`409 denoise_model_missing` naming the pull command),
-    // a lease on something else (`409 leased`), then exactly one input blob. The
+    // the session gate (another client's open session refuses a job sent without
+    // `queue`; 1.0.76), then exactly one input blob. The
     // job warms, reports `progress 0.0 separating`, refuses a non-44.1 kHz input
     // AFTER the upload as the worker does (`failed worker_failed`), and otherwise
     // publishes ONE stem, `(vocals)` in its name, the same length as the input
     // (here, the input's own bytes), with `primary_stem` and `load_seconds` on
-    // `done`. The card then holds the separator, so a lease can name it.
+    // `done`. The card then holds the separator until the session that loaded it closes.
     // `denoise` script: {stepMs, failWith, holdAfterWarming, envMissing, stemAs}.
     function wavRateOf(bytes) {
         if (bytes.length < 12 || bytes.toString('ascii', 8, 12) !== 'WAVE')
@@ -1227,13 +1435,6 @@ async function startFakeCrucible(options = {}) {
             refusal(res, 409, 'denoise_model_missing', `audio-separator needs the model files for '${model}' and they are not there. \`crucible denoise pull ${model}\` places them`);
             return;
         }
-        if (openLease !== null && openLease.model !== model) {
-            refusal(res, 409, 'leased', `'${openLease.model}' is leased by '${openLease.client}' for '${openLease.act}'`, {
-                lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act,
-                since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
-            });
-            return;
-        }
         const inputs = (body['inputs'] ?? {});
         const names = Object.keys(inputs);
         if (names.length !== 1 || typeof inputs[names[0]]?.blob_id !== 'string') {
@@ -1253,7 +1454,7 @@ async function startFakeCrucible(options = {}) {
         }
         const client = req.headers['x-crucible-client'] ?? null;
         const job = {
-            jobId: `job-${nextJob++}`, type: 'denoise', model, params, status: 'queued', leaseId: null, events: [], client,
+            jobId: `job-${nextJob++}`, type: 'denoise', model, params, status: 'queued', events: [], client,
             inputs: { [names[0]]: blobId },
             clientRef: typeof body['client_ref'] === 'string' ? body['client_ref'] : null,
         };
@@ -1290,8 +1491,7 @@ async function startFakeCrucible(options = {}) {
                     return true;
                 }
                 const loaded = resident === job.model ? 0.0 : 1.5;
-                resident = job.model;
-                residentCtx = null;
+                setCard(job.model);
                 job.artifacts = { [stem]: Buffer.from(script.stemAs?.bytes ?? pcm16StemOf(bytes)) };
                 pushJobEvent(job, 'artifact', { name: stem });
                 pushJobEvent(job, 'progress', { fraction: 1, message: `2 stem(s) from ${name}`, stage: 'separating' });
@@ -1353,6 +1553,8 @@ async function startFakeCrucible(options = {}) {
             refusal(res, 400, 'unknown_act', `'${chatAct}' is not a capability class`, { known: [...ACTS].filter((a) => options.legacyActs !== true || (a !== 'generate' && a !== 'decide')) });
             return;
         }
+        if (!sessionGate(req, res, body, 'call'))
+            return;
         const model = String(body['model'] ?? '');
         const upstreamMatch = /^(anthropic|openai|ollama)\/(.+)$/.exec(model);
         if (upstreamMatch) {
@@ -1449,7 +1651,9 @@ async function startFakeCrucible(options = {}) {
             refusal(res, 400, 'unknown_act', `'${act}' is not a capability class`, { known: [...ACTS] });
             return;
         }
-        const known = new Set(['model', 'state', 'images', 'questions', 'items', 'options', 'instructions', 'missing']);
+        if (!sessionGate(req, res, body, 'call'))
+            return;
+        const known = new Set(['model', 'state', 'images', 'questions', 'items', 'options', 'instructions', 'missing', 'queue']);
         const extra = Object.keys(body).filter((k) => !known.has(k));
         if (extra.length) {
             refusal(res, 400, 'invalid_request', `unknown field(s): ${extra.join(', ')}`, { fields: extra });
@@ -1820,6 +2024,86 @@ async function startFakeCrucible(options = {}) {
             send(res, 200, activityDoc());
             return;
         }
+        // ── the server's event stream (1.0.76) ───────────────────────────────
+        if (path === '/v1/events' && method === 'GET') {
+            if (!(options.features ?? ['events']).includes('events')) {
+                refusal(res, 404, 'not_found', `${method} ${path}`);
+                return;
+            }
+            streamServer(req, res);
+            return;
+        }
+        // ── queue sessions (1.0.76, docs/QUEUE.md) ───────────────────────────
+        if (path === '/v1/queue/sessions' && method === 'POST') {
+            if (!(options.features ?? ['queue.sessions']).includes('queue.sessions')) {
+                refusal(res, 404, 'not_found', `${method} ${path}`);
+                return;
+            }
+            const act = body['act'];
+            if (typeof act !== 'string' || !ACTS.has(act)) {
+                refusal(res, 400, 'unknown_act', `'${String(act)}' is not a capability class`, { known: [...ACTS] });
+                return;
+            }
+            for (const key of ['idle_s', 'max_wait_s']) {
+                const value = body[key];
+                if (value !== undefined && (typeof value !== 'number' || !Number.isInteger(value) || value < 10 || value > 86400)) {
+                    refusal(res, 400, 'invalid_request', `${key} must be a whole number of seconds from 10 to 86400`, { field: key });
+                    return;
+                }
+            }
+            const row = askForSession(req.headers['x-crucible-client'] ?? null, act, {
+                model: typeof body['model'] === 'string' ? body['model'] : null,
+                ...(body['idle_s'] === undefined ? {} : { idleS: body['idle_s'] }),
+                ...(body['max_wait_s'] === undefined ? {} : { maxWaitS: body['max_wait_s'] }),
+            });
+            send(res, 202, { session_id: row.id, status: row.status, position: row.status === 'queued' ? waitingSessions().indexOf(row) + 1 : null });
+            return;
+        }
+        const sessionEvents = /^\/v1\/queue\/sessions\/([^/]+)\/events$/.exec(path);
+        if (sessionEvents && method === 'GET') {
+            streamSession(req, res, decodeURIComponent(sessionEvents[1]));
+            return;
+        }
+        const sessionTouch = /^\/v1\/queue\/sessions\/([^/]+)\/touch$/.exec(path);
+        const sessionDoc = /^\/v1\/queue\/sessions\/([^/]+)$/.exec(path);
+        const sessionId = sessionTouch ? decodeURIComponent(sessionTouch[1]) : sessionDoc ? decodeURIComponent(sessionDoc[1]) : null;
+        if (sessionId !== null) {
+            const row = sessions.find((candidate) => candidate.id === sessionId);
+            if (row === undefined) {
+                refusal(res, 404, 'unknown_queue_session', `no queue session ${sessionId}`, { session_id: sessionId });
+                return;
+            }
+            if (sessionTouch && method === 'POST') {
+                if (row.status === 'closed') {
+                    refusal(res, 409, 'session_closed', `queue session ${row.id} ended (${row.reason})`, { session_id: row.id, reason: row.reason });
+                    return;
+                }
+                row.touches += 1;
+                send(res, 200, sessionStateDoc(row));
+                return;
+            }
+            if (sessionDoc && method === 'GET') {
+                send(res, 200, sessionStateDoc(row));
+                return;
+            }
+            if (sessionDoc && method === 'DELETE') {
+                endSession(row, 'client', 'closed by its client');
+                send(res, 200, sessionStateDoc(row));
+                return;
+            }
+        }
+        const queueItem = /^\/v1\/queue\/([^/]+)$/.exec(path);
+        if (queueItem && method === 'DELETE') {
+            const row = sessions.find((candidate) => candidate.id === decodeURIComponent(queueItem[1]));
+            if (row === undefined || row.status === 'closed') {
+                refusal(res, 404, 'unknown_queue_item', `nothing called ${queueItem[1]} waits or is open`, { job_id: queueItem[1] });
+                return;
+            }
+            const wasOpen = row.status === 'open';
+            endSession(row, 'operator', 'ended by an operator');
+            send(res, 200, { job_id: row.id, status: wasOpen ? 'closed' : 'removed', reason: 'operator' });
+            return;
+        }
         if (path === '/v1/capability' && method === 'GET') {
             const doc = capabilityDoc(url.searchParams);
             send(res, doc.status, doc.body);
@@ -2010,54 +2294,6 @@ async function startFakeCrucible(options = {}) {
             await decide(req, res, body);
             return;
         }
-        // ── leases: one per server ───────────────────────────────────────────
-        const take = /^\/v1\/models\/([^/]+)\/lease$/.exec(path);
-        if (take && method === 'POST') {
-            const model = decodeURIComponent(take[1]);
-            if (openLease !== null) {
-                refusal(res, 409, 'leased', `'${openLease.model}' is leased by '${openLease.client}' for '${openLease.act}'`, {
-                    lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act,
-                    since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
-                });
-                return;
-            }
-            if (resident !== model) {
-                refusal(res, 409, 'not_resident', `'${model}' is not resident${resident ? `; '${resident}' is` : ''}`, { resident });
-                return;
-            }
-            const leaseId = `lease-${nextLease++}`;
-            const client = req.headers['x-crucible-client'] ?? null;
-            openLease = { leaseId, model, client, act: String(body['act'] ?? '') };
-            leases.taken.push({ leaseId, model, act: body['act'], ttlSeconds: body['ttl_seconds'] });
-            send(res, 201, {
-                lease_id: leaseId, subject: model, kind: 'llm', client, act: body['act'] ?? null,
-                since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
-            });
-            return;
-        }
-        const beat = /^\/v1\/leases\/([^/]+)\/heartbeat$/.exec(path);
-        if (beat && method === 'POST') {
-            const leaseId = decodeURIComponent(beat[1]);
-            if (openLease === null || openLease.leaseId !== leaseId) {
-                refusal(res, 404, 'unknown_lease', `lease ${leaseId} is no longer open`, { lease_id: leaseId });
-                return;
-            }
-            send(res, 200, { expires_at: '2026-09-23T01:04:00+00:00' });
-            return;
-        }
-        const give = /^\/v1\/leases\/([^/]+)$/.exec(path);
-        if (give && method === 'DELETE') {
-            const leaseId = decodeURIComponent(give[1]);
-            leases.released.push(leaseId);
-            if (openLease === null || openLease.leaseId !== leaseId) {
-                refusal(res, 404, 'unknown_lease', `lease ${leaseId} is no longer open`, { lease_id: leaseId });
-                return;
-            }
-            openLease = null;
-            res.writeHead(204);
-            res.end();
-            return;
-        }
         refusal(res, 404, 'not_found', `${method} ${path}`);
     }
     // ContentStudio: `port` pins the standalone fake to a known port; keepers take an ephemeral one.
@@ -2072,11 +2308,12 @@ async function startFakeCrucible(options = {}) {
         name,
         requests,
         faults,
-        leases,
+        sessions,
         settingsPuts,
         pairings,
         inject(next) {
             named = { ...next };
+            pushSnapshot();
             if (foreignFinishTimer !== null)
                 clearTimeout(foreignFinishTimer);
             foreignFinishTimer = null;
@@ -2115,19 +2352,22 @@ async function startFakeCrucible(options = {}) {
         installedJobTypes,
         jobs,
         resident: () => resident,
-        setResident(model) {
-            resident = model;
-            residentCtx = null;
-            if (openLease !== null && openLease.model !== model)
-                openLease = null;
+        /** Put `model` on the card (null clears it), optionally as loaded at `context` tokens. */
+        setResident(model, context = null) {
+            setCard(model, context);
         },
-        expireLease() {
-            openLease = null;
+        /** The open queue session's state (the server's spelling), or null. */
+        openSession: () => (openSession() === null ? null : sessionStateDoc(openSession())),
+        /** Another client asks for a session (open at once when the server is free), as BookForge would. */
+        holdAsOther(client = 'bookforge/1.0', act = 'translate') {
+            return askForSession(client, act).id;
         },
-        openLease: () => (openLease === null ? null : { ...openLease }),
-        leaseAsOther(model, client) {
-            resident = model;
-            openLease = { leaseId: `lease-${nextLease++}`, model, client, act: 'translate' };
+        /** The server ends a session: `operator`, `idle`, `max_hold`, `server_restart`. */
+        endSession(id, reason = 'operator', message = `ended (${reason})`) {
+            const row = sessions.find((candidate) => candidate.id === id);
+            if (row === undefined)
+                throw new Error(`fake-crucible: no queue session ${id}`);
+            endSession(row, reason, message);
         },
         chatBodies() {
             return requests.filter((r) => r.path === '/v1/openai/chat/completions' && r.method === 'POST').map((r) => r.body);
@@ -2158,6 +2398,9 @@ async function startFakeCrucible(options = {}) {
         close() {
             if (foreignFinishTimer !== null)
                 clearTimeout(foreignFinishTimer);
+            // A stopping server closes the sessions it holds; their streams say so before the socket goes.
+            for (const row of sessions)
+                endSession(row, 'server_restart', 'the fake is closing');
             return new Promise((resolve) => {
                 server.closeAllConnections();
                 server.close(() => resolve());

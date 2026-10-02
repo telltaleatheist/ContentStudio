@@ -8,7 +8,7 @@ import { readRoutingModels } from '../metadata/routing-models';
 import { AIManagerService, AIConfig } from '../metadata/ai-manager.service';
 import { crucibleTransport } from '../../crucible/transport';
 import { installedLanes } from '../../crucible/lanes';
-import type { JobLeases } from '../../crucible/lease';
+import type { JobSessions } from '../../crucible/session';
 import { resolveSnapChapterModels } from '../metadata/metadata-routing';
 import { chapter } from '../metadata/chaptering/chaptering.service';
 import { TITLE_MAX_TOKENS, titleFromParts } from '../metadata/chaptering/summarize';
@@ -45,7 +45,7 @@ import { formatClock } from '../metadata/chaptering/chaptering.service';
  * throws, naming the entry, before anything runs; so does a snap run with no Crucible server to
  * put its scorer on, whatever the chapters row is (resolveSnapChapterModels).
  *
- * THE RUN: one job's leases (released when it ends, finished, failed or stopped: the server
+ * THE RUN: one job's sessions (released when it ends, finished, failed or stopped: the server
  * settles its own card, plan 6.5); every local call on its lane, call by call; progress events
  * weighted by work on 'story:analyze-progress'; Stop aborts the in-flight call (and kills a
  * claude -p child) and the run ends as the renderer's stop, never as an error.
@@ -105,10 +105,11 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
   // gates on `analyzing`/`splitRunning`), so one controller is enough. 'story:cancel' aborts it.
   let activeRun: AbortController | null = null;
 
-  // The titling loop's lease on its local model, for 'story:unload-model'. Taken by the first
-  // titling call on a local selection and held across the loop (evicting between titles would
-  // reload the model every time); a cloud selection has nothing to hold.
-  let titleJob: { job: JobLeases; model: string } | null = null;
+  // The titling loop's queue session (its local model resident in it), for 'story:unload-model'.
+  // Opened or joined by the first titling call on a local selection and held across the loop
+  // (closing between titles would reload the model every time); a cloud selection holds nothing.
+  // While it is held no other app runs on that server, so the renderer lets go when its loop ends.
+  let titleJob: { job: JobSessions; model: string } | null = null;
 
   const venue = deps.venue ?? (() => installedLanes().gpuVenue());
   // The chapters row bound on the server the call runs on (one catalog read per call): the row
@@ -215,9 +216,8 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
     } finally {
       if (activeRun === controller) activeRun = null;
       cloud?.cleanup();
-      // Released on a stop too: a stopped run has no more claim on the card than a finished one.
-      const lost = await job.releaseAll();
-      for (const line of lost) log.error(`[Story] the analysis lost its lease on ${line} before it ended`);
+      // Let go of on a stop too: a stopped run has no more claim on the server than a finished one.
+      await job.releaseAll();
     }
   }
 
@@ -271,14 +271,13 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
     }
   );
 
-  // Release the lease the titling loop held (end of the loop, or a stop): the server settles its
-  // own card. Never throws: a failure to release is housekeeping (the lease expires on its own).
+  // Let go of the session the titling loop held (end of the loop, or a stop): closing it settles
+  // the card. Never throws: a failure to close is housekeeping (the server ends it after idle_s).
   ipcMain.handle('story:unload-model', async () => {
     const held = titleJob;
     titleJob = null;
     if (!held) return { ok: true, released: null };
-    const lost = await held.job.releaseAll();
-    for (const line of lost) log.error(`[Story] the titling loop lost its lease on ${line} before it ended`);
+    await held.job.releaseAll();
     return { ok: true, released: held.model };
   });
 }

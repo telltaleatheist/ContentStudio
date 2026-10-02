@@ -244,10 +244,10 @@ export interface WholeTranscriptChapterOptions {
    * The JOB's model residence. This stage holds its model here instead of releasing it when it
    * finishes: the next stage usually wants the same one, and re-streaming 17GB of weights
    * between two stages of one job is what froze the operator's machine. The job releases the
-   * set once, at the end (model-lifecycle.ts): the job's Crucible lease on it.
+   * set once, at the end (model-lifecycle.ts): the job's Crucible session holds it.
    *
-   * Every call on it asks for its own load context (LEDGER #209); the lease grows the load when
-   * a call needs more and never shrinks it within the job (lease.ts), so a stage sharing this
+   * Every call on it asks for its own load context (LEDGER #209); the session's residency grows the load when
+   * a call needs more and never shrinks it within the job (session.ts), so a stage sharing this
    * model with the field calls is never reloaded to make its window smaller.
    */
   lifecycle: JobModelLifecycle;
@@ -273,7 +273,7 @@ export interface WholeTranscriptChapterOptions {
    * the local branch.
    *
    * When present, nothing local happens: no context sizing (the provider owns its window), no
-   * lease (`lifecycle` holds nothing). This is a second call shape inside `ask()`, not a second
+   * session (`lifecycle` holds nothing). This is a second call shape inside `ask()`, not a second
    * pipeline, and every stage, retry rule and warning reads identically on both.
    */
   cloudPlain?: (prompt: string, model: string, what: string, shape: { thinking: boolean }) => Promise<string | null>;
@@ -1032,7 +1032,7 @@ export class WholeTranscriptChapterService {
 
   /**
    * The run's largest load context, DECLARED (it used to be pinned as ONE load context for the
-   * whole run, LEDGER #111; P4 moved every call to its own step, LEDGER #209, and the lease keeps
+   * whole run, LEDGER #111; P4 moved every call to its own step, LEDGER #209, and the session's residency keeps
    * reloads to one per step crossed).
    *
    * Sized from a stage-1 window call, the largest prompt this run can send by construction:
@@ -1049,7 +1049,7 @@ export class WholeTranscriptChapterService {
       Math.ceil(words * TOKENS_PER_WORD) +
       estimateTokens(CHAPTER_PROMPTS.wholeTranscript(this.options.grain).length);
     // The largest stage-1 call's step, by the one sizing rule (context-check.ts). No floor, no
-    // ratchet: every call asks for its own step and the lease grows the load when one needs more.
+    // ratchet: every call asks for its own step and the session's residency grows the load when one needs more.
     const largest = loadContextFor(promptTokens * CHARS_PER_TOKEN, NUM_PREDICT);
 
     // The GPU ceiling is checked here, where the job report can carry it: a run that will be
@@ -1160,9 +1160,9 @@ export class WholeTranscriptChapterService {
         ...(shape.temperature === undefined ? {} : { temperature: shape.temperature }),
         // This call's own step (LEDGER #209): its prompt plus the output budget plus the margin.
         loadContext: loadContextFor(prompt.length, NUM_PREDICT),
-        // Held under the JOB's lease from here until the job ends: the next stage (the detail
+        // Held under the JOB's session from here until the job ends: the next stage (the detail
         // calls, then the field calls when they are routed to the same model) finds it loaded.
-        job: this.options.lifecycle.leases,
+        job: this.options.lifecycle.sessions,
         ...(this.options.abortSignal === undefined ? {} : { signal: this.options.abortSignal }),
         timeoutMs,
         what: `${what} (chapters)`,

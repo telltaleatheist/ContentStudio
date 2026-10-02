@@ -707,6 +707,18 @@ They are copied into `M/chaptering/` with a header naming the Briefcase commit, 
 
 ## 13. The queue
 
+> **Since Crucible 1.0.76 (LEDGER #255) leases are gone, and §13.2's parking, §13.3's job lease and
+> §13.4's lease rows with them.** A job holds ONE queue session per server (`crucible.session({act,
+> idleS: 900})`, electron/crucible/session.ts), opened by its first GPU work and closed when the job
+> ends; it waits in the server's own first-come-first-served line (its place is on the lane chip and
+> the job's row), and every model the job uses is loaded inside it. Standalone calls join this
+> install's open session on that server (same-client membership: the client name is
+> `contentstudio@<host>`), never a second one. A session the server ends fails the stage by name
+> (`session_closed`); nothing reopens one and carries on. The 15 s activity preflight became the
+> server's event stream (`/v1/events`, gated on the `events` feature), followed only while work is
+> queued. The ledger records jobs and sessions; the sweep cancels jobs and ends sessions, and the
+> server settles the card itself. Only a venue (nothing selected, paused, not answering) still parks.
+
 ### 13.1 Lanes
 
 - **One GPU lane per enabled server** (`SERVER_GPU_SLOTS = 1`, BF `shared/queue/slot-sets.ts`), in `electron/crucible/lanes.ts`.

@@ -1508,8 +1508,9 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
 
       // VOICE ISOLATION ON THE SELECTED CRUCIBLE (LEDGER #200). voice_separation.py asks for
       // each chunk; the isolator is opened on the first request of a track (its /v1/info row is
-      // checked before anything is uploaded), holds the separator's lease across that track's
-      // chunks, and is disposed on the track's `separation_release` and again when the run ends.
+      // checked before anything is uploaded), holds a queue session across that track's chunks
+      // (the separator stays resident in it, LEDGER #255), and is disposed on the track's
+      // `separation_release` and again when the run ends.
       let isolator: Promise<CrucibleVoiceIsolator> | null = null;
       const isolatorLog = (line: string): void => log.info(`[${jobId}] [voice isolation] ${line}`);
 

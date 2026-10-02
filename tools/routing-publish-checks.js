@@ -1072,8 +1072,8 @@ check('the titles reach the thumbnail call as input data, or the call refuses', 
 /**
  * EVERY LOCAL CALL ASKS FOR ITS OWN STEP (P4, LEDGER #209). This replaced the per-model, per-run
  * bucketed window (`ModelRunContextBudget`) and the job's context ratchet (`contextFloor`): a call
- * asks for the smallest 8,192 step its own prompt and budget need, and the lease (not a floor)
- * keeps reloads to growth. The boundary cases live in tools/p4-checks.js; this says the old
+ * asks for the smallest 8,192 step its own prompt and budget need, and the job's queue session's
+ * residency (not a floor) keeps reloads to growth. The boundary cases live in tools/p4-checks.js; this says the old
  * machinery is gone, so nothing can carry a floor from another stage or job.
  */
 check('no call sizes its window from another call: the per-run budget and the ratchet are gone', () => {
@@ -1714,7 +1714,8 @@ check('the ready sentence names who holds the card and never claims a wait (a wa
 //
 // Owen, 2026-09-26: "ill hit the start queue button and itll show the job that's currently running
 // on crucible and how long it has until it's done at the bottom of the queue ... if something else
-// takes the lease first, it fills in that slot with the new running job it's waiting to finish".
+// takes the lease first, it fills in that slot with the new running job it's waiting to finish" (a
+// lease then; another app's queue session or job since Crucible 1.0.76, LEDGER #255).
 // The row's words and when it shows; the holder facts and the time-left measurement are main's
 // (card-holder.ts, checked in check:crucible's test-crucible-polling.js).
 const crucibleWords = (() => {
@@ -1736,21 +1737,27 @@ check('the waiting row names who is on the card, doing what, how far, and the ti
   eq(line('mac', job()), 'Waiting for mac: crucible-cli is running a voice conversion (rvc) — 43% · about 12 min left');
   eq(line('mac', job({ secondsLeft: null, leftUnknown: 'measuring' })), 'Waiting for mac: crucible-cli is running a voice conversion (rvc) — 43% · time left not known yet');
   eq(line('pc', job({ client: null, what: 'mystery', progress: null, secondsLeft: null, leftUnknown: 'no-progress' })), 'Waiting for pc: Another app is running a mystery job · time left unknown');
-  eq(line('mac', { kind: 'lease', client: 'foundry/0.9', what: 'translate', model: 'qwen3.8-27b-4bit', id: 'L1', progress: null, secondsLeft: null, leftUnknown: 'no-progress' }),
-    'Waiting for mac: foundry has qwen3.8-27b-4bit reserved for translate work · time left unknown');
-  eq(line('mac', { kind: 'claim', client: 'bookforge', what: null, model: null, id: 's', progress: null, secondsLeft: null, leftUnknown: 'no-progress' }),
-    'Waiting for mac: bookforge is holding the card for a live session · time left unknown');
+  // Another app's queue session (Crucible 1.0.76, LEDGER #255): while it is open nothing else runs.
+  eq(line('mac', { kind: 'session', client: 'foundry/0.9', what: 'translate', model: 'qwen3.8-27b-4bit', id: 'ses-1', progress: null, secondsLeft: null, leftUnknown: 'no-progress' }),
+    'Waiting for mac: foundry has the server to itself for translate work (qwen3.8-27b-4bit) · time left unknown');
+  eq(line('mac', { kind: 'session', client: 'bookforge', what: null, model: null, id: 'ses-2', progress: null, secondsLeft: null, leftUnknown: 'no-progress' }),
+    'Waiting for mac: bookforge has the server to itself · time left unknown');
   eq([30, 90, 3600, 3900].map((s) => jobActivity.timeLeftText(s, null)), ['less than a minute left', 'about 2 min left', 'about 1 h left', 'about 1 h 5 min left']);
 });
 
-check('the waiting row shows only under a PARKED job on that server, never for our own work or an empty queue', () => {
+check('the waiting row shows only under a job waiting on that server (parked, or in its line), never for our own work or an empty queue', () => {
   const holder = { kind: 'job', client: 'crucible-cli', what: 'rvc', model: null, id: 'a', progress: 0.5, secondsLeft: 60, leftUnknown: null };
   const rows = jobActivity.waitingTurnRows;
-  const lanes = [{ server: 'mac', holder }, { server: 'pc', holder: null }];
+  const lanes = [{ server: 'mac', holder, inLine: null }, { server: 'pc', holder: null, inLine: null }];
   eq(rows([], lanes), [], 'nothing queued:');
-  eq(rows([{ status: 'pending', venue: 'mac' }, { status: 'processing', venue: 'mac' }], lanes), [], 'nothing parked:');
+  eq(rows([{ status: 'pending', venue: 'mac' }, { status: 'processing', venue: 'mac' }], lanes), [], 'nothing parked or in line:');
   eq(rows([{ status: 'parked', venue: 'pc' }], lanes), [], 'parked on a server whose card our own work holds (main sends no holder):');
   eq(rows([{ status: 'parked', venue: 'mac' }, { status: 'parked', venue: 'mac' }], lanes).map((row) => row.server), ['mac'], 'one row per server:');
+  // A running job whose queue session waits in the server's line (LEDGER #255): the row says its place.
+  const inLine = [{ server: 'mac', holder, inLine: { jobId: 'j1', position: 2, of: 3 } }];
+  eq(rows([{ status: 'processing', venue: 'mac' }], inLine).map((row) => row.line), ['In line 2 of 3 · Waiting for mac: crucible-cli is running a voice conversion (rvc) — 50% · about 1 min left']);
+  eq(jobActivity.laneBusyText("held: contentstudio's session for generate"), 'Busy with other ContentStudio work', 'our own session, from the strip:');
+  eq(jobActivity.laneBusyText('busy: contentstudio@owens-pc, asr 10% done'), 'busy: contentstudio@owens-pc, asr 10% done', 'another install is another app:');
 });
 
 check('an old answer with nothing polling says when it was checked; a live one does not', () => {
@@ -1891,7 +1898,7 @@ aiManager.AIManagerService.prototype.runPlainRequest = async function (prompt, m
   return storyAnswer(prompt, model, what);
 };
 
-/** The Crucible door, recorded: the outline, the decide questions, the local titles, the leases. */
+/** The Crucible door, recorded: the outline, the decide questions, the local titles, the jobs' sessions. */
 const transportModule = require(path.join(ROOT, 'crucible/transport.js'));
 const door = { chats: [], decides: [], jobs: [], onChat: null };
 /** The quoted sentence of a decide question, never the one quoted before it. */
@@ -2036,7 +2043,7 @@ async function rejects(promise) {
     eq(door.jobs[0].released, 1, 'released on the stop:');
   });
 
-  await checkAsync('a story is titled from its chapters (summarize_chapter_parts, thinking on); one lease across a local titling loop', async () => {
+  await checkAsync('a story is titled from its chapters (summarize_chapter_parts, thinking on); one session held across a local titling loop', async () => {
     resetDoor();
     const parts = [
       { label: 'Budget vote', detail: 'The council argued about the budget.', startSeconds: 1000, endSeconds: 1130 },
@@ -2055,8 +2062,8 @@ async function rejects(promise) {
     await local['story:suggest-title'](null, { name: 'Story 1', chapters: parts });
     await local['story:suggest-title'](null, { name: 'Story 2', chapters: parts });
     eq(door.chats.map((c) => [c.model, c.thinking, c.maxTokens]), [['qwen3.8-27b-8bit', true, 16384], ['qwen3.8-27b-8bit', true, 16384]], 'the local title calls:');
-    eq(door.jobs.length, 1, 'ONE lease across the titling loop:');
-    eq(await local['story:unload-model'](), { ok: true, released: 'qwen3.8-27b-8bit' }, 'the lease is what is released:');
+    eq(door.jobs.length, 1, 'ONE session held across the titling loop:');
+    eq(await local['story:unload-model'](), { ok: true, released: 'qwen3.8-27b-8bit' }, 'the held session is what is let go of:');
     eq(door.jobs[0].released, 1, 'released once:');
   });
 
@@ -2110,7 +2117,7 @@ async function rejects(promise) {
     const Gen = generatorModule.MetadataGeneratorService;
     const item = { source: '/x/keeper.mp4', title: 'keeper', srtSegments: [{ index: 1, start: '00:00:00,000', end: '00:00:10,000', text: 'Hello there, this is a test.' }] };
     const manager = { promptTrace: [], promotedItems: () => [], runPlainRequest: async () => null };
-    const lifecycle = { leases: {} };
+    const lifecycle = { sessions: {} };
     const base = {
       metadataRouting: routing.resolveMetadataRouting({ chapters: 'claude-cli' }), promptSet: 'youtube-telltale',
       // What generate() sets at the job's start; a claude -p chapters row reads no catalog.

@@ -405,8 +405,9 @@ export interface CrucibleReadinessView {
   /** The server that answers, when ready. */
   server: string | null;
   /**
-   * When ready but the card is someone else's right now (a job, a lease, an
-   * engine claim): the holder's sentence. AI work still queues; it parks for the card.
+   * When ready but the server is someone else's right now (a job, another app's
+   * queue session): the holder's sentence. AI work still queues; its session waits
+   * in the server's line.
    */
   busy: string | null;
   /** While starting: the latest line of the start or install. */
@@ -422,7 +423,7 @@ export interface CrucibleReadinessView {
   polling: boolean;
 }
 
-// ── the queue: lanes, parking, the fast pin (P3) ─────────────────────────────
+// ── the queue: lanes, the server's line, the fast pin (P3, LEDGER #255) ──────
 
 /**
  * Where a job picks up when it runs again after a park or a restart (plan
@@ -434,19 +435,21 @@ export type ResumeStage = 'transcribe' | 'chapters' | 'fields';
 
 /**
  * What `generate-metadata` and `send-held-prompt` answer when the job did not
- * run to an end because its server is busy, paused, or not there (LEDGER #205:
- * it waits, it never moves). A typed answer, not a thrown message the renderer
- * would have to parse (Law 10).
+ * start because its server is paused, not there, or nothing is selected (LEDGER
+ * #205: it waits, it never moves). Another app holding the server is not a park
+ * since Crucible 1.0.76 (LEDGER #255): the job runs, and its queue session waits
+ * in the server's line (`LaneChip.inLine`). A typed answer, not a thrown message
+ * the renderer would have to parse (Law 10).
  */
 export interface ParkedJobResult {
   status: 'parked';
   /** The server it waits for; null when nothing is selected or pinned. */
   server: string | null;
-  /** The holder's sentence ("GPU busy: foundry, tts 62% done"), or the venue's ("… is paused, work waits"). */
+  /** The venue's sentence ("… is paused, work waits"). */
   holderLine: string;
   /** Where it resumes from. */
   stage: ResumeStage;
-  /** Why, by code: server_busy, leased, engine_in_use, accelerator_busy, insufficient_memory, no_server, paused, unreachable. */
+  /** Why, by code: no_server, paused, unreachable. */
   code: string;
 }
 
@@ -458,8 +461,9 @@ export interface LaneChip {
   paused: boolean;
   /**
    * `running`: a ContentStudio job holds this lane. `busy`: another client holds
-   * the card. `idle`: nothing does. `unreachable`: the last read failed.
-   * `unread`: not read yet (or paused, which is not read).
+   * the server (a job on its lane, or its queue session). `idle`: nothing does.
+   * `unreachable`: its event stream (or the last read) failed. `unread`: not read
+   * yet (or paused, which is not read).
    */
   state: 'running' | 'busy' | 'idle' | 'unreachable' | 'unread';
   /** The resident model id, or null. */
@@ -472,32 +476,36 @@ export interface LaneChip {
   parked: number;
   /** Why the last read failed, when `state` is `unreachable`. */
   unreadReason: string | null;
-  /** When the preflight last read this server (epoch ms), or null. */
+  /** When this server was last heard from (its event stream, or a read; epoch ms), or null. */
   readAt: number | null;
   /**
-   * What ANOTHER client is doing on this card, as the last preflight read it (LEDGER #234),
-   * or null: the card is free, ContentStudio's own work holds it, or it has not been read.
-   * The queue shows it as the row a parked job waits behind.
+   * What ANOTHER client is doing on this server, as last heard (LEDGER #234), or null: it is
+   * free, ContentStudio's own work holds it, or it has not been heard from. The queue shows it as
+   * the row a job waits behind: one parked on this server, or one in its line (`inLine`).
    */
   holder: CardHolder | null;
+  /**
+   * The ContentStudio job on this lane whose queue session is waiting in the server's line, and
+   * its place there (1 is next, of `of` waiting); null when none waits (LEDGER #255).
+   */
+  inLine: { jobId: string; position: number; of: number } | null;
 }
 
-/** Another client's hold on a card, in the server's own facts. */
+/** Another client's hold on a server, in the server's own facts. */
 export interface CardHolder {
   /**
-   * `job` a job on the lane; `lease` the resident model reserved for a run; `claim` a
-   * streaming session holding the engine; `card` the server says it takes no work and
-   * names nothing.
+   * `job` a job on the lane; `session` another client's open queue session (while it is open
+   * nothing else runs; a TTS stream runs inside one).
    */
-  kind: 'job' | 'lease' | 'claim' | 'card';
+  kind: 'job' | 'session';
   /** The client as the server names it ("crucible-cli/1.0.43"), or null when it did not say. */
   client: string | null;
-  /** A job's type ("rvc"), or a lease's act ("translate"); null when there is none. */
+  /** A job's type ("rvc"), or a session's act ("translate"); null when there is none. */
   what: string | null;
   model: string | null;
-  /** The server's id for the hold (a job id, a lease id): a new id is a new holder. */
+  /** The server's id for the hold (a job id, a session id): a new id is a new holder. */
   id: string | null;
-  /** 0..1, or null when the server gives none (a lease, a stream). */
+  /** 0..1, or null when the server gives none (a session between its items). */
   progress: number | null;
   /**
    * Seconds left, estimated from how fast `progress` moved between this app's reads of the

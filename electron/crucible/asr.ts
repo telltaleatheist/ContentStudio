@@ -13,8 +13,13 @@
  * again, so a lost answer never becomes a second job on the card; cancel is a `DELETE`, not a
  * hang-up (abandoning the stream leaves the job running and holding the lane); a dropped event
  * stream is re-opened above the last event seen on a stated budget, and past it the job is
- * DELETEd. Left behind: Briefcase's parked-upload blob cache and its park-on-busy outcome —
- * ContentStudio has no parking until P3's lanes, so a busy lane fails the item by name (below).
+ * DELETEd. Left behind: Briefcase's parked-upload blob cache and its park-on-busy outcome.
+ *
+ * THE JOB RUNS INSIDE A QUEUE SESSION (Crucible 1.0.76, LEDGER #255). The audio is uploaded
+ * first (a blob waits on the server for nobody's turn), then `inSession` hands back the client
+ * of the session the job is an item of: the lane job's own when the transcription is part of a
+ * queue job, else this install's open session joined, else one asked for, which waits in the
+ * server's line. Every request from then on carries `X-Crucible-Session`.
  *
  * THE CLIENT IS INJECTED. P1 builds `electron/crucible/`'s registry, SDK vendoring and
  * readiness in parallel; until it lands, this module names only the handful of calls it makes,
@@ -28,8 +33,10 @@
  *   unavailable  Crucible cannot take the work: unreachable, no asr, the model or its aligner
  *                not offered or not downloaded, the token refused, the stream lost past its
  *                budget. Never "so use whisper" (Law 1, #206): the item fails naming the gap.
- *   busy         the lane is held (409 server_busy / leased). Fails the item with the holder's
- *                line; P3's lanes turn this into parking.
+ *   busy         another client holds the server (409 server_busy / session_open). Does not
+ *                arise inside our own session; fails the item with the holder's line if it does.
+ *   session      our queue session ended under the job (idle, operator, server_restart, …)
+ *                or never opened (expired): the item fails naming the reason.
  *   refused      the server refused the request itself (a bad param, a language, a context).
  *   failed       the server ran the job and it failed: its own code and message, verbatim —
  *                `asr_decode_loop` naming the time range included. Never swallowed.
@@ -141,14 +148,20 @@ export interface AsrCrucibleClient {
 /** A server and the client that reaches it. `server` is the registry name, used in every sentence. */
 export interface AsrVenue {
   readonly server: string;
+  /** A plain client: what the server offers (`/v1/info`) and the upload. */
   readonly client: AsrCrucibleClient;
+  /**
+   * The queue session a job runs in (session.ts via lanes.ts `sessionOn`): its client sends
+   * `X-Crucible-Session`. Let go of it once the job has ended.
+   */
+  session(request: { onQueue?: (position: { position: number; of: number }) => void; signal?: AbortSignal }): Promise<{ client: AsrCrucibleClient; release(): Promise<void> }>;
   /** P3's in-flight ledger for this venue's jobs, when the wiring has one (P2 wires it). */
   readonly ledger?: AsrJobLedger;
 }
 
 // ─────────────────────────────────────────────────────────────────────────── the outcomes
 
-export type CrucibleAsrErrorKind = 'unavailable' | 'busy' | 'refused' | 'failed' | 'cancelled';
+export type CrucibleAsrErrorKind = 'unavailable' | 'busy' | 'session' | 'refused' | 'failed' | 'cancelled';
 
 export class CrucibleAsrError extends Error {
   constructor(
@@ -190,7 +203,7 @@ export function isUnreachable(err: unknown): boolean {
 
 /**
  * An error at the door (upload, submit, info) as one of this module's outcomes. The SDK's
- * busy/leased classes carry a ready-made line naming the holder; a refusal carries the
+ * busy and session-held classes carry a ready-made line naming the holder; a refusal carries the
  * server's code and message. Anything this module does not recognise is still named, never
  * passed through bare: "refused" with the error's own text.
  */
@@ -199,9 +212,13 @@ export function classifyDoorError(err: unknown, server: string, verb: string): C
   const at = `Crucible on ${server}`;
   const name = errName(err);
   const code = errCode(err);
-  if (name === 'CrucibleBusy' || name === 'CrucibleLeased' || code === 'server_busy' || code === 'leased') {
-    const line = (err as { busyLine?: unknown; leasedLine?: unknown }).busyLine
-      ?? (err as { leasedLine?: unknown }).leasedLine;
+  if (name === 'CrucibleSessionClosed' || code === 'session_closed') {
+    const reason = (err as { reason?: unknown }).reason;
+    return new CrucibleAsrError('session', 'session_closed', server,
+      `${at} ended ContentStudio's queue session${typeof reason === 'string' ? ` (${reason})` : ''}, so ${verb} stops here: ${errText(err)}`);
+  }
+  if (name === 'CrucibleBusy' || name === 'CrucibleSessionHeld' || code === 'server_busy' || code === 'session_open') {
+    const line = (err as { busyLine?: unknown }).busyLine ?? (err as { heldLine?: unknown }).heldLine;
     return new CrucibleAsrError('busy', code ?? 'server_busy', server,
       `${at} is busy and cannot take ${verb} now: ${typeof line === 'string' && line ? line : errText(err)}`);
   }
@@ -347,6 +364,11 @@ export interface RunAsrJobOptions {
    * candidate's `client_ref`).
    */
   readonly clientRef: string;
+  /**
+   * The client the job is submitted, followed, fetched and cancelled through, asked for once the
+   * audio is uploaded: the queue session's (transcribeOnCrucible holds it and lets go of it).
+   */
+  readonly inSession: () => Promise<AsrCrucibleClient>;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: AsrJobProgress) => void;
   readonly onLog?: (line: string) => void;
@@ -444,7 +466,8 @@ export async function findByClientRef(client: AsrCrucibleClient, clientRef: stri
 
 export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcome> {
   const { venue, signal, clientRef } = options;
-  const { client, server } = venue;
+  const { server } = venue;
+  const plain = venue.client;
   const log = options.onLog ?? ((): void => undefined);
   const doorDelays = options.doorDelaysMs ?? DOOR_DELAYS_MS;
   const streamDelays = options.streamDelaysMs ?? STREAM_DELAYS_MS;
@@ -475,7 +498,7 @@ export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcom
     const ticker = setInterval(report, options.uploadTickMs ?? UPLOAD_TICK_MS);
     ticker.unref?.();
     try {
-      blobId = (await client.upload(counted ?? blob, { filename: options.filename })).blobId;
+      blobId = (await plain.upload(counted ?? blob, { filename: options.filename })).blobId;
       report();
     } catch (err) {
       if (signal?.aborted) throw cancelledBeforeSubmit();
@@ -489,6 +512,16 @@ export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcom
     } finally {
       clearInterval(ticker);
     }
+  }
+  if (signal?.aborted) throw cancelledBeforeSubmit();
+
+  // ── The session the job is an item of, once the audio is on the server. ──
+  let client: AsrCrucibleClient;
+  try {
+    client = await options.inSession();
+  } catch (err) {
+    if (signal?.aborted) throw cancelledBeforeSubmit();
+    throw classifyDoorError(err, server, 'the queue session the asr job runs in');
   }
   if (signal?.aborted) throw cancelledBeforeSubmit();
 

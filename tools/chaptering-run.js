@@ -18,11 +18,14 @@
  *   --live  a Crucible server over raw HTTP (no SDK yet: P8b wires the app's transport). Chat is
  *           `POST /v1/openai/chat/completions` with `X-Crucible-Act: generate`; a decision is
  *           `POST /v1/decide` with `X-Crucible-Act: decide` and `missing: "report"` (PHASE22 §2.2).
- *           The card holds ONE model, so the harness makes the role's model resident with a
- *           `load-model` job carrying a lease, heartbeats it, and on the next role releases it
- *           and unloads what IT loaded before loading the next (the service asks every outline
- *           and decision before the first title, so a run swaps once). A model someone else
- *           had resident is leased, never unloaded. Ctrl-C releases and unloads, then exits 130.
+ *           The run holds ONE Crucible 1.0.76 queue session (`POST /v1/queue/sessions`, act
+ *           `generate`, idle_s 900; LEDGER #255): it waits in the server's line until the
+ *           session opens, then every request carries `X-Crucible-Session`. The role's model is
+ *           made resident with a `load-model` job inside the session (the session holds what it
+ *           loads; the next role's load evicts it; the service asks every outline and decision
+ *           before the first title, so a run swaps once). Closing the session settles the card.
+ *           A session the server ends mid-run fails the next call by name. Ctrl-C closes the
+ *           session, then exits 130.
  *
  * NO SUBSTITUTION (Law 1): the outline and title models must be ids the server's /v1/models
  * lists, the `decide` and `generate` classes must be enabled in /v1/capability, and the server
@@ -216,8 +219,8 @@ function request(base, token, method, route, body, headers = {}, signal) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const LEASE_TTL = 120;
-const HEARTBEAT_MS = 40_000;
+/** `idle_s` of the run's queue session: the harness's own work between calls is not activity on the server. */
+const SESSION_IDLE_S = 900;
 /**
  * The 9B at 16,384 (LEDGER #196). The 27B title model at 24,576: a 6,000-token chapter window +
  * the ~1,000-token body + the 16,384 thinking budget (LEDGER #208, summarize.ts), as the app loads it.
@@ -237,7 +240,7 @@ function versionAtLeast(v, min) {
 async function liveTransport(args, log) {
   const base = args.server;
   const token = readToken(args.token);
-  const call = (method, route, body, headers, signal) => request(base, token, method, route, body, headers, signal);
+  let call = (method, route, body, headers, signal) => request(base, token, method, route, body, headers, signal);
 
   const info = (await call('GET', '/v1/info')).json;
   const serverName = `${info.server.name} ${info.server.version} at ${base}`;
@@ -259,83 +262,82 @@ async function liveTransport(args, log) {
   }
   log(`server ${serverName}; outline+decide on ${args.outlineModel}, titles on ${args.titleModel}`);
 
-  // --- residency: one model on the card, leased while we use it -----------------------
-  const held = { model: null, leaseId: null, loadedByUs: false, beat: null };
+  // --- the run's queue session, and residency inside it --------------------------------
+  const held = { model: null, sessionId: null, opening: null };
   const loadsByUs = [];
-  const unloadsByUs = [];
+  const raw = call;
+  // Every request after the session opens is one of its items, named explicitly.
+  call = (method, route, body, headers = {}, signal) =>
+    raw(method, route, body, held.sessionId === null ? headers : { ...headers, 'X-Crucible-Session': held.sessionId }, signal);
 
   async function followJob(jobId) {
     for (;;) {
       const s = (await call('GET', `/v1/jobs/${encodeURIComponent(jobId)}`)).json;
       if (s.status === 'done') return s;
-      if (s.status === 'failed' || s.status === 'cancelled' || s.status === 'interrupted') {
-        throw new Error(`job ${jobId} (${s.type} ${s.model || ''}) ended ${s.status}: ${s.error ? `${s.error.code}: ${s.error.message}` : 'no error stated'}`);
+      if (s.status === 'failed' || s.status === 'cancelled' || s.status === 'interrupted' || s.status === 'removed') {
+        const why = s.error ? `${s.error.code}: ${s.error.message}` : s.removal ? `${s.removal.reason}: ${s.removal.message}` : 'no error stated';
+        throw new Error(`job ${jobId} (${s.type} ${s.model || ''}) ended ${s.status}: ${why}`);
       }
       await sleep(1000);
     }
   }
 
-  async function release() {
-    if (held.beat) clearInterval(held.beat);
-    held.beat = null;
-    if (held.leaseId) {
-      const id = held.leaseId;
-      held.leaseId = null;
-      try {
-        await call('DELETE', `/v1/leases/${encodeURIComponent(id)}`);
-        log(`released lease ${id} on ${held.model}`);
-      } catch (e) {
-        log(`releasing lease ${id} failed: ${e.message}`);
-      }
+  /** Open the run's session once: wait in the line (reading its state is presence), fail by name if it never opens. */
+  async function openSession(act) {
+    if (held.sessionId !== null) return;
+    if (held.opening === null) {
+      held.opening = (async () => {
+        const ticket = (await raw('POST', '/v1/queue/sessions', { act, idle_s: SESSION_IDLE_S })).json;
+        let state = ticket;
+        while (state.status === 'queued') {
+          log(`waiting in "${serverName}"'s line for a queue session (position ${state.position ?? '?'})`);
+          await sleep(2000);
+          state = (await raw('GET', `/v1/queue/sessions/${encodeURIComponent(ticket.session_id)}`)).json;
+        }
+        if (state.status !== 'open') {
+          throw new Error(`the queue session on "${serverName}" never opened (${state.reason || state.status}: ${state.message || 'no message'})`);
+        }
+        held.sessionId = ticket.session_id;
+        log(`queue session ${held.sessionId} is open on "${serverName}" (idle_s ${SESSION_IDLE_S})`);
+      })();
     }
-    if (held.model && held.loadedByUs) {
-      const acts = (await call('GET', '/v1/activity')).json;
-      const residentId = acts.resident && (acts.resident.id || acts.resident.model);
-      if (residentId === held.model && !acts.lease) {
-        const job = (await call('POST', '/v1/jobs', { type: 'unload-model', model: held.model, params: {}, inputs: {} })).json.job_id;
-        await followJob(job);
-        unloadsByUs.push(held.model);
-        log(`unloaded ${held.model} (this run loaded it)`);
-      } else if (!residentId) {
-        log(`${held.model} left the card when its lease was released (Crucible's unload ruling); nothing to unload`);
-      }
-    }
-    held.model = null;
-    held.loadedByUs = false;
+    await held.opening;
   }
 
-  function startHeartbeat() {
-    held.beat = setInterval(() => {
-      if (!held.leaseId) return;
-      call('POST', `/v1/leases/${encodeURIComponent(held.leaseId)}/heartbeat`).catch((e) => log(`heartbeat failed: ${e.message}`));
-    }, HEARTBEAT_MS);
-    held.beat.unref();
+  async function release() {
+    const id = held.sessionId;
+    held.sessionId = null;
+    held.opening = null;
+    held.model = null;
+    if (id === null) return;
+    try {
+      await raw('DELETE', `/v1/queue/sessions/${encodeURIComponent(id)}`);
+      log(`closed queue session ${id} (the server settles the card)`);
+    } catch (e) {
+      log(`closing queue session ${id} failed: ${e.message}; the server ends it after ${SESSION_IDLE_S} s idle`);
+    }
   }
 
   async function ensure(model, act) {
+    await openSession(act);
     if (held.model === model) return;
-    await release();
-    const acts = (await call('GET', '/v1/activity')).json;
-    if (acts.lease) throw new Error(`Crucible "${serverName}" is leased by ${acts.lease.client || 'another client'} (${acts.lease.subject || '?'}); this run waits for no one and stops here`);
-    if (acts.resident && acts.resident.id === model) {
-      const lease = (await call('POST', `/v1/models/${encodeURIComponent(model)}/lease`, { act, ttl_seconds: LEASE_TTL })).json;
-      Object.assign(held, { model, leaseId: lease.lease_id, loadedByUs: false });
-      log(`leased resident ${model} (${lease.lease_id})`);
-    } else {
-      const t = Date.now();
-      const job = (await call('POST', '/v1/jobs', {
-        type: 'load-model',
-        model,
-        params: { lease: { act, ttl_seconds: LEASE_TTL }, context: model === args.titleModel ? TITLE_LOAD_CONTEXT : LOAD_CONTEXT },
-        inputs: {},
-      })).json.job_id;
-      const s = await followJob(job);
-      if (!s.lease_id) throw new Error(`loading ${model} finished without the lease it asked for`);
-      Object.assign(held, { model, leaseId: s.lease_id, loadedByUs: true });
-      loadsByUs.push(model);
-      log(`loaded ${model} at ${model === args.titleModel ? TITLE_LOAD_CONTEXT : LOAD_CONTEXT} tokens in ${((Date.now() - t) / 1000).toFixed(1)} s (lease ${s.lease_id})`);
+    const listed = (await call('GET', '/v1/models')).json.find((m) => m.id === model);
+    if (listed && listed.resident) {
+      held.model = model;
+      log(`${model} is already resident; running in session ${held.sessionId}`);
+      return;
     }
-    startHeartbeat();
+    const t = Date.now();
+    const job = (await call('POST', '/v1/jobs', {
+      type: 'load-model',
+      model,
+      params: { context: model === args.titleModel ? TITLE_LOAD_CONTEXT : LOAD_CONTEXT },
+      inputs: {},
+    })).json.job_id;
+    await followJob(job);
+    held.model = model;
+    loadsByUs.push(model);
+    log(`loaded ${model} at ${model === args.titleModel ? TITLE_LOAD_CONTEXT : LOAD_CONTEXT} tokens in ${((Date.now() - t) / 1000).toFixed(1)} s inside session ${held.sessionId}`);
   }
 
   // --- the two calls ---------------------------------------------------------------
@@ -435,7 +437,7 @@ async function liveTransport(args, log) {
   const close = async () => {
     await release();
   };
-  return { chat, decide, countTokens, close, calls: () => ({ ...counts, loadsByUs, unloadsByUs }), serverName };
+  return { chat, decide, countTokens, close, calls: () => ({ ...counts, loadsByUs }), serverName };
 }
 
 // ------------------------------------------------------------------------- run
@@ -459,7 +461,7 @@ async function main() {
   const onSignal = (sig, code) => async () => {
     if (stopping) return;
     stopping = true;
-    log(`${sig}: cancelling, releasing the lease and unloading what this run loaded`);
+    log(`${sig}: cancelling and closing the run's queue session`);
     ac.abort();
     try {
       await transport.close();

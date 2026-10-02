@@ -132,14 +132,24 @@ check('a registry change forgets the cached hop for that name', async () => {
   }
 });
 
-check('every client in the main process is built in client-factory.ts, named contentstudio', () => {
+check('every client in the main process is built in client-factory.ts, named contentstudio@<this host> (unique per install, LEDGER #255)', () => {
   const fs = require('fs');
   const path = require('path');
   const dir = path.join(__dirname, '..', 'electron', 'crucible');
   const builders = fs.readdirSync(dir).filter((file) => file.endsWith('.ts'))
     .filter((file) => /new CrucibleClient\(/.test(fs.readFileSync(path.join(dir, file), 'utf8')));
   assert.deepStrictEqual(builders, ['client-factory.ts']);
-  assert.strictEqual(crucible('client-factory').CRUCIBLE_CLIENT_NAME, 'contentstudio');
+  const factory = crucible('client-factory');
+  assert.strictEqual(factory.CRUCIBLE_CLIENT_NAME, factory.clientNameFor(require('os').hostname()));
+  assert.match(factory.CRUCIBLE_CLIENT_NAME, /^contentstudio@[a-z0-9.-]+$/);
+  // Stable across restarts and the network: macOS's `.local` comes and goes, and is dropped.
+  assert.strictEqual(factory.clientNameFor('Owens-Mac-Studio.local'), 'contentstudio@owens-mac-studio');
+  assert.strictEqual(factory.clientNameFor('owens-pc'), 'contentstudio@owens-pc');
+  assert.throws(() => factory.clientNameFor('  '), /unique per install/);
+  // Only THIS install's exact name is ours: another install's ContentStudio is another app.
+  assert.strictEqual(factory.isOurClient(factory.CRUCIBLE_CLIENT_NAME), true);
+  assert.strictEqual(factory.isOurClient('contentstudio@another-host'), false);
+  assert.strictEqual(factory.isOurClient('contentstudio'), false);
   assert.ok(CrucibleClientFactory);
 });
 

@@ -7,7 +7,7 @@
  * prompts.ts `parseThumbnailWords`; nothing re-asks (Law 3).
  */
 import type { AIManagerService } from '../metadata/ai-manager.service';
-import type { JobLeases } from '../../crucible/lease';
+import type { JobSessions } from '../../crucible/session';
 import { loadContextFor } from '../metadata/context-sizing';
 import { LOCAL_FIELD_TIMEOUT_MS } from '../metadata/metadata-tasks';
 import type { MetadataRoutingOption } from '../metadata/metadata-routing';
@@ -31,7 +31,7 @@ export async function writeThumbnailWords(input: {
   transcript: readonly string[];
   sourceLabel: string;
   /** The window's held job for this local model; absent for cloud. */
-  job?: JobLeases;
+  job?: JobSessions;
   /** Lines already written for this title, for "More options": the model is asked for others. */
   avoid?: readonly string[];
 }): Promise<WordsResult> {

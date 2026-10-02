@@ -8,8 +8,8 @@
  *
  *   decide  the SCORER, a fixed declared role (metadata-routing.ts REROLL_SCORER_MODEL, the 9B;
  *           #199 "9b -> ... snap"), through the one door's `decide` on its GPU lane, under the
- *           job's own leases, so the scorer and the field models trade the card inside one job
- *           rather than two leases fighting over it.
+ *           job's own sessions, so the scorer and the field models trade the card inside one job
+ *           rather than two sessions fighting over it.
  *   revise  the FIELD'S OWN routed model (the routing table stays the only thing that picks a
  *           writing model, #204), through AIManagerService.runPlainRequest like every generation
  *           call, plain text (Law 12), thinking on as the scrub's rewrite was measured.
@@ -207,7 +207,7 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
         // Its own step (LEDGER #209), as snap's decide calls size theirs. Absent, the scorer
         // loaded at the server's default, a size nobody stated for this call.
         loadContext: loadContextFor(request.state.length, DECIDE_QUESTION_TOKENS),
-        job: run.lifecycle.leases,
+        job: run.lifecycle.sessions,
         ...(o.signal === undefined ? {} : { signal: o.signal }),
         what: o.what,
         // Recorded by this file, with the answers, after the call (below): the item's trace is

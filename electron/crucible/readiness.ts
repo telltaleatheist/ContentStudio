@@ -60,10 +60,10 @@ export const READINESS_REFRESH_MS = { notReady: 10_000, ready: 30_000 } as const
  * server's activity every 15 s forever, so an idle ContentStudio logged another app's job
  * progress while Owen was doing nothing.
  *
- * Both timers follow this and nothing else: readiness's own, and the lanes' preflight (which
- * readiness switches through `onPolling`). What a running piece of work needs is not a poll and
- * is not governed here: a lease's heartbeat, a job's event stream, a transcription's upload
- * ticker. A start or install of the Crucible on this computer does count, because nothing else
+ * Both follow this and nothing else: readiness's own timer, and the lanes' event streams (which
+ * readiness switches through `onPolling`; server-watch.ts). What a running piece of work needs is
+ * not a poll and is not governed here: a job's event stream, a queue session's own stream and its
+ * touch around cloud calls, a transcription's upload ticker. A start or install of the Crucible on this computer does count, because nothing else
  * would carry its outcome to the banner.
  */
 export interface PollingFacts {
@@ -95,21 +95,23 @@ export class CrucibleRequiredError extends Error {
 
 /**
  * The ready answer's sentence. A card held by ANOTHER app is named (LEDGER #233: no wait is
- * claimed here; a job that really waits says so on its own row). A card held by ContentStudio's own work (probe.ts `busyLineOf` names the client
- * "contentstudio") is not something to wait for: it is the job on screen, transcribing or
+ * claimed here; a job that really waits says so on its own row). A card held by THIS install's own
+ * work (probe.ts `busyLineOf` names this install "contentstudio"; another install is named with its
+ * host, `contentstudio@<host>`, and is another app here) is not something to wait for: it is the job on screen, transcribing or
  * running its model calls, and "AI work waits its turn" there read as the job itself being
  * stuck (Owen, 2026-09-26: "its waiting now"). It says whose work it is instead (LEDGER #225).
  */
 export function readyReason(server: string, busy: string | null): string {
   if (busy === null) return `Crucible on ${server} is ready.`;
-  const own = busy.match(/^busy: contentstudio\b,?\s*(.*)$/i);
+  const own = busy.match(/^busy: contentstudio(?:,\s*(.*))?$/i);
   if (own !== null) {
-    const what = own[1].replace(/^asr\b/, 'transcription').trim();
+    const what = (own[1] ?? '').replace(/^asr\b/, 'transcription').trim();
     return `Crucible on ${server} is ready (busy with ContentStudio's own work${what ? `: ${what}` : ''}).`;
   }
+  if (/^held: contentstudio's session\b/i.test(busy)) return `Crucible on ${server} is ready (busy with ContentStudio's own work).`;
   // Another app's work is named, and nothing more: whether any of OUR work waits behind it is
-  // the queue's to say, on the job that waits (lanes.ts parks it and the row reads "Starts when
-  // <server> is free"). Said here it claimed a wait with no job queued (Owen, 2026-09-26: "im
+  // the queue's to say, on the job that waits (its session waits in the server's line and the
+  // row reads "Waiting in line on <server>"). Said here it claimed a wait with no job queued (Owen, 2026-09-26: "im
   // not waiting for anything ... this should only appear if its waiting for a job").
   return `Crucible on ${server} is ready (${busy}).`;
 }
@@ -205,7 +207,7 @@ export class CrucibleReadiness {
     return this.polling;
   }
 
-  /** Told when polling turns on or off (the lanes' preflight follows it). Returns the unsubscribe. */
+  /** Told when polling turns on or off (the lanes' event streams follow it). Returns the unsubscribe. */
   onPolling(listener: (on: boolean) => void): () => void {
     this.pollingListeners.add(listener);
     return () => this.pollingListeners.delete(listener);

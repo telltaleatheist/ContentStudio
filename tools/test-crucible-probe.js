@@ -42,7 +42,7 @@ check('ok: a Crucible that accepts the token answers with its version, backend a
     const info = server.requestsTo('/v1/info')[0];
     assert.strictEqual(info.headers['authorization'], `Bearer ${server.token}`);
     assert.strictEqual(info.headers['x-crucible-api'], '1');
-    assert.strictEqual(info.headers['x-crucible-client'], 'contentstudio');
+    assert.strictEqual(info.headers['x-crucible-client'], crucible('client-factory').CRUCIBLE_CLIENT_NAME);
     assert.ok(!JSON.stringify(answer).includes(server.token));
   },
 ));
@@ -124,7 +124,10 @@ check('an engine claim by anyone but ContentStudio is busy; our own, or none, is
     slots: { accelerated: { acceptsWork } },
   });
   assert.strictEqual(busyLineOf(activity('the settlement clearing the card')), 'busy: the card is held by the settlement clearing the card');
-  assert.strictEqual(busyLineOf(activity('contentstudio crucible-client/1.0.34')), null);
+  const ours = crucible('client-factory').CRUCIBLE_CLIENT_NAME;
+  assert.strictEqual(busyLineOf(activity(`${ours} crucible-client/1.0.76`)), null);
+  // Another install's ContentStudio is another app (its name carries its own host, LEDGER #255).
+  assert.strictEqual(busyLineOf(activity('contentstudio@another-host crucible-client/1.0.76')), 'busy: the card is held by contentstudio@another-host crucible-client/1.0.76');
   assert.strictEqual(busyLineOf(activity(null)), null);
   assert.strictEqual(busyLineOf(activity(null, false)), 'busy: the GPU is not accepting work right now');
 });

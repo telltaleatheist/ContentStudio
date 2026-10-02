@@ -88,7 +88,7 @@ export async function answerSeparationRequest(
  * The operation row's line and bar for one job event, WITHIN the chunk: the
  * bar sits at `(chunk - 1 + fraction) / chunks`, between the CHUNK lines
  * electron_workflow.py emits after each chunk lands. A fraction is the
- * server's; warming, uploading and parked leave the bar where the chunk began.
+ * server's; warming, uploading and waiting in line leave the bar where the chunk began.
  */
 export function separationProgress(
   request: SeparationRequest,
@@ -105,7 +105,7 @@ export function separationProgress(
       return { message: `${head}: ${progress.message}`, subProgress };
     case 'progress':
       return { message: `${head}: ${progress.message}`, subProgress };
-    case 'parked':
-      return { message: `${head} waits for the Crucible on ${server} (${progress.holderLine})`, subProgress };
+    case 'in_line':
+      return { message: `${head} waits in the Crucible on ${server}'s line (${progress.position} of ${progress.of}): another app's work is on it`, subProgress };
   }
 }

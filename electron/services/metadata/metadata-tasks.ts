@@ -32,7 +32,7 @@
  * prompt-set shape: that field's yml section, its self-check, the transcript, and a plain-text
  * output contract. Both post through the AI manager's plain door to Crucible (P2); they build
  * their prompt with the same builder and read their answer through the same parser. The only
- * difference is the shape of the call: a local one states a budget, a load context and a lease.
+ * difference is the shape of the call: a local one states a budget, a load context and a session.
  *
  * THERE USED TO BE A SECOND SHAPE: the trained adapters (`promptStyle: 'adapter'`), fine-tuned
  * models fed a terse `task:`/`format:` turn with the brief baked into their weights. They were
@@ -53,16 +53,16 @@
  * EACH CALL ASKS FOR ITS OWN LOAD CONTEXT (P4, LEDGER #209). A local call asks the door for the
  * smallest 8,192 step that holds its own prompt and answer budget (context-check.ts
  * `loadContextFor`). Loading a model at a different context is still a full reload (LEDGER #111),
- * and it is bounded by the lease instead of by a shared per-model number: a call that needs more
- * grows the load once, and a call that needs less runs on the window already loaded (lease.ts).
+ * and it is bounded by the session's residency instead of by a shared per-model number: a call that needs more
+ * grows the load once, and a call that needs less runs on the window already loaded (session.ts).
  * What this replaced, `ModelRunContextBudget`, pinned one bucketed window per model per run from
  * the largest prompt, with a floor carried from earlier stages, so a run whose chapter titles
  * loaded the 27B at 24,576 asked 24,576 for every field call after them.
  *
  * NO UNIT RELEASES A MODEL. Every unit here used to unload its model as it finished, which
  * reloaded ~17GB of weights for the next call on the same model and froze the operator's
- * machine while it did. A unit's calls hold the model under the JOB's Crucible lease
- * (`JobModelLifecycle.leases`, plan 13.3) and the JOB releases it once, in a finally in
+ * machine while it did. A unit's calls hold the model under the JOB's Crucible session
+ * (`JobModelLifecycle.sessions`, plan 13.3) and the JOB releases it once, in a finally in
  * metadata-generator.service.ts. That is why there is no `unload()` on the unit seam: a
  * per-stage release is the defect.
  */
@@ -611,7 +611,7 @@ export class CloudFieldUnit implements MetadataUnit {
  * exactly CloudFieldUnit's prompt, built by exactly CloudFieldUnit's builder, and read back
  * through exactly CloudFieldUnit's normalizer. Since P2 the transport is the same door too
  * (AIManagerService.runPlainRequest, then Crucible); what is local about this unit is the
- * shape of its call: an output budget, a load context sized for this call, and the job's lease.
+ * shape of its call: an output budget, a load context sized for this call, and the job's session.
  */
 export class LocalFieldUnit implements MetadataUnit {
   readonly label: string;
@@ -622,7 +622,7 @@ export class LocalFieldUnit implements MetadataUnit {
     private readonly aiManager: AIManagerService,
     private readonly spec: MetadataFieldUnitSpec,
     private readonly option: MetadataRoutingOption,
-    /** The job's leases. This unit never releases one itself. */
+    /** The job's sessions. This unit never releases one itself. */
     private readonly lifecycle: JobModelLifecycle
   ) {
     this.fields = [spec.field];
@@ -653,7 +653,7 @@ export class LocalFieldUnit implements MetadataUnit {
       thinking: false,
       maxTokens: LOCAL_FIELD_NUM_PREDICT,
       loadContext,
-      job: this.lifecycle.leases,
+      job: this.lifecycle.sessions,
       timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
     });
     if (!text) {
@@ -823,7 +823,7 @@ export interface MetadataPlanRequest {
  *     (`inputFields`). The self-check line about not repeating a core word from the top 3
  *     titles is emitted for the thumbnail call because that call can READ the titles.
  *   - RESIDENCE. Units on one model run consecutively under one pinned load context and the job's
- *     lease, so four calls on the 27B cost one load, not four.
+ *     session, so four calls on the 27B cost one load, not four.
  *
  * Two things ride with exactly one call each, and this is where that is decided:
  *   the insights block — the TITLES call, else the first call, logged. Channel performance data

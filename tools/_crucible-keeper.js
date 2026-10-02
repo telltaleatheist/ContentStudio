@@ -125,7 +125,7 @@ function scriptedLocal(overrides = {}) {
 function context(options = {}) {
   const { createCrucibleContext } = crucible('context');
   const dir = options.dir ?? tempDir();
-  const pushed = { servers: [], readiness: [], install: [], lanes: [] };
+  const pushed = { servers: [], readiness: [], install: [], lanes: [], inLine: [] };
   const clipboard = [];
   const scripted = options.scripted ?? scriptedLocal();
   if (options.discovered) scripted.local.host.discovered = options.discovered;
@@ -134,12 +134,13 @@ function context(options = {}) {
     pairingHost: options.pairingHost ?? pairingHost(null),
     clipboard: (text) => { clipboard.push(text); },
     ...(options.legacyKeys === undefined ? {} : { legacyKeys: options.legacyKeys }),
-    ...(options.leaseTimings === undefined ? {} : { leaseTimings: options.leaseTimings }),
+    ...(options.sessionTimings === undefined ? {} : { sessionTimings: options.sessionTimings }),
     push: {
       serversChanged: (change) => pushed.servers.push(change),
       readiness: (view) => pushed.readiness.push(view),
       installProgress: (event) => pushed.install.push(event),
       lanes: (view) => pushed.lanes.push(view),
+      inLine: (jobId, server, position) => pushed.inLine.push({ jobId, server, position }),
     },
     local: scripted.local,
     // P3: the lanes' clocks, so a keeper drives the preflight and the stall clock itself.

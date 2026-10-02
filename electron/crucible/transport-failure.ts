@@ -10,7 +10,7 @@
  * classified the same way, or a server that is rebooting reads as a broken one.
  *
  * DELIBERATELY NARROW. A `TypeError` is also what `x is not a function`
- * throws, and parking work on a programming mistake is work that waits for
+ * throws, and waiting out a programming mistake is work that waits for
  * ever with nobody told. So a `TypeError` qualifies only on undici's two exact
  * messages, and anything else only by carrying a real transport errno.
  */

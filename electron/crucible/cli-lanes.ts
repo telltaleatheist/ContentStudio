@@ -11,15 +11,16 @@
  *
  * WHY ITS OWN LEDGER FILE. The app's ledger (`crucible-in-flight.json`) is read
  * and swept by the app at every start; a CLI running while the app starts would
- * have its live lease released under it, and two processes writing one file
+ * have its live session closed under it, and two processes writing one file
  * lose rows. So each CLI process writes `crucible-in-flight-<tool>-<pid>.json`,
  * and at start sweeps the ledgers of any earlier run of the same tool whose
  * process is gone (a `kill -9`, a closed terminal).
  *
  * INTERRUPT (plan sections 0a, 13.4; Briefcase's lesson: a Ctrl-C'd eval left
- * its lease held until the TTL and the card was stuck for everyone). SIGINT and
- * SIGTERM abort the run, cancel its Crucible jobs and release its leases (its
- * whole ledger), then exit 130 or 143. A second signal exits at once.
+ * its lease held until the TTL and the card was stuck for everyone; an open queue session left
+ * behind is worse, nothing from any other app runs until it idles out). SIGINT and
+ * SIGTERM abort the run, cancel its Crucible jobs and close its queue sessions
+ * (its whole ledger), then exit 130 or 143. A second signal exits at once.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -107,7 +108,7 @@ export function openCliLanes(options: {
     const code = signal === 'SIGINT' ? 130 : 143;
     if (interrupted) process.exit(code);
     interrupted = true;
-    say(`${signal}: stopping ${options.tool}, cancelling its Crucible jobs and releasing its leases (press again to exit at once)`);
+    say(`${signal}: stopping ${options.tool}, cancelling its Crucible jobs and closing its queue sessions (press again to exit at once)`);
     controller.abort(new Error(`${options.tool} was interrupted (${signal})`));
     void giveBack(`${options.tool} was interrupted (${signal})`).finally(() => process.exit(code));
   };

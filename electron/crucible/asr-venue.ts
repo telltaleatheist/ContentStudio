@@ -14,19 +14,24 @@
  *
  * Every asr job is written to the in-flight ledger when the server admits it and settled when it
  * ends (P3), so a kill mid-transcription leaves the sweep a job to cancel.
+ *
+ * Every asr job runs inside a queue session (LEDGER #255): the lanes' `sessionOn` hands back the
+ * queue job's own session when the transcription is part of one, else this install's open session
+ * on that server joined, else a new one (session.ts). Its client is the SDK's `CrucibleSession`,
+ * which sends `X-Crucible-Session` on every request.
  */
 import type { CrucibleClient } from '@crucible/client';
 import type { AsrCrucibleClient, AsrVenue } from './asr';
 import type { CrucibleClientFactory } from './client-factory';
 import type { InFlightLedger } from './in-flight-ledger';
 import { currentJobVenue } from './lanes';
+import type { SessionSource } from './session';
 import type { CrucibleServers } from './servers';
 
 /** The ASR model every job names (LEDGER #206; the official id, never `-mlx`, #205). */
 const ASR_MODEL = 'qwen3-asr-1.7b';
 
-function engineClient(factory: Pick<CrucibleClientFactory, 'clientFor'>, server: string): AsrCrucibleClient {
-  const get = (): Promise<CrucibleClient> => factory.clientFor(server);
+function engineClient(get: () => Promise<CrucibleClient>): AsrCrucibleClient {
   return {
     info: async () => (await get()).info(),
     upload: async (data, options) => (await get()).upload(data, options),
@@ -46,6 +51,7 @@ export function crucibleAsrVenue(deps: {
   servers: Pick<CrucibleServers, 'selected'>;
   factory: Pick<CrucibleClientFactory, 'clientFor'>;
   ledger: InFlightLedger;
+  sessions: SessionSource;
 }): () => AsrVenue {
   return () => {
     const job = currentJobVenue();
@@ -53,7 +59,17 @@ export function crucibleAsrVenue(deps: {
     const jobId = job?.jobId ?? '';
     return {
       server,
-      client: engineClient(deps.factory, server),
+      client: engineClient(() => deps.factory.clientFor(server)),
+      session: async ({ onQueue, signal }) => {
+        const hold = await deps.sessions.sessionOn(server, {
+          act: 'asr',
+          what: jobId === '' ? 'a transcription' : `the transcription of ${jobId}`,
+          ...(onQueue === undefined ? {} : { onQueue }),
+          ...(signal === undefined ? {} : { signal }),
+        });
+        const session = hold.card.session;
+        return { client: engineClient(async () => session), release: () => hold.release() };
+      },
       ledger: {
         record: (id) => deps.ledger.record({ server, kind: 'job', id, jobType: 'asr', model: ASR_MODEL, jobId }),
         settle: (id) => deps.ledger.settle(server, 'job', id),

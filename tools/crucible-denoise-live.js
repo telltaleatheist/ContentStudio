@@ -17,10 +17,10 @@
  *
  * THE LOCAL CRUCIBLE ONLY. The server is the one this machine's pairing file
  * names; it refuses any other URL, because the PC's GPU needs Owen's go every
- * time (LEDGER Law 7, #205). A busy lane waits by re-reading /v1/activity every
- * 15 s (the editor's interim park). Ctrl-C cancels the job on the server and
- * releases the lease before exiting 130 (plan section 0a: a tool that takes a
- * lease must give it back on interrupt).
+ * time (LEDGER Law 7, #205). The pass runs in one Crucible 1.0.76 queue session
+ * (LEDGER #255), which waits in the server's line while another app holds it.
+ * Ctrl-C cancels the job on the server and closes the session before exiting 130
+ * (plan section 0a: a tool that holds the server must give it back on interrupt).
  */
 'use strict';
 const fs = require('fs');
@@ -36,8 +36,9 @@ Module._resolveFilename = function (request, ...rest) {
   return originalResolve.call(this, request, ...rest);
 };
 
+const os = require('os');
 const { readPairingFile } = require('@crucible/client');
-const { rawDenoiseClient } = require('./crucible-raw-denoise-client');
+const { rawDenoiseClient, rawDenoiseSession } = require('./crucible-raw-denoise-client');
 const denoise = require(path.join(__dirname, '..', 'dist', 'main', 'crucible', 'denoise.js'));
 
 function arg(name, fallback) {
@@ -62,7 +63,9 @@ async function main() {
   if (host !== '127.0.0.1' && host !== 'localhost') {
     throw new Error(`the pairing file names ${pairing.url}, not this machine. This tool only runs on the local Crucible.`);
   }
-  const client = rawDenoiseClient({ url: pairing.url, token: pairing.token, clientName: 'contentstudio' });
+  // This install's own client name, so the pass joins a session the app already holds (client-factory.ts).
+  const clientName = require(path.join(__dirname, '..', 'dist', 'main', 'crucible', 'client-factory.js')).clientNameFor(os.hostname());
+  const client = rawDenoiseClient({ url: pairing.url, token: pairing.token, clientName });
   const info = await client.info();
   const server = info.server.name;
   const lines = [];
@@ -95,26 +98,13 @@ async function main() {
   };
 
   const controller = new AbortController();
-  const park = async (holder, signal) => {
-    console.log(`  parked: ${holder}`);
-    for (;;) {
-      await new Promise((resolve, reject) => {
-        const stop = () => { clearTimeout(t); reject(new Error('cancelled')); };
-        const t = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, 15_000);
-        signal?.addEventListener('abort', stop, { once: true });
-      });
-      const a = await activity();
-      const free = a.slots?.accelerated?.accepts_work === true && a.lease === null;
-      console.log(`  re-read /v1/activity: ${free ? 'free' : `still held (${a.lease ? `lease: ${a.lease.client}, ${a.lease.act}` : 'lane busy'})`}`);
-      if (free) return;
-    }
-  };
-  const isolator = new denoise.CrucibleVoiceIsolator({ server, client, park, onLog: log });
+  const session = ({ onQueue, signal }) => rawDenoiseSession({ url: pairing.url, token: pairing.token, clientName, onQueue, signal });
+  const isolator = new denoise.CrucibleVoiceIsolator({ server, client, session, onLog: log });
   let interrupted = false;
   const stop = (signalName) => {
     if (interrupted) return;
     interrupted = true;
-    console.log(`\n${signalName}: cancelling the job and releasing the lease`);
+    console.log(`\n${signalName}: cancelling the job and closing the queue session`);
     controller.abort();
     void isolator.dispose().finally(() => process.exit(signalName === 'SIGINT' ? 130 : 143));
   };
@@ -143,7 +133,7 @@ async function main() {
       const done = await isolator.separate(chunk, asked, {
         signal: controller.signal,
         onProgress: (p) => {
-          const line = p.kind === 'parked' ? `parked: ${p.holderLine}` : p.kind === 'uploading' ? 'uploading' : `${p.kind}: ${p.message}`;
+          const line = p.kind === 'in_line' ? `in line: ${p.position} of ${p.of}` : p.kind === 'uploading' ? 'uploading' : `${p.kind}: ${p.message}`;
           if (line !== lastLine) console.log(`    ${line}`);
           lastLine = line;
         },
@@ -153,7 +143,7 @@ async function main() {
       const row = {
         at, jobId: done.jobId, wallSeconds: wall, loadSeconds: done.loadSeconds, separateSeconds: done.separateSeconds,
         residentAfter: a.resident ? `${a.resident.kind}:${a.resident.id}` : null,
-        leaseAfter: a.lease ? `${a.lease.client}:${a.lease.act}:${a.lease.kind}` : null,
+        sessionAfter: a.session ? `${a.session.client}:${a.session.act}:${a.session.status}` : null,
         stem: path.basename(done.stem),
         stemFormat: denoise.readWavFormat(done.stem),
       };
@@ -164,12 +154,12 @@ async function main() {
     clearInterval(sampler);
     await isolator.dispose();
     result.wallSeconds = (Date.now() - runStart) / 1000;
-    // What the card holds once the lease is given back: the settle clears it.
+    // What the card holds once the session is closed: the settle clears it.
     await new Promise((r) => setTimeout(r, 3_000));
     const after = await activity();
-    result.afterRelease = { resident: after.resident ? `${after.resident.kind}:${after.resident.id}` : null, lease: after.lease };
+    result.afterClose = { resident: after.resident ? `${after.resident.kind}:${after.resident.id}` : null, session: after.session ?? null };
     fs.writeFileSync(path.join(out, 'crucible-live.json'), JSON.stringify(result, null, 2));
-    console.log(`after release: resident ${result.afterRelease.resident}, lease ${JSON.stringify(after.lease)}`);
+    console.log(`after close: resident ${result.afterClose.resident}, session ${JSON.stringify(after.session ?? null)}`);
   }
 }
 

@@ -2,8 +2,8 @@
  * P5's live acceptance runs on this Mac's Crucible (docs/crucible/P5.md records the numbers).
  *
  * Drives the COMPILED app code — the same door, job, context builder and editor protocol the
- * app runs — against the paired server through tools/crucible-raw-client.js (P1's client
- * replaces it). Nothing here writes into the operator's output directory or his editor
+ * app runs — against the paired server through tools/crucible-raw-client.js (the vendored SDK
+ * with this install's client name; each asr job runs in a queue session, LEDGER #255). Nothing here writes into the operator's output directory or his editor
  * sessions: every product goes under --out.
  *
  *   window    one stretch of a recording, transcribed as the pipeline would send it:
@@ -19,8 +19,8 @@
  *             never beside the real session), answering its asr_requests with the app's responder:
  *               --zip <zip> --out <dir> [--max-seconds N] [--channel <id>]
  *
- * Ctrl-C cancels the job in flight with a DELETE (plan §0a: a CLI that takes GPU work must
- * release it on SIGINT) and exits 130.
+ * Ctrl-C cancels the job in flight with a DELETE and closes its queue session (plan §0a: a CLI
+ * that takes GPU work must give it back on SIGINT) and exits 130.
  */
 const fs = require('fs');
 const os = require('os');

@@ -8,7 +8,7 @@ const { assert, crucible, check, run } = require('./_crucible-keeper');
 
 const { CRUCIBLE_STALL_MS, JobStallClock, withStreamStallClock, CrucibleStreamWentQuiet } = crucible('stream-stall');
 const { QUIT_SWEEP_DEADLINE_MS, QUIT_UNWIND_MS } = crucible('in-flight-sweep');
-const { PREFLIGHT_EVERY_MS } = crucible('lanes');
+const { SESSION_TOUCH_EVERY_MS, JOB_SESSION_IDLE_S } = crucible('session');
 
 /** A clock: setTimeout/clearTimeout that fire only when `advance` passes their instant. */
 function fakeTimers() {
@@ -41,9 +41,10 @@ function fakeTimers() {
 
 const MIN = 60_000;
 
-check('the windows are the plan\'s: 10 min of silence, a 15 s preflight, a 30 s quit with a 2 s unwind', () => {
+check('the windows are the plan\'s: 10 min of silence, a 900 s session idle with a 30 s touch around cloud calls, a 30 s quit with a 2 s unwind', () => {
   assert.strictEqual(CRUCIBLE_STALL_MS, 10 * MIN);
-  assert.strictEqual(PREFLIGHT_EVERY_MS, 15_000);
+  assert.strictEqual(JOB_SESSION_IDLE_S, 900);
+  assert.strictEqual(SESSION_TOUCH_EVERY_MS, 30_000);
   assert.strictEqual(QUIT_SWEEP_DEADLINE_MS, 30_000);
   assert.strictEqual(QUIT_UNWIND_MS, 2_000);
 });

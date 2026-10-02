@@ -192,18 +192,37 @@ export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): 
     const started = Date.now();
     say(`transcribing ${request.audioFile} on ${server} (Crucible ${version ?? 'version not stated'}) with ${QWEN_ASR_MODEL}: ` +
       `language ${params.language}, vad_filter false, word_timestamps true, context of ${params.context.length} characters`);
-    const outcome = await runAsrJob({
-      venue,
-      params,
-      file: request.audioFile,
-      filename: safeUploadName(request.audioFile),
-      clientRef: `contentstudio:${request.clientRefStem}:${crypto.randomBytes(4).toString('hex')}`,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
-      // The venue's in-flight ledger (P3), so a kill mid-transcription leaves the sweep a job to cancel.
-      ...(venue.ledger === undefined ? {} : { ledger: venue.ledger }),
-      onLog: say,
-      onProgress: report,
-    });
+    // The queue session the job runs in (LEDGER #255): held from the submit to the job's end, and
+    // let go of then (a queue job's session stays the job's; a standalone one closes).
+    let session: { release(): Promise<void> } | null = null;
+    let outcome: Awaited<ReturnType<typeof runAsrJob>>;
+    try {
+      outcome = await runAsrJob({
+        venue,
+        params,
+        file: request.audioFile,
+        filename: safeUploadName(request.audioFile),
+        clientRef: `contentstudio:${request.clientRefStem}:${crypto.randomBytes(4).toString('hex')}`,
+        inSession: async () => {
+          const held = await venue.session({
+            onQueue: (position) => {
+              say(`waiting in ${server}'s line: ${position.position} of ${position.of}`);
+              request.onProgress?.(last, `Queued on Crucible on ${server} (position ${position.position})`);
+            },
+            ...(request.signal === undefined ? {} : { signal: request.signal }),
+          });
+          session = held;
+          return held.client;
+        },
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        // The venue's in-flight ledger (P3), so a kill mid-transcription leaves the sweep a job to cancel.
+        ...(venue.ledger === undefined ? {} : { ledger: venue.ledger }),
+        onLog: say,
+        onProgress: report,
+      });
+    } finally {
+      await (session as { release(): Promise<void> } | null)?.release();
+    }
     const wallSeconds = (Date.now() - started) / 1000;
     say(`job ${outcome.jobId} done in ${wallSeconds.toFixed(1)} s`);
     return {

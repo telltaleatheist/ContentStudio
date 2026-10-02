@@ -1257,8 +1257,8 @@ export class Inputs implements OnInit, OnDestroy {
    * Start whatever may start now. MAIN decides (`crucible:queue-plan`, electron/crucible/
    * lanes.ts): at most one job per Crucible server, each on the fast pin's server or the
    * selected one and never another (LEDGER #205), so the Mac's job and the PC's run side by
-   * side. A row main says waits on its server is shown PARKED with the reason, in grey; it
-   * starts again by itself when main's preflight says the holder has gone. This page runs
+   * side. A row main says waits on its server is shown PARKED with the reason, in grey; main
+   * decides it again at each plan. This page runs
    * what it is told and decides nothing about where.
    */
   private async processNextJob() {
@@ -1529,7 +1529,8 @@ export class Inputs implements OnInit, OnDestroy {
   laneStateText(lane: LaneChip): string {
     if (lane.paused) return lane.runningJobId ? 'Paused (finishing a job)' : 'Paused, work waits';
     switch (lane.state) {
-      case 'running': return 'Running a job';
+      // Our job's queue session waiting in the server's line (LEDGER #255): where it stands.
+      case 'running': return lane.inLine ? `In line, ${lane.inLine.position} of ${lane.inLine.of}` : 'Running a job';
       case 'busy': return laneReadAge(laneBusyText(lane.busyLine), lane.readAt, this.crucibleLive(), this.now());
       case 'idle': return laneReadAge('Idle', lane.readAt, this.crucibleLive(), this.now());
       case 'unreachable': return laneReadAge('Not answering', lane.readAt, this.crucibleLive(), this.now());

@@ -8,19 +8,45 @@
  * call time, so a token never sits in a service field, a cache or a log line,
  * and nothing that answers the renderer can reach it.
  *
- * `clientName` is 'contentstudio' on every client. It lands in the User-Agent
- * and `X-Crucible-Client`, which is what `/v1/activity` reports as a job's
- * `client`, so a Crucible shared with BookForge, Foundry and Briefcase can say
- * whose work is on the card. One name, declared once.
+ * `clientName` is `contentstudio@<this computer's host name>` on every client
+ * ({@link CRUCIBLE_CLIENT_NAME}). It lands in the User-Agent and
+ * `X-Crucible-Client`, which is what `/v1/activity` reports as a job's `client`,
+ * so a Crucible shared with BookForge, Foundry and Briefcase can say whose work is
+ * on the card. Since Crucible 1.0.76 it is also what a QUEUE SESSION is matched
+ * on: every request from the client holding the open session is an item of it,
+ * header or not (MIGRATION.md, "Same-client membership"). Two installs sharing a
+ * name would ride each other's sessions, so the name is unique per install and
+ * the same across restarts (Crucible's requirement, LEDGER #255). One name,
+ * declared once.
  */
 import * as http from 'http';
 import * as https from 'https';
+import * as os from 'os';
 import { Readable, Transform } from 'stream';
 import { API_VERSION, CrucibleClient, SDK_VERSION } from '@crucible/client';
 import type { CrucibleServers } from './servers';
 import { EngineResolver, type ClientMaker, type ResolvedEngine } from './engine-resolve';
 
-export const CRUCIBLE_CLIENT_NAME = 'contentstudio';
+/**
+ * `contentstudio@<host>`: the host name lower-cased, macOS's `.local` suffix dropped (it comes and
+ * goes with the network on a Mac, and the name must not), and anything outside `[a-z0-9.-]` turned
+ * into `-` so it travels in a header unchanged. A host that names nothing is refused by name: a
+ * shared name is exactly the failure this exists to prevent.
+ */
+export function clientNameFor(hostname: string): string {
+  const host = hostname.trim().toLowerCase().replace(/\.local$/, '').replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (host === '') {
+    throw new Error(`This computer's host name (${JSON.stringify(hostname)}) names nothing ContentStudio can use in its Crucible client name, which must be unique per install.`);
+  }
+  return `contentstudio@${host}`;
+}
+
+export const CRUCIBLE_CLIENT_NAME = clientNameFor(os.hostname());
+
+/** Is this client name (as a server reports `client`) THIS install? Exact: another install's ContentStudio is another app. */
+export function isOurClient(client: string | null | undefined): boolean {
+  return typeof client === 'string' && client.trim() === CRUCIBLE_CLIENT_NAME;
+}
 
 export interface ClientOptions {
   /**
@@ -92,12 +118,16 @@ export class CrucibleClientFactory {
    * so a streamed chat is filed under the same client on a shared server's bench. The token is
    * read from the registry at call time and never leaves this method.
    */
-  async engineFetch(name: string, path: string, init: { method: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }): Promise<{ response: Response; url: string }> {
+  async engineFetch(name: string, path: string, init: { method: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal; session?: string }): Promise<{ response: Response; url: string }> {
     const entry = this.servers.getWithToken(name);
     const engine = await this.resolver.resolve(entry);
     const headers = new Headers(init.headers ?? {});
     headers.set('User-Agent', `${CRUCIBLE_CLIENT_NAME} crucible-client/${SDK_VERSION}`);
     headers.set('X-Crucible-Client', CRUCIBLE_CLIENT_NAME);
+    // The queue session the request is an item of, named as the SDK's CrucibleSession names it,
+    // so a session the server has ended answers `409 session_closed` rather than letting the
+    // request run as a plain one (session.ts).
+    if (init.session !== undefined) headers.set('X-Crucible-Session', init.session);
     headers.set('Authorization', `Bearer ${entry.token}`);
     headers.set('X-Crucible-Api', String(API_VERSION));
     const url = `${engine.url.replace(/\/+$/, '')}${path}`;

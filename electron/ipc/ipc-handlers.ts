@@ -3401,8 +3401,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           warnings,
         };
       } finally {
-        const lost = await job.releaseAll();
-        for (const line of lost) log.error(`[TranscriptSplit] the split lost its lease on ${line} before it ended`);
+        await job.releaseAll();
       }
     } catch (error) {
       log.error('Error analyzing transcript split:', error);

@@ -29,10 +29,10 @@
  *
  * ── The HTTP client is injected ────────────────────────────────────────────
  *
- * {@link DenoiseClient} is the nine calls this door makes, typed as the vendored
- * SDK's own `CrucibleClient` spells them, so the SDK client satisfies it as it
- * is and a keeper or a tool can hand in anything else that does. The transport
- * and the lanes are another phase's (P3); this module never builds a client.
+ * {@link DenoiseClient} is the six calls this door makes, typed as the vendored
+ * SDK's own `CrucibleClient` spells them, so the SDK client (and its
+ * `CrucibleSession`) satisfies it as it is and a keeper or a tool can hand in
+ * anything else that does. This module never builds a client.
  * docs/crucible/P7.md says exactly what a client must provide.
  *
  * ── What it refuses, and what it never does ────────────────────────────────
@@ -45,34 +45,37 @@
  *   "Mechanics"), relayed in the server's words with the command that builds it.
  * - **A failed job aborts the run** with the server's message: the noisy
  *   original never ships (plan section 9, "Fail loud, as today").
- * - **A busy lane parks** (LEDGER #195): `409 server_busy` or `409 leased` hands
- *   the holder's sentence to the injected `park`, which returns when the lane's
- *   owner says to ask again. Nothing here loops, retries on a timer, or sends
- *   the work anywhere else.
+ * - **Another app on the server is a wait in its line, not a refusal** (LEDGER
+ *   #255): the pass runs in a queue session, which waits its turn in the
+ *   server's line before the first chunk is submitted (`in_line` progress says
+ *   where it stands). Nothing here loops, retries on a timer, or sends the work
+ *   anywhere else.
+ * - **A session the server ended aborts the run by name** (`session_closed`
+ *   with its reason): no new session is opened to carry on.
  * - **Cancel is a DELETE**, then the stream's own `cancelled` frame: hanging up
  *   would leave the job running on the lane.
  *
- * ── One lease for the pass ─────────────────────────────────────────────────
+ * ── One queue session for the pass (Crucible 1.0.76, LEDGER #255) ──────────
  *
- * The separator is resident between jobs (`KIND_DENOISE`, Crucible's ruling of
- * 2026-09-15), but the server clears the card the moment nothing holds it, so a
- * session's chunks would each pay the 913 MB checkpoint load. A lease is what
- * holds it for the rest of the pass. It is taken AFTER the first chunk (a lease
- * names what is already resident and never loads), heartbeated before each
- * later chunk, and released by {@link CrucibleVoiceIsolator.dispose}, which the
- * editor calls when a track is finished and again when the run ends. A lease
- * that cannot be taken is a DECLARED mode (Law 8), not a failure: the pass is
- * correct without it and only slower, and the log says which happened.
- * (BookForge's electron/crucible/denoise.ts, ported.)
+ * The separator stays resident inside the session that loaded it, so a pass's
+ * chunks pay the 913 MB checkpoint load once. The editor's voice isolation runs
+ * OUTSIDE any queue job (the editor's own workflow), so the pass holds a session
+ * of its own: asked for (or this install's open one joined, never a second one
+ * beside it: session.ts) once the first chunk is uploaded, held across the
+ * track's chunks, and let go of by {@link CrucibleVoiceIsolator.dispose}, which
+ * the editor calls when a track is finished and again when the run ends. The
+ * editor's own Python between chunks is work on this side, not on the server's:
+ * the session's `idle_s` (900 s) covers it.
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import type { SessionSource } from './session';
 import {
-  CrucibleBusy,
-  CrucibleLeased,
   CrucibleRefused,
+  CrucibleSessionClosed,
   type JobEvent,
   type JobRequest,
+  type QueuePosition,
   type ServerInfo,
 } from '@crucible/client';
 
@@ -89,14 +92,8 @@ export const VOICE_ISOLATION_MODEL = 'vocals-roformer';
 export const VOICE_ISOLATION_SAMPLE_RATE = 44_100;
 /** EMPTY BY CONTRACT (PHASE4-AUDIO.md 4.2): the server forbids every key. Not an omission. */
 export const VOICE_ISOLATION_PARAMS: Readonly<Record<string, never>> = Object.freeze({});
-/** The act a lease on the separator names, which is what a bench shows. */
+/** The act the pass's queue session names, which is what a bench shows. */
 export const VOICE_ISOLATION_ACT = 'denoise';
-/**
- * How long the pass's lease outlives silence. Heartbeated before every chunk,
- * and a 6-8 minute chunk separates in about a minute on the Mac, so five
- * minutes is several chunks of slack without holding a dead client's card long.
- */
-export const VOICE_ISOLATION_LEASE_TTL_S = 300;
 /** What places the manifest's two files on a host (PHASE4-AUDIO.md 4.2). */
 export const VOICE_ISOLATION_PULL_COMMAND = `crucible denoise pull ${VOICE_ISOLATION_MODEL}`;
 /** What builds the env `denoise` runs in: it has none of its own (plan section 3.4, section 19 N3). */
@@ -104,16 +101,17 @@ export const VOICE_ISOLATION_ENV_COMMAND = 'crucible install rvc';
 
 /**
  * THE CALLS THIS DOOR MAKES, and nothing else. Spelled as the vendored SDK's
- * `CrucibleClient` spells them (@crucible/client 1.0.34), so that client is one
- * as it stands; anything else handed in must answer in the same shapes and
- * throw the SDK's error classes for a refusal (see docs/crucible/P7.md).
+ * `CrucibleClient` spells them (@crucible/client 1.0.76), so that client and its
+ * `CrucibleSession` are one as they stand; anything else handed in must answer
+ * in the same shapes and throw the SDK's error classes for a refusal (see
+ * docs/crucible/P7.md).
  */
 export interface DenoiseClient {
   /** `GET /v1/info`: job types and each one's model rows, with `installed`. */
   info(): Promise<ServerInfo>;
   /** `POST /v1/uploads` (multipart, part `file`). */
   upload(data: Blob, options: { filename: string }): Promise<{ readonly blobId: string }>;
-  /** `POST /v1/jobs`. A refusal throws `CrucibleRefused`; busy and leased are its `CrucibleBusy` and `CrucibleLeased`. */
+  /** `POST /v1/jobs`. A refusal throws `CrucibleRefused`; an ended session is `CrucibleSessionClosed`. */
   submit(request: JobRequest): Promise<string>;
   /** `GET /v1/jobs/{id}/events`, ending after the first terminal frame. */
   events(jobId: string): AsyncIterable<JobEvent>;
@@ -121,21 +119,20 @@ export interface DenoiseClient {
   artifact(jobId: string, name: string): Promise<Uint8Array>;
   /** `DELETE /v1/jobs/{id}`. */
   cancel(jobId: string): Promise<unknown>;
-  /** `POST /v1/models/{id}/lease`. */
-  lease(subject: string, options: { act: string; ttlSeconds: number }): Promise<{ readonly leaseId: string }>;
-  /** `POST /v1/leases/{id}/heartbeat`. */
-  heartbeat(leaseId: string): Promise<unknown>;
-  /** `DELETE /v1/leases/{id}`. */
-  release(leaseId: string): Promise<void>;
+}
+
+/** The queue session a pass's jobs run in: its client sends `X-Crucible-Session`. Let go of it once. */
+export interface DenoiseSession {
+  readonly client: DenoiseClient;
+  release(): Promise<void>;
 }
 
 /**
- * Wait out a busy lane. Called with the holder's sentence ("busy: bookforge,
- * tts 62% done"); resolves when the lane's owner says to ask again, rejects to
- * give up (an aborted `signal` is the run being cancelled). The lanes are P3's;
- * the editor's interim one is {@link parkOnProbe}.
+ * Hold the queue session the pass runs in (lanes.ts `sessionOn`: this install's open session on
+ * the server joined, else a new one). Resolves once it is open; `onQueue` hears its place in the
+ * server's line while it waits; an aborted `signal` takes it out of the line.
  */
-export type ParkOnBusyLane = (holderLine: string, signal?: AbortSignal) => Promise<void>;
+export type OpenDenoiseSession = (options: { onQueue: (position: QueuePosition) => void; signal?: AbortSignal }) => Promise<DenoiseSession>;
 
 /** A refusal before or at the submit, or a result this side cannot use. The run aborts. */
 export class VoiceIsolationRefused extends Error {
@@ -299,18 +296,16 @@ function isIntegerPcm(format: WavFormat): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Refusals: the holder's line for a wait, the server's words for the rest
+// Refusals: the server's words
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** The holder's sentence when the lane or the card is someone else's, else null. */
-export function holderLineOf(err: unknown): string | null {
-  if (err instanceof CrucibleBusy) return err.busyLine;
-  if (err instanceof CrucibleLeased) return err.leasedLine;
-  return null;
-}
 
 function describeRefusal(err: unknown, server: string, verb: string): Error {
   const at = `crucible "${server}"`;
+  if (err instanceof CrucibleSessionClosed) {
+    return new VoiceIsolationRefused('session_closed', server,
+      `${at} ended the queue session voice isolation ran in (${err.reason}: ${err.serverMessage}), so ${verb} stops here. `
+      + 'No new session is opened to carry on.');
+  }
   if (err instanceof CrucibleRefused) {
     // `env_missing` and `denoise_model_missing` are the two a host can fix, and
     // the second already names its command in the server's message.
@@ -336,14 +331,16 @@ export type VoiceIsolationProgress =
   | { readonly kind: 'warming'; readonly message: string }
   /** The server's own fraction for this chunk, 0..1, never re-derived here. */
   | { readonly kind: 'progress'; readonly fraction: number; readonly message: string }
-  /** Waiting out a busy lane, with the holder's sentence. */
-  | { readonly kind: 'parked'; readonly holderLine: string };
+  /** The pass's queue session waiting in the server's line: 1 is next, of `of` waiting. */
+  | { readonly kind: 'in_line'; readonly position: number; readonly of: number };
 
 export interface VoiceIsolatorOptions {
   /** The registered name, for every sentence. Never a URL. */
   readonly server: string;
+  /** A plain client: what the server offers (`/v1/info`) and the uploads. */
   readonly client: DenoiseClient;
-  readonly park: ParkOnBusyLane;
+  /** The queue session the jobs run in, asked for once the first chunk is uploaded. */
+  readonly session: OpenDenoiseSession;
   readonly onLog?: (line: string) => void;
 }
 
@@ -356,7 +353,7 @@ export interface SeparatedChunk {
   /** Where the vocal stem was written: the caller's `out`, exactly (a 16-bit PCM WAV). */
   readonly stem: string;
   readonly jobId: string;
-  /** `done.extra.load_seconds`: the load on the chunk that paid it, 0 on the rest while the lease holds. */
+  /** `done.extra.load_seconds`: the load on the chunk that paid it, 0 on the rest while the session holds it. */
   readonly loadSeconds: number | null;
   readonly separateSeconds: number | null;
 }
@@ -365,12 +362,11 @@ export class CrucibleVoiceIsolator {
   /** The registered name this pass runs on, for the operation row. */
   readonly server: string;
   private readonly client: DenoiseClient;
-  private readonly park: ParkOnBusyLane;
+  private readonly openSession: OpenDenoiseSession;
   private readonly log: (line: string) => void;
   private offered = false;
-  private leaseId: string | null = null;
-  /** True once a lease has been asked for in this pass, so a refusal is logged once, not per chunk. */
-  private leaseAsked = false;
+  /** The pass's queue session: asked for by the first chunk, let go of by {@link dispose}. */
+  private session: Promise<DenoiseSession> | null = null;
 
   constructor(options: VoiceIsolatorOptions) {
     if (typeof options.server !== 'string' || options.server.trim() === '') {
@@ -379,7 +375,7 @@ export class CrucibleVoiceIsolator {
     }
     this.server = options.server;
     this.client = options.client;
-    this.park = options.park;
+    this.openSession = options.session;
     this.log = options.onLog ?? (() => undefined);
   }
 
@@ -442,10 +438,6 @@ export class CrucibleVoiceIsolator {
     }
     if (signal?.aborted) throw new VoiceIsolationCancelled(server, null, 'voice isolation was cancelled before the chunk was sent');
 
-    // Keep the lease alive across the chunk about to run. A lease that has
-    // lapsed is not a failure; it is re-taken after this chunk.
-    await this.heartbeat();
-
     const name = path.basename(chunk);
     progress({ kind: 'uploading' });
     const openAsBlob = (fs as unknown as { openAsBlob?: (p: string) => Promise<Blob> }).openAsBlob;
@@ -468,30 +460,18 @@ export class CrucibleVoiceIsolator {
       inputs: { [name]: { blobId } },
       clientRef: `contentstudio:voice-isolation:${name}`,
     };
-    let jobId: string | null = null;
-    while (jobId === null) {
-      if (signal?.aborted) throw new VoiceIsolationCancelled(server, null, 'voice isolation was cancelled before the chunk was admitted');
-      try {
-        jobId = await this.client.submit(request);
-      } catch (err) {
-        const holder = holderLineOf(err);
-        if (holder === null) throw describeRefusal(err, server, `the voice-isolation job for ${name}`);
-        // A WAIT, NOT A FAILURE (LEDGER #195). The blob stays on the server: a
-        // refused submission never materialises its inputs. The lane's owner
-        // says when to ask again; nothing here counts or sleeps.
-        this.log(`crucible "${server}" is busy (${holder}); ${name} waits for the lane`);
-        progress({ kind: 'parked', holderLine: holder });
-        try {
-          await this.park(holder, signal);
-        } catch (parkErr) {
-          if (signal?.aborted) throw new VoiceIsolationCancelled(server, null, 'voice isolation was cancelled while it waited for the lane');
-          throw parkErr;
-        }
-      }
+    // THE PASS'S SESSION, once the chunk is on the server (a blob waits for nobody's turn). The
+    // first chunk asks for it and may wait in the server's line; the rest run in it.
+    const inSession = await this.sessionFor(signal, progress);
+    let jobId: string;
+    try {
+      jobId = await inSession.submit(request);
+    } catch (err) {
+      throw describeRefusal(err, server, `the voice-isolation job for ${name}`);
     }
     this.log(`crucible "${server}" admitted voice isolation of ${name} as ${jobId}`);
 
-    const done = await this.follow(jobId, name, signal, progress);
+    const done = await this.follow(inSession, jobId, name, signal, progress);
 
     // THE STEM THE SERVER NAMES, never one picked by filename here: exactly one
     // output names the primary stem, and that is the server's invariant.
@@ -515,7 +495,7 @@ export class CrucibleVoiceIsolator {
     }
     let bytes: Uint8Array;
     try {
-      bytes = await this.client.artifact(jobId, primary);
+      bytes = await inSession.artifact(jobId, primary);
     } catch (err) {
       throw describeRefusal(err, server, `the stem of job ${jobId}`);
     }
@@ -550,32 +530,46 @@ export class CrucibleVoiceIsolator {
     }
     fs.renameSync(partial, target);
 
-    // AFTER the first chunk: a lease names what is already resident, and this
-    // job is what made it so.
-    await this.holdTheSeparator();
-
     const num = (key: string): number | null => (typeof done.extra[key] === 'number' ? done.extra[key] as number : null);
     return { stem: target, jobId, loadSeconds: num('load_seconds'), separateSeconds: num('separate_seconds') };
   }
 
-  /** Give the card back. Idempotent and never throws, so it sits in a `finally`. */
+  /** Let go of the pass's session. Idempotent and never throws, so it sits in a `finally`. */
   async dispose(): Promise<void> {
-    const held = this.leaseId;
-    this.leaseId = null;
-    this.leaseAsked = false;
+    const held = this.session;
+    this.session = null;
     if (held === null) return;
+    const session = await held.catch(() => null);
+    if (session === null) return;
+    await session.release();
+    this.log(`let go of the queue session on crucible "${this.server}" (the separator goes with it unless other work of this app holds it)`);
+  }
+
+  /** The pass's session client: asked for once, waiting in the server's line if it must. */
+  private async sessionFor(signal: AbortSignal | undefined, progress: (p: VoiceIsolationProgress) => void): Promise<DenoiseClient> {
+    if (this.session === null) {
+      const asking = this.openSession({
+        onQueue: (position) => {
+          this.log(`crucible "${this.server}" has other work on it; voice isolation waits in its line (${position.position} of ${position.of})`);
+          progress({ kind: 'in_line', position: position.position, of: position.of });
+        },
+        ...(signal === undefined ? {} : { signal }),
+      });
+      this.session = asking;
+      // A wait that was abandoned holds nothing: the next chunk asks again.
+      asking.catch(() => { if (this.session === asking) this.session = null; });
+    }
     try {
-      await this.client.release(held);
-      this.log(`released ${VOICE_ISOLATION_MODEL} on crucible "${this.server}" (lease ${held})`);
+      return (await this.session).client;
     } catch (err) {
-      // Declared, not swallowed: the ttl frees it, and the log says it had to.
-      this.log(`could not release lease ${held} on crucible "${this.server}" `
-        + `(${err instanceof Error ? err.message : String(err)}); it lapses after ${VOICE_ISOLATION_LEASE_TTL_S} s`);
+      if (signal?.aborted) throw new VoiceIsolationCancelled(this.server, null, 'voice isolation was cancelled while it waited in the server\'s line');
+      throw describeRefusal(err, this.server, 'the queue session voice isolation runs in');
     }
   }
 
   /** Follow one job to its terminal frame. A DELETE on abort, then the stream's own `cancelled`. */
   private async follow(
+    client: DenoiseClient,
     jobId: string,
     name: string,
     signal: AbortSignal | undefined,
@@ -587,7 +581,7 @@ export class CrucibleVoiceIsolator {
       if (cancelAsked) return;
       cancelAsked = true;
       this.log(`cancelling crucible "${server}" job ${jobId}`);
-      this.client.cancel(jobId).catch((err: unknown) => {
+      client.cancel(jobId).catch((err: unknown) => {
         // A job already past cancelling is the stream's news to deliver.
         this.log(`cancel of crucible "${server}" job ${jobId} was not accepted: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -595,7 +589,7 @@ export class CrucibleVoiceIsolator {
     signal?.addEventListener('abort', cancel, { once: true });
     if (signal?.aborted) cancel();
     try {
-      for await (const event of this.client.events(jobId)) {
+      for await (const event of client.events(jobId)) {
         if (event.event === 'warming') {
           progress({ kind: 'warming', message: event.data.message ?? 'warming up' });
         } else if (event.event === 'progress') {
@@ -626,41 +620,10 @@ export class CrucibleVoiceIsolator {
     }
     throw new VoiceIsolationRefused('crucible_protocol', server, `the event stream of job ${jobId} ended with no terminal frame`);
   }
-
-  private async holdTheSeparator(): Promise<void> {
-    if (this.leaseAsked) return;
-    this.leaseAsked = true;
-    try {
-      ({ leaseId: this.leaseId } = await this.client.lease(VOICE_ISOLATION_MODEL, {
-        act: VOICE_ISOLATION_ACT, ttlSeconds: VOICE_ISOLATION_LEASE_TTL_S,
-      }));
-      this.log(`holding ${VOICE_ISOLATION_MODEL} on crucible "${this.server}" for the rest of the pass (lease ${this.leaseId})`);
-    } catch (err) {
-      this.leaseId = null;
-      // DECLARED, NOT FATAL (Law 8): correct without it, only slower.
-      this.log(`could not hold ${VOICE_ISOLATION_MODEL} on crucible "${this.server}" `
-        + `(${err instanceof Error ? err.message : String(err)}); each later chunk may pay its own model load`);
-    }
-  }
-
-  private async heartbeat(): Promise<void> {
-    const held = this.leaseId;
-    if (held === null) return;
-    try {
-      await this.client.heartbeat(held);
-    } catch (err) {
-      // The lease lapsed or was released: the run is unprotected, not broken.
-      // Asked for again after the next chunk.
-      this.leaseId = null;
-      this.leaseAsked = false;
-      this.log(`lease ${held} on crucible "${this.server}" is no longer open `
-        + `(${err instanceof Error ? err.message : String(err)}); it is taken again after the next chunk`);
-    }
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The editor's door: the selected server, its capability, and an interim park
+// The editor's door: the routing's server, its capability, and the pass's session
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** What the editor's IPC needs, built by {@link crucibleVoiceIsolation} over the app's Crucible context. */
@@ -677,32 +640,8 @@ export interface VoiceIsolationContext {
   /** The model routing's server, which every action uses when it names one (Owen 2026-09-29). */
   routingServer(): string | null;
   factory: { clientFor(name: string, options?: { timeoutMs?: number }): Promise<DenoiseClient> };
-  probes: { reach(name: string): Promise<{ probe: { outcome: string; message?: string; facts?: { busyLine: string | null } } }> };
-}
-
-/** How often {@link parkOnProbe} re-reads the probe: its own cache window (probe.ts PROBE_CACHE_MS). */
-export const PARK_REREAD_MS = 15_000;
-
-/**
- * THE INTERIM PARK, until P3's lanes own admission: wait until the selected
- * server's probe reads a free lane, re-reading at the probe's own 15 s cache
- * window, then let the isolator ask the door again. The door is still what
- * decides (`/v1/activity` is a display, never admission), so a lane taken again
- * between the read and the submit parks again with the new holder's sentence.
- */
-export function parkOnProbe(probes: VoiceIsolationContext['probes'], server: string, rereadMs = PARK_REREAD_MS): ParkOnBusyLane {
-  return async (_holderLine, signal) => {
-    for (;;) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, rereadMs);
-        const stop = (): void => { clearTimeout(timer); reject(new Error('cancelled while waiting for the lane')); };
-        if (signal?.aborted) { stop(); return; }
-        signal?.addEventListener('abort', stop, { once: true });
-      });
-      const answer = await probes.reach(server);
-      if (answer.probe.outcome === 'ok' && answer.probe.facts?.busyLine === null) return;
-    }
-  };
+  /** The lanes, which hand out queue sessions (lanes.ts `sessionOn`; session.ts). */
+  lanes: SessionSource;
 }
 
 /** Voice isolation over the app's Crucible context: the routing's server, else the selected one (LEDGER #205; Owen 2026-09-29). */
@@ -729,7 +668,20 @@ export function crucibleVoiceIsolation(ctx: VoiceIsolationContext): VoiceIsolati
       const server = ctx.routingServer() ?? ctx.servers.selected();
       // A work client: no deadline, which would cut off the event stream.
       const client = await ctx.factory.clientFor(server);
-      const isolator = new CrucibleVoiceIsolator({ server, client, park: parkOnProbe(ctx.probes, server), onLog });
+      const isolator = new CrucibleVoiceIsolator({
+        server,
+        client,
+        session: async ({ onQueue, signal }) => {
+          const hold = await ctx.lanes.sessionOn(server, {
+            act: VOICE_ISOLATION_ACT,
+            what: 'the editor\'s voice isolation',
+            onQueue,
+            ...(signal === undefined ? {} : { signal }),
+          });
+          return { client: hold.card.session, release: () => hold.release() };
+        },
+        onLog,
+      });
       await isolator.start();
       return isolator;
     },

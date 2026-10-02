@@ -10,7 +10,7 @@
  *     story" with the counts said; a file name that finds one story links by name (and says whether
  *     the transcript agrees); a name and a transcript that disagree link nothing and name both; a
  *     link the operator made by hand is used as it is and never replaced.
- *   - STAGE ORDER, 27B REUSE, NO DECIDE: inside one lane job on one JobLeases (as the metadata job
+ *   - STAGE ORDER, 27B REUSE, NO DECIDE: inside one lane job on one JobSessions (as the metadata job
  *     runs), the story and the frames ask the server nothing (CPU only since the frame scoring was
  *     removed 2026-09-29, Owen picks the frames), and the words run on the fields' 27B with no second
  *     load. No decide at all: the tone and photo ranking went the same day (Owen picks his photos).
@@ -266,13 +266,13 @@ const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a
 /**
  * The world one item's thumbnails run in: the synthetic week, the photos in a scratch library, the
  * fake Crucible behind the real transport and lanes, a stand-in renderer, and a `job(fn)` that runs
- * `fn(leases)` inside one lane job holding one JobLeases, as the metadata job does.
+ * `fn(sessions)` inside one lane job holding one JobSessions, as the metadata job does.
  */
 async function withWorld(options, fn) {
   // The catalog says what /v1/models says: the 8-bit 27B installed (the Mac's build), the 9B not downloaded.
   const catalog = MODELS.map((m) => ({ kind: 'model', id: m.id, name: m.id, jobType: 'llm', installed: m.installed !== false, expectedBytes: null }));
   const server = await fake.startFakeCrucible({ version: '1.0.55', models: MODELS, catalog, decideProbs, chatReplies: { 'qwen3.8-27b-8bit': () => ({ content: WORDS_REPLY, finishReason: 'stop' }) }, ...(options.fake ?? {}) });
-  const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
+  const made = context();
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   installCrucibleTransport(made.ctx.transport);
   installLanes(made.ctx.lanes);
@@ -320,22 +320,22 @@ async function withWorld(options, fn) {
   const job = async (body) => {
     const controller = new AbortController();
     const outcome = await made.ctx.lanes.runJob({ jobId: 'keeper-metadata-job', fast: false, stage: 'transcribe', controller }, async () => {
-      const leases = made.ctx.transport.job('the keeper\'s metadata job');
+      const sessions = made.ctx.transport.job('the keeper\'s metadata job');
       try {
-        return await body(leases, controller);
+        return await body(sessions, controller);
       } finally {
-        await leases.releaseAll();
+        await sessions.releaseAll();
       }
     });
     assert.strictEqual(outcome.kind, 'done', JSON.stringify(outcome));
     return outcome.value;
   };
-  const itemRun = (leases, controller, over = {}) => pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
+  const itemRun = (sessions, controller, over = {}) => pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
     jobId: 'keeper-job', itemIndex: 0, sourceLabel: 'f2 - the rapture.mov', contentType: 'video',
     videoPath: w.exportOf(over.name ?? 'f2 - the rapture'), operatorRef: undefined, segments: captions(STORY_TEXT[over.story ?? 2]),
     reportFolder: over.reportFolder ?? path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
   }, {
-    leases, aiManager, routing: routing.resolveMetadataRouting(over.routing ?? {}), models, signal: controller.signal,
+    sessions, aiManager, routing: routing.resolveMetadataRouting(over.routing ?? {}), models, signal: controller.signal,
     cancelled: () => controller.signal.aborted, progress: () => undefined,
   });
   try {
@@ -351,14 +351,14 @@ async function withWorld(options, fn) {
 const FIELDS = { titles: ['Title one', 'Title two', 'Title three', 'Title four'], description_hook: 'She says the rapture is here.', description: 'A rapture claim.\n\nLinks' };
 
 check('stages: story and frames before the chapters with no model; words and render after the fields; the 27B loaded once (the fields\'), the words on it; no decide; the grid is at most two frames a scene, in time order, the only frames on disk', () => withWorld({}, async ({ server, renders, plainCalls, aiManager, job, itemRun, root }) => {
-  const rec = await job(async (leases, controller) => {
-    const run = itemRun(leases, controller);
+  const rec = await job(async (sessions, controller) => {
+    const run = itemRun(sessions, controller);
     await run.beforeChapters();
     assert.strictEqual(run.record().state, 'made', run.record().line);
     assert.deepStrictEqual(run.record().timings.map((t) => t.stage), ['story', 'frames']);
-    assert.deepStrictEqual([loadsOf(server).length, server.leases.taken.length, server.decideBodies().length], [0, 0, 0], 'the story and the frames asked the server nothing');
-    // The chapters and the fields, as the metadata job runs them: on the 27B, under the same leases.
-    await aiManager.runPlainRequest('the titles prompt', 'qwen3.8-27b-8bit', 'titles', { thinking: false, maxTokens: 2048, loadContext: 8192, job: leases });
+    assert.deepStrictEqual([loadsOf(server).length, server.sessions.length, server.decideBodies().length], [0, 0, 0], 'the story and the frames asked the server nothing');
+    // The chapters and the fields, as the metadata job runs them: on the 27B, under the same sessions.
+    await aiManager.runPlainRequest('the titles prompt', 'qwen3.8-27b-8bit', 'titles', { thinking: false, maxTokens: 2048, loadContext: 8192, job: sessions });
     const loadsBefore = loadsOf(server).length;
     await run.afterFields(FIELDS);
     assert.strictEqual(loadsOf(server).length, loadsBefore, 'the words loaded nothing: the fields\' 27B stayed');
@@ -370,7 +370,7 @@ check('stages: story and frames before the chapters with no model; words and ren
   assert.deepStrictEqual(record.RETIRED_STAGES, ['tone-photos', 'scoring'], 'an older record may still name them');
   assert.strictEqual(server.decideBodies().length, 0, 'no decide at all');
   assert.deepStrictEqual(loadsOf(server), ['qwen3.8-27b-8bit'], 'the 27B once, the only model of the job');
-  assert.strictEqual(server.leases.taken.length, 1, 'one lease');
+  assert.strictEqual(server.sessions.length, 1, 'one session');
   assert.ok(plainCalls.every((c) => c.job !== undefined), 'every text call carried the job');
   assert.ok(rec.folder.startsWith(path.join(root, 'report', 'thumbnails', 'keeper-job-1')), rec.folder);
   // The grid: at most two frames a scene, look-alikes dropped, in time order, the only frames on disk.
@@ -391,8 +391,8 @@ check('stages: story and frames before the chapters with no model; words and ren
 
 check('stages: words per title (one call each, the title in it), the gate\'s ranking first when it ranked them; kinds claim, stakes, reaction; no pair gets a frame and nothing is drawn, "no frame / no photo picked yet" on each', () => withWorld({}, async ({ plainCalls, job, itemRun, renders }) => {
   const ranked = { ...FIELDS, reroll_gate: { ranking: { order: [{ title: 'Title three' }, { title: 'Title one' }, { title: 'Title four' }, { title: 'Title two' }] } } };
-  const rec = await job(async (leases, controller) => {
-    const run = itemRun(leases, controller);
+  const rec = await job(async (sessions, controller) => {
+    const run = itemRun(sessions, controller);
     await run.beforeChapters();
     await run.afterFields(ranked);
     return run.record();
@@ -420,12 +420,12 @@ check('stages: words per title (one call each, the title in it), the gate\'s ran
 }));
 
 check('stages: an item with no story stops with the reason on the record; no model is called and nothing is written', () => withWorld({}, async ({ server, plainCalls, job, itemRun, root }) => {
-  const rec = await job(async (leases) => {
+  const rec = await job(async (sessions) => {
     // A name that finds no story, and a transcript no story of the week holds.
     const run = pipeline.ItemThumbnailRun.start({ mode: 'on', setup: {} }, {
       jobId: 'keeper-job', itemIndex: 1, sourceLabel: 'u9.mov', contentType: 'video', videoPath: path.join(root, '2026-01-04', 'complete', 'u9 - unrelated.mov'),
       operatorRef: undefined, segments: captions(words(77, 400)), reportFolder: path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
-    }, { leases, aiManager: { runPlainRequest: async () => { throw new Error('no model'); } }, routing: routing.resolveMetadataRouting({}), models: routing.RoutingModels.withoutCatalog('no model is called'), cancelled: () => false, progress: () => undefined });
+    }, { sessions, aiManager: { runPlainRequest: async () => { throw new Error('no model'); } }, routing: routing.resolveMetadataRouting({}), models: routing.RoutingModels.withoutCatalog('no model is called'), cancelled: () => false, progress: () => undefined });
     await run.beforeChapters();
     await run.afterFields(FIELDS);
     return run.record();
@@ -442,8 +442,8 @@ check('stages: an item with no story stops with the reason on the record; no mod
 }));
 
 check('stages: a failed stage is on the record and in the warning, in plain words; the later stages do not run; a stop is rethrown, not recorded', () => withWorld({}, async ({ job, itemRun, renders }) => {
-  const rec = await job(async (leases, controller) => {
-    const run = itemRun(leases, controller, { routing: { thumbnail_words: 'qwen35-9b' } });
+  const rec = await job(async (sessions, controller) => {
+    const run = itemRun(sessions, controller, { routing: { thumbnail_words: 'qwen35-9b' } });
     await run.beforeChapters();
     await run.afterFields(FIELDS);
     // Refused by the job's resolution, before anything is loaded: the row names a model the server does not hold.
@@ -455,8 +455,8 @@ check('stages: a failed stage is on the record and in the warning, in plain word
   assert.deepStrictEqual(renders, [], 'the render did not run');
   assert.strictEqual(record.readItemThumbnails(rec, 'keeper').failure.stage, 'words');
   // A stop: the frames stage while the run is being stopped goes up, unrecorded.
-  const err = await rejection(job(async (leases, controller) => {
-    const run = itemRun(leases, controller);
+  const err = await rejection(job(async (sessions, controller) => {
+    const run = itemRun(sessions, controller);
     controller.abort(new Error('Stopped by the user'));
     await run.beforeChapters();
   }));
@@ -467,7 +467,7 @@ check('off: absent setup, the per-run switch, a channel that makes none and a ch
   const item = (channel) => ({
     jobId: 'j', itemIndex: 0, sourceLabel: 'x', contentType: 'video', videoPath: '/x.mov', operatorRef: undefined, segments: [], reportFolder: '/r', channel,
   });
-  const doors = { leases: null, aiManager: null, routing: {}, cancelled: () => false, progress: () => undefined };
+  const doors = { sessions: null, aiManager: null, routing: {}, cancelled: () => false, progress: () => undefined };
   const fireside = assets.promptAssets().channel('youtube-fireside');
   const lines = [
     pipeline.ItemThumbnailRun.start(undefined, item(fireside), doors),
@@ -635,13 +635,13 @@ async function windowOver(world, { record: given = null, noStory = false, subjec
   fs.writeFileSync(video, 'a video');
   const segments = captions(noStory ? words(77, 400) : STORY_TEXT[2]);
   if (!subject) saveTranscript({ outputDir: root, videoPath: video, segments, durationSec: 200, whisperModel: 'keeper', words: null, speakerTagging: null });
-  const rec = given ?? await inJob(async (leases, controller) => {
-    const run = itemRun(leases, controller, { reportFolder: job.txtFolder, ...(noStory ? { name: 'u9 - unrelated', story: 1 } : {}) });
+  const rec = given ?? await inJob(async (sessions, controller) => {
+    const run = itemRun(sessions, controller, { reportFolder: job.txtFolder, ...(noStory ? { name: 'u9 - unrelated', story: 1 } : {}) });
     if (noStory) {
       const r = pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
         jobId: job.jobId, itemIndex: 0, sourceLabel: subject ? 'the rapture' : 'u9.mov', contentType: subject ? 'subject' : 'video', videoPath: subject ? null : video, operatorRef: undefined,
         segments: subject ? [] : segments, reportFolder: job.txtFolder, channel: assets.promptAssets().channel('youtube-fireside'),
-      }, { leases, aiManager, routing: routing.resolveMetadataRouting({}), models: world.models, cancelled: () => false, progress: () => undefined });
+      }, { sessions, aiManager, routing: routing.resolveMetadataRouting({}), models: world.models, cancelled: () => false, progress: () => undefined });
       await r.beforeChapters();
       return r.record();
     }
@@ -841,7 +841,8 @@ check('window, an old own-image pick: nothing makes a new one (no choose-own, no
 check('window, rewrite words for a title: one words call carrying the title on ONE held load of the 27B, no decide; pair n takes the title and the new words and answers the words to put on card n; nothing is drawn and the saved card and picks are left as they are; a second action while one runs is refused; the hold is given back', () => withWorld({}, async (world) => {
   const { job, itemId, window, rec } = await windowOver(world);
   const { server, plainCalls } = world;
-  const leasesBefore = server.leases.taken.length;
+  const sessionsBefore = server.sessions.length;
+  const loadsBefore = loadsOf(server).length;
   const callsBefore = plainCalls.length;
   const decidesBefore = server.decideBodies().length;
   const drawsBefore = drawsOf(world).length;
@@ -855,7 +856,8 @@ check('window, rewrite words for a title: one words call carrying the title on O
   assert.ok(words[0].prompt.includes('\nTitle four\n'), 'carrying the new title');
   assert.ok(words[0].job !== undefined, 'under the window\'s held job');
   assert.strictEqual(server.decideBodies().length - decidesBefore, 0, 'no tone or photo question');
-  assert.deepStrictEqual(server.leases.taken.slice(leasesBefore).map((l) => l.model), ['qwen3.8-27b-8bit'], 'one lease on the 27B for the words');
+  assert.strictEqual(server.sessions.length - sessionsBefore, 1, 'one held session for the words');
+  assert.ok(loadsOf(server).slice(loadsBefore).every((model) => model === 'qwen3.8-27b-8bit') && server.resident() === 'qwen3.8-27b-8bit', 'the 27B, and nothing else, on the card for the words');
   assert.deepStrictEqual(text, { kind: 'stakes', phrase: 'MAYBE TOMORROW', wordsFor: 'Title four' }, 'the words for card 2, of the kind it had');
   const p2 = v.record.pairs[1];
   assert.deepStrictEqual([p2.title, p2.words.stakes.includes('MAYBE TOMORROW')], ['Title four', true]);
@@ -865,9 +867,9 @@ check('window, rewrite words for a title: one words call carrying the title on O
   assert.deepStrictEqual(v.picks.map((p) => p.pick), picksBefore, 'the picks as they were');
   assert.ok(/"shout" is not a kind of words/.test((await rejection(window.pairTitle(job.jobId, itemId, 2, 'Title four', 'shout'))).message));
   assert.strictEqual(window.heldModel(), 'qwen3.8-27b-8bit');
-  const released = server.leases.released.length;
+  const released = closedSessions(server);
   assert.strictEqual(await window.releaseHold('the window closed'), 'qwen3.8-27b-8bit');
-  assert.ok(server.leases.released.length > released, 'the lease went back to the server');
+  assert.ok(closedSessions(server) > released, 'the held session was closed');
   assert.strictEqual(await window.releaseHold('again'), null);
 }));
 
@@ -1125,7 +1127,7 @@ check('window, the words are kept: New options and More options are in the repor
 
   // CLOSING MID-RUN: the run goes on and saves; the model is given back only after it.
   await window.releaseHold('the check starts the close');
-  const releasedBefore = server.leases.released.length;
+  const releasedBefore = closedSessions(server);
   server.inject({ chatDelayMs: 400 });
   const running = window.writeWords(job.jobId, itemId, 2, 'new');
   await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1134,14 +1136,14 @@ check('window, the words are kept: New options and More options are in the repor
   const closedBefore = pieces.asked.closed;
   assert.strictEqual(await window.closed(), null, 'closing gives nothing back while the words are written');
   assert.strictEqual(pieces.asked.closed, closedBefore + 1, 'the face search\'s page goes at once');
-  assert.strictEqual(server.leases.released.length, releasedBefore, 'the lease is not given back under the running request');
+  assert.strictEqual(closedSessions(server), releasedBefore, 'the held session is not closed under the running request');
   assert.strictEqual(window.heldModel(), 'qwen3.8-27b-8bit');
   const done = await running;
   server.inject({});
   assert.ok(/new options for “Title two”/.test(done.line), done.line);
   assert.deepStrictEqual(onDisk(out, job.jobId).earlierWords.map((e) => e.title), [rec.pairs[1].title, 'Title one'], 'the run finished and saved after the window closed, the old set kept');
   assert.strictEqual(window.running(job.jobId, itemId), null);
-  assert.ok(server.leases.released.length > releasedBefore, 'the model went back after the run');
+  assert.ok(closedSessions(server) > releasedBefore, 'the model went back after the run');
   assert.strictEqual(window.heldModel(), null);
   // Quitting the app gives it back at once, whatever runs.
   await window.writeWords(job.jobId, itemId, 3, 'more');
@@ -1200,6 +1202,8 @@ const compose = (() => {
 })();
 
 const loadsOf = (server) => server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model').map((b) => b.model);
+/** The queue sessions this install's work has closed on the fake (Crucible 1.0.76, LEDGER #255). */
+const closedSessions = (server) => server.sessions.filter((row) => row.status === 'closed').length;
 
 /**
  * A record as Owen's first run left it (2026-09-29): stopped at the since-removed tone-photos stage
@@ -1241,10 +1245,10 @@ check('errors reach the window: a record stopped at a removed stage (tone-photos
   assert.deepStrictEqual([blocked.finish.stage, blocked.finish.keep, blocked.finish.run], ['scoring', ['story', 'frames'], ['words', 'render']], 'a stop at the removed scoring keeps its frames and goes on from the words');
   assert.ok(blocked.finish.reason === null && blocked.finish.retired === true, 'the refused vision model is not repeated');
   assert.strictEqual(blocked.finish.blocked, 'No Crucible server to run the models on: no Crucible server is selected in Settings');
-  const before = [plainCalls.length, server.decideBodies().length, server.leases.taken.length];
+  const before = [plainCalls.length, server.decideBodies().length, server.sessions.length];
   const refused = await rejection(noServer.window.finish(noServer.job.jobId, noServer.itemId));
   assert.ok(/No Crucible server/.test(refused.message), refused.message);
-  assert.deepStrictEqual([plainCalls.length, server.decideBodies().length, server.leases.taken.length], before, 'refused before any model was called or leased');
+  assert.deepStrictEqual([plainCalls.length, server.decideBodies().length, server.sessions.length], before, 'refused before any model was called or a session asked for');
   const seen = { busy: [], failed: [] };
   const runner = new compose.ActionRunner({ busy: (b) => seen.busy.push(b && b.what), failed: (line) => seen.failed.push(line) }, () => 1000);
   const [a, b] = await Promise.all([runner.run('Saving the thumbnails', async () => { throw drawErr; }), runner.run('Reading the thumbnails', async () => 'read')]);
@@ -1293,14 +1297,14 @@ function screenshotsRecord(folder, story, pairs) {
   };
 }
 
-check('finish: a record stopped at the removed tone-photos stage is prepared from what it stores (no word written, no decide, no lease), its story pairs left without the frames the old ranking gave them; made; own picks stay; a screenshots record stopped at render draws only; the plans', () => withWorld({}, async (world) => {
+check('finish: a record stopped at the removed tone-photos stage is prepared from what it stores (no word written, no decide, no session), its story pairs left without the frames the old ranking gave them; made; own picks stay; a screenshots record stopped at render draws only; the plans', () => withWorld({}, async (world) => {
   const { server, plainCalls, root } = world;
   const made = await windowOver(world);
   const old = stoppedAtTonePhotos(made.rec);
   const { job, itemId, window, rec } = await windowOver(world, { record: old });
   const mine = picture(path.join(root, 'Desktop', 'mine.png'), '1280x720');
   await window.saveCards(job.jobId, itemId, cardsFor(old, [{ own: mine }, null, null]));
-  const before = { plain: plainCalls.length, decides: server.decideBodies().length, loads: loadsOf(server).length, leases: server.leases.taken.length };
+  const before = { plain: plainCalls.length, decides: server.decideBodies().length, loads: loadsOf(server).length, sessions: server.sessions.length };
   const drawsBefore = world.renders.length;
   const v = await window.finish(job.jobId, itemId);
   const r = v.record;
@@ -1308,7 +1312,7 @@ check('finish: a record stopped at the removed tone-photos stage is prepared fro
   assert.strictEqual(r.line, '3 title and thumbnail pairs have their words; pick the frames and photos in the Thumbnails window.');
   assert.deepStrictEqual(r.frames.map((f) => f.id), rec.frames.map((f) => f.id), 'the frames as stored');
   assert.deepStrictEqual(r.pairs.map((p) => p.words), rec.pairs.map((p) => p.words), 'the words as stored');
-  assert.deepStrictEqual([plainCalls.length, server.decideBodies().length, loadsOf(server).length, server.leases.taken.length], [before.plain, before.decides, before.loads, before.leases], 'no model call, no load, no lease');
+  assert.deepStrictEqual([plainCalls.length, server.decideBodies().length, loadsOf(server).length, server.sessions.length], [before.plain, before.decides, before.loads, before.sessions], 'no model call, no load, no session');
   assert.strictEqual(world.renders.length, drawsBefore, 'nothing drawn: no pair has a frame until Owen picks');
   assert.ok(r.pairs.every((p) => p.default.frameId === null && !p.default.render.ok && p.default.photo === null && p.lines.includes(pipeline.NO_FRAME_YET) && p.lines.includes(pipeline.NO_PHOTO_YET)), 'no frame, not drawn, no photo, said');
   assert.ok(r.lines.some((l) => l === 'Finished in the Thumbnails window after stopping at the tone-photos stage: story, frames, words kept as stored; render run.'), r.lines.join(' | '));

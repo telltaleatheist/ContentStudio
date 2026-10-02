@@ -18,14 +18,18 @@
  *
  * A REFUSAL IS THE SDK'S OWN TYPE (`refusalOf`): 401 CrucibleAuthError, 426
  * CrucibleVersionError, 5xx CrucibleServerError, 4xx CrucibleRefused, built from the server's
- * `{"error": {code, message, details}}` exactly as the SDK's `#failure` builds them, so P3's
- * `parkRefusalOf` reads a busy chat door by type and code the way it reads every other door.
+ * `{"error": {code, message, details}}` exactly as the SDK's `#failure` builds them, including its
+ * two queue-session classes (1.0.76): `session_closed` is `CrucibleSessionClosed` (the stage fails
+ * naming the reason, session.ts), and `session_open` / `server_busy` door `session` is
+ * `CrucibleSessionHeld`.
  */
 import {
   CrucibleAuthError,
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
+  CrucibleSessionClosed,
+  CrucibleSessionHeld,
   CrucibleUnreachable,
   CrucibleVersionError,
 } from '@crucible/client';
@@ -65,8 +69,43 @@ export async function refusalOf(response: Response, url: string): Promise<Error>
     return new CrucibleVersionError(code, message, typeof stated === 'number' ? stated : null, 1);
   }
   if (response.status >= 500) return new CrucibleServerError(response.status, code, message, details);
-  if (response.status >= 400) return new CrucibleRefused(response.status, code, message, details);
+  if (response.status >= 400) return sessionRefusalOf(response.status, code, message, details) ?? new CrucibleRefused(response.status, code, message, details);
   return new CrucibleProtocolError(`HTTP ${response.status} from ${url} is neither a success nor a refusal`);
+}
+
+function text(body: Record<string, unknown>, key: string): string | null {
+  const value = body[key];
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * The SDK's queue-session refusals (its `closedRefusal` / `sessionRefusal`), read from the same
+ * details. A details object without the fields the class carries is a protocol error, as the SDK
+ * makes it: a session refusal that cannot name its session is not one this side can act on.
+ */
+function sessionRefusalOf(status: number, code: string, message: string, details: unknown): Error | null {
+  const body = details !== null && typeof details === 'object' ? (details as Record<string, unknown>) : null;
+  if (code === 'session_closed') {
+    const sessionId = body === null ? null : text(body, 'session_id') ?? text(body, 'queue_session_id');
+    const reason = body === null ? null : text(body, 'reason');
+    if (sessionId === null || reason === null) {
+      return new CrucibleProtocolError(`a session_closed refusal (${message}) names no session_id and reason in its details`);
+    }
+    return new CrucibleSessionClosed(status, message, details, { sessionId, reason });
+  }
+  if (code === 'session_open' || (code === 'server_busy' && body?.['door'] === 'session')) {
+    const sessionId = body === null ? null : text(body, 'session_id');
+    const act = body === null ? null : text(body, 'act');
+    const sessionStatus = body === null ? null : text(body, 'status');
+    const since = body === null ? null : text(body, 'since');
+    if (sessionId === null || act === null || sessionStatus === null || since === null) {
+      return new CrucibleProtocolError(`a ${code} refusal (${message}) does not name the session holding the server`);
+    }
+    return new CrucibleSessionHeld(status, code, message, details, {
+      holder: body === null ? null : text(body, 'holder'), sessionId, act, model: body === null ? null : text(body, 'model'), sessionStatus, since,
+    });
+  }
+  return null;
 }
 
 function count(usage: Record<string, unknown>, key: string): number | null {

@@ -10,14 +10,15 @@
  *  - `upstream_unconfigured` is a clear, named error;
  *  - a 429 passes through as a 429, never retried here;
  *  - a prompt over the loaded context throws BEFORE anything is sent;
- *  - a cancel aborts the fetch and gives the lease back;
+ *  - a cancel aborts the fetch and closes the call's queue session;
  *  - a reply without `finish_reason` is refused, and `length` is a hard failure;
  *  - the act is `generate` where the server lists it and `analysis` (said once) where not;
- *  - a heartbeat answered `unknown_lease` fails the job's next call, loudly;
+ *  - a queue session the server ends fails the job's next call by name, and nothing reopens one
+ *    (Crucible 1.0.76, LEDGER #255); every local item carries `X-Crucible-Session`;
  *  - decide carries its act and its model, and a server without the door refuses by name;
- *  - (P3's contract) a call runs on its lane's server, writes every load and lease to the
- *    in-flight ledger and settles it, beats the stall clock on a streamed answer, and carries a
- *    busy card's SDK refusal as its `cause` so the lane parks the job.
+ *  - (P3's contract) a call runs on its lane's server, in the session its lane hands it, writes
+ *    every load to the in-flight ledger and settles it, and beats the stall clock on a streamed
+ *    answer; another app's session refusing a session-less call is `busy` by name.
  *
  * Every call runs inside a lane step (`lanes.aiCall`), as it does in the app.
  *
@@ -33,7 +34,6 @@ const ASSETS_DIR = path.join(REPO, 'electron', 'assets');
 const { installCrucibleTransport, ANTHROPIC_MAX_TOKENS, CrucibleTransport } = crucible('transport');
 const { CrucibleCallError } = crucible('errors');
 const { installLanes, gpuCall, routeOfModelId } = crucible('lanes');
-const { parkRefusalOf } = crucible('parking');
 
 const KEY = 'sk-ant-api03-keeper-key-abcdefghijklmnop-WXYZ';
 const MODELS = [
@@ -44,7 +44,7 @@ const MODELS = [
 /** A registered, selected fake at 1.0.34 with the transport installed process-wide. */
 async function withDoor(options, fn) {
   const server = await fake.startFakeCrucible({ version: '1.0.34', models: MODELS, upstreams: { anthropic: { key: KEY } }, ...options });
-  const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
+  const made = context();
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   installCrucibleTransport(made.ctx.transport);
   installLanes(made.ctx.lanes);
@@ -160,8 +160,8 @@ check('6.3 rows, cloud: no sampling to Anthropic, max_tokens 16000, thinking sta
     assert.ok(!('response_format' in request.body), 'no json_object to Anthropic (it would be dropped); the JSON contract is the system turn');
   }
   assert.match(sent[1].body.messages[0].content, /output ONLY valid JSON/, 'the package carries the JSON system turn');
-  // Nothing leased for an upstream: it is never resident (PHASE15 3.4).
-  assert.strictEqual(server.leases.taken.length, 0);
+  // No session for an upstream: it takes no lane and is never resident (PHASE15 3.4).
+  assert.strictEqual(server.sessions.length, 0);
 }));
 
 check('the compilation package on a LOCAL model asks for json_object, thinking off, 4096', () => withDoor({}, async (server) => {
@@ -187,8 +187,8 @@ check('a sampling parameter to a cloud upstream, a wrong Anthropic ceiling, or a
 // ── the refusals ─────────────────────────────────────────────────────────────
 
 check('409 model_not_resident: the model is made resident again ONCE and the chat resent', () => withDoor({}, async (server, ctx) => {
-  await onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.withJobLease('mac', 'qwen3.8-27b-4bit', async (job) => {
-    // Someone else's load evicts our model mid-job.
+  await onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.withJobSession('mac', 'qwen3.8-27b-4bit', async (job) => {
+    // Another item of the session (a transcription, the editor's title) loaded something else.
     server.setResident('qwen3.5-9b');
     const answer = await ctx.transport.chat({
       model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null,
@@ -198,7 +198,8 @@ check('409 model_not_resident: the model is made resident again ONCE and the cha
   assert.strictEqual(chats(server).length, 2, 'one refused send and one resend, never more');
   const loads = server.jobs.filter((j) => j.type === 'load-model' && j.model === 'qwen3.8-27b-4bit');
   assert.strictEqual(loads.length, 2, 'the job load and the ONE re-ensure');
-  assert.strictEqual(server.openLease(), null, 'the job gave its lease back');
+  assert.strictEqual(server.openSession(), null, 'the job closed its session');
+  assert.strictEqual(server.sessions.length, 1, 'the re-ensure ran inside the same session');
 }));
 
 check('a second model_not_resident is not chased: the call fails by name', () => withDoor({}, async (server, ctx) => {
@@ -240,7 +241,7 @@ check('over the loaded context: throws BEFORE sending, naming the model, the ser
     assert.match(err.message, /qwen3\.5-9b on "mac" is loaded with 16384/);
     assert.match(err.message, /needs ~\d+ tokens/);
     assert.strictEqual(chats(server).length, 0, 'nothing was sent');
-    assert.strictEqual(server.openLease(), null, 'the one-call lease was given back');
+    assert.strictEqual(server.openSession(), null, 'the one-call session was closed');
   },
 ));
 
@@ -258,10 +259,13 @@ check('the job loads the model at its stated context (LEDGER #111), and that is 
   }));
   const load = server.jobs.find((j) => j.type === 'load-model');
   assert.strictEqual(load.params.context, 24576);
-  assert.deepStrictEqual(load.params.lease, { act: 'generate', ttl_seconds: 120 }, 'the lease is taken on the load, ttl 120 s');
+  assert.ok(!('lease' in load.params), 'no lease: leases are gone (1.0.76)');
+  const submit = server.requestsTo('/v1/jobs', 'POST')[0];
+  assert.strictEqual(submit.headers['x-crucible-session'], server.sessions[0].id, 'the load is an item of the call\'s session');
+  assert.ok(!('queue' in submit.body), 'a session\'s helper sends no queue (its items go ahead of the line)');
 }));
 
-check('cancel aborts the open fetch and gives the lease back', () => withDoor({}, async (server, ctx) => {
+check('cancel aborts the open fetch and closes the call\'s session', () => withDoor({}, async (server, ctx) => {
   server.inject({ chatDelayMs: 5_000 });
   const controller = new AbortController();
   const pending = onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
@@ -273,8 +277,8 @@ check('cancel aborts the open fetch and gives the lease back', () => withDoor({}
   const err = await rejection(pending);
   assert.strictEqual(err.name, 'JobCancelledError');
   assert.ok(Date.now() - started < 2_000, 'the fetch was aborted, not waited out');
-  assert.strictEqual(server.openLease(), null, 'the lease was released');
-  assert.strictEqual(server.leases.released.length, 1);
+  assert.strictEqual(server.openSession(), null, 'the session was closed');
+  assert.deepStrictEqual(server.sessions.map((row) => row.reason), ['client']);
 }));
 
 check('a reply without finish_reason is REFUSED (never read as stop), and finish_reason length is a hard failure', () => withDoor(
@@ -297,59 +301,73 @@ check('the act: `generate` where the server lists it, `analysis` on a pre-1.0.24
     await onLane(ctx, base.model, () => ctx.transport.chat(base));
     await onLane(ctx, base.model, () => ctx.transport.chat(base));
     assert.deepStrictEqual(chats(server).map(actOf), ['analysis', 'analysis']);
-    assert.deepStrictEqual(server.leases.taken.map((l) => l.act), ['analysis', 'analysis'], 'the lease names the same act');
+    assert.deepStrictEqual(server.sessions.map((row) => row.act), ['analysis', 'analysis'], 'the session names the same act');
     const said = logged.filter((l) => l.text.includes('predates 1.0.24; sending act analysis'));
     assert.strictEqual(said.length, 1, 'one line per server per session (Law 8)');
   },
 ));
 
-check('a heartbeat answered unknown_lease fails the job\'s next call, and the job, loudly', () => withDoor({}, async (server, ctx) => {
-  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.withJobLease('mac', 'qwen3.8-27b-4bit', async (job) => {
-    server.expireLease();
-    await until(() => job.held().some((h) => h.lost !== null));
+check('a session the server ends fails the job\'s next call by name, and nothing is sent outside it or reopened', () => withDoor({}, async (server, ctx) => {
+  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.withJobSession('mac', 'qwen3.8-27b-4bit', async (job) => {
+    server.endSession(server.sessions[0].id, 'operator', 'ended from the desktop Queue');
+    await until(() => ctx.sessions.openOn('mac') === null);
     await ctx.transport.chat({
       model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null,
     });
   }, { what: 'the keeper job' })));
-  assert.strictEqual(err.code, 'lease_lost');
-  assert.match(err.message, /unknown_lease/);
-  assert.strictEqual(chats(server).length, 0, 'nothing was sent unprotected');
+  assert.strictEqual(err.code, 'session_closed');
+  assert.match(err.message, /operator/);
+  assert.strictEqual(chats(server).length, 0, 'nothing was sent outside the session');
+  assert.strictEqual(server.sessions.length, 1, 'no new session was opened to carry on');
 }));
 
-check('a job holds ONE lease per model and heartbeats it; switching models hands the first back', () => withDoor({}, async (server, ctx) => {
+check('a chat whose session the server closed mid-flight is refused session_closed on the wire, and named', () => withDoor({}, async (server, ctx) => {
+  // The SDK's own follow of the session has not heard yet: the server's refusal of the item is what says it.
+  server.faults.refuse = [{ match: { path: '/v1/openai/chat/completions' }, status: 409, code: 'session_closed', message: 'queue session ended (idle)', details: { session_id: 'ses-x', reason: 'idle' } }];
+  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
+    model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null,
+  })));
+  assert.strictEqual(err.code, 'session_closed');
+  assert.match(err.message, /idle/);
+}));
+
+check('a job holds ONE session per server: two models trade the card inside it, every item names it, and it closes at the end', () => withDoor({}, async (server, ctx) => {
   const job = ctx.transport.job('the keeper job');
   const call = (model) => onLane(ctx, model, () => ctx.transport.chat({ model, prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null }));
   await call('qwen3.8-27b-4bit');
   await call('qwen3.8-27b-4bit');
-  await until(() => server.requestsTo('/v1/leases/').some((r) => r.path.endsWith('/heartbeat')));
-  assert.strictEqual(server.leases.taken.length, 1, 'two calls, one lease');
   await call('qwen3.5-9b');
-  assert.strictEqual(server.leases.taken.length, 2);
-  assert.strictEqual(server.leases.released.length, 1, 'the 27B was handed back before the 9B was loaded');
-  assert.deepStrictEqual(await job.releaseAll(), []);
-  assert.strictEqual(server.openLease(), null);
+  assert.strictEqual(server.sessions.length, 1, 'three calls, two models, one session');
+  assert.deepStrictEqual(server.jobs.filter((j) => j.type === 'load-model').map((j) => j.model), ['qwen3.8-27b-4bit', 'qwen3.5-9b']);
+  const id = server.sessions[0].id;
+  assert.ok([...chats(server), ...server.requestsTo('/v1/jobs', 'POST')].every((r) => r.headers['x-crucible-session'] === id));
+  assert.strictEqual(server.sessions[0].idleS, 900, 'idle_s 900 on every session (LEDGER #255)');
+  await job.releaseAll();
+  assert.strictEqual(server.openSession(), null);
+  assert.deepStrictEqual(ctx.ledger.read(), [], 'the session row left the ledger');
 }));
 
-check('another client\'s lease pinning OUR model: the call runs under it, said, and takes none of its own', () => withDoor({}, async (server, ctx) => {
-  server.leaseAsOther('qwen3.8-27b-4bit', 'bookforge');
-  const answer = await onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
+check('another app\'s session holds the server: a standalone local call waits in the line, and runs once it closes', () => withDoor({}, async (server, ctx) => {
+  const holder = server.holdAsOther('bookforge/1.0', 'translate');
+  const pending = onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null,
   }));
+  await until(() => server.sessions.length === 2 && server.sessions[1].status === 'queued');
+  assert.strictEqual(chats(server).length + server.jobs.length, 0, 'nothing was sent while it waited');
+  server.endSession(holder, 'client');
+  const answer = await pending;
   assert.strictEqual(answer.server, 'mac');
-  assert.ok(logged.some((l) => /running under their lease/.test(l.text)));
 }));
 
-check('another client\'s lease on a DIFFERENT model: busy with the holder\'s sentence, nothing loaded over it', () => withDoor({}, async (server, ctx) => {
-  server.leaseAsOther('qwen3.5-9b', 'bookforge');
-  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
-    model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null,
+check('an upstream chat to a server another app\'s session holds is refused by name (busy, the holder\'s sentence), never retried', () => withDoor({}, async (server, ctx) => {
+  server.holdAsOther('bookforge/1.0', 'translate');
+  const err = await rejection(onLane(ctx, 'anthropic/claude-sonnet-5', () => ctx.transport.chat({
+    model: 'anthropic/claude-sonnet-5', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 16000, what: 'the keeper call', trace: null,
   })));
   assert.strictEqual(err.code, 'busy');
+  assert.strictEqual(err.serverCode, 'session_open');
   assert.match(err.busyLine, /bookforge/);
-  assert.strictEqual(chats(server).length, 0);
-  // The SDK's own refusal rides as the cause, so P3's lane parks the job on it by type.
-  const park = parkRefusalOf(err);
-  assert.ok(park !== null && park.code === 'leased', `the lane reads the busy card: ${JSON.stringify(park)}`);
+  assert.strictEqual(chats(server).length, 1, 'sent once');
 }));
 
 check('a paused or older server takes no work, by name', () => withDoor({}, async (_server, ctx) => {
@@ -362,15 +380,15 @@ check('a paused or older server takes no work, by name', () => withDoor({}, asyn
   assert.strictEqual((await rejection(onLane(ctx, base.model, () => ctx.transport.chat(base)))).code, 'needs_update');
 })));
 
-check('P3\'s contract: the load and the lease are in the ledger before the next await, settled at the end; the answer beats', () => withDoor({}, async (_server, ctx) => {
+check('P3\'s contract: the load is in the ledger before the next await and settled at the end, in the session the lane hands it; the answer beats', () => withDoor({}, async (server, ctx) => {
   const said = [];
   const transport = new CrucibleTransport({
     servers: ctx.servers, factory: ctx.factory, probes: ctx.probes,
     hooks: () => ({
       lane: 'gpu', server: 'mac', jobId: 'job-1', signal: null,
+      session: (request) => { said.push(`session ${request.act}`); return ctx.sessions.use('mac', request); },
       submitted: (row) => said.push(`submitted ${row.jobType} ${row.model}`),
-      leased: (row) => said.push(`leased ${row.model}`),
-      settled: (server, kind) => said.push(`settled ${kind}`),
+      settled: (_at, kind) => said.push(`settled ${kind}`),
       streamed: () => { if (said[said.length - 1] !== 'streamed') said.push('streamed'); },
       beat: () => { if (said[said.length - 1] !== 'beat') said.push('beat'); },
       streamDropped: async () => ({ rows: [], kept: [], timedOut: false }),
@@ -378,14 +396,15 @@ check('P3\'s contract: the load and the lease are in the ledger before the next 
   });
   await transport.chat({ model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null });
   assert.deepStrictEqual(said, [
-    'submitted load-model qwen3.8-27b-4bit', 'streamed', 'settled job', 'leased qwen3.8-27b-4bit', 'beat', 'settled lease',
+    'session generate', 'submitted load-model qwen3.8-27b-4bit', 'streamed', 'settled job', 'beat',
   ]);
+  assert.strictEqual(server.openSession(), null, 'the one-call session closed');
 }));
 
 check('a GPU call runs on its lane\'s server and nowhere else, and a lane-less local call is refused by name', () => withDoor({}, async (_server, ctx) => {
   const lane = (server) => new CrucibleTransport({
     servers: ctx.servers, factory: ctx.factory, probes: ctx.probes,
-    hooks: () => ({ lane: 'cloud', server, jobId: '', signal: null, submitted() {}, leased() {}, settled() {}, streamed() {}, beat() {}, async streamDropped() { return { rows: [], kept: [], timedOut: false }; } }),
+    hooks: () => ({ lane: 'cloud', server, jobId: '', signal: null, session: async () => { throw new Error('no session for a cloud step'); }, submitted() {}, settled() {}, streamed() {}, beat() {}, async streamDropped() { return { rows: [], kept: [], timedOut: false }; } }),
   });
   const err = await rejection(lane(null).chat({ model: 'qwen3.8-27b-4bit', prompt: 'x', act: 'generate', thinking: false, maxTokens: 10, what: 'the keeper call', trace: null }));
   assert.match(err.message, /runs on its server's lane/);
@@ -409,7 +428,8 @@ check('decide: act `decide`, the named model, the report mode; a server without 
   assert.strictEqual(actOf(sent), 'decide');
   assert.strictEqual(sent.body.model, 'qwen3.5-9b');
   assert.strictEqual(sent.body.missing, 'report');
-  assert.strictEqual(server.leases.taken[0].act, 'decide');
+  assert.strictEqual(server.sessions[0].act, 'decide');
+  assert.strictEqual(sent.headers['x-crucible-session'], server.sessions[0].id, 'the decision is an item of the session');
 }).then(() => withDoor({ legacyActs: true }, async (_server, ctx) => {
   const err = await rejection(onLane(ctx, 'qwen3.5-9b', () => ctx.transport.decide({
     model: 'qwen3.5-9b', state: 'x', questions: { q: { type: 'yesno', instructions: 'Is it?' } }, what: 'assign', trace: null,
@@ -446,4 +466,4 @@ check('the routing dialog lists only what the selected server offers, Claude onl
 
 // The AI queue's watchdog (queue-manager.service.ts) is a plain setInterval that holds any
 // process that loaded AIManagerService open; this keeper exits on its own verdict instead.
-run('crucible: the one door (transport, lease, act, catalog)').then(() => process.exit(process.exitCode ?? 0));
+run('crucible: the one door (transport, session, act, catalog)').then(() => process.exit(process.exitCode ?? 0));

@@ -191,7 +191,7 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
 
   /**
    * The lanes strip: one chip per server. Asked for (the queue page opening) while nothing is
-   * queued, the chips are read once now, on demand, since no preflight is running to keep them
+   * queued, the chips are read once now, on demand, since no event stream is followed to keep them
    * current (LEDGER #234); the new read arrives on the `crucible:lanes` push.
    */
   ipcMain.handle('crucible:lanes', () => guard('lanes', () => {

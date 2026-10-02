@@ -20,9 +20,9 @@
  * send a metadata job: the model routing's server when it names one, else the server the app has
  * selected (venue-decision.ts, LEDGER #222). `--server <name>` is this CLI's spelling of the
  * routing's server, for THIS run only, without writing anything (it never picks one on its own:
- * Q14, #205). Every lease the run
- * takes is released on SIGINT/SIGTERM before the process exits 130/143 (plan 0a), so a Ctrl-C
- * never leaves a card pinned until its ttl.
+ * Q14, #205). Every queue session the run
+ * opens is closed on SIGINT/SIGTERM before the process exits 130/143 (plan 0a), so a Ctrl-C
+ * never leaves a server held until the session idles out (LEDGER #255).
  *
  * FOUR DELIBERATE OVERRIDES, each printed loudly at startup (the fourth, --claude-cli, is
  * documented at its patch site below):
@@ -430,7 +430,7 @@ async function main() {
 
   // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
   // registry and routing record, with this process's own in-flight ledger. Ctrl-C (SIGINT) and
-  // SIGTERM cancel this run's Crucible jobs and release its leases, then exit 130/143
+  // SIGTERM cancel this run's Crucible jobs and close its queue sessions, then exit 130/143
   // (CRUCIBLE-MIGRATION-PLAN.md sections 0a, 13.4).
   const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
   cli = openCliLanes({

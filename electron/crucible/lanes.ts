@@ -1,8 +1,9 @@
 /**
- * THE LANES: one GPU lane per Crucible server, and the queue's admission,
- * parking, stall clock and in-flight bookkeeping over them.
+ * THE LANES: one GPU lane per Crucible server, and the queue's admission, the
+ * server's line, the stall clock and the in-flight bookkeeping over them.
  *
- * Plan section 13, cut to LEDGER #205. What replaced what:
+ * Plan section 13, cut to LEDGER #205, moved onto Crucible 1.0.76's queue
+ * sessions by LEDGER #255. What replaced what:
  *
  *   before (queue-manager.service.ts)        now
  *   ─────────────────────────────────────    ──────────────────────────────────────────────
@@ -14,64 +15,73 @@
  *   (ipc-handlers.ts), one job at a time      run a job each in parallel (P3b, folded in)
  *   a 30-minute wall-clock watchdog and a    a 10-minute STALL clock per job (stream-stall.ts):
  *   4-hour chapter cap                       silence ends a run, work does not
- *   a busy answer failed the job              it PARKS (parking.ts), and starts again by itself
- *                                            when the preflight says the holder has gone
+ *   a busy answer failed the job              the job's QUEUE SESSION waits in the server's own
+ *                                            line (session.ts); the job's row says where it
+ *                                            stands ("in line on mac, 2 of 3")
  *
  * TWO LEVELS ON A LANE, because two kinds of work share a server:
  *
- *   the JOB     a queue job admitted to the server (`runJob`). One at a time, so
- *               two of our jobs never fight over one card, and the fast pin's job
- *               on the PC runs beside the Mac's.
+ *   the JOB     a queue job admitted to the server (`runJob`). One at a time (Owen: one live
+ *               job on the Mac's Crucible at a time), so two of our jobs never fight over one
+ *               server, and the fast pin's job on the PC runs beside the Mac's. The job OWNS
+ *               one queue session on its server, opened by its first piece of GPU work
+ *               ({@link CrucibleLanes.sessionOn}) and closed in `runJob`'s finally.
  *   the SLOT    one GPU model call at a time (`aiCall`), taken by the admitted
  *               job's local calls AND by standalone calls (the editor's story
  *               title, the reports page's "more titles"), which interleave with a
- *               running job call by call exactly as they did with the old pool.
- *               The chapter stage holds it for its whole run, as it held the pool.
+ *               running job call by call. A standalone call on a server where a job's
+ *               session is open JOINS that session (Crucible matches membership on our
+ *               client name; a second session of ours would queue behind the first).
  *
  * WHERE A JOB GOES is venue-decision.ts's rule: the fast pin's server, else the
  * model routing's server (#222), else the selected one, never another (LEDGER
- * #205). This layer passes the routing's server in; it decides nothing about
- * it. A standalone call (no job) stays on the selected server. WHAT A BUSY ANSWER DOES is
- * parking.ts's. The preflight (`activity()` every 15 s per running server) is
- * display and preflight, NEVER permission: a job is always submitted, and the
- * door's 409 is what parks it. The preflight only says when a PARKED job may be
- * tried again. It runs only while ContentStudio has work queued: readiness.ts
- * `needsPolling` is the one rule and switches it through `setPolling` (LEDGER
- * #234); with nothing queued a lane is read only when the renderer asks.
+ * #205). A job whose venue cannot take work (nothing selected, paused, not
+ * answering) PARKS on that venue and is re-decided at the next plan; that is the
+ * only park left. Another client holding the server is not a park any more: the
+ * job's session waits in the server's line, and `onQueue` puts its place on the
+ * lane chip and the job's row.
  *
- * TRANSPORT'S SEAM. This layer does not talk to a model. transport.ts (P2's
- * chat/decide/withJobLease) runs inside `aiCall` and reaches this layer through
- * {@link crucibleStepHooks}: the server the step must run on, the job's abort
- * signal, the ledger writes it must make right after a submit or a lease, the
- * stall clock's beat, and the dropped-stream sweep. Its refusals come up as the
- * SDK's own types (CrucibleBusy, CrucibleLeased, CrucibleRefused), unwrapped,
- * and `aiCall` reads them (docs/crucible/P3.md, "what transport.ts must call").
+ * THE STRIP IS FOLLOWED, NOT POLLED (server-watch.ts): each server's `/v1/events`
+ * stream while ContentStudio has work queued (readiness.ts `needsPolling`
+ * switches it through `setPolling`, LEDGER #234); a one-shot `/v1/activity`
+ * read when the renderer asks (`readAll`). It is display, never permission.
+ *
+ * TRANSPORT'S SEAM. This layer does not talk to a model. transport.ts runs
+ * inside `aiCall` and reaches this layer through {@link crucibleStepHooks}: the
+ * server the step must run on, the job's abort signal, the session it runs in,
+ * the ledger writes it must make right after a submit, the stall clock's beat,
+ * and the dropped-stream sweep (docs/crucible/P3.md).
  *
  * THE STARTUP SWEEP GATES GPU ADMISSION. `setAdmissionGate` takes the startup
  * sweep's promise (main.ts); no job is admitted and no standalone GPU call
  * takes a slot until it settles (plan section 13.4). Cloud calls never wait
- * for it: they hold nothing on a card.
+ * for it: they hold nothing on a server.
  */
 import { AsyncLocalStorage } from 'async_hooks';
-import type { Activity, AcceleratorState, CrucibleClient } from '@crucible/client';
+import type { CrucibleClient, QueuePosition } from '@crucible/client';
 import * as log from 'electron-log';
 import { catalogInventory, type CatalogInventory } from './catalog';
 import { CrucibleRoutingError } from './errors';
 import type { InFlightKind, InFlightLedger } from './in-flight-ledger';
 import { JOB_SWEEP_DEADLINE_MS, QUIT_SWEEP_DEADLINE_MS, QUIT_UNWIND_MS, sweepCrucibleInFlight, type SweepReport } from './in-flight-sweep';
-import { needsAcceleratorRead, observe, parkFor, parkRefusalOf, type ParkRecord, type PreflightRead } from './parking';
-import { holderOf, trackHolder, type HolderTrack } from './card-holder';
-import { busyLineOf, FRESH_PROBE_MS } from './probe';
+import { busyLineOfView, cardViewOf, holderOf, trackHolder, type CardView, type HolderTrack } from './card-holder';
+import { FRESH_PROBE_MS } from './probe';
+import { ServerWatch } from './server-watch';
+import { SESSION_TOUCH_EVERY_MS, type CardSession, type SessionHold, type SessionRequest, type ServerSessions } from './session';
 import { CRUCIBLE_STALL_MS, JobStallClock } from './stream-stall';
 import { decideVenue, intendedServer, type VenueHost } from './venue-decision';
 import type { CrucibleLanesView, LaneChip, ParkedJobResult, QueuePlan, QueuePlanCandidate, ResumeStage, RoutingView, ServerReach } from './wire';
 
-/** How often each running server's activity is read (plan section 13.2). */
-export const PREFLIGHT_EVERY_MS = 15_000;
-/** The preflight read's own clock: a sleeping server must not stall the loop. */
-export const PREFLIGHT_TIMEOUT_MS = 3_000;
+/** A one-shot activity read's own clock (the renderer's ask, a Re-check): a sleeping server must not stall it. */
+export const READ_TIMEOUT_MS = 3_000;
 /** A lane reserved by `plan()` for a job the renderer has not started yet is freed after this. */
 export const RESERVATION_MS = 30_000;
+/**
+ * How long a lane job's session may wait in the server's line before the server gives up on it
+ * (`max_wait_s`, Crucible's maximum). A job the user queued waits its turn as long as it takes;
+ * an hour (the server's default) would fail a job queued behind a long run of another app's.
+ */
+export const JOB_SESSION_MAX_WAIT_S = 86_400;
 
 // ── the call's route ────────────────────────────────────────────────────────
 
@@ -124,13 +134,17 @@ export interface CrucibleStepHooks {
   readonly routingServer: string | null;
   /** The ContentStudio job id, or '' for a standalone call. */
   readonly jobId: string;
-  /** Aborted by Stop, a park, a stall or quit. Hand it to every fetch. */
+  /** Aborted by Stop, a stall or quit. Hand it to every fetch. */
   readonly signal: AbortSignal | null;
+  /**
+   * The queue session the step's work runs in on its server: the lane job's own (held until the
+   * job ends; `release` does nothing), else this install's open one joined, else a new one
+   * (session.ts). A GPU step only; a cloud step holds nothing.
+   */
+  session(request: SessionRequest): Promise<SessionHold>;
   /** Call SYNCHRONOUSLY right after `submit()` returned an id, before the next await. */
   submitted(row: { server: string; id: string; jobType: string; model: string | null }): void;
-  /** Call SYNCHRONOUSLY right after `lease()` answered (or a load's `done` carried a lease id). */
-  leased(row: { server: string; id: string; model: string }): void;
-  /** Call when a job settled or a lease was released: the row leaves the ledger. */
+  /** Call when a job settled: the row leaves the ledger. */
   settled(server: string, kind: InFlightKind, id: string): void;
   /** Call per SSE event acted on: the ledger's reconnect cursor, and the stall clock's beat. */
   streamed(server: string, id: string, lastEventId: string): void;
@@ -165,7 +179,7 @@ export interface LaneRun {
   readonly routingServer: string | null;
   /** Where the job is, for `resumeFrom` when it parks. */
   stage: ResumeStage;
-  /** Aborted by Stop, a park, a stall or quit. The pipeline hands it to the generator. */
+  /** Aborted by Stop, a stall or quit. The pipeline hands it to the generator. */
   readonly controller: AbortController;
   /** A sign of life: the pipeline's own progress lines count, as SSE events and completed calls do. */
   beat(): void;
@@ -173,9 +187,15 @@ export interface LaneRun {
 
 interface RunState extends LaneRun {
   clock: JobStallClock;
-  park: ParkRecord | null;
   stalled: string | null;
   done: Promise<void>;
+  /** The job's queue session on its server, asked for by its first GPU work; null until then. */
+  session: Promise<SessionHold> | null;
+  /** The session once open, for the touch around cloud calls. */
+  card: CardSession | null;
+  /** Cloud calls of this job running now, and the touch timer while there are any. */
+  cloudCalls: number;
+  touchTimer: NodeJS.Timeout | null;
 }
 
 const runStore = new AsyncLocalStorage<RunState>();
@@ -223,6 +243,23 @@ export class CrucibleJobStalled extends Error {
   }
 }
 
+/**
+ * A job waiting on its VENUE: nothing selected or pinned, the server paused, or not answering.
+ * Re-decided by the venue rule at every `plan()`, never by reading the server.
+ */
+export interface VenuePark {
+  readonly jobId: string;
+  /** The server it is for; null when nothing is selected or pinned. */
+  readonly server: string | null;
+  readonly fast: boolean;
+  readonly stage: ResumeStage;
+  readonly code: 'no_server' | 'paused' | 'unreachable';
+  /** The venue's sentence. Shown as `parked — <line>`. */
+  readonly line: string;
+  /** Epoch ms. */
+  readonly at: number;
+}
+
 // ── the lanes ───────────────────────────────────────────────────────────────
 
 /** A FIFO mutex: one GPU model call at a time on one server. */
@@ -252,11 +289,17 @@ interface Lane {
   /** Jobs waiting for `holder` to leave (an "Analyze" press on a busy lane, a CLI's job). */
   waiters: Array<{ jobId: string; admit: () => void }>;
   readonly slot: Slot;
-  read: PreflightRead | null;
+  /** When the strip last heard from this server (epoch ms), or null. */
+  readAt: number | null;
   chip: { state: LaneChip['state']; resident: string | null; busyLine: string | null; unreadReason: string | null; holder: LaneChip['holder'] };
-  /** Another client's hold as read so far, for its time left (card-holder.ts). */
+  /** Another client's hold as seen so far, for its time left (card-holder.ts). */
   holderTrack: HolderTrack | null;
+  /** Our lane job's session waiting in the server's line, and where it stands; null otherwise. */
+  inLine: LaneChip['inLine'];
 }
+
+/** The session registry, as the lanes use it (session.ts `ServerSessions`). */
+export type LaneSessions = Pick<ServerSessions, 'use' | 'closeAll'>;
 
 export interface LanesDeps {
   /** The registry and the choice (servers.ts). */
@@ -279,8 +322,15 @@ export interface LanesDeps {
   /** The probe's answer, at most `maxAgeMs` (default 15 s) old (probe.ts `reach`). */
   reach(server: string, maxAgeMs?: number): Promise<{ reach: ServerReach; message: string | null }>;
   ledger: InFlightLedger;
+  /** Every queue session this install holds (session.ts): one per server, joined, never doubled. */
+  sessions: LaneSessions;
   /** Pushes the lanes strip to the renderer. */
   push?(view: CrucibleLanesView): void;
+  /**
+   * A lane job's session moved in the server's line (`position` of `of`), or opened (null): the
+   * job's row says so (ipc wiring sends it as the job's progress line).
+   */
+  onInLine?(jobId: string, server: string, position: QueuePosition | null): void;
   /** The jobs running, parked or in line changed: readiness re-applies its polling rule (LEDGER #234). */
   onWorkChange?(): void;
   /**
@@ -292,30 +342,37 @@ export interface LanesDeps {
   beforeAdmit?(): Promise<unknown> | null;
   now?(): number;
   stallMs?: number;
-  preflightEveryMs?: number;
+  /** How long a server whose event stream could not be opened waits before it is followed again (a keeper shortens it). */
+  watchRetryMs?: number;
+  /** How often a lane job's open session is touched while its cloud calls run (a keeper shortens it). */
+  touchEveryMs?: number;
 }
 
 export class CrucibleLanes {
   private readonly lanes = new Map<string, Lane>();
   private readonly runs = new Map<string, RunState>();
-  private readonly parks = new Map<string, ParkRecord>();
-  /** Parks the preflight has cleared: `plan()` starts them. */
-  private readonly cleared = new Set<string>();
+  private readonly parks = new Map<string, VenuePark>();
   /** Each job's give-back in progress, so they run one after another (sweepJob). */
   private readonly jobSweeps = new Map<string, Promise<void>>();
   private gate: Promise<unknown> = Promise.resolve();
-  private timer: NodeJS.Timeout | null = null;
-  private reading = false;
+  private readonly watch: ServerWatch;
+  private watching = false;
   private quitting = false;
   private offRegistry: (() => void) | null = null;
   private readonly now: () => number;
   readonly stallMs: number;
-  readonly preflightEveryMs: number;
+  private readonly touchEveryMs: number;
 
   constructor(private readonly deps: LanesDeps) {
     this.now = deps.now ?? Date.now;
     this.stallMs = deps.stallMs ?? CRUCIBLE_STALL_MS;
-    this.preflightEveryMs = deps.preflightEveryMs ?? PREFLIGHT_EVERY_MS;
+    this.touchEveryMs = deps.touchEveryMs ?? SESSION_TOUCH_EVERY_MS;
+    this.watch = new ServerWatch({
+      clientFor: (server) => deps.clientFor(server),
+      onView: (server, view) => this.saw(server, view),
+      onFailure: (server, reason) => this.unread(server, reason),
+      ...(deps.watchRetryMs === undefined ? {} : { retryMs: deps.watchRetryMs }),
+    });
   }
 
   // ── the gate ─────────────────────────────────────────────────────────────
@@ -325,32 +382,34 @@ export class CrucibleLanes {
     this.gate = gate.catch(() => undefined);
   }
 
-  // ── the preflight ────────────────────────────────────────────────────────
+  // ── the strip ────────────────────────────────────────────────────────────
 
-  /** Follow the registry. The preflight itself starts only when polling does (`setPolling`). */
+  /** Follow the registry. The event streams start only when polling does (`setPolling`). */
   start(): void {
     if (this.offRegistry !== null) return;
-    this.offRegistry = this.deps.servers.onChange(() => this.publish());
+    this.offRegistry = this.deps.servers.onChange(() => {
+      if (this.watching) this.watch.follow(this.followable());
+      this.publish();
+    });
   }
 
   /**
-   * The 15 s preflight on or off, as readiness.ts `needsPolling` says (LEDGER #234: only while
-   * work is queued). Its timer is unref'd, so it never holds the app open. It does not read at
-   * once when switched on: the queue's first admission takes a fresh probe of its own.
+   * Following the servers' event streams on or off, as readiness.ts `needsPolling` says (LEDGER
+   * #234: only while work is queued). Off, nothing is followed; the renderer's ask reads once.
    */
   setPolling(on: boolean): void {
-    if (on && this.timer === null && !this.quitting) {
-      this.timer = setInterval(() => { void this.readAll(); }, this.preflightEveryMs);
-      this.timer.unref?.();
-    } else if (!on && this.timer !== null) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (on && !this.watching && !this.quitting) {
+      this.watching = true;
+      this.watch.follow(this.followable());
+    } else if (!on && this.watching) {
+      this.watching = false;
+      this.watch.stop();
     }
   }
 
-  /** Whether the preflight timer runs (a keeper reads it). */
-  preflightRunning(): boolean {
-    return this.timer !== null;
+  /** Whether the event streams are being followed (a keeper reads it). */
+  watchRunning(): boolean {
+    return this.watching;
   }
 
   stop(): void {
@@ -359,7 +418,11 @@ export class CrucibleLanes {
     this.offRegistry = null;
   }
 
-  /** Jobs running, parked or in line on a lane: work that keeps polling on (LEDGER #234). */
+  private followable(): string[] {
+    return this.deps.servers.routingView().servers.filter((row) => !row.paused).map((row) => row.name);
+  }
+
+  /** Jobs running, parked or in line on a lane: work that keeps the streams followed (LEDGER #234). */
   workCount(): number {
     let waiting = 0;
     for (const lane of this.lanes.values()) waiting += lane.waiters.length;
@@ -374,68 +437,50 @@ export class CrucibleLanes {
     }
   }
 
-  /** One preflight pass over every running (not paused) server. Exposed for keepers and a Re-check. */
+  /**
+   * One `/v1/activity` read of every running (not paused) server: the renderer's ask while nothing
+   * is followed, a Re-check, a keeper. Display only.
+   */
   async readAll(): Promise<void> {
-    if (this.reading) return;
-    this.reading = true;
     try {
-      const routing = this.deps.servers.routingView();
-      await Promise.all(routing.servers.filter((row) => !row.paused).map((row) => this.readOne(row.name)));
+      await Promise.all(this.followable().map(async (server) => {
+        try {
+          const client = await this.deps.clientFor(server, { timeoutMs: READ_TIMEOUT_MS });
+          this.saw(server, cardViewOf(await client.activity()), false);
+        } catch (err) {
+          this.unread(server, err instanceof Error ? err.message : String(err), false);
+        }
+      }));
     } finally {
-      this.reading = false;
       this.publish();
     }
   }
 
-  private async readOne(server: string): Promise<void> {
+  /** A server's view arrived (its stream, or a read): the chip follows it. */
+  private saw(server: string, view: CardView, publish = true): void {
     const lane = this.lane(server);
-    let activity: Activity;
-    let accelerator: AcceleratorState | null = null;
     const at = this.now();
-    try {
-      const client = await this.deps.clientFor(server, { timeoutMs: PREFLIGHT_TIMEOUT_MS });
-      activity = await client.activity();
-      // The accelerator read costs an nvidia-smi on the server: only while a job waits on the card's memory.
-      if ([...this.parks.values()].some((park) => park.server === server && needsAcceleratorRead(park))) {
-        accelerator = await client.accelerator();
-      }
-    } catch (err) {
-      lane.chip = { ...lane.chip, state: 'unreachable', unreadReason: err instanceof Error ? err.message : String(err), holder: null };
-      lane.holderTrack = null;
-      return;
-    }
-    const read: PreflightRead = {
-      at,
-      acceptsWork: activity.slots.accelerated.acceptsWork ?? null,
-      leaseId: activity.lease?.leaseId ?? null,
-      accelerator: accelerator === null ? null : {
-        freeBytes: accelerator.freeBytes,
-        unattributedBytes: accelerator.unattributedBytes,
-        pids: accelerator.holders === null ? null : accelerator.holders.map((holder) => holder.pid),
-      },
-    };
-    lane.read = read;
+    lane.readAt = at;
     const ours = this.deps.ledger.idsOn(server);
-    const leaseOurs = activity.lease !== null && ours.has(activity.lease.leaseId);
-    const busyLine = busyLineOf(activity)
-      ?? (activity.lease !== null && !leaseOurs ? `leased: ${activity.lease.client ?? 'another app'}, ${activity.lease.act ?? 'a run'}` : null);
-    const held = trackHolder(lane.holderTrack, holderOf(activity, ours), at);
+    const held = trackHolder(lane.holderTrack, holderOf(view, ours), at);
     lane.holderTrack = held.track;
+    const busyLine = held.holder === null ? null : busyLineOfView(view);
     lane.chip = {
-      // `running` is the lane's own fact (view() reads the holder); this is the card's.
+      // `running` is the lane's own fact (view() reads the holder); this is the server's.
       state: busyLine !== null ? 'busy' : 'idle',
-      resident: activity.resident?.id ?? null,
+      resident: view.resident,
       busyLine,
       unreadReason: null,
       holder: held.holder,
     };
-    for (const park of this.parks.values()) {
-      if (park.server !== server || this.cleared.has(park.jobId)) continue;
-      if (observe(park, read)) {
-        this.cleared.add(park.jobId);
-        log.info(`[crucible] ${park.jobId} may start again on "${server}": what parked it (${park.code}) has gone`);
-      }
-    }
+    if (publish) this.publish();
+  }
+
+  private unread(server: string, reason: string, publish = true): void {
+    const lane = this.lane(server);
+    lane.chip = { ...lane.chip, state: 'unreachable', unreadReason: reason, holder: null };
+    lane.holderTrack = null;
+    if (publish) this.publish();
   }
 
   // ── the queue's plan ─────────────────────────────────────────────────────
@@ -443,8 +488,7 @@ export class CrucibleLanes {
   /**
    * Which of these rows start now. At most one per server, and its lane is
    * reserved for it until `runJob` claims it (or {@link RESERVATION_MS}
-   * passes). A parked row starts only once the preflight cleared it, or its
-   * venue changed because the user chose (a switch, a pin, the Fast toggle).
+   * passes). A row parked on its venue is decided afresh each time.
    */
   async plan(candidates: readonly QueuePlanCandidate[]): Promise<QueuePlan> {
     await this.gate;
@@ -463,11 +507,7 @@ export class CrucibleLanes {
       }
       if (park !== undefined && (park.fast !== candidate.fast || (park.server !== null && park.server !== intended))) {
         // The user chose: a different server selected, the pin moved, or the row's Fast toggled.
-        // Work not yet started goes where the user now says (Briefcase's switch rule), decided afresh.
         this.forgetPark(candidate.jobId, 'the user changed where it goes');
-      } else if (park !== undefined && park.wait.kind !== 'venue' && !this.cleared.has(candidate.jobId)) {
-        plan.waiting.push({ jobId: candidate.jobId, server: park.server, line: park.line, parked: true });
-        continue;
       }
       const venue = await decideVenue(candidate.fast, host);
       if (venue.kind === 'fail') {
@@ -479,7 +519,7 @@ export class CrucibleLanes {
         const known = this.parks.has(candidate.jobId);
         this.parks.set(candidate.jobId, {
           jobId: candidate.jobId, server: venue.server, fast: candidate.fast, stage: this.parks.get(candidate.jobId)?.stage ?? 'transcribe',
-          code: venue.wait, line: venue.line, wait: { kind: 'venue' }, at: this.now(), needsEdge: false, sawHeld: false,
+          code: venue.wait, line: venue.line, at: this.now(),
         });
         if (!known) this.workChanged();
         plan.waiting.push({ jobId: candidate.jobId, server: venue.server, line: venue.line, parked: true });
@@ -502,9 +542,9 @@ export class CrucibleLanes {
 
   /**
    * Admit one queue job to its server's lane and run it. Answers `parked`
-   * (never throws) when it cannot run now for a reason that is the server's,
-   * and throws for everything else: a misconfiguration, the stall clock, the
-   * job's own failure.
+   * (never throws) when its venue cannot take work now, and throws for
+   * everything else: a misconfiguration, the stall clock, the job's own failure
+   * (a session the server ended under it among them).
    */
   async runJob<T>(
     options: { jobId: string; fast: boolean; stage: ResumeStage; controller?: AbortController },
@@ -524,7 +564,7 @@ export class CrucibleLanes {
     if (venue.kind === 'wait') {
       this.parks.set(options.jobId, {
         jobId: options.jobId, server: venue.server, fast: options.fast, stage: options.stage,
-        code: venue.wait, line: venue.line, wait: { kind: 'venue' }, at: this.now(), needsEdge: false, sawHeld: false,
+        code: venue.wait, line: venue.line, at: this.now(),
       });
       this.workChanged();
       this.publish();
@@ -543,11 +583,14 @@ export class CrucibleLanes {
       routingServer,
       stage: options.stage,
       controller,
-      park: null,
       stalled: null,
       done: new Promise<void>((resolve) => { settle = resolve; }),
       clock: new JobStallClock(`${options.jobId} on "${server}"`, (sentence) => { void this.stall(run, sentence); }, this.stallMs, this.now),
       beat: () => run.clock.beat(),
+      session: null,
+      card: null,
+      cloudCalls: 0,
+      touchTimer: null,
     };
     this.runs.set(options.jobId, run);
     this.workChanged();
@@ -562,22 +605,18 @@ export class CrucibleLanes {
       } catch (err) {
         failure = err;
       }
-      // A park or a stall aborts the job, and the generator then ends it its own way (a
-      // cancelled result, or a throw): what the lane recorded is the answer, not that.
+      // A stall aborts the job, and the generator then ends it its own way (a cancelled result,
+      // or a throw): what the lane recorded is the answer, not that.
       if (run.stalled !== null) throw new CrucibleJobStalled(run.jobId, run.stalled);
-      const refusal = run.park === null && failure !== null ? parkRefusalOf(failure) : null;
-      if (refusal !== null) run.park = parkFor(refusal, { jobId: run.jobId, server, fast: run.fast, stage: run.stage }, this.recentRead(server), this.now());
-      if (run.park !== null) {
-        this.parks.set(run.jobId, run.park);
-        log.info(`[crucible] ${run.jobId} parked on "${server}" at ${run.park.stage}: ${run.park.line}`);
-        return { kind: 'parked', result: { status: 'parked', server, holderLine: run.park.line, stage: run.park.stage, code: run.park.code } };
-      }
       if (failure !== null) throw failure;
       return { kind: 'done', server, value: value as T };
     } finally {
       run.clock.stop();
-      // What the job's own finally did not give back (transport releases its lease there), the
-      // lane does, after any give-back already under way (a stall's, a Stop's) has settled.
+      this.stopTouching(run);
+      // The job's session goes with the job (closed unless a standalone action joined it).
+      await this.releaseSession(run);
+      // What the job's own finally did not give back, the lane does, after any give-back already
+      // under way (a stall's, a Stop's) has settled.
       await this.jobSweeps.get(run.jobId);
       if (this.deps.ledger.rowsOf(run.jobId).length > 0) {
         await this.sweepJob(run.jobId, `${run.jobId} ended with holds still recorded`);
@@ -590,11 +629,10 @@ export class CrucibleLanes {
     }
   }
 
-  /** Stop one job (the row's Stop): abort its fetch, cancel its Crucible jobs, release its lease. */
+  /** Stop one job (the row's Stop): abort its fetch and its wait in the line, cancel its Crucible jobs. */
   async stopJob(jobId: string, reason: string): Promise<void> {
     const run = this.runs.get(jobId);
     this.forgetPark(jobId, reason);
-    this.cleared.delete(jobId);
     const lane = [...this.lanes.values()].find((candidate) => candidate.holder?.jobId === jobId && candidate.holder.reserved);
     if (lane !== undefined) this.release(lane.server, jobId);
     if (run === undefined) return;
@@ -610,9 +648,8 @@ export class CrucibleLanes {
   }
 
   /**
-   * Give back one job's holds. Chained per job: a stall's sweep, a Stop's and the job's own
-   * end can all ask at once, and each must read the ledger AFTER the one before settled its
-   * rows, or two of them release one lease twice.
+   * Give back one job's jobs. Chained per job: a stall's sweep, a Stop's and the job's own end
+   * can all ask at once, and each must read the ledger AFTER the one before settled its rows.
    */
   private sweepJob(jobId: string, reason: string): Promise<SweepReport> {
     const before = this.jobSweeps.get(jobId) ?? Promise.resolve();
@@ -626,13 +663,100 @@ export class CrucibleLanes {
     return next;
   }
 
+  // ── the job's session ────────────────────────────────────────────────────
+
+  /**
+   * The queue session for work on `server` (session.ts). Inside a lane job on that server it is the
+   * JOB's: asked for by its first GPU work (waiting in the server's line, its place on the chip and
+   * the job's row), kept for every later piece of the job, and let go of when the job ends (the
+   * hold handed out here releases nothing). Anywhere else it is this install's open session on
+   * that server, joined, or a new one, held until the caller releases it.
+   */
+  async sessionOn(server: string, request: SessionRequest): Promise<SessionHold> {
+    const run = runStore.getStore();
+    if (run === undefined || run.server !== server) return this.deps.sessions.use(server, request);
+    if (run.session === null) {
+      const lane = this.lane(server);
+      const asking = this.deps.sessions.use(server, {
+        act: request.act,
+        what: `${run.jobId} (${request.what})`,
+        signal: run.controller.signal,
+        maxWaitS: JOB_SESSION_MAX_WAIT_S,
+        onQueue: (position) => {
+          lane.inLine = { jobId: run.jobId, position: position.position, of: position.of };
+          log.info(`[crucible] ${run.jobId} is in line on "${server}": ${position.position} of ${position.of}`);
+          run.beat();
+          this.tellInLine(run.jobId, server, position);
+          this.publish();
+          request.onQueue?.(position);
+        },
+      });
+      run.session = asking;
+      void asking.then(
+        (hold) => { run.card = hold.card; },
+        () => { if (run.session === asking) run.session = null; },
+      ).finally(() => {
+        if (lane.inLine?.jobId === run.jobId) {
+          lane.inLine = null;
+          this.tellInLine(run.jobId, server, null);
+          this.publish();
+        }
+      });
+    }
+    const hold = await run.session;
+    return { card: hold.card, release: async () => undefined };
+  }
+
+  private tellInLine(jobId: string, server: string, position: QueuePosition | null): void {
+    try {
+      this.deps.onInLine?.(jobId, server, position);
+    } catch (err) {
+      log.warn(`[crucible] Could not tell the renderer where ${jobId} stands: ${(err as Error).message}`);
+    }
+  }
+
+  private async releaseSession(run: RunState): Promise<void> {
+    const asking = run.session;
+    run.session = null;
+    run.card = null;
+    if (asking === null) return;
+    const hold = await asking.catch(() => null);
+    if (hold !== null) await hold.release();
+  }
+
+  /** A cloud call of `run` started: its open session is touched until the last one ends (session.ts's rule). */
+  private startTouching(run: RunState): void {
+    run.cloudCalls += 1;
+    if (run.cloudCalls > 1 || run.card === null) return;
+    const card = run.card;
+    const touch = (): void => {
+      if (card.ended !== null) return;
+      card.touch().catch((err: unknown) => {
+        // Not a failure of the cloud call: if the session is gone, the job's next GPU call says so by name.
+        log.warn(`[crucible] ${run.jobId}: could not touch session ${card.id} on "${card.server}": ${err instanceof Error ? err.message : String(err)}`);
+      });
+    };
+    touch();
+    run.touchTimer = setInterval(touch, this.touchEveryMs);
+    run.touchTimer.unref?.();
+  }
+
+  private stopTouching(run: RunState, one = false): void {
+    if (one) run.cloudCalls = Math.max(0, run.cloudCalls - 1);
+    else run.cloudCalls = 0;
+    if (run.cloudCalls === 0 && run.touchTimer !== null) {
+      clearInterval(run.touchTimer);
+      run.touchTimer = null;
+    }
+  }
+
   // ── one model call ───────────────────────────────────────────────────────
 
   /**
    * Run one model call on its lane: a GPU call takes its server's slot (the
    * job's venue, or the selected server for a standalone call); a cloud call
-   * takes nothing. A busy refusal inside a job parks the job (and aborts the
-   * rest of it); outside a job it is thrown as the SDK raised it.
+   * takes nothing, and inside a job it keeps the job's open session touched
+   * while it runs (work on this side is not activity on the server's).
    */
   async aiCall<T>(route: AiCallRoute, name: string, execute: () => Promise<T>): Promise<T> {
     const run = runStore.getStore();
@@ -642,9 +766,14 @@ export class CrucibleLanes {
       if (fresh !== null) await fresh;
     }
     if (route.lane === 'cloud') {
-      const value = await stepStore.run(this.hooks('cloud', null, run), execute);
-      run?.beat();
-      return value;
+      if (run !== undefined) this.startTouching(run);
+      try {
+        const value = await stepStore.run(this.hooks('cloud', null, run), execute);
+        run?.beat();
+        return value;
+      } finally {
+        if (run !== undefined) this.stopTouching(run, true);
+      }
     }
     const server = run?.server ?? this.standaloneServer(name);
     if (run === undefined) {
@@ -653,18 +782,9 @@ export class CrucibleLanes {
       if (fresh !== null) await fresh;
     }
     return this.lane(server).slot.run(async () => {
-      try {
-        const value = await stepStore.run(this.hooks('gpu', server, run), execute);
-        run?.beat();
-        return value;
-      } catch (err) {
-        const refusal = parkRefusalOf(err);
-        if (run !== undefined && refusal !== null && run.park === null) {
-          run.park = parkFor(refusal, { jobId: run.jobId, server, fast: run.fast, stage: run.stage }, this.recentRead(server), this.now());
-          run.controller.abort(new Error(`parked: ${refusal.line}`));
-        }
-        throw err;
-      }
+      const value = await stepStore.run(this.hooks('gpu', server, run), execute);
+      run?.beat();
+      return value;
     });
   }
 
@@ -710,8 +830,13 @@ export class CrucibleLanes {
       routingServer: run?.routingServer ?? null,
       jobId,
       signal: run?.controller.signal ?? null,
+      session: (request) => {
+        if (lane !== 'gpu' || server === null) {
+          return Promise.reject(new Error(`${request.what} asked for a queue session from a ${lane} step; only a GPU step runs in one.`));
+        }
+        return this.sessionOn(server, request);
+      },
       submitted: (row) => { ledger.record({ server: row.server, kind: 'job', id: row.id, jobType: row.jobType, model: row.model, jobId }); },
-      leased: (row) => { ledger.record({ server: row.server, kind: 'lease', id: row.id, jobType: 'lease', model: row.model, jobId }); },
       settled: (at, kind, id) => { ledger.settle(at, kind, id); },
       streamed: (at, id, lastEventId) => { ledger.advance(at, id, lastEventId); run?.beat(); },
       beat: () => { run?.beat(); },
@@ -725,9 +850,9 @@ export class CrucibleLanes {
   // ── quit ─────────────────────────────────────────────────────────────────
 
   /**
-   * Quit: stop admitting, abort every running job, give them
-   * {@link QUIT_UNWIND_MS} to release their own holds, then sweep the ledger,
-   * the whole thing under `deadlineMs` (plan sections 0a, 13.4). Never throws.
+   * Quit: stop admitting, abort every running job, give them {@link QUIT_UNWIND_MS} to let go of
+   * their sessions, close every session still open, then sweep the ledger, the whole thing under
+   * `deadlineMs` (plan sections 0a, 13.4). Never throws.
    */
   async quit(sweep: (deadlineMs: number) => Promise<SweepReport>, deadlineMs: number = QUIT_SWEEP_DEADLINE_MS, unwindMs: number = QUIT_UNWIND_MS): Promise<SweepReport> {
     const started = this.now();
@@ -735,15 +860,18 @@ export class CrucibleLanes {
     this.stop();
     const running = [...this.runs.values()];
     for (const run of running) run.controller.abort(new Error('ContentStudio is quitting'));
-    if (running.length > 0) {
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([
-        Promise.all(running.map((run) => run.done)),
-        new Promise<void>((resolve) => { timer = setTimeout(resolve, unwindMs); timer.unref?.(); }),
-      ]);
-      if (timer !== undefined) clearTimeout(timer);
-    }
+    if (running.length > 0) await this.within(unwindMs, Promise.all(running.map((run) => run.done)));
+    await this.within(Math.max(1, deadlineMs - (this.now() - started)), this.deps.sessions.closeAll('ContentStudio is quitting'));
     return sweep(Math.max(1, deadlineMs - (this.now() - started)));
+  }
+
+  private async within(ms: number, work: Promise<unknown>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      work.then(() => undefined, () => undefined),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); timer.unref?.(); }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
   }
 
   // ── the strip ────────────────────────────────────────────────────────────
@@ -768,9 +896,10 @@ export class CrucibleLanes {
           runningJobId: running,
           parked: [...this.parks.values()].filter((park) => park.server === row.name).length,
           unreadReason: state === 'unreachable' ? lane.chip.unreadReason : null,
-          readAt: lane.read?.at ?? null,
-          // Our own job on the lane is the running row, never a holder to wait behind.
-          holder: running === null && !row.paused ? lane.chip.holder : null,
+          readAt: lane.readAt,
+          // Another client's hold: what a parked job, or our job in the server's line, waits behind.
+          holder: !row.paused && (running === null || lane.inLine !== null) ? lane.chip.holder : null,
+          inLine: lane.inLine,
         };
       }),
     };
@@ -782,7 +911,7 @@ export class CrucibleLanes {
   }
 
   /** The park recorded for a job, for a keeper. */
-  parkOf(jobId: string): ParkRecord | null {
+  parkOf(jobId: string): VenuePark | null {
     return this.parks.get(jobId) ?? null;
   }
 
@@ -791,7 +920,11 @@ export class CrucibleLanes {
   private lane(server: string): Lane {
     let lane = this.lanes.get(server);
     if (lane === undefined) {
-      lane = { server, holder: null, waiters: [], slot: new Slot(), read: null, chip: { state: 'unread', resident: null, busyLine: null, unreadReason: null, holder: null }, holderTrack: null };
+      lane = {
+        server, holder: null, waiters: [], slot: new Slot(), readAt: null,
+        chip: { state: 'unread', resident: null, busyLine: null, unreadReason: null, holder: null },
+        holderTrack: null, inLine: null,
+      };
       this.lanes.set(server, lane);
     }
     return lane;
@@ -816,17 +949,6 @@ export class CrucibleLanes {
       // readiness's freshWithin never rejects; were it to, admission goes on and the door decides.
       log.warn(`[crucible] Could not check Crucible before admitting work: ${(err as Error)?.message ?? err}`);
     });
-  }
-
-  /**
-   * The lane's last preflight read if it is recent enough to say what the card was doing when
-   * the door refused; null when it is older (the preflight does not run while nothing is
-   * queued, LEDGER #234), so a stale "clear" never makes a park wait for an edge it may miss.
-   */
-  private recentRead(server: string): PreflightRead | null {
-    const read = this.lane(server).read;
-    if (read === null) return null;
-    return this.now() - read.at <= this.preflightEveryMs + PREFLIGHT_TIMEOUT_MS ? read : null;
   }
 
   /** Take the lane for `jobId`: at once when free or reserved for it, else in turn. */
@@ -877,7 +999,6 @@ export class CrucibleLanes {
       log.info(`[crucible] ${jobId} is no longer parked: ${why}`);
       this.workChanged();
     }
-    this.cleared.delete(jobId);
   }
 
   private publish(): void {
