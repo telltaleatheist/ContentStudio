@@ -25,6 +25,7 @@ import {
   FindDraftResult,
   MAX_AB_VARIANTS,
   MAX_TITLE_LENGTH,
+  youtubeDescriptionProblem,
   PushReceipt,
   ResolvedMetadata,
   SPREAKER_DESTINATION,
@@ -460,6 +461,10 @@ export class PublishState {
     }
     if (!this.channelId()) return 'This item is not routed to a channel yet.';
     if (!this.pushTitle()) return 'No title is chosen. Variant 1 is what goes on the video.';
+    if (this.hasResolved()) {
+      const problem = youtubeDescriptionProblem(this.resolvedDescription());
+      if (problem) return problem;
+    }
     return null;
   });
 
@@ -494,6 +499,10 @@ export class PublishState {
     }
     if (!this.channelId()) return 'This item is not routed to a channel yet.';
     if (!this.pushTitle()) return 'No title is chosen. Variant 1 is what goes on the video.';
+    if (this.hasResolved()) {
+      const problem = youtubeDescriptionProblem(this.resolvedDescription());
+      if (problem) return problem;
+    }
     return null;
   });
 

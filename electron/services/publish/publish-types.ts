@@ -43,6 +43,30 @@ export function isItemId(value: unknown): value is string {
 export const MAX_TITLE_LENGTH = 100;
 
 /**
+ * YouTube's description rule: at most 5,000 BYTES (UTF-8, so an emoji counts 4) and no "<" or
+ * ">" anywhere (YouTube Data API, videos resource, snippet.description). A description over it
+ * is refused at videos.insert as "The request metadata specifies an invalid video description"
+ * (2026-10-04: the Gruber/White Rose report's 37 chapters made it 5,105 bytes). Said here, before
+ * anything is sent, with what to do about it; nothing is ever trimmed to fit.
+ */
+export const YOUTUBE_MAX_DESCRIPTION_BYTES = 5000;
+
+/** Why YouTube would refuse this description, or null when it would take it. */
+export function youtubeDescriptionProblem(description: string): string | null {
+  const bytes = new TextEncoder().encode(description).length;
+  if (bytes > YOUTUBE_MAX_DESCRIPTION_BYTES) {
+    return `The description is ${bytes.toLocaleString('en-US')} bytes and YouTube's limit is ` +
+      `${YOUTUBE_MAX_DESCRIPTION_BYTES.toLocaleString('en-US')}: take out at least ` +
+      `${(bytes - YOUTUBE_MAX_DESCRIPTION_BYTES).toLocaleString('en-US')} (drop or shorten some ` +
+      `chapters, turn chapters off for this item, or shorten the body).`;
+  }
+  if (/[<>]/.test(description)) {
+    return 'The description contains "<" or ">", which YouTube refuses in a description: take them out.';
+  }
+  return null;
+}
+
+/**
  * Spreaker enforces a 140-character episode title limit — a DIFFERENT limit from
  * YouTube's 100, on the same string.
  *

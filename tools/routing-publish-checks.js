@@ -2166,6 +2166,17 @@ async function rejects(promise) {
     eq(/must be an absolute path/.test(relative && relative.message), true, 'a relative path:');
   });
 
+  check("YouTube's description rule: 5,000 bytes (not characters), no < or >, said with what to do", () => {
+    const p = types.youtubeDescriptionProblem;
+    eq(p('a'.repeat(5000)), null, 'exactly 5,000 bytes:');
+    eq(/5,001 bytes .* at least 1 /.test(p('a'.repeat(5001))), true, 'one byte over:');
+    // 1,250 four-byte emoji are 1,250 characters and 5,000 bytes; one more is over.
+    eq(p('🔥'.repeat(1250)), null, 'emoji at the limit:');
+    eq(/5,004 bytes/.test(p('🔥'.repeat(1251))), true, 'emoji over:');
+    eq(/"<" or ">"/.test(p('see <here>')), true, 'angle brackets:');
+    eq(p(''), null, 'empty:');
+  });
+
   aiManager.AIManagerService.prototype.runPlainRequest = realRunPlain;
   transportModule.installCrucibleTransport(null);
   lanesModule.installLanes(null);

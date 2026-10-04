@@ -48,7 +48,7 @@ import { matchDraft, toFillCandidates } from './video-matcher';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
 import { fitThumbnailFile } from './thumbnail-validate';
-import { ChosenMetadata, UploadReceipt } from './publish-types';
+import { ChosenMetadata, UploadReceipt, youtubeDescriptionProblem } from './publish-types';
 import { firstLineOf, splitTags } from './youtube-push';
 
 /** The API surface an upload needs. Structural, like YouTubePushApi, and for the same
@@ -122,6 +122,10 @@ export function planVideoInsert(input: UploadPlanInput): UploadPlan {
       `Item ${record.itemId} has no chosen title. The first chosen title IS the video's ` +
       `title; nothing is uploaded until the operator has picked one.`
     );
+  }
+  const descriptionProblem = youtubeDescriptionProblem(resolved.description);
+  if (descriptionProblem) {
+    throw new Error(`Item ${record.itemId} was not uploaded. ${descriptionProblem}`);
   }
   if (file.sizeBytes <= 0) {
     throw new Error(`Item ${record.itemId}'s source file "${file.path}" is empty (0 bytes).`);

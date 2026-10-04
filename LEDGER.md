@@ -1320,3 +1320,17 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Open.** If it crashes again after a save, the next step is to keep one page for the app's life rather than destroy one per save.
 
 [electron/services/thumbnails/canvas-page.ts]
+
+**258. YouTube's description limit is checked before an upload or push, and named with what to cut (Owen, 2026-10-04: "videos.insert (session init) failed (HTTP 400): The request metadata specifies an invalid video description.").**
+- **Cause.** Item itm-mut9a0vj-2ktkk1a7, the Gruber / White Rose report, composes to 5,105 bytes. That is the 1,313-byte body, its 37 chapters, and the hashtags and links. YouTube allows 5,000 bytes and no "<" or ">" (Data API, snippet.description). Nothing in ContentStudio knew that, so the calendar's upload sent it and YouTube's vague refusal was all that came back. The other items in that run uploaded.
+- **The rule.** It lives in one place, `youtubeDescriptionProblem` in publish-types.ts, mirrored in the renderer's publish.types.ts.
+  - It counts UTF-8 bytes, not characters, so an emoji counts 4.
+  - The message names the overrun and the ways out: drop or shorten some chapters, turn chapters off for this item, or shorten the body.
+  - Nothing is trimmed to fit. No fallback.
+- **Where it applies.**
+  - `planVideoInsert` (the upload) and `planVideoUpdate` (the push) refuse before anything is sent.
+  - The publish panel's Upload and Push buttons give it as their blocked reason.
+  - For this item, turning chapters off brings it under the limit.
+- **Checks.** routing-publish-checks: the new check covers exactly 5,000, one byte over, emoji at and over the limit, angle brackets and empty. On the real report it says "5,105 bytes … take out at least 105". build:electron and the frontend build are clean.
+
+[electron/services/publish/publish-types.ts, youtube-upload.ts, youtube-push.ts; frontend/src/app/features/publish/publish.types.ts, publish-state.ts; tools/routing-publish-checks.js]

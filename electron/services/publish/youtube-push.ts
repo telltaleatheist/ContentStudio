@@ -62,6 +62,7 @@ import {
   MAX_TITLE_LENGTH,
   PushReceipt,
   ResolvedMetadata,
+  youtubeDescriptionProblem,
 } from './publish-types';
 
 /**
@@ -216,6 +217,10 @@ export function planVideoUpdate(input: {
       `${currentDescription.length} characters of one. Refusing to erase it. Fix the item's ` +
       `description (or clear its override) and push again.`
     );
+  }
+  const descriptionProblem = youtubeDescriptionProblem(description);
+  if (descriptionProblem) {
+    throw new Error(`Nothing was pushed to video ${videoId}. ${descriptionProblem}`);
   }
   const currentTags: string[] = Array.isArray(video.snippet.tags) ? video.snippet.tags : [];
   if (tags.length === 0 && currentTags.length > 0) {
