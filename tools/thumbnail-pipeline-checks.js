@@ -482,6 +482,20 @@ check('off: absent setup, the per-run switch, a channel that makes none and a ch
   assert.ok(assets.promptAssets().channelIds().every((id) => !assets.promptAssets().channel(id).fields.includes('thumbnail_text')), 'THUMBNAIL TEXT OPTIONS is retired from every shipped channel');
 });
 
+check('a compilation (withoutStory) is a no-story record its window fills from Owen\'s own images and words; a run that makes none stays off', () => {
+  const item = (channel) => ({
+    jobId: 'j', itemIndex: 0, sourceLabel: 'x', contentType: 'subject', videoPath: null, operatorRef: undefined, segments: [], reportFolder: '/r', channel,
+  });
+  const doors = { sessions: null, aiManager: null, routing: {}, cancelled: () => false, progress: () => undefined };
+  const fireside = assets.promptAssets().channel('youtube-fireside');
+  const on = pipeline.ItemThumbnailRun.start({ mode: 'on', setup: { style: {} } }, item(fireside), doors).withoutStory(pipeline.COMPILATION_NO_STORY).record();
+  assert.deepStrictEqual([on.state, on.story.state, on.story.reason, on.folder], ['no-story', 'none', pipeline.COMPILATION_NO_STORY, null]);
+  const off = pipeline.ItemThumbnailRun.start({ mode: 'off', reason: 'Thumbnails were switched off for this run.' }, item(fireside), doors).withoutStory(pipeline.COMPILATION_NO_STORY).record();
+  assert.deepStrictEqual([off.state, off.line], ['off', 'Thumbnails were switched off for this run.']);
+  const shorts = pipeline.ItemThumbnailRun.start({ mode: 'on', setup: { style: {} } }, item(assets.promptAssets().channel('youtube-shorts')), doors).withoutStory(pipeline.COMPILATION_NO_STORY).record();
+  assert.strictEqual(shorts.state, 'off', 'a channel that makes no thumbnails stays off');
+});
+
 check('pieces: a kind with no options starts on the next kind, said; no default frame is chosen by the run any more', () => {
   assert.strictEqual(pipeline.defaultFrames, undefined, 'the ranking\'s default frames are gone');
   const d = pipeline.defaultWords({ claim: [], stakes: ['S'], reaction: ['R'] }, 'claim');
@@ -886,7 +900,7 @@ check('window, no story (a report made from a subject, no video yet): its cards 
   assert.strictEqual(window.summary(job.jobId, itemId).line, v0.line, 'the reports page says the same');
   assert.ok(!/story/i.test(v0.line) && !/story/i.test(v0.wordsBlocked), 'no pipeline words for Owen');
   assert.deepStrictEqual([v0.canOpen, v0.frames, v0.finish], [true, {}, null]);
-  assert.strictEqual(v0.wordsBlocked, 'This one was made from a subject, not a video, so there is no transcript to write text from. Type your own words.');
+  assert.strictEqual(v0.wordsBlocked, 'This one was made from a subject or is a compilation, so there is no one video transcript to write text from. Type your own words.');
   assert.strictEqual(compose.noPairFor(1, v0.record.pairs), null, 'card 1 can be filled');
   // No text can be written for it: refused by name before any model is asked.
   const callsBefore = plainCalls.length;

@@ -117,10 +117,10 @@ export const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg'] as const;
 export const NO_STORY_LINE = 'No frames were taken for this one: make its thumbnails from your own images.';
 
 /**
- * Why New options and More options cannot run for a report made from a subject: the words are
- * written from the video's transcript, and a subject has none.
+ * Why New options and More options cannot run for a report made from a subject or a compilation:
+ * the words are written from one video's transcript, and neither has one.
  */
-export const NO_TRANSCRIPT_WORDS = 'This one was made from a subject, not a video, so there is no transcript to write text from. Type your own words.';
+export const NO_TRANSCRIPT_WORDS = 'This one was made from a subject or is a compilation, so there is no one video transcript to write text from. Type your own words.';
 
 /** Where an added image's two grid pictures are kept, under the record's folder (its full size is in `full/`). */
 export const ADDED_FOLDER = 'added';

@@ -1402,3 +1402,14 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:crucible 23 keepers pass. build:electron is clean.
 
 [electron/crucible/lanes.ts; electron/main.ts]
+
+**262. A compilation's thumbnails are made in the Thumbnails window from Owen's own images and words (Owen, 2026-10-04: "if i run a compilation, it should still take me to the normal thumbnails section where i can drag/drop my thumbnail background image and type in words and create the thumbnail from that").**
+- **Before.** The compilation branch of metadata-generator forced the thumbnail choice to `off` ("A compilation joins several videos …"). An `off` record has no "Make thumbnails…" button and the window has nothing to open.
+- **Now.**
+  - The branch starts the run with the job's real choice, then `ItemThumbnailRun.withoutStory(COMPILATION_NO_STORY)`. A run that makes thumbnails becomes a `no-story` record, the same kind a report made from a subject gets (#250): one card per title, filled from his dropped images, typed words and a photo.
+  - A run with thumbnails switched off, or a channel that makes none, stays `off`.
+  - "New options" and "More options" stay refused, because there is no one transcript. `NO_TRANSCRIPT_WORDS` now names compilations as well as subjects.
+- **Existing report fixed.** The one compilation report recorded `off` this way was moved to `no-story` in place: job-1791156130103-4vp451qqh, "greg locke goes to THE REAL no… + 3 more", youtube-fireside, whose channel makes thumbnails. Its state, line and story were set to what `withoutStory` writes, and a copy was kept in the session scratchpad.
+- **Checks.** thumbnail-pipeline-checks 28 (one new), thumbnail-lab 33 and check:pure pass. build:electron is clean.
+
+[electron/services/thumbnails/pipeline.ts, report-thumbnails.ts; electron/services/metadata/metadata-generator.service.ts; tools/thumbnail-pipeline-checks.js]

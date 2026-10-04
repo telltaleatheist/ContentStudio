@@ -66,7 +66,7 @@ import type { TranscriptRef } from '../publish/publish-types';
 import { gpuCall, queueAITask } from '../queue-manager.service';
 import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
 import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
-import { ItemThumbnailRun, type ThumbnailJobDoors, type ThumbnailRunChoice } from '../thumbnails/pipeline';
+import { COMPILATION_NO_STORY, ItemThumbnailRun, type ThumbnailJobDoors, type ThumbnailRunChoice } from '../thumbnails/pipeline';
 import { promptAssets } from './prompt-assets';
 import { ChapterPick, STORIES_PAST_SECONDS, chapterPickOf } from './chaptering/granularity';
 import { srtSeconds } from './chaptering/units';
@@ -653,17 +653,16 @@ export class MetadataGeneratorService {
         const compilationProvenance = this.compilationProvenanceOf(contentItems);
         await ensureLessons();
         // A compilation is one item made of several videos, so it has no one editor story to take
-        // thumbnail frames from; the record says so rather than leaving the key absent.
+        // thumbnail frames from: its record is a no-story one (withoutStory), and the Thumbnails
+        // window makes its cards from Owen's own images and words, as for a report from a subject.
         const compilationThumbnails = ItemThumbnailRun.start(
-          params.thumbnails === undefined || params.thumbnails.mode === 'off'
-            ? params.thumbnails
-            : { mode: 'off', reason: 'A compilation joins several videos, so there is no one editor story to take thumbnail frames from.' },
+          params.thumbnails,
           {
             jobId: jobInfo.jobId, itemIndex: 0, sourceLabel: jobName, contentType: 'subject', videoPath: null, operatorRef: undefined,
             segments: [], reportFolder: jobInfo.txtFolder, channel: promptAssets().channel(params.promptSet),
           },
           this.thumbnailDoors(params, lifecycle, aiManager, 0),
-        );
+        ).withoutStory(COMPILATION_NO_STORY);
 
         // Summarize each item SEPARATELY to preserve distinct subjects
         // (Combining first then summarizing loses the ITEM structure during chunking)

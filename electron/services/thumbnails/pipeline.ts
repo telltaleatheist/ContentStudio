@@ -181,6 +181,9 @@ export interface ThumbnailRunSetup {
  * Whether this run makes thumbnails. `off` carries the reason, stated on every item's record.
  * Absent on GenerationParams (a caller that predates this, the test CLI) the generator states that.
  */
+/** Why a compilation's thumbnails are made from Owen's own images and words (withoutStory). */
+export const COMPILATION_NO_STORY = 'A compilation joins several videos, so there is no one editor story to take thumbnail frames from.';
+
 export type ThumbnailRunChoice = { mode: 'on'; setup: ThumbnailRunSetup } | { mode: 'off'; reason: string };
 
 /** One item, as the stages need it. */
@@ -490,6 +493,20 @@ export class ItemThumbnailRun {
     } finally {
       this.rec.timings.push({ stage: name, seconds: Math.round((Date.now() - t0) / 100) / 10 });
     }
+  }
+
+  /**
+   * An item that has no one video to take frames from at all (a compilation, 2026-10-04: Owen "it
+   * should still take me to the normal thumbnails section where i can drag/drop my thumbnail
+   * background image and type in words"): its record is a no-story one, so the window fills its
+   * cards from his images, his words and a photo. A run that makes no thumbnails stays off.
+   */
+  withoutStory(reason: string): this {
+    if (this.rec.state === 'made') {
+      this.rec.story = { state: 'none', reason, evidence: null };
+      this.noStory(reason);
+    }
+    return this;
   }
 
   private noStory(reason: string): void {
