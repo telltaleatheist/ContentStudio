@@ -85,3 +85,52 @@ export function childrenOf(parent: Span, sub: readonly Span[], units: readonly S
   }
   return out;
 }
+
+/**
+ * HOW SHORT A CHAPTER MAY BE (Owen, 2026-10-04: "we dont need that many chapters. especially on
+ * longer videos"). The outline and its refinement drew a chapter every one to three minutes on
+ * long videos: 37 on a 63-minute one, which also pushed its description past YouTube's 5,000
+ * bytes. A chapter must now cover at least a tenth of the video, and never less than a minute,
+ * so a video carries about ten chapters at most and a short one keeps its finer ones.
+ */
+export const MIN_CHAPTER_SHARE = 0.1;
+export const MIN_CHAPTER_SECONDS = 60;
+
+export function minChapterSeconds(totalSeconds: number): number {
+  return Math.max(MIN_CHAPTER_SECONDS, totalSeconds * MIN_CHAPTER_SHARE);
+}
+
+/**
+ * Merge every chapter shorter than `minSeconds` into a neighbour, shortest first, until none is
+ * short. A chapter joins whichever neighbouring chapter is shorter (so sizes stay even), and the
+ * merged chapter keeps the label of the longer of the two. Sponsor reads (`isAd`) are never
+ * merged and never merged into: they are their own chapters, kept out of the description. A
+ * short chapter with only sponsor reads beside it stays as it is. The spans still tile the video.
+ */
+export function consolidateShort<T extends Span>(spans: readonly T[], minSeconds: number): T[] {
+  const out = spans.map((s) => ({ ...s, unitRange: [s.unitRange[0], s.unitRange[1]] as [number, number] }));
+  const len = (s: Span) => s.endSec - s.startSec;
+  for (;;) {
+    let pick = -1;
+    for (let i = 0; i < out.length; i++) {
+      const s = out[i];
+      if (s.isAd || len(s) >= minSeconds) continue;
+      const mergeable = (i > 0 && !out[i - 1].isAd) || (i + 1 < out.length && !out[i + 1].isAd);
+      if (mergeable && (pick < 0 || len(s) < len(out[pick]))) pick = i;
+    }
+    if (pick < 0) return out;
+    const prev = pick > 0 && !out[pick - 1].isAd ? pick - 1 : -1;
+    const next = pick + 1 < out.length && !out[pick + 1].isAd ? pick + 1 : -1;
+    const into = prev < 0 ? next : next < 0 ? prev : len(out[prev]) <= len(out[next]) ? prev : next;
+    const [a, b] = into < pick ? [into, pick] : [pick, into];
+    const first = out[a];
+    const second = out[b];
+    const merged = {
+      ...(len(first) >= len(second) ? first : second),
+      startSec: first.startSec,
+      endSec: second.endSec,
+      unitRange: [first.unitRange[0], second.unitRange[1]] as [number, number],
+    };
+    out.splice(a, 2, merged);
+  }
+}

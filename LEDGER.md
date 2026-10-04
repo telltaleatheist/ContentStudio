@@ -1334,3 +1334,28 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** routing-publish-checks: the new check covers exactly 5,000, one byte over, emoji at and over the limit, angle brackets and empty. On the real report it says "5,105 bytes … take out at least 105". build:electron and the frontend build are clean.
 
 [electron/services/publish/publish-types.ts, youtube-upload.ts, youtube-push.ts; frontend/src/app/features/publish/publish.types.ts, publish-state.ts; tools/routing-publish-checks.js]
+
+**259. Fewer chapters: none shorter than a tenth of the video or a minute, merged before titling (Owen, 2026-10-04: "we dont need that many chapters. especially on longer videos").**
+- **What was wrong.** On snap at the chapters grain (outline + assign + Viterbi at switch cost 20, then a level-2 sub-outline inside every section past 15 min), long videos got a chapter every one to three minutes. The six latest reports:
+
+  | report | length | chapters | median chapter |
+  |---|---|---|---|
+  | Gruber pt 1 | 63 min | 37 | 78 s |
+  | Gruber pt 2 | 75 min | 33 | — |
+  | Metaxas intro | 91 min | 27 | — |
+  | Kent Hovind | 62 min | 23 | — |
+  | Alex Jones | 46 min | 21 | — |
+  | f1 Gruber | 15 min | 8 | — |
+
+  Gruber pt 1's chapter list also pushed its description past YouTube's 5,000 bytes (#258).
+- **The rule.**
+  - `chapters.ts` `consolidateShort`, at `minChapterSeconds`: a tenth of the runtime, never under 60 s.
+  - The shortest short chapter merges first, into whichever neighbour is shorter. The merged chapter keeps the longer one's outline label.
+  - Sponsor reads (`isAd`) are never merged and never merged into.
+  - It runs after refinement and before the titles, so each title is written for its whole merged chapter.
+  - A video now carries about ten chapters at most.
+- **Owen overrides Law 6 here.** A duration-derived bound on chapter LENGTH now sits beside the declared switch cost (#199, #213). The outline, assign and refinement are unchanged.
+- **Not changed.** The stories grain, and the retired whole-transcript engine's prompt bands.
+- **Checks.** check:chaptering 55 (one new). build:electron is clean.
+
+[electron/services/metadata/chaptering/chapters.ts, chaptering.service.ts; tools/chaptering-checks.js]

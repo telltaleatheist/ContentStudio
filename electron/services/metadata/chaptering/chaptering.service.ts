@@ -57,7 +57,7 @@ import { assignQuestions, optionNames, questionName, readChoiceDistribution, rea
 import { viterbi } from './viterbi';
 import { CONFIRM_THRESHOLD, adBaseline, baselineRow, confirmPlugs, confirmThreshold, confirmWindows, isOutlineItemCandidate, trimToCores } from './plugs';
 import { Chunk, ChunkPath, ChunkPlanOptions, Piece, pathPieces, planChunks, stitchChunks, unitTokens } from './chunks';
-import { Span, childrenOf, piecesToSpans } from './chapters';
+import { Span, childrenOf, consolidateShort, minChapterSeconds, piecesToSpans } from './chapters';
 import { TITLE_MAX_TOKENS, summarizeChapter } from './summarize';
 import {
   Chapter,
@@ -289,6 +289,18 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
     }
     spans = spans.flatMap((s) => replaced.get(s) ?? [s]);
     base += W_REFINE;
+  }
+
+  // Fewer, longer chapters (chapters.ts consolidateShort): none under a tenth of the video or a
+  // minute, merged before the titles are written so each title describes its whole chapter.
+  if (setting.method === 'outline') {
+    const minSeconds = minChapterSeconds(totalSeconds);
+    const before = spans.filter((s) => !s.isAd).length;
+    spans = consolidateShort(spans, minSeconds);
+    const after = spans.filter((s) => !s.isAd).length;
+    if (after < before) {
+      log.info(`[Chaptering] ${before} chapters merged to ${after}: none shorter than ${Math.round(minSeconds)} s (a tenth of ${formatClock(totalSeconds)}, at least a minute)`);
+    }
   }
 
   // Titles and summaries, in time order, each call seeing the summary and titles before it.

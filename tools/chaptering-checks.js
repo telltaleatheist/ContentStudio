@@ -1004,6 +1004,24 @@ check('a chapter over the title budget is read in equal parts and titled from th
   assert.ok(warnings.some((w) => w.includes(`read in ${windows.length} parts`)));
 });
 
+check('short chapters merge into the shorter neighbour until none is under a tenth of the video (a minute at least); sponsor reads stay', () => {
+  const { consolidateShort, minChapterSeconds } = C('chapters');
+  assert.strictEqual(minChapterSeconds(3600), 360);
+  assert.strictEqual(minChapterSeconds(300), 60);
+  const sp = (a, b, label, isAd = false, u = [a, b]) => ({ startSec: a, endSec: b, unitRange: u, label, isAd });
+  // 0-400 long, 400-450 short, 450-500 short ad, 500-560 short, 560-1000 long: min 100 s.
+  const out = consolidateShort([sp(0, 400, 'A'), sp(400, 450, 'b'), sp(450, 500, 'ad', true), sp(500, 560, 'c'), sp(560, 1000, 'D')], 100);
+  assert.deepStrictEqual(out.map((s) => [s.startSec, s.endSec, s.label, s.isAd]), [[0, 450, 'A', false], [450, 500, 'ad', true], [500, 1000, 'D', false]]);
+  // Still tiles, unit ranges joined.
+  assert.deepStrictEqual(out[0].unitRange, [0, 450]);
+  // Shortest first, into the shorter neighbour: 0-300, 300-330, 330-400, 400-1000 at 100 s.
+  const even = consolidateShort([sp(0, 300, 'A'), sp(300, 330, 'b'), sp(330, 400, 'c'), sp(400, 1000, 'D')], 100);
+  assert.deepStrictEqual(even.map((s) => [s.startSec, s.endSec, s.label]), [[0, 300, 'A'], [300, 400, 'c'], [400, 1000, 'D']]);
+  // Nothing short: unchanged. A lone short chapter between ads stays.
+  assert.strictEqual(consolidateShort([sp(0, 500, 'A'), sp(500, 1000, 'B')], 100).length, 2);
+  assert.strictEqual(consolidateShort([sp(0, 10, 'ad', true), sp(10, 20, 'x'), sp(20, 30, 'ad2', true)], 100).length, 3);
+});
+
 check('progress is monotone, weighted by work, and ends at 1', async () => {
   const v = fakeVideo(300, SECTIONS);
   const seen = [];
