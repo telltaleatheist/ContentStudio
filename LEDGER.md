@@ -1311,3 +1311,12 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:crucible 23 keepers all pass; check:asr, check:pure and check:chaptering (54) pass; build:electron is clean. No live server call.
 
 [vendor/*1.0.80.tgz; package.json; package-lock.json; shared/crucible/contentstudio.module.json, contentstudio.toml; electron/crucible/in-flight-sweep.ts; tools/test-crucible-in-flight.js]
+
+**257. The thumbnail drawing page is a plain hidden window, no longer an offscreen one (Owen, 2026-10-04: "crash").**
+- **The crash.** ContentStudio died with `ContentStudio-2026-10-04-112143.ips`: EXC_BAD_ACCESS (KERN_INVALID_ADDRESS at 0x1) in `objc_release` on CrBrowserMain, under V8 frames. That is the same signature as the earlier crash after a thumbnail was made. It came 21 s after the log's last line, "[Thumbnails] … saved the cards (1 made, 2 made, 3 made)".
+- **Why the page is suspected.** Every save draws through `ThumbnailCanvas` (canvas-page.ts), a hidden `BrowserWindow` with `webPreferences.offscreen: true`, and destroys it in the save's `finally` (`renderer.close()`). An objc object released from the main thread after JS ran, seconds after an offscreen window was destroyed, points at the offscreen window's teardown when its wrapper is collected. That is suspected, not proven: the scratch repro hit it once in many runs.
+- **The fix.** The page never needed offscreen rendering. It draws on its own canvas and hands back `toDataURL`, and faces come from the Shape Detection API, so it is now `show: false` with no `offscreen`. backgroundThrottling stays off.
+- **Checks.** check:thumbnail (10) and check:thumbnail-lab's Electron half (18, including Apple Vision on the reference frame and the evidence render) pass on the plain hidden page. thumbnail-pipeline-checks pass (27). build:electron is clean.
+- **Open.** If it crashes again after a save, the next step is to keep one page for the app's life rather than destroy one per save.
+
+[electron/services/thumbnails/canvas-page.ts]
