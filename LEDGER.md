@@ -1341,11 +1341,11 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   | report | length | chapters | median chapter |
   |---|---|---|---|
   | Gruber pt 1 | 63 min | 37 | 78 s |
-  | Gruber pt 2 | 75 min | 33 | — |
-  | Metaxas intro | 91 min | 27 | — |
-  | Kent Hovind | 62 min | 23 | — |
-  | Alex Jones | 46 min | 21 | — |
-  | f1 Gruber | 15 min | 8 | — |
+  | Gruber pt 2 | 75 min | 33 | 108 s |
+  | Metaxas intro | 91 min | 27 | 165 s |
+  | Kent Hovind | 62 min | 23 | 99 s |
+  | Alex Jones | 46 min | 21 | 119 s |
+  | f1 Gruber | 15 min | 8 | 113 s |
 
   Gruber pt 1's chapter list also pushed its description past YouTube's 5,000 bytes (#258).
 - **The rule.**
@@ -1359,3 +1359,20 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:chaptering 55 (one new). build:electron is clean.
 
 [electron/services/metadata/chaptering/chapters.ts, chaptering.service.ts; tools/chaptering-checks.js]
+
+- **The six reports trimmed by hand (same day, Owen: "go through the 6 latest metadata reports and remove irrelevant chapter markers").**
+  - Done through each item's selection record, the same `chapterDrops` and `chapterEdits` the reports page writes. The reports themselves are untouched, so a drop is undone on the page.
+  - The kept markers are the real subject changes. A kept chapter that absorbed the dropped ones beside it was renamed to cover its whole span.
+
+  | report | chapters | description |
+  |---|---|---|
+  | Metaxas intro | 27 → 11 | 3,026 bytes |
+  | Kent Hovind | 23 → 9 | 2,796 bytes |
+  | Gruber pt 2 | 33 → 10 | 2,787 bytes |
+  | Gruber pt 1 | 37 → 11 | 2,669 bytes, was 5,105 and refused |
+  | Alex Jones | 21 → 10 | 2,766 bytes |
+  | f1 Gruber | 8 → 4 | 2,182 bytes |
+
+  - Measured through composePublishedText and youtubeDescriptionProblem.
+  - Five of the six are already on YouTube (fqELNmOOxSQ, fZ8FEO7qwj0, EgAmlxu5tzI, YokxTMxJFtM, tO6hy_Pn1yc) and carry the long lists until each is pushed.
+  - The records were backed up in the session scratchpad first.
