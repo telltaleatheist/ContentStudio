@@ -93,7 +93,7 @@ export class ThumbnailCanvas {
         // backgroundThrottling off: a hidden page's image decoding and timers may otherwise be held back.
         // NOT `offscreen`: the page only draws on its own canvas and reads it back (toDataURL), so it
         // never needs its frames painted for us. An offscreen page closed after a save is the suspect in
-        // the app crashing after thumbnails were made (2026-09-30, and 2026-10-04 21 s after "saved
+        // the app crashing after thumbnails were made (twice; on 2026-10-04 21 s after "saved
         // the cards": EXC_BAD_ACCESS in objc_release on the main thread, LEDGER #257).
         webPreferences: { experimentalFeatures: true, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
       });
