@@ -1392,3 +1392,13 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:chaptering 55, check:pure and routing-publish-checks pass. build:electron and the frontend build are clean.
 
 [electron/assets/prompts/shared/pipeline/thumbnails.yml; electron/services/thumbnails/prompts.ts; tools/thumbnail-lab-checks.js; electron/services/metadata/chaptering/granularity.ts; electron/services/metadata/metadata-generator.service.ts; frontend/src/app/components/inputs/inputs.html]
+
+**261. A queue on a half-quit app says so, and the quit logs how far it got (Owen, 2026-10-04: "i added some items to the queue but they arent actually processing. The queue is running: 0 jobs working, 1 job waiting").**
+- **Cause.** The ContentStudio Owen was using was PID 57128, started 11:21:52, the copy he quit at 12:02:18. It logged "Application is quitting..." after the Crucible quit sweep, and the process never exited. At 18:27 macOS `activate` reopened a main window on it. Its lanes were `quitting`, and `plan()` answered every queue plan with an empty plan. The row sat "waiting" forever while both Crucible servers were idle: nothing running, nothing queued, no session (read from /v1/activity and /v1/queue, both on 1.0.103).
+- **Now.**
+  - `plan()` refuses by name while quitting, so the page shows "The queue could not ask which jobs may start: ContentStudio is quitting … quit it fully (or force-quit it) and open it again."
+  - main.ts logs `[Quit] will-quit` and `[Quit] quit, exit code N`, so the next quit that does not finish shows where it stopped. Nothing past "Application is quitting..." was logged this time.
+- **Open.** Why the quit stalls after its second before-quit pass. It is an old problem (the "quit hang" note) and is not reproduced. Suspects: a window that does not close; the hidden offscreen thumbnail page (#257 took offscreen off the per-save page, and the Thumbnails window's face-search page uses the same class).
+- **Checks.** check:crucible 23 keepers pass. build:electron is clean.
+
+[electron/crucible/lanes.ts; electron/main.ts]

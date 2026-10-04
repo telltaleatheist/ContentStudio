@@ -455,6 +455,11 @@ app.on('before-quit', (event) => {
   // still lists (P3, LEDGER #255).
 });
 
+// Where a quit stops, said in the log: on 2026-10-04 a quit logged "Application is quitting..." and
+// the process stayed alive for hours, its queue refusing every job. These lines say how far it got.
+app.on('will-quit', () => log.info('[Quit] will-quit: every window is closed'));
+app.on('quit', (_event, code) => log.info(`[Quit] quit, exit code ${code}`));
+
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   log.error('Uncaught exception:', error);

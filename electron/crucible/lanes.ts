@@ -493,7 +493,9 @@ export class CrucibleLanes {
   async plan(candidates: readonly QueuePlanCandidate[]): Promise<QueuePlan> {
     await this.gate;
     const plan: QueuePlan = { start: [], waiting: [], failed: [] };
-    if (this.quitting) return plan;
+    // Refused by name, never an empty plan: a quit that did not finish leaves this process alive,
+    // and a window reopened on it showed "1 job waiting" forever with both servers idle (2026-10-04).
+    if (this.quitting) throw new Error('ContentStudio is quitting, so no job starts. If the app is still open, quit it fully (or force-quit it) and open it again.');
     this.expireReservations();
     const host = this.venueHost();
     for (const candidate of candidates) {
