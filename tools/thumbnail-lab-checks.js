@@ -371,12 +371,15 @@ check('words: the plain answer parses into three kinds; decoration stripped, off
     'SHE\'S SERIOUS',
   ].join('\n');
   const r = prompts.parseThumbnailWords(answer, 'a keeper answer');
-  assert.deepStrictEqual(r.claim, ['DON\'T STAND UNDER A ROOF', 'CHECK FOR BALLS OF LIGHT']);
+  // Quotes around a whole option mark the subject's claim as theirs (2026-10-04): kept, curly.
+  assert.deepStrictEqual(r.claim, ['DON\'T STAND UNDER A ROOF', '“CHECK FOR BALLS OF LIGHT”']);
   assert.deepStrictEqual(r.stakes, ['MAYBE TOMORROW', 'EVERY YEAR SINCE NINETEEN EIGHTY EIGHT AGAIN']);
   assert.deepStrictEqual(r.reaction, ['SHE\'S SERIOUS']);
   assert.ok(r.warnings.some((w) => /before the first kind/.test(w)), 'the preamble is named');
   assert.ok(r.warnings.some((w) => /is 7 words/.test(w)), 'a long option is warned about, and kept');
   assert.throws(() => prompts.parseThumbnailWords('I cannot help with that.', 'x'), /no options under CLAIM, STAKES or REACTION/);
+  const marked = prompts.parseThumbnailWords(['CLAIM', '“trans people are destroying America”', "'Hitler was a socialist'?", 'Hitler was a socialist?', '"half quoted', 'PASTORS\''].join('\n'), 'x');
+  assert.deepStrictEqual(marked.claim, ['“TRANS PEOPLE ARE DESTROYING AMERICA”', '“HITLER WAS A SOCIALIST”?', 'HITLER WAS A SOCIALIST?', 'HALF QUOTED', 'PASTORS']);
 });
 
 // ── face-safe box and fitting ───────────────────────────────────────────────

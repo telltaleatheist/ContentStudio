@@ -86,6 +86,12 @@ export function isLongSection(units: number, seconds: number): boolean {
  */
 export type ChapterPick = 'chapters' | 'stories';
 
+/**
+ * Past this runtime the `chapters` pick is drawn at the `stories` grain (Owen, 2026-10-04, LEDGER
+ * #260): a long video needs its whole-subject changes, not a chapter every few minutes.
+ */
+export const STORIES_PAST_SECONDS = 20 * 60;
+
 export const CHAPTER_PICKS: readonly ChapterPick[] = ['chapters', 'stories'];
 
 /**

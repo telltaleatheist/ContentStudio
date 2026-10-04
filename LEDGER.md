@@ -1376,3 +1376,19 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - Measured through composePublishedText and youtubeDescriptionProblem.
   - Five of the six are already on YouTube (fqELNmOOxSQ, fZ8FEO7qwj0, EgAmlxu5tzI, YokxTMxJFtM, tO6hy_Pn1yc) and carry the long lists until each is pushed.
   - The records were backed up in the session scratchpad first.
+
+**260. Thumbnail words never state a subject's claim as the host's own; a video past 20 minutes is chaptered as stories (Owen, 2026-10-04).**
+- **Thumbnail words.** Owen: "it should never seem like something im saying if its insane ... a question mark on the end ... or in quotes ... we shouldnt make it so people scroll past the video and see that and think its a valid argument."
+  - thumbnails.yml `text` gains the rule for every option: the subject's claim always carries its marking, in quotation marks or ending in a question mark.
+  - CLAIM no longer says "stated the way the subject means it". It now says "in quotation marks or ending in a question mark so it is plainly theirs".
+  - `parseThumbnailWords` (thumbnails/prompts.ts) used to strip the quotes around an option as decoration, which would have erased that marking. It now keeps quotes around a whole option, as curly double quotes, with any trailing "?", "!" or "." after them. A lone quote at one end is still stripped.
+  - Impact has the curly quotes and the question mark.
+  - thumbnail-lab-checks: 33 pass, and the parser check now covers the quoted and question-marked forms.
+- **Chapters past 20 minutes.** Owen: "we dont need one every few minutes unless its under 20 minutes. over 20 minutes can be dramatically reduced. maybe stories instead of chapters if its over 20 minutes."
+  - The `chapters` pick now draws a video longer than `STORIES_PAST_SECONDS` (20 min, granularity.ts) at the `stories` grain. That is the 45-second-junction story splitter (#212): whole-subject changes, consolidated, never fewer than 3, so YouTube still shows them. The switch is logged per item.
+  - Up to 20 minutes, the chapters grain runs as before with #259's minimum length. A `stories` pick is stories at any length.
+  - The inputs picker reads "Chapters (stories past 20 min)" and "Stories (any length)".
+  - Known difference: the stories grain runs no ad detection, so a sponsor read in a long video sits inside a story instead of being its own chapter that promo-chapters.ts drops from the published list.
+- **Checks.** check:chaptering 55, check:pure and routing-publish-checks pass. build:electron and the frontend build are clean.
+
+[electron/assets/prompts/shared/pipeline/thumbnails.yml; electron/services/thumbnails/prompts.ts; tools/thumbnail-lab-checks.js; electron/services/metadata/chaptering/granularity.ts; electron/services/metadata/metadata-generator.service.ts; frontend/src/app/components/inputs/inputs.html]

@@ -11,11 +11,12 @@ text: |-
   - is 2 to 5 words, in capital letters;
   - reads as a complete thought to a stranger who has never heard of the video, and leaves them wanting to know more;
   - adds something the title leaves unsaid, so the title and the words together say more than either one alone: a viewer the title did not win gets a second chance to be won by the words, so never repeat the title's words or its point;
-  - comes from the transcript: a claim the subject actually makes, lightly paraphrased, or the host's own reaction to it.
+  - comes from the transcript: a claim the subject actually makes, lightly paraphrased, or the host's own reaction to it;
+  - never reads as the host's own view or as a fact when it is the subject's claim. The host is debunking these people, and a viewer scrolling past sees only the thumbnail: a bare HITLER WAS A SOCIALIST would look like the channel agrees. So the subject's claim always carries its marking: in quotation marks, as "TRANS PEOPLE ARE DESTROYING AMERICA", or ending in a question mark, as HITLER WAS A SOCIALIST?
 
   Write three kinds of option, {per_kind} of each:
 
-  CLAIM: the subject's own claim or advice, lightly paraphrased, stated the way the subject means it. Example: DON'T STAND UNDER A ROOF (a preacher's advice for surviving the rapture).
+  CLAIM: the subject's own claim or advice, lightly paraphrased, in quotation marks or ending in a question mark so it is plainly theirs. Examples: "DON'T STAND UNDER A ROOF" (a preacher's advice for surviving the rapture); HITLER WAS A SOCIALIST?
   STAKES: the stakes or the absurdity the claim leads to, in the fewest words. Example: MAYBE TOMORROW (a rapture that keeps not arriving).
   REACTION: the host's reaction to the subject, as a viewer would feel it. Example: SHE'S SERIOUS{more}
 

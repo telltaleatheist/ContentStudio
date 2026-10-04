@@ -108,7 +108,9 @@ function kindOf(header: string): WordKind {
 
 /**
  * Read the words answer: a kind's name on its own line, then its options one per line. List
- * markers, surrounding quotes and emphasis are decoration and are stripped; options are shown in
+ * markers and emphasis are decoration and are stripped. Quotation marks around a WHOLE option are
+ * kept, as curly double quotes: they mark a subject's claim as theirs, not the host's (Owen,
+ * 2026-10-04). A lone quote at one end only is stripped as decoration. Options are shown in
  * capitals (the style is capitals, as a CSS text-transform would be). Text before the first kind is
  * set aside with a warning. A kind with no options is a warning; an answer with no options at all
  * throws with what came back.
@@ -125,12 +127,12 @@ export function parseThumbnailWords(text: string, what: string): WordOptions {
       kind = kindOf(header[1]);
       continue;
     }
-    const option = line
-      .replace(LIST_MARKER, '')
-      .replace(/^[*_]+|[*_]+$/g, '')
-      .replace(/^["'“‘]+|["'”’]+$/g, '')
-      .trim()
-      .toUpperCase();
+    const bare = line.replace(LIST_MARKER, '').replace(/^[*_]+|[*_]+$/g, '').trim();
+    const quoted = /^["“'‘]+(.*?)["”'’]+([?!.]?)$/.exec(bare);
+    const option = (quoted && quoted[1].trim() !== ''
+      ? `“${quoted[1].trim()}”${quoted[2]}`
+      : bare.replace(/^["'“‘]+|["'”’]+$/g, '').trim()
+    ).toUpperCase();
     if (option === '') continue;
     if (kind === null) {
       stray.push(option);

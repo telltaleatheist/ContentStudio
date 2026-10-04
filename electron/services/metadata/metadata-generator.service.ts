@@ -68,7 +68,8 @@ import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
 import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
 import { ItemThumbnailRun, type ThumbnailJobDoors, type ThumbnailRunChoice } from '../thumbnails/pipeline';
 import { promptAssets } from './prompt-assets';
-import { ChapterPick, chapterPickOf } from './chaptering/granularity';
+import { ChapterPick, STORIES_PAST_SECONDS, chapterPickOf } from './chaptering/granularity';
+import { srtSeconds } from './chaptering/units';
 
 /** The queue's pick as the whole-transcript engine's grain (LEDGER #213). */
 const WHOLE_TRANSCRIPT_GRAIN: Readonly<Record<ChapterPick, ChapterGrain>> = { chapters: 'detailed', stories: 'stories' };
@@ -1629,9 +1630,18 @@ export class MetadataGeneratorService {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
     const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue(), this.models(params));
-    const pick = this.resolveChapterPick(params);
+    const picked = this.resolveChapterPick(params);
+    // Owen, 2026-10-04: "we dont need one every few minutes unless its under 20 minutes ... maybe
+    // stories instead of chapters if its over 20 minutes". The chapters pick draws chapters on a
+    // video up to STORIES_PAST_SECONDS long and stories past it (the whole-subject changes, never
+    // fewer than three, so YouTube still shows them). A stories pick is stories at any length.
+    const runtime = srtSeconds(item.srtSegments[item.srtSegments.length - 1].end);
+    const pick: ChapterPick = picked === 'chapters' && runtime > STORIES_PAST_SECONDS ? 'stories' : picked;
     const titleThinking = params.chapterTitleThinking ?? true;
     const label = item.source || `item_${itemIndex + 1}`;
+    if (pick !== picked) {
+      log.info(`[MetadataGenerator] ${label} runs ${Math.round(runtime / 60)} min, past ${STORIES_PAST_SECONDS / 60}: chaptered at the stories grain (LEDGER #260)`);
+    }
     log.info(
       `[MetadataGenerator] Chaptering ${label} on snap at the ${pick} grain; ` +
         `outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
