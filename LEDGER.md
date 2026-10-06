@@ -1444,3 +1444,11 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Unsure.** The 5-minute hand-off window is a guess at the renderer's rescan + bootstrap time; a bootstrap slower than that lets go and the transcription opens its own session (loudly logged, still correct). The aligner is modelled riding with the transcriber in the fake; the real server's aligner residency inside one session is assumed, not measured.
 
 [electron/crucible/run-session.ts (new), session.ts (header), denoise.ts, asr.ts, asr-venue.ts; electron/services/editor/editor-ipc.ts, editor-asr.ts, python-service.ts; electron/services/transcription/crucible-transcription.ts; electron/ipc/ipc-handlers.ts; frontend project-setup-modal.component.ts; tools/fake-crucible.js, tools/test-crucible-editor-run.js (new)]
+
+**265. The chapter assign stays on the questions form: the items form was measured with no gain (Owen, 2026-10-06: "see if we can make the api calls more efficient").**
+- **The measurement.** It was run live on the Mac's qwen3.5-9b (Crucible 1.0.108), the card otherwise idle, with Owen's go-ahead ("lets do the fixes"). The input was the Kid Rock story transcript (2026-10-05, 198 sentences) with its real 19-item outline, asked in 64-sentence batches both ways under one bench session (client `contentstudio-bench`).
+  - **Answers:** argmax agreed on 198 of 198 sentences, with mean total-variation distance 0.0000.
+  - **Time:** 544 ms per sentence on the questions form against 524 ms on the items form.
+- **Why there is no gain.** Since 1.0.78 the server sends questions through the items route itself, so the shared state is already cached.
+- **Where the cost is.** About 0.5 s per sentence is the per-item text: 19 option lines plus the sentence and the one before it. The 0.2 s per question seen in serve.log belongs to other question kinds with fewer options and shorter text.
+- **Not done.** Making the assign cheaper means changing its prompt, for example the outline once in the state with shorter options. That changes what is measured (YTSeg F1, #199) and is not done without a measurement. The bench script is in the session scratchpad (bench-items.js).
