@@ -64,8 +64,19 @@ const GUIDELINES_NUM_PREDICT = 2048;
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
 import { gpuCall, queueAITask } from '../queue-manager.service';
-import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
+import { beatJob, enterJobStage, installedLanes, jobBatch, setJobStage } from '../../crucible/lanes';
+import { GATE_ROUNDS, gateStage, type StageNeed } from '../../crucible/batch';
 import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
+import { titleChapters } from './chaptering/titles';
+import { captionsOf, sentenceUnits, speakerRolesOf } from './chaptering/units';
+import { granularitySetting } from './chaptering/granularity';
+import type { ChapteringResult } from './chaptering/types';
+import { fieldNeed, scorerNeed, scrubNeed, titleNeed, TITLE_CONTEXT_ALLOWANCE } from './stage-needs';
+import { LOCAL_FIELD_NUM_PREDICT } from './metadata-tasks';
+import { NUM_PREDICT as DESCRIPTION_NUM_PREDICT } from './description-unit';
+import { REWRITE_NUM_PREDICT } from './rewrite-pass';
+import { directPassesRaw } from './ai-manager.service';
+import { renderChapterDigest } from './chapter-digest';
 import { COMPILATION_NO_STORY, ItemThumbnailRun, type ThumbnailJobDoors, type ThumbnailRunChoice } from '../thumbnails/pipeline';
 import { promptAssets } from './prompt-assets';
 import { ChapterPick, STORIES_PAST_SECONDS, chapterPickOf } from './chaptering/granularity';
@@ -80,6 +91,13 @@ import * as path from 'path';
 
 // ENTITY_POOL_SIZE and PHRASE_POOL_SIZE live in tags-hashtags.ts (LEDGER #223): the chapter
 // re-roll rebuilds the same pools from the same two numbers.
+
+/**
+ * One item's chapter boundaries, made in a stage-major batch's `chapters` stage (crucible/batch.ts,
+ * LEDGER #266) and titled in its `fields` stage; or the boundaries' failure, which fails the item's
+ * chapters exactly where a single job's would (resolveChapters records it).
+ */
+type StagedBoundaries = { boundaries: ChapteringResult } | { failed: unknown };
 
 /** The chapter engines a run may declare (GenerationParams.chapterEngine). */
 export type ChapterEngine = 'snap' | 'whole-transcript';
@@ -529,9 +547,22 @@ export class MetadataGeneratorService {
       // so skipping them would make this flow display a prompt that is not the prompt
       // that gets sent — which is the one thing this flow exists to rule out. The
       // chapters come back with the prompts and are reused on send.
+      // A STAGE-MAJOR BATCH MEMBER (crucible/batch.ts, LEDGER #266): this job's chapter boundaries
+      // run in the batch's `chapters` stage with every other job's, before anyone's titles or fields.
+      const batch = jobBatch();
+      if (batch !== null) {
+        log.info(`[MetadataGenerator] ${params.jobId} runs in ${batch.id} (${batch.size} jobs), stage by stage under one session`);
+        if (rerollGate.mode === 'on' && rerollGate.maxRerolls > GATE_ROUNDS) {
+          throw new Error(`the re-roll gate allows ${rerollGate.maxRerolls} rounds and a batch has stages for ${GATE_ROUNDS}; nothing was run`);
+        }
+      }
+      const stageArgs = { aiManager, params, lifecycle, transcriptCeiling, fieldPolicy: fieldInput.policy };
+
       if (params.showPrompt) {
-        await ensureLessons();
         const mode = params.mode || 'individual';
+        const staged = batch !== null && mode !== 'compilation' ? await this.stageChapters(contentItems, stageArgs) : undefined;
+        if (batch !== null && mode === 'compilation') await enterJobStage('fields');
+        await ensureLessons();
         console.log(`[MetadataGenerator] Show-prompt mode: assembling prompt(s) only (${mode})`);
         const prompts: string[] = [];
 
@@ -572,7 +603,8 @@ export class MetadataGeneratorService {
               contentItems.length,
               warnings,
               lifecycle,
-              computedChapters
+              computedChapters,
+              staged?.get(i)
             );
 
             params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
@@ -651,6 +683,8 @@ export class MetadataGeneratorService {
         // their words came from cannot be recorded as one item, and finding that out
         // after N summarizations and a metadata call would cost the operator the run.
         const compilationProvenance = this.compilationProvenanceOf(contentItems);
+        // In a batch a compilation has no chapters stage: its summaries and packaging are writing-model work.
+        if (batch !== null) await enterJobStage('fields');
         await ensureLessons();
         // A compilation is one item made of several videos, so it has no one editor story to take
         // thumbnail frames from: its record is a no-story one (withoutStory), and the Thumbnails
@@ -753,6 +787,15 @@ export class MetadataGeneratorService {
           this.throwIfCancelled(params, 'before the thumbnail frames');
           await run.beforeChapters();
         }
+        // In a batch: every item's boundaries in the `chapters` stage, then the `fields` stage opens.
+        const staged = batch !== null ? await this.stageChapters(contentItems, stageArgs) : undefined;
+        // One item per job is what a batch stages its gate and finish for; a job of several items runs
+        // each item's gate inside its own `fields` turn (the scorer and the writing model trade the
+        // card per item there, as in a single job), declared once here.
+        const gatePhases = batch !== null && contentItems.length === 1 && rerollGate.mode === 'on';
+        if (batch !== null && contentItems.length > 1) {
+          log.info(`[MetadataGenerator] ${params.jobId} has ${contentItems.length} items, so its re-roll gate and thumbnail words run inside its own fields turn, item by item (a declared cost of a several-item job in a batch)`);
+        }
         await ensureLessons();
 
         for (let i = 0; i < contentItems.length; i++) {
@@ -790,7 +833,8 @@ export class MetadataGeneratorService {
             contentItems.length,
             warnings,
             lifecycle,
-            computedChapters
+            computedChapters,
+            staged?.get(i)
           );
 
           // ---- Everything else, conditioned on those chapters -----------------
@@ -896,7 +940,11 @@ export class MetadataGeneratorService {
             warnings,
             sourceLabel,
             signal: params.cancelSignal,
+            // In a batch, each round's checks and rewrites wait for the batch's (crucible/batch.ts).
+            ...(gatePhases ? { phase: (phase: string) => enterJobStage(gateStage(phase)) } : {}),
           });
+          // The thumbnails' words and the save: the batch's `finish` stage, after every job's gate.
+          if (gatePhases) await enterJobStage('finish');
 
           // WHAT THE FIELDS READ, and THE 16,384 ASSERTION (P4; plan 16 P4: "on the PC, every call
           // of a 60-minute video fits under 16,384 (a log assertion)"). Written onto the item so
@@ -1436,7 +1484,9 @@ export class MetadataGeneratorService {
     itemCount: number,
     warnings: string[],
     lifecycle: JobModelLifecycle,
-    sink?: { [sourceLabel: string]: ChapterPipelineResult }
+    sink?: { [sourceLabel: string]: ChapterPipelineResult },
+    /** A batch member's boundaries from its `chapters` stage (stageChapters), titled here. */
+    staged?: StagedBoundaries
   ): Promise<ChapterOutcome> {
     // Past transcription: a job that parks from here resumes from its saved transcript.
     setJobStage('chapters');
@@ -1465,7 +1515,9 @@ export class MetadataGeneratorService {
     params.progressCallback?.('generating', `Finding chapters ${itemIndex + 1}/${itemCount}...`, 0, undefined, itemIndex);
 
     try {
-      const result = await this.generateChapters(item, aiManager, params, itemIndex, itemCount, lifecycle);
+      // A boundaries run that failed in the batch's chapters stage fails the chapters here, by its own words.
+      if (staged !== undefined && 'failed' in staged) throw staged.failed;
+      const result = await this.generateChapters(item, aiManager, params, itemIndex, itemCount, lifecycle, staged?.boundaries);
 
       // Degradations the pipeline recovered from rather than threw on. Surfaced even
       // when the chapters below are then dropped for being too few — the user asked
@@ -1580,18 +1632,132 @@ export class MetadataGeneratorService {
     params: GenerationParams,
     itemIndex: number,
     itemCount: number,
-    lifecycle: JobModelLifecycle
+    lifecycle: JobModelLifecycle,
+    boundaries?: ChapteringResult
   ): Promise<ChapterPipelineResult> {
-    // THE ONE SITE the engine's default is declared. Logged either way, so a run's log says which
-    // engine drew its chapters and whether anyone chose it.
+    const engine = this.chapterEngineOf(params);
+    if (boundaries !== undefined && engine !== 'snap') {
+      throw new Error(`stored snap boundaries reached the ${engine} chapter engine; only snap stages its boundaries`);
+    }
+    return engine === 'snap'
+      ? this.generateSnapChapters(item, aiManager, params, itemIndex, itemCount, lifecycle, boundaries)
+      : this.generateWholeTranscriptChapters(item, aiManager, params, itemIndex, itemCount, lifecycle);
+  }
+
+  /**
+   * THE ONE SITE the engine's default is declared. Logged either way, so a run's log says which
+   * engine drew its chapters and whether anyone chose it.
+   */
+  private static chapterEngineOf(params: GenerationParams): ChapterEngine {
     const engine = params.chapterEngine ?? 'snap';
     if (!CHAPTER_ENGINES.includes(engine)) {
       throw new Error(`unknown chapter engine "${String(engine)}" — expected ${CHAPTER_ENGINES.join(' or ')}`);
     }
     log.info(`[MetadataGenerator] chapter engine: ${engine}${params.chapterEngine === undefined ? ' (the declared default)' : ''}`);
-    return engine === 'snap'
-      ? this.generateSnapChapters(item, aiManager, params, itemIndex, itemCount, lifecycle)
-      : this.generateWholeTranscriptChapters(item, aiManager, params, itemIndex, itemCount, lifecycle);
+    return engine;
+  }
+
+  /**
+   * A STAGE-MAJOR BATCH MEMBER's chapter stage (crucible/batch.ts, LEDGER #266): wait for the batch's
+   * `chapters` stage stating the scorer's largest load (exact, stage-needs.ts), draw every snap item's
+   * BOUNDARIES there (outline, assign, ads, level 2: the 9B only), then wait for the `fields` stage
+   * stating the writing models' largest loads (estimated from those boundaries). The titles are
+   * written in the fields stage by resolveChapters, from what this returns.
+   *
+   * Only snap items with a timestamped transcript and no chapters already computed are staged: the
+   * whole-transcript engine runs on the chapters row (a writing model), so its items do all their
+   * chapter work in the fields stage. A boundaries run that fails is kept as the item's failure
+   * and reported by resolveChapters as a single job's would be; a stop is thrown at once.
+   */
+  private static async stageChapters(
+    contentItems: ContentItem[],
+    args: { aiManager: AIManagerService; params: GenerationParams; lifecycle: JobModelLifecycle; transcriptCeiling: 'local' | 'cloud'; fieldPolicy: FieldInputPolicy },
+  ): Promise<Map<number, StagedBoundaries>> {
+    const { aiManager, params, lifecycle } = args;
+    const engine = this.chapterEngineOf(params);
+    const staged = new Map<number, StagedBoundaries>();
+    const todo = contentItems
+      .map((item, i) => ({ item, i, label: item.source || `item_${i + 1}` }))
+      .filter(({ item, label }) => engine === 'snap' && item.srtSegments && item.srtSegments.length > 0 && !params.preComputedChapters?.[label]);
+
+    const scorerNeeds: StageNeed[] = [];
+    for (const { item, i, label } of todo) {
+      const setup = this.snapSetup(item, aiManager, params, i, lifecycle, 'needs');
+      const need = scorerNeed(sentenceUnits(captionsOf(setup.captions)), setup.models.scorer.model, granularitySetting(setup.pick).method, label);
+      if (need !== null) scorerNeeds.push(need);
+    }
+    await enterJobStage('chapters', scorerNeeds);
+    for (const { item, i } of todo) {
+      this.throwIfCancelled(params, `before the chapter boundaries for item ${i + 1}`);
+      try {
+        staged.set(i, { boundaries: await this.snapBoundaries(item, aiManager, params, i, contentItems.length, lifecycle) });
+      } catch (error) {
+        if (this.isCancellation(params, error)) throw error;
+        staged.set(i, { failed: error });
+      }
+    }
+    await enterJobStage('fields', this.fieldsStageNeeds(contentItems, staged, args));
+    return staged;
+  }
+
+  /**
+   * What this job's `fields` stage will need of each writing model's load (stage-needs.ts, ESTIMATED;
+   * a call that needs more grows the load once and says so): the chapter titles from the stored
+   * boundaries, the field calls from what they will read, the scrub. Per model as the routing binds
+   * it on this job's server, so only a model the stage will load is stated.
+   */
+  private static fieldsStageNeeds(
+    contentItems: ContentItem[],
+    staged: Map<number, StagedBoundaries>,
+    args: { aiManager: AIManagerService; params: GenerationParams; lifecycle: JobModelLifecycle; transcriptCeiling: 'local' | 'cloud'; fieldPolicy: FieldInputPolicy },
+  ): StageNeed[] {
+    const { aiManager, params, lifecycle } = args;
+    const routing = this.routing(params);
+    const models = this.models(params);
+    const needs: StageNeed[] = [];
+    // A row this server cannot bind states no floor: it is an estimate, not a gate. The row's own
+    // call (if this item makes it: a chaptered item never calls the tags row) fails by name as before.
+    const bindOrSay = (taskId: MetadataRoutingTaskId) => {
+      try {
+        return routingOption(taskId, routing[taskId], models);
+      } catch (error) {
+        log.info(`[MetadataGenerator] no load floor stated for the ${taskId} row: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    };
+    const fieldModels = [...new Set(metadataRunTasks()
+      .filter((task) => task.id !== 'chapters')
+      .map((task) => bindOrSay(task.id))
+      .filter((option): option is NonNullable<typeof option> => option !== null && option.kind === 'local')
+      .map((option) => option.model))];
+    const scrub = bindOrSay(SCRUB_ROUTING_TASK);
+    contentItems.forEach((item, i) => {
+      const label = item.source || `item_${i + 1}`;
+      const stage = staged.get(i);
+      const boundaries = stage !== undefined && 'boundaries' in stage ? stage.boundaries : null;
+      if (boundaries !== null) {
+        const setup = this.snapSetup(item, aiManager, params, i, lifecycle, 'needs');
+        if (setup.models.titles.kind === 'local') {
+          const need = titleNeed(boundaries, setup.models.titles.model, {
+            videoTitle: setup.videoTitle || 'untitled', channelName: params.promptSet, promotedItems: aiManager.promotedItems(),
+            speakerRoles: speakerRolesOf(setup.captions), label,
+          });
+          if (need !== null) needs.push(need);
+        }
+      }
+      // What the field calls will read: the raw transcript when it passes, else the chapter digest
+      // (chapter-digest.ts's rule), sized with each chapter's title and detail at their allowances.
+      const transcript = this.contentTextOf(item).text;
+      const raw = args.fieldPolicy === 'raw' && directPassesRaw({ chars: transcript.length, ceiling: args.transcriptCeiling });
+      const contentChars = raw || boundaries === null
+        ? transcript.length
+        : renderChapterDigest(boundaries.chapters.map((c) => ({
+          timestamp: '00:00:00', title: 'x'.repeat(TITLE_CONTEXT_ALLOWANCE.titleChars), detail: 'x'.repeat(TITLE_CONTEXT_ALLOWANCE.previousDetailChars),
+        }))).length;
+      for (const model of fieldModels) needs.push(fieldNeed(contentChars, Math.max(LOCAL_FIELD_NUM_PREDICT, DESCRIPTION_NUM_PREDICT), model, label));
+      if (scrub?.kind === 'local') needs.push(scrubNeed(REWRITE_NUM_PREDICT, scrub.model, label));
+    });
+    return needs;
   }
 
   /**
@@ -1623,8 +1789,93 @@ export class MetadataGeneratorService {
     params: GenerationParams,
     itemIndex: number,
     itemCount: number,
-    lifecycle: JobModelLifecycle
+    lifecycle: JobModelLifecycle,
+    /** A batch member's stored boundaries (stageChapters): only the titles are written here. */
+    boundaries?: ChapteringResult
   ): Promise<ChapterPipelineResult> {
+    const setup = this.snapSetup(item, aiManager, params, itemIndex, lifecycle, boundaries === undefined ? 'all' : 'titles');
+    // Chapter work is 0-60% of this item's "generating" phase, as on the other engine.
+    const notice = this.chapterProgress(params, setup.label, itemIndex, itemCount);
+    notice.arm();
+    const onProgress = (p: { phase: string; done: number; total: number; fraction: number }) =>
+      notice.report(p.phase, Math.round(60 * p.fraction), `${p.phase} ${p.done}/${p.total}`);
+    try {
+      const result = boundaries === undefined
+        ? await chapterOnSnap(setup.captions, {
+          granularity: setup.pick,
+          chat: setup.transports.chat,
+          decide: setup.transports.decide,
+          promotedItems: aiManager.promotedItems(),
+          channelName: params.promptSet,
+          videoTitle: setup.videoTitle,
+          titleThinking: setup.titleThinking,
+          ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+          onProgress,
+        })
+        // The titles over the boundaries the batch's chapters stage drew (chaptering/titles.ts: the
+        // same loop chapter() runs, held equal by check:chaptering).
+        : await titleChapters(boundaries, {
+          chat: setup.transports.chat,
+          promotedItems: aiManager.promotedItems(),
+          channelName: params.promptSet,
+          videoTitle: setup.videoTitle,
+          titleThinking: setup.titleThinking,
+          speakerRoles: speakerRolesOf(setup.captions),
+          ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+          onProgress,
+        });
+      return toChapterPipelineResult(result, setup.titleThinking);
+    } finally {
+      notice.disarm();
+    }
+  }
+
+  /**
+   * A batch member's chapter BOUNDARIES alone (crucible/batch.ts's `chapters` stage): chapter() with
+   * `summarize: false`, so the scorer is the only model it loads. generateSnapChapters titles them later.
+   */
+  private static async snapBoundaries(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number,
+    lifecycle: JobModelLifecycle
+  ): Promise<ChapteringResult> {
+    const setup = this.snapSetup(item, aiManager, params, itemIndex, lifecycle, 'boundaries');
+    const notice = this.chapterProgress(params, setup.label, itemIndex, itemCount);
+    notice.arm();
+    try {
+      return await chapterOnSnap(setup.captions, {
+        granularity: setup.pick,
+        chat: setup.transports.chat,
+        decide: setup.transports.decide,
+        promotedItems: aiManager.promotedItems(),
+        channelName: params.promptSet,
+        videoTitle: setup.videoTitle,
+        summarize: false,
+        ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+        onProgress: (p) => notice.report(p.phase, Math.round(60 * p.fraction), `${p.phase} ${p.done}/${p.total}`),
+      });
+    } finally {
+      notice.disarm();
+    }
+  }
+
+  /**
+   * One snap run's setting, shared by the whole run, the boundaries and the titles: the models
+   * (resolveSnapChapterModels), the grain (the queue's pick; a video past STORIES_PAST_SECONDS is
+   * chaptered as stories, LEDGER #260), the titles' thinking, the transports and the captions.
+   */
+  private static snapSetup(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    itemIndex: number,
+    lifecycle: JobModelLifecycle,
+    /** Which part runs, for the log line; 'needs' (stage-needs sizing) logs nothing. */
+    part: 'all' | 'boundaries' | 'titles' | 'needs'
+  ) {
     if (!item.srtSegments || item.srtSegments.length === 0) {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
@@ -1638,12 +1889,13 @@ export class MetadataGeneratorService {
     const pick: ChapterPick = picked === 'chapters' && runtime > STORIES_PAST_SECONDS ? 'stories' : picked;
     const titleThinking = params.chapterTitleThinking ?? true;
     const label = item.source || `item_${itemIndex + 1}`;
-    if (pick !== picked) {
+    if (pick !== picked && part !== 'needs' && part !== 'titles') {
       log.info(`[MetadataGenerator] ${label} runs ${Math.round(runtime / 60)} min, past ${STORIES_PAST_SECONDS / 60}: chaptered at the stories grain (LEDGER #260)`);
     }
-    log.info(
-      `[MetadataGenerator] Chaptering ${label} on snap at the ${pick} grain; ` +
-        `outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
+    if (part !== 'needs') log.info(
+      `[MetadataGenerator] Chaptering ${label} on snap at the ${pick} grain` +
+        (part === 'all' ? '' : part === 'boundaries' ? ' (the boundaries, in the batch\'s chapters stage)' : ' (the titles, in the batch\'s fields stage)') +
+        `; outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
         `(thinking ${titleThinking ? 'on' : 'off'})`
     );
 
@@ -1657,33 +1909,14 @@ export class MetadataGeneratorService {
       ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
       laneName: `chapters-${params.jobId || 'job'}-${itemIndex}`,
     });
-
-    // Chapter work is 0-60% of this item's "generating" phase, as on the other engine.
-    const notice = this.chapterProgress(params, label, itemIndex, itemCount);
-    notice.arm();
-    try {
-      // The speaker id is the segment's speaker and label together, the string the whole-transcript
-      // engine reads its HOST/CLIP side from (chapter-transcript.ts speakerRoleOf), so the two
-      // engines tag the same transcript the same way.
-      const captions = item.srtSegments.map((seg) => {
-        const speaker = `${seg.speaker || ''} ${seg.speakerLabel || ''}`.trim();
-        return { start: seg.start, end: seg.end, text: seg.text, ...(speaker ? { speaker } : {}) };
-      });
-      const result = await chapterOnSnap(captions, {
-        granularity: pick,
-        chat: transports.chat,
-        decide: transports.decide,
-        promotedItems: aiManager.promotedItems(),
-        channelName: params.promptSet,
-        videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
-        titleThinking,
-        ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
-        onProgress: (p) => notice.report(p.phase, Math.round(60 * p.fraction), `${p.phase} ${p.done}/${p.total}`),
-      });
-      return toChapterPipelineResult(result, titleThinking);
-    } finally {
-      notice.disarm();
-    }
+    // The speaker id is the segment's speaker and label together, the string the whole-transcript
+    // engine reads its HOST/CLIP side from (chapter-transcript.ts speakerRoleOf), so the two
+    // engines tag the same transcript the same way.
+    const captions = item.srtSegments.map((seg) => {
+      const speaker = `${seg.speaker || ''} ${seg.speakerLabel || ''}`.trim();
+      return { start: seg.start, end: seg.end, text: seg.text, ...(speaker ? { speaker } : {}) };
+    });
+    return { models, pick, titleThinking, label, transports, captions, videoTitle: item.title || (item.source ? path.basename(item.source) : undefined) };
   }
 
   /**

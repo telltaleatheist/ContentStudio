@@ -39,7 +39,7 @@ import type { JobModelLifecycle } from '../model-lifecycle';
 import { parseLines } from '../plain-call';
 import { promptAssets } from '../prompt-assets';
 import { gpuCall, queueAITask } from '../../queue-manager.service';
-import { GateFieldInput, GateRecord, runGate } from './gate';
+import { GateFieldInput, GatePhase, GateRecord, runGate } from './gate';
 import { channelFacts, joinSentences, splitSentences } from './rules';
 import { RerollGateSettings } from './settings';
 import { DecideFn, DecideRequest, GateError, GateField, ReviseFn } from './types';
@@ -75,6 +75,11 @@ export interface RerollGateRun {
   warnings: string[];
   sourceLabel: string;
   signal?: AbortSignal;
+  /**
+   * A stage-major batch's gate at each round's checks and rewrites (gate.ts `phase`, LEDGER #266):
+   * the generator's `enterJobStage` for the round's batch stage. Absent: the gate runs straight through.
+   */
+  phase?: (phase: GatePhase) => Promise<void>;
   /**
    * Only a keeper passes this: its own decide and revise in place of the Crucible scorer and the
    * routed models, so the whole binding — fields off the item, answers back on, trace, record,
@@ -246,6 +251,7 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
     sourceLabel: run.sourceLabel,
     rank: fields.some((f) => f.field === 'titles'),
     signal: run.signal,
+    ...(run.phase === undefined ? {} : { phase: run.phase }),
   });
   // Only a field the gate CHANGED is written back: an untouched field stays byte for byte what the
   // run wrote (the prose is rebuilt around a re-rolled sentence, never re-flowed around none).

@@ -107,7 +107,15 @@ export interface GateInput {
   /** Titles to rank once the titles field is settled; absent when the item carries none. */
   rank: boolean;
   signal?: AbortSignal;
+  /**
+   * Awaited before each round's checks (`check-N`) and rewrites (`revise-N`): a stage-major batch's
+   * gate (crucible/batch.ts, LEDGER #266). Absent: the gate runs straight through.
+   */
+  phase?: (phase: GatePhase) => Promise<void>;
 }
+
+/** The points in the gate a batch may hold it at (see `runGate`). */
+export type GatePhase = `check-${number}` | `revise-${number}`;
 
 function rawToUnit(field: GateField, text: string, raw: Parameters<typeof unitScore>[2] | undefined, baselines: Baselines, settings: RerollGateSettings, what: string): UnitScore {
   if (!raw || raw.length !== FIELD_RULES[field].length) {
@@ -116,94 +124,136 @@ function rawToUnit(field: GateField, text: string, raw: Parameters<typeof unitSc
   return unitScore(field, text, raw, baselines, settings);
 }
 
-async function gateField(input: GateInput, fin: GateFieldInput, record: GateRecord): Promise<{ units: string[]; field: FieldRecord }> {
+/** One field's state across the rounds. */
+interface FieldRun {
+  fin: GateFieldInput;
+  baselines: Baselines;
+  units: UnitRecord[];
+  /** Rounds actually run for this field. */
+  rounds: number;
+  /** This round's rewrites, by unit index, between its revise and its check. */
+  proposed: Map<number, string>;
+}
+
+const whatOf = (input: GateInput, field: GateField, attempt: number) =>
+  `re-roll gate: ${field} rule checks for ${input.sourceLabel}${attempt === 0 ? '' : `, re-roll ${attempt}`}`;
+
+const current = (run: FieldRun) => run.units.map((u) => u.attempts[u.kept]);
+
+/** Attempt 0 of one field: every unit asked, the baselines frozen from it. */
+async function firstCheck(input: GateInput, fin: GateFieldInput, record: GateRecord): Promise<FieldRun> {
   const { field } = fin;
   const settings = input.settings;
-  const whatOf = (attempt: number) => `re-roll gate: ${field} rule checks for ${input.sourceLabel}${attempt === 0 ? '' : `, re-roll ${attempt}`}`;
-
-  // Attempt 0: every unit, and the baselines frozen from it.
-  const first = await askRules(field, fin.stateText(fin.units), fin.units, input.facts, input.decide, { what: whatOf(0), signal: input.signal });
+  const first = await askRules(field, fin.stateText(fin.units), fin.units, input.facts, input.decide, { what: whatOf(input, field, 0), signal: input.signal });
   record.decideCalls.push(...first.calls);
   const pYes = fin.units.map((_, i) => Object.fromEntries((first.raw.get(i) ?? []).map((r) => [r.rule, r.pYes])) as Partial<Record<RuleId, number | null>>);
   const baselines = baselinesOf(field, pYes, settings);
   const units: UnitRecord[] = fin.units.map((text, i) => {
-    const s = rawToUnit(field, text, first.raw.get(i), baselines, settings, whatOf(0));
+    const s = rawToUnit(field, text, first.raw.get(i), baselines, settings, whatOf(input, field, 0));
     return { index: i, attempts: [{ attempt: 0, text, score: s.score, failing: s.failing, readings: s.readings }], kept: 0 };
   });
+  return { fin, baselines, units, rounds: 0, proposed: new Map() };
+}
 
-  const current = () => units.map((u) => u.attempts[u.kept]);
-  let rounds = 0;
-  for (let attempt = 1; attempt <= settings.maxRerolls; attempt++) {
-    const failing = units.filter((u) => u.attempts[u.kept].failing.length > 0);
-    if (failing.length === 0) break;
-    if (input.signal?.aborted) throw new GateError('cancelled', `${whatOf(attempt)} was cancelled`);
-    rounds = attempt;
-
-    // One call per rule, each unit under the first rule it fails (FIELD_RULES order).
-    const byRule = new Map<RuleId, UnitRecord[]>();
-    for (const u of failing) {
-      const rule = FIELD_RULES[field].find((r) => u.attempts[u.kept].failing.includes(r))!;
-      byRule.set(rule, [...(byRule.get(rule) ?? []), u]);
-    }
-    const proposed = new Map<number, string>();
-    for (const [rule, group] of byRule) {
-      const sent = group.map((u) => u.attempts[u.kept].text);
-      const prompt = revisePrompt(field, rule, sent, input.facts);
-      const at = new Date().toISOString();
-      const answers = await input.revise({ field, rule, units: sent, attempt, prompt });
-      if (answers.length !== sent.length) {
-        throw new GateError('answer_shape', `the ${field} re-roll ${attempt} for ${input.sourceLabel} sent ${sent.length} entr${sent.length === 1 ? 'y' : 'ies'} and got ${answers.length} back; nothing was applied`);
-      }
-      record.rerollCalls.push({ field, at, attempt, rule, units: group.map((u) => u.index), prompt, answers });
-      group.forEach((u, k) => proposed.set(u.index, answers[k].replace(/\s+/g, ' ').trim()));
-    }
-
-    // Judge the rewrites in the field as it would ship with them in it.
-    const candidate = current().map((a, i) => proposed.get(i) ?? a.text);
-    const which = [...proposed.keys()].sort((a, b) => a - b);
-    const again = await askRules(field, fin.stateText(candidate), candidate, input.facts, input.decide, { what: whatOf(attempt), which, signal: input.signal });
-    record.decideCalls.push(...again.calls);
-    for (const i of which) {
-      const s = rawToUnit(field, candidate[i], again.raw.get(i), baselines, settings, whatOf(attempt));
-      const u = units[i];
-      u.attempts.push({ attempt, text: candidate[i], score: s.score, failing: s.failing, readings: s.readings });
-      // The best attempt ships: a higher score, or an equal one that fails fewer rules. A rewrite
-      // that is no better never replaces what it was asked to fix.
-      const best = u.attempts[u.kept];
-      if (s.score > best.score || (s.score === best.score && s.failing.length < best.failing.length)) u.kept = u.attempts.length - 1;
-    }
+/** One round's rewrites of one field: one call per rule, each unit under the first rule it fails (FIELD_RULES order). */
+async function revise(input: GateInput, run: FieldRun, attempt: number, record: GateRecord): Promise<void> {
+  const { field } = run.fin;
+  const failing = run.units.filter((u) => u.attempts[u.kept].failing.length > 0);
+  const byRule = new Map<RuleId, UnitRecord[]>();
+  for (const u of failing) {
+    const rule = FIELD_RULES[field].find((r) => u.attempts[u.kept].failing.includes(r))!;
+    byRule.set(rule, [...(byRule.get(rule) ?? []), u]);
   }
+  run.proposed = new Map();
+  for (const [rule, group] of byRule) {
+    const sent = group.map((u) => u.attempts[u.kept].text);
+    const prompt = revisePrompt(field, rule, sent, input.facts);
+    const at = new Date().toISOString();
+    const answers = await input.revise({ field, rule, units: sent, attempt, prompt });
+    if (answers.length !== sent.length) {
+      throw new GateError('answer_shape', `the ${field} re-roll ${attempt} for ${input.sourceLabel} sent ${sent.length} entr${sent.length === 1 ? 'y' : 'ies'} and got ${answers.length} back; nothing was applied`);
+    }
+    record.rerollCalls.push({ field, at, attempt, rule, units: group.map((u) => u.index), prompt, answers });
+    group.forEach((u, k) => run.proposed.set(u.index, answers[k].replace(/\s+/g, ' ').trim()));
+  }
+}
 
-  const stillFailing = units
+/** One round's check of one field: the rewrites judged in the field as it would ship with them in it. */
+async function recheck(input: GateInput, run: FieldRun, attempt: number, record: GateRecord): Promise<void> {
+  const { field } = run.fin;
+  const candidate = current(run).map((a, i) => run.proposed.get(i) ?? a.text);
+  const which = [...run.proposed.keys()].sort((a, b) => a - b);
+  const again = await askRules(field, run.fin.stateText(candidate), candidate, input.facts, input.decide, { what: whatOf(input, field, attempt), which, signal: input.signal });
+  record.decideCalls.push(...again.calls);
+  for (const i of which) {
+    const s = rawToUnit(field, candidate[i], again.raw.get(i), run.baselines, input.settings, whatOf(input, field, attempt));
+    const u = run.units[i];
+    u.attempts.push({ attempt, text: candidate[i], score: s.score, failing: s.failing, readings: s.readings });
+    // The best attempt ships: a higher score, or an equal one that fails fewer rules. A rewrite
+    // that is no better never replaces what it was asked to fix.
+    const best = u.attempts[u.kept];
+    if (s.score > best.score || (s.score === best.score && s.failing.length < best.failing.length)) u.kept = u.attempts.length - 1;
+  }
+  run.proposed = new Map();
+}
+
+/** One field's record and warnings, once its rounds are over. */
+function settle(run: FieldRun, record: GateRecord): string[] {
+  const { field } = run.fin;
+  const stillFailing = run.units
     .filter((u) => u.attempts[u.kept].failing.length > 0)
     .map((u) => ({ index: u.index, text: u.attempts[u.kept].text, rules: u.attempts[u.kept].failing, score: u.attempts[u.kept].score }));
+  const rounds = run.rounds;
   for (const f of stillFailing) {
     record.warnings.push(
       `re-roll gate: ${field} "${f.text}" still fails ${f.rules.join(' and ')} (score ${f.score.toFixed(2)}) after ` +
         `${rounds} re-roll${rounds === 1 ? '' : 's'}; it ships as the best-scoring attempt, flagged (LEDGER #201).`,
     );
   }
-  const noEvidence = units.reduce((n, u) => n + u.attempts.reduce((m, a) => m + a.readings.filter((r) => r.read === 'no-evidence').length, 0), 0);
+  const noEvidence = run.units.reduce((n, u) => n + u.attempts.reduce((m, a) => m + a.readings.filter((r) => r.read === 'no-evidence').length, 0), 0);
   if (noEvidence > 0) {
     record.warnings.push(`re-roll gate: ${noEvidence} ${field} rule question(s) came back with almost no weight on Yes or No, and were counted as passes (no evidence is no reason to re-roll).`);
   }
-  const fieldRecord: FieldRecord = { field, rules: FIELD_RULES[field], baselines, units, rerolls: rounds, stillFailing };
-  record.fields.push(fieldRecord);
-  return { units: current().map((a) => a.text), field: fieldRecord };
+  record.fields.push({ field, rules: FIELD_RULES[field], baselines: run.baselines, units: run.units, rerolls: rounds, stillFailing });
+  return current(run).map((a) => a.text);
 }
 
 /**
- * Run the gate over the given fields in order, then rank the settled titles. Returns the text of
- * every field as it ships (same unit count, same order) and the record of how it got there.
+ * Run the gate over the given fields, then rank the settled titles. Returns the text of every field
+ * as it ships (same unit count, same order) and the record of how it got there.
+ *
+ * ROUND-MAJOR (LEDGER #266): every field's checks of a round, then every field's rewrites of the
+ * next, then their checks, rather than one field's whole loop before the next field's. Each field's
+ * rounds are exactly what they were (a field's checks, baselines and rewrites read only that field),
+ * so what ships is the same; what changes is that the scorer and the writing models trade the card
+ * once per ROUND instead of once per field and round. `phase` is awaited before each round's checks
+ * (`check-N`, on the scorer) and rewrites (`revise-N`, on the fields' own models): a stage-major
+ * batch puts its gate (crucible/batch.ts) at those points, so every job's checks run before anyone's
+ * rewrites. The title ranking (the scorer) runs inside the last check phase. The decide and re-roll
+ * records list the calls in the order they were made.
  */
 export async function runGate(input: GateInput): Promise<{ fields: Map<GateField, string[]>; record: GateRecord }> {
   const record: GateRecord = { settings: input.settings, fields: [], decideCalls: [], rerollCalls: [], ranking: null, warnings: [] };
   const out = new Map<GateField, string[]>();
-  for (const fin of input.fields) {
-    if (fin.units.length === 0) continue;
-    const { units } = await gateField(input, fin, record);
-    out.set(fin.field, units);
+  const fields = input.fields.filter((fin) => fin.units.length > 0);
+  const runs: FieldRun[] = [];
+  if (fields.length > 0) {
+    await input.phase?.('check-0');
+    for (const fin of fields) runs.push(await firstCheck(input, fin, record));
   }
+  for (let attempt = 1; attempt <= input.settings.maxRerolls; attempt++) {
+    const pending = runs.filter((run) => run.units.some((u) => u.attempts[u.kept].failing.length > 0));
+    if (pending.length === 0) break;
+    if (input.signal?.aborted) throw new GateError('cancelled', `${whatOf(input, pending[0].fin.field, attempt)} was cancelled`);
+    await input.phase?.(`revise-${attempt}`);
+    for (const run of pending) {
+      run.rounds = attempt;
+      await revise(input, run, attempt, record);
+    }
+    await input.phase?.(`check-${attempt}`);
+    for (const run of pending) await recheck(input, run, attempt, record);
+  }
+  for (const run of runs) out.set(run.fin.field, settle(run, record));
   if (input.rank) {
     const titles = out.get('titles');
     if (!titles || titles.length < 2) {

@@ -226,16 +226,18 @@ check('an unpinned item stays on the selected server, in its line, even when ano
   }
 });
 
-check('one running job per server: the Mac\'s and the PC\'s run side by side, a third waits for its own lane', async () => {
+check('one lane per server: the Mac\'s job and the PC\'s run side by side, a row added while the Mac\'s runs waits for its lane', async () => {
   const w = await world();
   try {
+    // Two rows bound for one server in ONE plan are a stage-major batch (LEDGER #266,
+    // test-crucible-batch.js); here each server gets one row, and the third comes later.
     const plan = await w.lanes.plan([
       { jobId: 'a', fast: false },
       { jobId: 'b', fast: true },
-      { jobId: 'c', fast: false },
     ]);
     assert.deepStrictEqual(plan.start, [{ jobId: 'a', server: 'mac' }, { jobId: 'b', server: 'pc' }]);
-    assert.deepStrictEqual(plan.waiting.map((row) => [row.jobId, row.server, row.parked]), [['c', 'mac', false]]);
+    const third = await w.lanes.plan([{ jobId: 'c', fast: false }]);
+    assert.deepStrictEqual(third.waiting.map((row) => [row.jobId, row.server, row.parked]), [['c', 'mac', false]]);
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const seen = [];

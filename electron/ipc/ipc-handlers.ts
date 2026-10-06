@@ -124,7 +124,7 @@ import { crucibleVoiceIsolation } from '../crucible/denoise';
 import type { CrucibleContext } from '../crucible/context';
 import { catalogInventory } from '../crucible/catalog';
 import { readRoutingModels } from '../services/metadata/routing-models';
-import type { LaneRun } from '../crucible/lanes';
+import { finishJobStage, type LaneRun } from '../crucible/lanes';
 import type { ResumeStage } from '../crucible/wire';
 
 /**
@@ -792,6 +792,9 @@ async function runPipeline(job: PipelineJob): Promise<any> {
 
     const contentItems = await inputHandler.processMultipleInputs(
       normalizedInputs, customNotesMap, inputFailures, transcriptLinkMap, useSavedTranscriptMap);
+    // In a stage-major batch (crucible/batch.ts) the next job may transcribe now: what this one does
+    // before its chapters (the thumbnails' frame sampling) is CPU. Nothing for a single job.
+    finishJobStage();
 
     if (job.cancelled || endedByLane(job)) {
       return { success: false, error: 'Job cancelled by user' };

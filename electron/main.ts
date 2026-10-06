@@ -308,6 +308,11 @@ app.whenReady().then(async () => {
             ? `Crucible on ${server} is free; starting`
             : `Waiting in line on ${server}: ${position.position} of ${position.of} (another app's work is ahead)`,
         }),
+        // A stage-major batch member at a stage gate (crucible/batch.ts, LEDGER #266): its row says
+        // which stage it waits for and why. Its turn coming says nothing: its next stage line follows.
+        batchWait: (jobId, line) => {
+          if (line !== null) pushToAllWindows('generation-progress', { jobId, phase: 'waiting', message: line });
+        },
       },
     });
 

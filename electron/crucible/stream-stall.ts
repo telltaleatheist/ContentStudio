@@ -198,6 +198,19 @@ export class JobStallClock {
     return this.fired;
   }
 
+  /**
+   * A batch member waiting at a stage gate for the other jobs of its batch (batch.ts): its silence
+   * is theirs, not its own, so the clock does not run. {@link resume} starts it afresh.
+   */
+  pause(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  resume(): void {
+    this.beat();
+  }
+
   stop(): void {
     this.stopped = true;
     if (this.timer !== null) clearTimeout(this.timer);

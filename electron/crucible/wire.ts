@@ -528,14 +528,23 @@ export interface QueuePlanCandidate {
 }
 
 /**
- * `crucible:queue-plan`: which rows start now (at most one per server; its lane
- * is reserved for it), which wait and why, and which fail on a
- * misconfiguration. Main decides; the renderer only runs what it is told.
+ * `crucible:queue-plan`: which rows start now (per server one row, or two or
+ * more as ONE stage-major batch; the lane is reserved for it), which wait and
+ * why, and which fail on a misconfiguration. Main decides; the renderer only
+ * runs what it is told, starting every `start` row at once.
  */
 export interface QueuePlan {
-  start: Array<{ jobId: string; server: string }>;
-  /** `parked` rows wait on the server (grey); the rest wait for our own job ahead of them on that lane. */
-  waiting: Array<{ jobId: string; server: string | null; line: string; parked: boolean }>;
+  /**
+   * `batch`: this row is member `position` of `of` in a stage-major batch on its server (LEDGER
+   * #266): its rows run stage by stage under one queue session, and each says on its row which
+   * stage it waits for. Absent: the row runs alone, as before.
+   */
+  start: Array<{ jobId: string; server: string; batch?: { id: string; position: number; of: number } }>;
+  /**
+   * `parked` rows wait on the server (grey); the rest wait for our own work ahead of them on that
+   * lane. `batchOf`: what is ahead is a batch of that many jobs, and this row starts with the next one.
+   */
+  waiting: Array<{ jobId: string; server: string | null; line: string; parked: boolean; batchOf?: number }>;
   failed: Array<{ jobId: string; reason: string }>;
 }
 

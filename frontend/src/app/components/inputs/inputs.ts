@@ -1255,9 +1255,9 @@ export class Inputs implements OnInit, OnDestroy {
 
   /**
    * Start whatever may start now. MAIN decides (`crucible:queue-plan`, electron/crucible/
-   * lanes.ts): at most one job per Crucible server, each on the fast pin's server or the
-   * selected one and never another (LEDGER #205), so the Mac's job and the PC's run side by
-   * side. A row main says waits on its server is shown PARKED with the reason, in grey; main
+   * lanes.ts): per Crucible server one job, or every row bound for it as one stage-major batch
+   * (LEDGER #266), each on the fast pin's server or the selected one and never another (LEDGER
+   * #205), so the Mac's work and the PC's run side by side. A row main says waits on its server is shown PARKED with the reason, in grey; main
    * decides it again at each plan. This page runs
    * what it is told and decides nothing about where.
    */
@@ -1305,13 +1305,20 @@ export class Inputs implements OnInit, OnDestroy {
         // Not parked: another job of this queue is on its server, and it starts when that one ends.
         this.jobQueue.updateJob(waiting.jobId, waiting.parked
           ? { status: 'parked', parkedLine: waiting.line, venue: waiting.server, waitingLine: undefined }
-          : { waitingLine: `Starts when ${waiting.server} is free: another job is running there`, venue: waiting.server });
+          : {
+            waitingLine: waiting.batchOf !== undefined
+              // A batch holds the server (LEDGER #266): this row starts with the next batch.
+              ? `Starts with the next batch on ${waiting.server}: a batch of ${waiting.batchOf} is running there`
+              : `Starts when ${waiting.server} is free: another job is running there`,
+            venue: waiting.server,
+          });
       }
       for (const start of plan.start) {
         const job = this.jobQueue.getJob(start.jobId);
         if (!job) continue;
         this.jobQueue.updateJob(job.id, { venue: start.server, parkedLine: undefined, waitingLine: undefined });
-        // Not awaited: one job per server runs at once, and each finishes on its own.
+        // Not awaited: each finishes on its own. The rows of one stage-major batch all start now and
+        // take turns stage by stage in main (crucible/batch.ts); each row says which stage it waits for.
         if (job.resumeHeld || job.status === 'held') {
           void this.sendHeldJob(job, { advanceQueue: true });
         } else {

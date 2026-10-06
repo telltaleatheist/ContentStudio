@@ -52,6 +52,13 @@
  * the ledger writes it must make right after a submit, the stall clock's beat,
  * and the dropped-stream sweep (docs/crucible/P3.md).
  *
+ * STAGE-MAJOR BATCHES (batch.ts, LEDGER #266). When the plan finds two or more startable rows
+ * bound for one free server, it plans them as ONE BATCH: the lane is the batch's, every member
+ * runs its own pipeline in its own `runJob`, the members share ONE queue session (a
+ * {@link SessionShare}), and each member's pipeline awaits {@link enterJobStage} at its stage
+ * boundaries, where batch.ts's turnstile lets one member at a time do one stage's GPU work and
+ * opens a stage only when every member has finished the one before. One row runs as it always did.
+ *
  * THE STARTUP SWEEP GATES GPU ADMISSION. `setAdmissionGate` takes the startup
  * sweep's promise (main.ts); no job is admitted and no standalone GPU call
  * takes a slot until it settles (plan section 13.4). Cloud calls never wait
@@ -70,6 +77,7 @@ import { ServerWatch } from './server-watch';
 import { SESSION_TOUCH_EVERY_MS, type CardSession, type SessionHold, type SessionRequest, type ServerSessions } from './session';
 import { CRUCIBLE_STALL_MS, JobStallClock } from './stream-stall';
 import { decideVenue, intendedServer, type VenueHost } from './venue-decision';
+import { StageBatch, type BatchStage, type LoadFloor, type StageNeed } from './batch';
 import type { CrucibleLanesView, LaneChip, ParkedJobResult, QueuePlan, QueuePlanCandidate, ResumeStage, RoutingView, ServerReach } from './wire';
 
 /** A one-shot activity read's own clock (the renderer's ask, a Re-check): a sleeping server must not stall it. */
@@ -185,14 +193,29 @@ export interface LaneRun {
   beat(): void;
 }
 
+/**
+ * The queue session a lane job runs in, and who shares it: one job's own, or a batch's (every
+ * member's work is an item of it). Asked for by the first GPU work, closed when the last sharer ends.
+ */
+interface SessionShare {
+  /** For the session's log lines: "j1 (…)" or "the batch of 3 on mac". */
+  readonly what: string;
+  /** The session, asked for by the first GPU work; null until then. */
+  session: Promise<SessionHold> | null;
+  /** The session once open, for the touch around cloud calls and the batch's load floors. */
+  card: CardSession | null;
+  /** The floors of the batch stage now open, set on the card when it opens (batch.ts). */
+  floors: { stage: BatchStage; floors: ReadonlyMap<string, LoadFloor> } | null;
+}
+
 interface RunState extends LaneRun {
   clock: JobStallClock;
   stalled: string | null;
   done: Promise<void>;
-  /** The job's queue session on its server, asked for by its first GPU work; null until then. */
-  session: Promise<SessionHold> | null;
-  /** The session once open, for the touch around cloud calls. */
-  card: CardSession | null;
+  /** The session this job's GPU work runs in: its own, or its batch's. */
+  share: SessionShare;
+  /** The batch this job is a member of, or null when it runs alone. */
+  batch: StageBatch | null;
   /** Cloud calls of this job running now, and the touch timer while there are any. */
   cloudCalls: number;
   touchTimer: NodeJS.Timeout | null;
@@ -204,6 +227,46 @@ const runStore = new AsyncLocalStorage<RunState>();
 export function setJobStage(stage: ResumeStage): void {
   const run = runStore.getStore();
   if (run !== undefined) run.stage = stage;
+}
+
+/** The resume stage a batch stage parks at: everything past the chapters' boundaries resumes at `fields`. */
+function resumeStageOf(stage: BatchStage): ResumeStage {
+  return stage === 'transcribe' || stage === 'chapters' ? stage : 'fields';
+}
+
+/** The lanes this run belongs to, for the stage gates below (set by `runJob`). */
+const gateStore = new WeakMap<RunState, CrucibleLanes>();
+
+/**
+ * THE STAGE GATE (batch.ts). The pipeline awaits this at each stage boundary, stating what its
+ * work there will need of each model's load. A single job only records the stage (as setJobStage);
+ * a batch member waits until the stage is open and the turn is its own, its stall clock paused
+ * meanwhile, and its row told where it stands. Outside a lane job it does nothing.
+ */
+export async function enterJobStage(stage: BatchStage, needs: readonly StageNeed[] = []): Promise<void> {
+  const run = runStore.getStore();
+  if (run === undefined) return;
+  const lanes = gateStore.get(run);
+  if (lanes === undefined || run.batch === null) {
+    run.stage = resumeStageOf(stage);
+    return;
+  }
+  await lanes.enterStage(run, stage, needs);
+}
+
+/**
+ * The current batch member's GPU work for its stage is done (its next work is CPU until its next
+ * gate), so the next member may take the turn. Nothing for a single job, or outside a lane job.
+ */
+export function finishJobStage(): void {
+  const run = runStore.getStore();
+  if (run?.batch) run.batch.finishTurn(run.jobId);
+}
+
+/** The batch the current job runs in, or null (a single job, or outside a lane job). */
+export function jobBatch(): { id: string; size: number } | null {
+  const batch = runStore.getStore()?.batch ?? null;
+  return batch === null ? null : { id: batch.id, size: batch.size };
 }
 
 /** A sign of life for the current job (a progress line); outside a job it does nothing. */
@@ -284,8 +347,11 @@ class Slot {
 
 interface Lane {
   readonly server: string;
-  /** The admitted job, or a reservation `plan()` made for one the renderer is about to start. */
-  holder: { jobId: string; reserved: boolean; at: number } | null;
+  /**
+   * The admitted job, or a reservation `plan()` made for one the renderer is about to start. For a
+   * batch, `jobId` is the batch's id and `batch` the batch: the lane is its until its last member ends.
+   */
+  holder: { jobId: string; reserved: boolean; at: number; batch?: StageBatch } | null;
   /** Jobs waiting for `holder` to leave (an "Analyze" press on a busy lane, a CLI's job). */
   waiters: Array<{ jobId: string; admit: () => void }>;
   readonly slot: Slot;
@@ -346,12 +412,22 @@ export interface LanesDeps {
   watchRetryMs?: number;
   /** How often a lane job's open session is touched while its cloud calls run (a keeper shortens it). */
   touchEveryMs?: number;
+  /**
+   * A batch member's waiting line (batch.ts), or null once its turn came: the job's row says it
+   * (ipc wiring sends it as the job's `waiting` progress line).
+   */
+  onBatchWait?(jobId: string, line: string | null): void;
 }
 
 export class CrucibleLanes {
   private readonly lanes = new Map<string, Lane>();
   private readonly runs = new Map<string, RunState>();
   private readonly parks = new Map<string, VenuePark>();
+  /** Batches planned or running, by id (a member is found by `batchOf`). */
+  private readonly batches = new Map<string, StageBatch>();
+  /** Each batch's closing (its session let go of, its lane freed), once. */
+  private readonly batchClosings = new Map<StageBatch, Promise<void>>();
+  private batchCount = 0;
   /** Each job's give-back in progress, so they run one after another (sweepJob). */
   private readonly jobSweeps = new Map<string, Promise<void>>();
   private gate: Promise<unknown> = Promise.resolve();
@@ -486,9 +562,11 @@ export class CrucibleLanes {
   // ── the queue's plan ─────────────────────────────────────────────────────
 
   /**
-   * Which of these rows start now. At most one per server, and its lane is
-   * reserved for it until `runJob` claims it (or {@link RESERVATION_MS}
-   * passes). A row parked on its venue is decided afresh each time.
+   * Which of these rows start now. Per free server: its one row, or — two or more bound for it — all
+   * of them as ONE BATCH (batch.ts), in queue order; the lane is reserved for the row (or the batch)
+   * until `runJob` claims it (or {@link RESERVATION_MS} passes). A row bound for a server whose lane
+   * is held (a job, or a batch running) waits for it: a row added while a batch runs starts with the
+   * NEXT batch (batch.ts "who joins"). A row parked on its venue is decided afresh each time.
    */
   async plan(candidates: readonly QueuePlanCandidate[]): Promise<QueuePlan> {
     await this.gate;
@@ -498,8 +576,12 @@ export class CrucibleLanes {
     if (this.quitting) throw new Error('ContentStudio is quitting, so no job starts. If the app is still open, quit it fully (or force-quit it) and open it again.');
     this.expireReservations();
     const host = this.venueHost();
+    /** The rows that may go, per server, in queue order. */
+    const go = new Map<string, QueuePlanCandidate[]>();
     for (const candidate of candidates) {
       if (this.runs.has(candidate.jobId)) continue;
+      // Already told to start as a member of a planned batch (the renderer is starting it).
+      if (this.batchOf(candidate.jobId) !== null) continue;
       const park = this.parks.get(candidate.jobId);
       let intended: string | null;
       try {
@@ -527,17 +609,135 @@ export class CrucibleLanes {
         plan.waiting.push({ jobId: candidate.jobId, server: venue.server, line: venue.line, parked: true });
         continue;
       }
-      const lane = this.lane(venue.server);
+      go.set(venue.server, [...(go.get(venue.server) ?? []), candidate]);
+    }
+    for (const [server, rows] of go) {
+      const lane = this.lane(server);
       if (lane.holder !== null || lane.waiters.length > 0) {
+        const batch = lane.holder?.batch;
         const ahead = lane.holder?.jobId ?? lane.waiters[0]!.jobId;
-        plan.waiting.push({ jobId: candidate.jobId, server: venue.server, line: `waiting for ${venue.server}: ${ahead} is on it`, parked: false });
+        for (const row of rows) {
+          plan.waiting.push(batch === undefined
+            ? { jobId: row.jobId, server, line: `waiting for ${server}: ${ahead} is on it`, parked: false }
+            : { jobId: row.jobId, server, line: `waiting for ${server}: a batch of ${batch.size} is on it, and this job starts with the next batch`, parked: false, batchOf: batch.size });
+        }
         continue;
       }
-      lane.holder = { jobId: candidate.jobId, reserved: true, at: this.now() };
-      plan.start.push({ jobId: candidate.jobId, server: venue.server });
+      if (rows.length === 1) {
+        lane.holder = { jobId: rows[0]!.jobId, reserved: true, at: this.now() };
+        plan.start.push({ jobId: rows[0]!.jobId, server });
+        continue;
+      }
+      const batch = this.makeBatch(server, rows.map((row) => row.jobId));
+      lane.holder = { jobId: batch.id, reserved: true, at: this.now(), batch };
+      rows.forEach((row, i) => plan.start.push({ jobId: row.jobId, server, batch: { id: batch.id, position: i + 1, of: rows.length } }));
+      log.info(`[crucible] ${batch.id}: ${rows.length} jobs planned on "${server}", run stage by stage under one session (${batch.jobIds.join(', ')})`);
     }
     if (plan.start.length > 0) this.publish();
     return plan;
+  }
+
+  // ── batches ──────────────────────────────────────────────────────────────
+
+  private makeBatch(server: string, jobIds: string[]): StageBatch {
+    this.batchCount += 1;
+    const id = `batch ${this.batchCount} on ${server}`;
+    const batch: StageBatch = new StageBatch(id, server, jobIds, {
+      onWait: (jobId, line) => this.tellBatchWait(jobId, line),
+      onStageOpen: (stage, floors) => {
+        const share = this.shareOfBatch(batch);
+        share.floors = { stage, floors };
+        log.info(`[crucible] ${id}: the ${stage} stage opens (${batch.view().filter((m) => m.state !== 'ended').map((m) => `${m.jobId} at ${m.stage ?? 'start'}`).join(', ')})`);
+        share.card?.setLoadFloors(floors, stage);
+      },
+      onTurn: () => this.publish(),
+      onDone: () => { void this.closeBatch(batch); },
+    }, this.now());
+    this.batches.set(id, batch);
+    this.batchShares.set(batch, { what: `${id} (${jobIds.join(', ')})`, session: null, card: null, floors: null });
+    // A member the renderer never starts would hold every later stage shut. The plan's reservation
+    // expiry drops it at the next plan; this drops it even when no plan comes (every row started).
+    const expiry = setTimeout(() => {
+      const dropped = batch.dropUnarrived();
+      if (dropped.length > 0) log.warn(`[crucible] ${id}: ${dropped.join(', ')} never started within ${RESERVATION_MS / 1000} s, so ${dropped.length === 1 ? 'it leaves' : 'they leave'} the batch`);
+    }, RESERVATION_MS);
+    expiry.unref?.();
+    return batch;
+  }
+
+  private readonly batchShares = new Map<StageBatch, SessionShare>();
+
+  private shareOfBatch(batch: StageBatch): SessionShare {
+    const share = this.batchShares.get(batch);
+    if (share === undefined) throw new Error(`${batch.id} has no session share; it was not made by plan()`);
+    return share;
+  }
+
+  /** The planned or running batch `jobId` is a live member of, or null. */
+  private batchOf(jobId: string): StageBatch | null {
+    for (const batch of this.batches.values()) if (batch.has(jobId)) return batch;
+    return null;
+  }
+
+  /** A member leaves without running to its end (parked, its venue moved, stopped before it started). */
+  private leaveBatch(batch: StageBatch, jobId: string, why: string): void {
+    if (!batch.has(jobId)) return;
+    log.info(`[crucible] ${jobId} leaves ${batch.id}: ${why}`);
+    batch.end(jobId);
+  }
+
+  /**
+   * The batch is over (its last member ended, or nobody it planned ever started): its session is let
+   * go of (closed: the card is settled) and its lane freed. Once, however many ask.
+   */
+  private closeBatch(batch: StageBatch): Promise<void> {
+    let closing = this.batchClosings.get(batch);
+    if (closing === undefined) {
+      closing = (async () => {
+        this.batches.delete(batch.id);
+        const share = this.batchShares.get(batch);
+        this.batchShares.delete(batch);
+        if (share !== undefined) await this.releaseShare(share);
+        log.info(`[crucible] ${batch.id} is done; its session was let go of and the lane on "${batch.server}" is free`);
+        this.release(batch.server, batch.id);
+        this.workChanged();
+        this.publish();
+      })();
+      this.batchClosings.set(batch, closing);
+      void closing.finally(() => { setTimeout(() => this.batchClosings.delete(batch), 0).unref?.(); });
+    }
+    return closing;
+  }
+
+  /** Called by {@link enterJobStage} for a batch member: wait at the gate, stall clock paused. */
+  async enterStage(run: RunState, stage: BatchStage, needs: readonly StageNeed[]): Promise<void> {
+    const batch = run.batch;
+    if (batch === null) {
+      run.stage = resumeStageOf(stage);
+      return;
+    }
+    run.clock.pause();
+    try {
+      await batch.enter(run.jobId, stage, { signal: run.controller.signal, needs });
+    } finally {
+      run.clock.resume();
+    }
+    run.stage = resumeStageOf(stage);
+    log.info(`[crucible] ${run.jobId} takes ${batch.id}'s turn for ${stage}`);
+  }
+
+  private tellBatchWait(jobId: string, line: string | null): void {
+    if (line !== null) log.info(`[crucible] ${jobId}: ${line}`);
+    try {
+      this.deps.onBatchWait?.(jobId, line);
+    } catch (err) {
+      log.warn(`[crucible] Could not tell the renderer where ${jobId} stands in its batch: ${(err as Error).message}`);
+    }
+  }
+
+  /** Where each batch stands, for a keeper and the quit log. */
+  batchViews(): Array<{ id: string; server: string; members: ReturnType<StageBatch['view']> }> {
+    return [...this.batches.values()].map((b) => ({ id: b.id, server: b.server, members: b.view() }));
   }
 
   // ── running a job ────────────────────────────────────────────────────────
@@ -561,7 +761,18 @@ export class CrucibleLanes {
     // Read ONCE for this admission: the venue and the job's cloud calls see the same answer. A
     // stored value that is not a server name at all throws here and fails the job by name.
     const routingServer = this.deps.routingServer();
-    const venue = await decideVenue(options.fast, { ...this.venueHost(FRESH_PROBE_MS), routingServer: () => routingServer });
+    let batch = this.batchOf(options.jobId);
+    let venue: Awaited<ReturnType<typeof decideVenue>>;
+    try {
+      venue = await decideVenue(options.fast, { ...this.venueHost(FRESH_PROBE_MS), routingServer: () => routingServer });
+    } catch (err) {
+      if (batch !== null) this.leaveBatch(batch, options.jobId, `its venue could not be decided (${(err as Error).message})`);
+      throw err;
+    }
+    if (batch !== null && (venue.kind !== 'venue' || venue.server !== batch.server)) {
+      this.leaveBatch(batch, options.jobId, venue.kind === 'venue' ? `it now goes to "${venue.server}"` : `its venue says ${venue.kind}`);
+      batch = null;
+    }
     if (venue.kind === 'fail') throw new CrucibleVenueRefused(venue.server, venue.reason);
     if (venue.kind === 'wait') {
       this.parks.set(options.jobId, {
@@ -574,7 +785,12 @@ export class CrucibleLanes {
     }
     const server = venue.server;
     const controller = options.controller ?? new AbortController();
-    await this.claim(server, options.jobId, controller.signal);
+    if (batch !== null) {
+      this.claimForBatch(server, batch);
+      batch.arrive(options.jobId);
+    } else {
+      await this.claim(server, options.jobId, controller.signal);
+    }
     this.forgetPark(options.jobId, 'admitted');
 
     let settle!: () => void;
@@ -589,21 +805,26 @@ export class CrucibleLanes {
       done: new Promise<void>((resolve) => { settle = resolve; }),
       clock: new JobStallClock(`${options.jobId} on "${server}"`, (sentence) => { void this.stall(run, sentence); }, this.stallMs, this.now),
       beat: () => run.clock.beat(),
-      session: null,
-      card: null,
+      share: batch !== null ? this.shareOfBatch(batch) : { what: options.jobId, session: null, card: null, floors: null },
+      batch,
       cloudCalls: 0,
       touchTimer: null,
     };
+    gateStore.set(run, this);
     this.runs.set(options.jobId, run);
     this.workChanged();
     run.clock.start();
-    log.info(`[crucible] ${options.jobId} admitted to "${server}" (${venue.because}), from ${options.stage}`);
+    log.info(`[crucible] ${options.jobId} admitted to "${server}" (${venue.because}), from ${options.stage}${batch === null ? '' : `, as a member of ${batch.id}`}`);
     this.publish();
     try {
       let value: T | undefined;
       let failure: unknown = null;
       try {
-        value = await runStore.run(run, () => work(run));
+        value = await runStore.run(run, async () => {
+          // A batch member waits for its first stage like any other (a held job starts at `fields`).
+          if (batch !== null) await this.enterStage(run, options.stage, []);
+          return work(run);
+        });
       } catch (err) {
         failure = err;
       }
@@ -615,8 +836,13 @@ export class CrucibleLanes {
     } finally {
       run.clock.stop();
       this.stopTouching(run);
-      // The job's session goes with the job (closed unless a standalone action joined it).
-      await this.releaseSession(run);
+      if (run.batch !== null) {
+        // A member leaves; the batch's session and lane go with its LAST member (closeBatch).
+        if (run.batch.end(run.jobId)) await this.closeBatch(run.batch);
+      } else {
+        // The job's session goes with the job (closed unless a standalone action joined it).
+        await this.releaseShare(run.share);
+      }
       // What the job's own finally did not give back, the lane does, after any give-back already
       // under way (a stall's, a Stop's) has settled.
       await this.jobSweeps.get(run.jobId);
@@ -624,7 +850,7 @@ export class CrucibleLanes {
         await this.sweepJob(run.jobId, `${run.jobId} ended with holds still recorded`);
       }
       this.runs.delete(run.jobId);
-      this.release(server, run.jobId);
+      if (run.batch === null) this.release(server, run.jobId);
       settle();
       this.workChanged();
       this.publish();
@@ -635,6 +861,12 @@ export class CrucibleLanes {
   async stopJob(jobId: string, reason: string): Promise<void> {
     const run = this.runs.get(jobId);
     this.forgetPark(jobId, reason);
+    // A planned member that has not started leaves its batch; a running one leaves when its run ends.
+    const planned = this.batchOf(jobId);
+    if (planned !== null && run === undefined) {
+      this.leaveBatch(planned, jobId, reason);
+      if (planned.done) await this.closeBatch(planned);
+    }
     const lane = [...this.lanes.values()].find((candidate) => candidate.holder?.jobId === jobId && candidate.holder.reserved);
     if (lane !== undefined) this.release(lane.server, jobId);
     if (run === undefined) return;
@@ -677,11 +909,12 @@ export class CrucibleLanes {
   async sessionOn(server: string, request: SessionRequest): Promise<SessionHold> {
     const run = runStore.getStore();
     if (run === undefined || run.server !== server) return this.deps.sessions.use(server, request);
-    if (run.session === null) {
+    const share = run.share;
+    if (share.session === null) {
       const lane = this.lane(server);
       const asking = this.deps.sessions.use(server, {
         act: request.act,
-        what: `${run.jobId} (${request.what})`,
+        what: `${share.what} (${request.what})`,
         signal: run.controller.signal,
         maxWaitS: JOB_SESSION_MAX_WAIT_S,
         onQueue: (position) => {
@@ -693,10 +926,14 @@ export class CrucibleLanes {
           request.onQueue?.(position);
         },
       });
-      run.session = asking;
+      share.session = asking;
       void asking.then(
-        (hold) => { run.card = hold.card; },
-        () => { if (run.session === asking) run.session = null; },
+        (hold) => {
+          share.card = hold.card;
+          // A batch stage that opened before the session did (every transcript was saved): its floors now.
+          if (share.floors !== null) hold.card.setLoadFloors(share.floors.floors, share.floors.stage);
+        },
+        () => { if (share.session === asking) share.session = null; },
       ).finally(() => {
         if (lane.inLine?.jobId === run.jobId) {
           lane.inLine = null;
@@ -705,7 +942,7 @@ export class CrucibleLanes {
         }
       });
     }
-    const hold = await run.session;
+    const hold = await share.session;
     return { card: hold.card, release: async () => undefined };
   }
 
@@ -717,10 +954,10 @@ export class CrucibleLanes {
     }
   }
 
-  private async releaseSession(run: RunState): Promise<void> {
-    const asking = run.session;
-    run.session = null;
-    run.card = null;
+  private async releaseShare(share: SessionShare): Promise<void> {
+    const asking = share.session;
+    share.session = null;
+    share.card = null;
     if (asking === null) return;
     const hold = await asking.catch(() => null);
     if (hold !== null) await hold.release();
@@ -729,8 +966,8 @@ export class CrucibleLanes {
   /** A cloud call of `run` started: its open session is touched until the last one ends (session.ts's rule). */
   private startTouching(run: RunState): void {
     run.cloudCalls += 1;
-    if (run.cloudCalls > 1 || run.card === null) return;
-    const card = run.card;
+    if (run.cloudCalls > 1 || run.share.card === null) return;
+    const card = run.share.card;
     const touch = (): void => {
       if (card.ended !== null) return;
       card.touch().catch((err: unknown) => {
@@ -883,7 +1120,8 @@ export class CrucibleLanes {
     return {
       lanes: routing.servers.map((row): LaneChip => {
         const lane = this.lane(row.name);
-        const running = lane.holder !== null && !lane.holder.reserved ? lane.holder.jobId : null;
+        const running = lane.holder === null || lane.holder.reserved ? null
+          : lane.holder.batch !== undefined ? lane.holder.batch.runningJobId() ?? lane.holder.jobId : lane.holder.jobId;
         const state: LaneChip['state'] = row.paused && running === null ? 'unread'
           : running !== null ? 'running'
             : lane.chip.state === 'running' ? 'idle' : lane.chip.state;
@@ -976,6 +1214,15 @@ export class CrucibleLanes {
     lane.holder = { jobId, reserved: false, at: this.now() };
   }
 
+  /** A batch member's admission: the lane is its batch's (reserved by the plan, or already running). */
+  private claimForBatch(server: string, batch: StageBatch): void {
+    const lane = this.lane(server);
+    if (lane.holder?.batch !== batch) {
+      throw new Error(`${batch.id} does not hold the lane on "${server}" (it holds ${lane.holder?.jobId ?? 'nothing'}); its member cannot be admitted`);
+    }
+    lane.holder = { ...lane.holder, reserved: false };
+  }
+
   private release(server: string, jobId: string): void {
     const lane = this.lane(server);
     if (lane.holder?.jobId !== jobId) return;
@@ -988,7 +1235,14 @@ export class CrucibleLanes {
   }
 
   private expireReservations(): void {
+    // A batch member the renderer never started leaves the batch, so the stages it would block open.
+    for (const batch of [...this.batches.values()]) {
+      if (this.now() - batch.createdAt <= RESERVATION_MS) continue;
+      const dropped = batch.dropUnarrived();
+      if (dropped.length > 0) log.warn(`[crucible] ${batch.id}: ${dropped.join(', ')} never started, so ${dropped.length === 1 ? 'it leaves' : 'they leave'} the batch`);
+    }
     for (const lane of this.lanes.values()) {
+      if (lane.holder?.batch !== undefined) continue;
       if (lane.holder?.reserved && this.now() - lane.holder.at > RESERVATION_MS && !this.runs.has(lane.holder.jobId)) {
         log.warn(`[crucible] the lane on "${lane.server}" was reserved for ${lane.holder.jobId}, which never started; freed`);
         this.release(lane.server, lane.holder.jobId);

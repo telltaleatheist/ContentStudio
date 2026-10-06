@@ -71,6 +71,8 @@ export interface CrucibleContextDeps {
     lanes?: (view: CrucibleLanesView) => void;
     /** A queue job's session moved in its server's line (`position`), or opened (null): its row says so. */
     inLine?: (jobId: string, server: string, position: QueuePosition | null) => void;
+    /** A batch member's waiting line at a stage gate (batch.ts), or null once its turn came. */
+    batchWait?: (jobId: string, line: string | null) => void;
   };
   /**
    * A CLI's `--server`: this process sends its work to that registered server instead of the
@@ -271,6 +273,7 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     sessions,
     push: push.lanes,
     ...(push.inLine === undefined ? {} : { onInLine: push.inLine }),
+    ...(push.batchWait === undefined ? {} : { onBatchWait: push.batchWait }),
     // THE POLLING RULE's wiring (readiness.ts `needsPolling`, LEDGER #234): the lanes' work
     // feeds it, and it switches the lanes' event streams. Admission asks readiness for a fresh answer.
     onWorkChange: () => readiness.pollingMayHaveChanged(),

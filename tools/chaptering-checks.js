@@ -532,6 +532,28 @@ check('a title that runs out its thinking budget ships with its outline label an
   assert.ok(r.stats.warnings.some((w) => w.includes('carries its outline label "Two"')));
 });
 
+check('PARITY (LEDGER #266): boundaries then titleChapters gives exactly what chapter() with its own titles gives, tagged, refined and with a run-out title', async () => {
+  const titles = C('titles');
+  const sections = SECTIONS;
+  const opts = { speakerOf: (i) => (i % 3 === 0 ? 'screen' : 'mic') };
+  const runOut = (chat) => async (prompt, o) => (o.role === 'summarize' && prompt.includes('Title chapter 2') ? { text: '', finishReason: 'length' } : chat(prompt, o));
+  const whole = fakeVideo(300, sections, opts);
+  const a = await service.chapter(whole.captions, { granularity: 'chapters', chat: runOut(whole.chat), decide: whole.decide, videoTitle: 'Fake', channelName: 'Ch', promotedItems: ['the Patreon'], titleThinking: false, titleMaxTokens: 4096 });
+  const split = fakeVideo(300, sections, opts);
+  const b0 = await service.chapter(split.captions, { granularity: 'chapters', chat: split.chat, decide: split.decide, videoTitle: 'Fake', channelName: 'Ch', promotedItems: ['the Patreon'], summarize: false });
+  assert.ok(b0.chapters.every((c) => c.title === '' && c.summary === ''), 'a boundaries-only run writes no titles');
+  assert.strictEqual(split.calls.chat.filter((c) => c.o.role === 'summarize').length, 0);
+  const b = await titles.titleChapters(b0, { chat: runOut(split.chat), videoTitle: 'Fake', channelName: 'Ch', promotedItems: ['the Patreon'], titleThinking: false, titleMaxTokens: 4096, speakerRoles: units.speakerRolesOf(split.captions) });
+  assert.ok(a.stats.speakerTagged && a.chapters.length >= 3, 'the case is tagged and refined');
+  assert.deepStrictEqual(b.chapters, a.chapters, 'the same chapters, titles and summaries');
+  const asked = (v) => v.calls.chat.filter((c) => c.o.role === 'summarize').map((c) => [c.prompt, c.o.thinking, c.o.maxTokens]);
+  assert.deepStrictEqual(asked(split), asked(whole), 'the same title calls, prompts and shapes, in the same order');
+  assert.deepStrictEqual([...b.stats.warnings].sort(), [...a.stats.warnings].sort(), 'the same warnings');
+  assert.deepStrictEqual([b.stats.chatCalls, b.stats.titleMs.length, b.stats.titledFromParts], [a.stats.chatCalls, a.stats.titleMs.length, a.stats.titledFromParts]);
+  await assert.rejects(titles.titleChapters(b, { chat: split.chat }), /already carry titles/);
+  await assert.rejects(titles.titleChapters(b0, { chat: split.chat }), /no speaker roles/);
+});
+
 check('chapters: the two-level outline refines both long sections; four leaves tile the video at level 2', async () => {
   const v = fakeVideo(300, SECTIONS);
   const r = await service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, summarize: false });

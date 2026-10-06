@@ -63,6 +63,7 @@ import {
   type QueueSessionEnd,
 } from '@crucible/client';
 import { CrucibleCallError } from './errors';
+import type { LoadFloor } from './batch';
 import type { InFlightLedger } from './in-flight-ledger';
 import type { CrucibleStepHooks } from './lanes';
 import { crucibleUnavailableCause } from './transport-failure';
@@ -206,6 +207,11 @@ export interface ResidencyRequest {
   /** The context to load at, when this session loads the model (today's num_ctx, LEDGER #111). */
   loadContext?: number;
   signal?: AbortSignal;
+  /**
+   * Set by {@link CardSession.ensure} when a batch's load floor raised `loadContext` (batch.ts): the
+   * floor's reason, for the load's log line. A caller never sets it.
+   */
+  floor?: string;
 }
 
 export interface CardTimings {
@@ -230,6 +236,13 @@ interface Resident {
 export class CardSession {
   private resident: Resident | null = null;
   private lock: Promise<unknown> = Promise.resolve();
+  /**
+   * A STAGE-MAJOR BATCH's load floors for the stage it is in (batch.ts, LEDGER #266), per model: a
+   * load of that model in this session happens at least at the floor, so the batch's first load is
+   * at the largest context any of its jobs stated for the stage, and a later job that needs more
+   * finds it already there. Empty outside a batch (a single job loads at each call's own step, #209).
+   */
+  private floors: ReadonlyMap<string, LoadFloor> = new Map();
 
   constructor(
     readonly server: string,
@@ -273,8 +286,29 @@ export class CardSession {
     if (this.resident?.model === model) this.resident = null;
   }
 
+  /**
+   * The batch's floors for the stage that just opened (lanes.ts, from batch.ts `onStageOpen`):
+   * replaces the last stage's, so a model the stage does not state loads at its own call's step.
+   */
+  setLoadFloors(floors: ReadonlyMap<string, LoadFloor>, stage: string): void {
+    this.floors = new Map(floors);
+    const said = [...floors.entries()].map(([model, f]) => `${model} at ${f.tokens} (${f.jobId}: ${f.why})`);
+    log.info(
+      `[crucible] session ${this.id} on "${this.server}", the batch's ${stage} stage: ` +
+        (said.length === 0 ? 'no load floor (no job stated a need there)' : `load floor${said.length === 1 ? '' : 's'} ${said.join('; ')}`),
+    );
+  }
+
+  /** The request with the batch floor for `model` applied to its load context (a call that states none is left alone). */
+  private floored(model: string, request: ResidencyRequest): ResidencyRequest {
+    const floor = this.floors.get(model);
+    if (floor === undefined || request.loadContext === undefined || floor.tokens <= request.loadContext) return request;
+    return { ...request, loadContext: floor.tokens, floor: `the batch's floor for this stage, ${floor.tokens} tokens (${floor.jobId}: ${floor.why}); this call alone needs ${request.loadContext}` };
+  }
+
   /** Make `model` resident in this session at a context that fits `request`, unless it already is. */
-  async ensure(model: string, what: string, request: ResidencyRequest): Promise<void> {
+  async ensure(model: string, what: string, unfloored: ResidencyRequest): Promise<void> {
+    const request = this.floored(model, unfloored);
     const run = this.lock.then(() => this.ensureUnlocked(model, what, request));
     this.lock = run.catch(() => undefined);
     await run;
@@ -288,6 +322,14 @@ export class CardSession {
       const grows = request.need !== null && window !== null && request.need > window
         && request.loadContext !== undefined && request.loadContext > window;
       if (!grows) return;
+      const floor = this.floors.get(model);
+      if (floor !== undefined) {
+        // Said loudly: the batch loaded this model at what its jobs stated, and a call needs more.
+        log.warn(
+          `[crucible] ${what}: the batch's stated floor for ${model} (${floor.tokens}, ${floor.jobId}: ${floor.why}) was short ` +
+            `of the ${request.need} tokens this call needs; the load grows once, as a single job's would`,
+        );
+      }
       // WITHIN A JOB the window only grows (LEDGER #209: a job loads at the step its largest
       // call needs, and a later smaller call runs in the window already open). A later call
       // that does not fit reloads the model at its own context. Shrinking happens between jobs.
@@ -411,7 +453,8 @@ export class CardSession {
     request.hooks.submitted({ server: this.server, id: jobId, jobType: 'load-model', model });
     log.info(
       `[crucible] ${what}: loading ${model} on "${this.server}" in session ${this.id}` +
-        `${request.loadContext === undefined ? ' at its manifest context' : ` at ${request.loadContext} tokens`} (job ${jobId})`,
+        `${request.loadContext === undefined ? ' at its manifest context' : ` at ${request.loadContext} tokens`} (job ${jobId})` +
+        (request.floor === undefined ? '' : `: ${request.floor}`),
     );
     const onAbort = (): void => {
       void this.session.cancel(jobId).catch(() => undefined);
