@@ -270,6 +270,19 @@ check('a row added while a batch runs waits for the next batch; one row alone ru
   }
 });
 
+check('a batch takes at most MAX_BATCH (4) jobs in queue order; the rest wait for the next batch, said', async () => {
+  const w = await world();
+  try {
+    const ids = ['j1', 'j2', 'j3', 'j4', 'j5', 'j6'];
+    const plan = await w.ctx.lanes.plan(ids.map((jobId) => ({ jobId, fast: false })));
+    assert.deepStrictEqual(plan.start.map((s) => [s.jobId, s.batch.position, s.batch.of]), [['j1', 1, 4], ['j2', 2, 4], ['j3', 3, 4], ['j4', 4, 4]]);
+    assert.deepStrictEqual(plan.waiting.map((r) => [r.jobId, r.batchOf, r.parked]), [['j5', 4, false], ['j6', 4, false]]);
+    assert.ok(plan.waiting.every((r) => /starts with the next batch/.test(r.line)));
+  } finally {
+    await w.close();
+  }
+});
+
 check('the turnstile: a stage opens only when every member is past the one before; a held job that starts at fields waits for it', () => {
   const { StageBatch } = crucible('batch');
   const opened = [];

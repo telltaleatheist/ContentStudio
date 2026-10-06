@@ -419,6 +419,9 @@ export interface LanesDeps {
   onBatchWait?(jobId: string, line: string | null): void;
 }
 
+/** The most queue jobs one stage-major batch takes (Owen, 2026-10-06); the rest wait for the next batch. */
+export const MAX_BATCH = 4;
+
 export class CrucibleLanes {
   private readonly lanes = new Map<string, Lane>();
   private readonly runs = new Map<string, RunState>();
@@ -628,10 +631,16 @@ export class CrucibleLanes {
         plan.start.push({ jobId: rows[0]!.jobId, server });
         continue;
       }
-      const batch = this.makeBatch(server, rows.map((row) => row.jobId));
+      // At most MAX_BATCH jobs per batch, in queue order (Owen, 2026-10-06: "Cap at 4"): most of the
+      // load savings, and a report every few videos instead of only at the end of a long queue.
+      const members = rows.slice(0, MAX_BATCH);
+      for (const row of rows.slice(MAX_BATCH)) {
+        plan.waiting.push({ jobId: row.jobId, server, line: `waiting for ${server}: a batch of ${members.length} starts first, and this job starts with the next batch`, parked: false, batchOf: members.length });
+      }
+      const batch = this.makeBatch(server, members.map((row) => row.jobId));
       lane.holder = { jobId: batch.id, reserved: true, at: this.now(), batch };
-      rows.forEach((row, i) => plan.start.push({ jobId: row.jobId, server, batch: { id: batch.id, position: i + 1, of: rows.length } }));
-      log.info(`[crucible] ${batch.id}: ${rows.length} jobs planned on "${server}", run stage by stage under one session (${batch.jobIds.join(', ')})`);
+      members.forEach((row, i) => plan.start.push({ jobId: row.jobId, server, batch: { id: batch.id, position: i + 1, of: members.length } }));
+      log.info(`[crucible] ${batch.id}: ${members.length} jobs planned on "${server}", run stage by stage under one session (${batch.jobIds.join(', ')})`);
     }
     if (plan.start.length > 0) this.publish();
     return plan;

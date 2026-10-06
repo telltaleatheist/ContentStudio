@@ -1466,3 +1466,10 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Not verified.** No keeper drives `MetadataGeneratorService.generate` inside a batch (the keeper drives the pipeline's GPU skeleton through the same modules); the field-stage floor constants are estimates from P4's table; nothing was run against a real server.
 
 [electron/crucible/batch.ts (new), lanes.ts, session.ts, stream-stall.ts, wire.ts, context.ts; electron/main.ts; electron/ipc/ipc-handlers.ts; electron/services/metadata/metadata-generator.service.ts, stage-needs.ts (new), chaptering/titles.ts (new), reroll/gate.ts, reroll/reroll.service.ts; frontend inputs.ts, crucible.types.ts (mirror); tools/test-crucible-batch.js (new), test-crucible-lanes.js, chaptering-checks.js, _crucible-keeper.js]
+
+**267. Owen's rulings on #266's batches (2026-10-06).**
+- **Size: "Cap at 4".** A batch takes at most `MAX_BATCH` = 4 jobs in queue order (lanes.ts plan). The rest wait with "a batch of 4 starts first, and this job starts with the next batch". Keeper: test-crucible-batch.js, 6 checks.
+- **A job added while a batch runs: "Wait for next batch".** This is what #266 built.
+- **A batch session the server ends: "Fail them, I'll requeue".** Every unfinished member fails naming the reason. Nothing opens a fresh session for them (#255's session rule).
+
+[electron/crucible/lanes.ts; tools/test-crucible-batch.js]
