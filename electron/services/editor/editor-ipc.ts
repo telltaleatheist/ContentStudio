@@ -21,6 +21,7 @@ import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
 import { readArchiveLedger, recordArchived, forgetArchivedUnder } from './archive-ledger';
+import { finalCutRefusal } from './final-cut-open';
 import {
   readMuteCatalog, loadProjectMuteSettings, saveProjectMuteSettings, ensureProjectMuteSettings,
 } from './mute-words';
@@ -2183,6 +2184,8 @@ function setupArchiveHandlers(store: Store<any>): void {
         // body holds the queue, so a transfer CANNOT have started during the work above. The
         // old check was the best a handler outside the queue could do — it narrowed the race
         // rather than closing it.
+        const fcpArchive = await finalCutRefusal(realTarget, `the archive copy of ${name}`);
+        if (fcpArchive !== null) throw new Error(fcpArchive);
         log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
         // `path` ECHOES THE CALLER'S OWN STRING (`target`), deliberately, and not the
         // realpath-resolved `realTarget` used for the safety decisions below. The renderer
@@ -2394,12 +2397,67 @@ function setupArchiveHandlers(store: Store<any>): void {
             `${week} resolves to ${realWeek}, which is inside the archive root. This deletes the LOCAL copy only.`
           );
         }
+        // Final Cut Pro working in this week (2026-10-06, LEDGER #263): it writes into every library
+        // it has open, and a delete under it fails halfway while the library is rebuilt.
+        const fcpLocal = await finalCutRefusal(realWeek, name);
+        if (fcpLocal !== null) throw new Error(fcpLocal);
+
+        // The week leaves the archive ledger BEFORE anything is deleted. The archive copy was just
+        // confirmed identical, and from the first unlink the local folder is a partial copy: a
+        // ledger entry naming it would have the next launch's drift pass sync that partial copy up
+        // over the good archived one (rsync --inplace). Its failure stops the delete with nothing
+        // deleted yet.
+        try {
+          const forgotten = forgetArchivedUnder(week);
+          if (forgotten) {
+            log.info(`[archive] dropped ${forgotten} archive-ledger entr` +
+              `${forgotten === 1 ? 'y' : 'ies'} under ${week}`);
+          }
+        } catch (err: any) {
+          throw new Error(
+            `${name} was NOT deleted: the record of what has been archived could not be updated first ` +
+            `(${err?.message || String(err)}), and deleting with it in place would let a later sync push a ` +
+            `partial local copy over the archived one.`
+          );
+        }
+
         log.warn(`[archive] deleting the LOCAL copy of ${name}: ${realWeek} (archived at ${check.destPath})`);
         broadcast('archive:delete-progress', { path: weekPath, name, phase: 'deleting' });
         // Async so tens of GB of local unlinks don't freeze every window. The sync-vs-delete
         // race this opens is closed on the other side: archive:sync refuses to enqueue while
         // deletionInFlight is set.
-        await fs.promises.rm(realWeek, { recursive: true, force: false });
+        // A partial delete is not retried by this handler: what is left would not pass the
+        // re-verification (its files differ from the archive's), and syncing it would push it over
+        // the good copy. So the week leaves the projects list as well, and the leftovers are named
+        // for removing by hand.
+        const leaveRegistry = (): string => {
+          try {
+            writeProjectsRegistryFile({ version: 1, projects: registry.projects.filter(p => !isAtOrUnder(week, p.path)) });
+            return '';
+          } catch (e: any) {
+            return ` (Its rows could not be taken off the projects list: ${e?.message || String(e)}.)`;
+          }
+        };
+        try {
+          await fs.promises.rm(realWeek, { recursive: true, force: false });
+        } catch (err: any) {
+          const writer = await finalCutRefusal(realWeek, name).catch(() => null);
+          throw new Error(
+            `${name} was only partly deleted (${err?.message || String(err)})` +
+            (writer !== null ? `: Final Cut Pro opened it while it was being deleted.` : '.') +
+            ` The archive copy at ${check.destPath} is complete and untouched. ${name} is off the projects list ` +
+            `and no longer kept in step with the archive, so what is left at ${realWeek} is never synced: close ` +
+            `it in Final Cut Pro if it is open there, then remove that folder in the Finder.` + leaveRegistry()
+          );
+        }
+        if (fs.existsSync(realWeek)) {
+          throw new Error(
+            `${name} was deleted, but ${realWeek} exists again: something wrote into it while it was being ` +
+            `deleted (Final Cut Pro, if that week's library was open). The archive copy at ${check.destPath} is ` +
+            `complete and untouched. ${name} is off the projects list and no longer kept in step with the archive: ` +
+            `close it in Final Cut Pro, then remove that folder in the Finder.` + leaveRegistry()
+          );
+        }
         log.info(`[archive] deleted ${realWeek}; removing ${underWeek.length} project(s) from the registry`);
         broadcast('archive:delete-progress', { path: weekPath, name, phase: 'updating-registry' });
 
@@ -2416,27 +2474,6 @@ function setupArchiveHandlers(store: Store<any>): void {
           throw new Error(
             `${name} was deleted from ${realWeek}, but the projects list could not be updated: ` +
             `${err?.message || String(err)}. Its rows disappear on the next reload.`
-          );
-        }
-
-        // The same week leaves the archive ledger. Its local folder is gone, so there is
-        // nothing left here to keep in step with the archive — and an entry naming it would
-        // have every future launch check a path that no longer exists and try to sync it.
-        //
-        // Its own try, with its own sentence: the registry failing above leaves a stale ROW
-        // the user can see, and this failing leaves a stale BACKUP INSTRUCTION they cannot.
-        // Reporting the second under the first's wording would name the wrong file.
-        try {
-          const forgotten = forgetArchivedUnder(week);
-          if (forgotten) {
-            log.info(`[archive] dropped ${forgotten} archive-ledger entr` +
-              `${forgotten === 1 ? 'y' : 'ies'} under ${week}`);
-          }
-        } catch (err: any) {
-          throw new Error(
-            `${name} was deleted from ${realWeek} and removed from the projects list, but the ` +
-            `record of what has been archived could not be updated: ${err?.message || String(err)}. ` +
-            `Until that file is fixed, every launch will try to re-sync a week that is no longer here.`
           );
         }
 

@@ -1413,3 +1413,20 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** thumbnail-pipeline-checks 28 (one new), thumbnail-lab 33 and check:pure pass. build:electron is clean.
 
 [electron/services/thumbnails/pipeline.ts, report-thumbnails.ts; electron/services/metadata/metadata-generator.service.ts; tools/thumbnail-pipeline-checks.js]
+
+**263. Deleting a week is refused while Final Cut Pro is working in it; a partial delete can never be synced over the archive (Owen, 2026-10-06: "i archived a project at the same time i opened final cut pro ... it was changing actively while it was being deleted, because fcpx changes things every time you open it").**
+- **What happened.**
+  - 11:17:49: "deleting the LOCAL copy of 2026-09-20", archived at /Volumes/iO/FCPX/2026-09-20.
+  - Final Cut Pro opened that week's library while it was being deleted and wrote into it, so `fs.promises.rm` failed partway and the handler threw.
+  - The throw came before the projects list and the archive ledger were updated, so 2026-09-20 stayed listed and stayed "kept in step". The next launch's drift pass would have rsynced (`--inplace`) the 1.1 MB rebuilt library over the archived one.
+- **Fixed by hand.**
+  - The week's 3 projects were removed from config/projects.json and its 4 entries from config/archive-synced.json, with copies kept in the session scratchpad.
+  - The leftover local folder was deleted after lsof showed Final Cut had nothing open in it.
+  - /Volumes/iO/FCPX/2026-09-20 is untouched (2026-09-20.fcpbundle, complete, files, thumbnails).
+- **The code (electron/services/editor/final-cut-open.ts, editor-ipc.ts).**
+  - **Refused while open.** Both deletes, the local copy and the archive copy, ask lsof which files a Final Cut Pro process has open under the folder, and refuse while it has any, naming the library. An lsof that cannot answer stops the delete by name.
+  - **Ledger first.** The local delete now drops the week from the archive ledger BEFORE the first unlink. The archive was just verified identical, and from the first unlink the local folder is a partial copy that must never be synced.
+  - **Partial delete.** If the rm fails, or the folder exists again afterwards because something rebuilt it, the week also leaves the projects list. The error says the archive copy is complete and untouched, and names what is left to remove in the Finder after closing it in Final Cut. Retrying the delete could not help: the leftovers fail the re-verification, and syncing them would overwrite the good copy.
+- **Checks.** Run live against this Mac: Final Cut had 2026-10-04 open and the refusal named "2026-10-04.fcpbundle (and N of its media files)"; a week it did not have open returned none. check:pure passes and build:electron is clean. No archive keeper exists to extend.
+
+[electron/services/editor/final-cut-open.ts (new), electron/services/editor/editor-ipc.ts]
