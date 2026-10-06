@@ -24,8 +24,17 @@
  *   installedJobTypes (['echo']), catalog, disabledClasses, failModuleWith,
  *   models, resident, loadMs, upstreamModels, chatReplies, asrInstalled, asr,
  *   decideProbs, decideMaxOptions, decideSelected, imagesNotServed, chatMaxInFlight, contextCeilings,
- *   localModelChoices, and ContentStudio's own `legacyActs`, `port` and
- *   `setupUrls` (below).
+ *   localModelChoices, and ContentStudio's own `legacyActs`, `port`,
+ *   `setupUrls` (below) and `holdAnswer`.
+ *
+ * SEVERAL ANSWERS IN FLIGHT (ContentStudio, LEDGER #270). A chat or decide on a local model is
+ * counted from the moment it passes the residency check to its last byte (or the client hanging
+ * up, `aborted`): `answering()` lists them now, `answerLog` every start, end and abort in order,
+ * `peakAnswering(model?)` the most ever in flight together. `holdAnswer(kind, body)` (an option)
+ * may return a promise the answer waits on, so a keeper holds calls in flight and looks. A model
+ * put on the card while another's answers are in flight is recorded in `loadsUnderAnswers` (a
+ * client bug: the real engine would cut those answers off). `contextCeilings[model]` may be a
+ * function of the asked concurrency (the card's KV arithmetic: x/concurrency).
  *
  * WHAT IT ANSWERS (the typed original's `FakeCrucible`): url, token, name,
  * requests, faults, sessions, settingsPuts, pairings, tasks, catalog,
@@ -452,6 +461,35 @@ async function startFakeCrucible(options = {}) {
     let residentCtx = null;
     /** Every model put on the card that was not already there, in order: what a run paid to load. */
     const cardLoads = [];
+    /** ContentStudio (LEDGER #270): the local answers in flight, their log, and loads made under them. */
+    const answering = [];
+    const answerLog = [];
+    const loadsUnderAnswers = [];
+    const peaks = new Map();
+    /** Count one answer in flight on `model`; the returned function ends it ('end' | 'aborted'), once. */
+    function beginAnswer(kind, model, body, res) {
+        const messages = body['messages'];
+        const tag = Array.isArray(messages) ? String(messages[messages.length - 1]?.content ?? '').slice(0, 60) : String(body['state'] ?? '').slice(0, 60);
+        const entry = { kind, model, tag, done: false };
+        answering.push(entry);
+        const now = answering.filter((a) => a.model === model).length;
+        peaks.set(model, Math.max(peaks.get(model) ?? 0, now));
+        peaks.set('*', Math.max(peaks.get('*') ?? 0, answering.length));
+        answerLog.push({ event: 'start', kind, model, tag, inFlight: answering.length });
+        const finish = (how) => {
+            if (entry.done)
+                return;
+            entry.done = true;
+            answering.splice(answering.indexOf(entry), 1);
+            answerLog.push({ event: how, kind, model, tag, inFlight: answering.length });
+        };
+        res.on('close', () => finish(res.writableEnded ? 'end' : 'aborted'));
+        return finish;
+    }
+    const ceilingOf = (id, concurrency) => {
+        const c = options.contextCeilings?.[id];
+        return typeof c === 'function' ? c(concurrency) : c ?? 131072;
+    };
     let decideProbs = options.decideProbs;
     const jobs = [];
     const jobListeners = new Map();
@@ -657,6 +695,9 @@ async function startFakeCrucible(options = {}) {
         const before = resident;
         if (before === model && residentCtx === context)
             return;
+        const under = answering.filter((a) => a.model === before);
+        if (before !== null && under.length > 0)
+            loadsUnderAnswers.push({ from: before, to: model, context, inFlight: under.length });
         resident = model;
         residentCtx = context;
         if (model !== null && before !== model)
@@ -798,8 +839,9 @@ async function startFakeCrucible(options = {}) {
     const ceilings = (concurrency) => models
         .filter((m) => m.backendSupported !== false && (m.modalities ?? ['text']).includes('text') && m.weightsOf == null && !/^dots/.test(m.id))
         .map((m) => {
-        const tokens = options.contextCeilings?.[m.id] ?? 131072;
-        return { model: m.id, tokens, bound_by: 'served', served_context: tokens, memory_context: null, concurrency };
+        const tokens = ceilingOf(m.id, concurrency);
+        const bound = typeof options.contextCeilings?.[m.id] === 'function' ? 'memory' : 'served';
+        return { model: m.id, tokens, bound_by: bound, served_context: tokens, memory_context: null, concurrency };
     });
     const capabilityDoc = (query = new URLSearchParams()) => {
         const sizedClass = query.get('class');
@@ -1146,7 +1188,7 @@ async function startFakeCrucible(options = {}) {
             }
             const wanted = (body['params'] ?? {})['context'];
             if (wanted !== undefined) {
-                const ceiling = options.contextCeilings?.[info.id] ?? 131072;
+                const ceiling = ceilingOf(info.id, 1);
                 if (typeof wanted !== 'number' || !Number.isInteger(wanted) || wanted < 2048) {
                     refusal(res, 400, 'invalid_params', `context must be a whole number >= 2048, got ${JSON.stringify(wanted)}`);
                     return;
@@ -1576,6 +1618,20 @@ async function startFakeCrucible(options = {}) {
             refusal(res, 409, 'model_not_resident', `'${model}' is not resident${resident ? `; '${resident}' is` : '; nothing is'}`, { resident });
             return;
         }
+        const finishAnswer = beginAnswer('chat', model, body, res);
+        try {
+            await chatAnswer(req, res, body, model, upstreamMatch);
+        }
+        finally {
+            finishAnswer(res.writableEnded ? 'end' : 'aborted');
+        }
+    }
+    async function chatAnswer(req, res, body, model, upstreamMatch) {
+        if (options.holdAnswer !== undefined) {
+            await options.holdAnswer('chat', body);
+            if (res.destroyed)
+                return;
+        }
         if (named.chatDelayMs !== undefined) {
             const aborted = await new Promise((resolve) => {
                 const t = setTimeout(() => resolve(false), named.chatDelayMs);
@@ -1764,6 +1820,20 @@ async function startFakeCrucible(options = {}) {
             refusal(res, 503, 'decide_not_served', `the engine reads at most ${cap} options; question '${over.name}' has ${over.labels.length}`, { engine: 'mlx-lm', max_options: cap, question: over.name });
             return;
         }
+        const finishAnswer = beginAnswer('decide', model, body, res);
+        try {
+            if (options.holdAnswer !== undefined) {
+                await options.holdAnswer('decide', body);
+                if (res.destroyed)
+                    return;
+            }
+            await decideAnswer(req, res, body, model, questions, missing, itemsForm);
+        }
+        finally {
+            finishAnswer(res.writableEnded ? 'end' : 'aborted');
+        }
+    }
+    async function decideAnswer(req, res, body, model, questions, missing, itemsForm) {
         if (named.chatDelayMs !== undefined) {
             const aborted = await new Promise((resolve) => {
                 const t = setTimeout(() => resolve(false), named.chatDelayMs);
@@ -2363,6 +2433,12 @@ async function startFakeCrucible(options = {}) {
         resident: () => resident,
         /** Every model put on the card that was not there already (load-model, denoise, asr), in order. */
         cardLoads,
+        /** ContentStudio (LEDGER #270): the local answers in flight now, every start/end/abort, loads made under answers. */
+        answering: () => answering.map(({ kind, model, tag }) => ({ kind, model, tag })),
+        answerLog,
+        loadsUnderAnswers,
+        /** The most local answers ever in flight together (on `model`, or on the card). */
+        peakAnswering: (model) => peaks.get(model ?? '*') ?? 0,
         /** Put `model` on the card (null clears it), optionally as loaded at `context` tokens. */
         setResident(model, context = null) {
             setCard(model, context);

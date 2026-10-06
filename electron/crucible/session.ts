@@ -212,6 +212,18 @@ export interface ResidencyRequest {
    * floor's reason, for the load's log line. A caller never sets it.
    */
   floor?: string;
+  /**
+   * How many calls of this size the job means to have in flight on this model together (LEDGER
+   * #269, set by {@link JobSessions.expect}): the width question asks the server about that many
+   * first, so one answer covers the whole fan-out. A caller never sets it.
+   */
+  width?: number;
+  /**
+   * Set by {@link JobSessions.expect} when a fan-out's expectation raised `loadContext`: a model
+   * resident at a smaller window grows NOW, before the fan-out's calls are in flight, rather than
+   * when its largest call arrives and has to wait for the others to finish. A caller never sets it.
+   */
+  expected?: string;
 }
 
 export interface CardTimings {
@@ -243,6 +255,26 @@ export class CardSession {
    * finds it already there. Empty outside a batch (a single job loads at each call's own step, #209).
    */
   private floors: ReadonlyMap<string, LoadFloor> = new Map();
+  /**
+   * THE CALLS BEING ANSWERED NOW (LEDGER #270), each by the size it was sized at (its load context,
+   * else its need). Since one job's independent calls go out together (fan-out.ts), several can be
+   * in flight on the resident model at once. Two rules follow, both here and nowhere else:
+   *   - NO LOAD UNDER AN ANSWER. A call that needs a load (another model, or this one grown) waits,
+   *     holding the session's lock so no new call is admitted meanwhile, until every call in flight
+   *     has finished; then it loads. A reload never cuts off an answer being written.
+   *   - THE WIDTH QUESTION. A model is loaded on the capability question at ONE request in flight
+   *     (`fitsOnHost`). Before a call is admitted beside k others, the server is asked whether the
+   *     card holds k+1 requests of the largest size among them (`GET /v1/capability?class=generate
+   *     &context_tokens=&concurrency=`: Crucible's own accounting, weights + overhead + KV per
+   *     token x context x concurrency, docs/FITS-AND-THE-CARD.md). Where it says no, the call
+   *     waits for one in flight to finish, said once in the log; at one in flight it never waits.
+   */
+  private readonly serving: Array<number | null> = [];
+  private servedWaiters: Array<() => void> = [];
+  /** Per model: widths the server said the card holds ({tokens, width}) and refused, for this session. */
+  private readonly widthHeld = new Map<string, Array<{ tokens: number; width: number }>>();
+  private readonly widthRefused = new Map<string, Array<{ tokens: number; width: number }>>();
+  private readonly widthSaid = new Set<string>();
 
   constructor(
     readonly server: string,
@@ -314,13 +346,144 @@ export class CardSession {
     await run;
   }
 
+  /**
+   * {@link ensure}, then ADMIT one call to be answered on `model` (LEDGER #270): the width question
+   * when others are in flight, and the call counted until the returned function is called (once,
+   * when its answer is read or it failed; it never throws).
+   */
+  async admit(model: string, what: string, unfloored: ResidencyRequest): Promise<() => void> {
+    const request = this.floored(model, unfloored);
+    const run = this.lock.then(async () => {
+      await this.ensureUnlocked(model, what, request);
+      // The call's own size (a batch's floor is other jobs' need: it sizes the load, not this answer).
+      const size = unfloored.loadContext ?? unfloored.need;
+      while (this.serving.length > 0 && !(await this.holdsWidth(model, what, request, size))) {
+        await this.nextRelease(request.signal);
+      }
+      this.serving.push(size);
+      let done = false;
+      return (): void => {
+        if (done) return;
+        done = true;
+        this.serving.splice(this.serving.indexOf(size), 1);
+        const waiters = this.servedWaiters;
+        this.servedWaiters = [];
+        for (const wake of waiters) wake();
+      };
+    });
+    this.lock = run.catch(() => undefined);
+    return run;
+  }
+
+  /** How many calls are being answered in this session now (a keeper reads it). */
+  get inFlight(): number {
+    return this.serving.length;
+  }
+
+  /** Resolves when a call in flight finishes; rejects (an abort) when the caller is stopped first. */
+  private nextRelease(signal: AbortSignal | undefined): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) return reject(new LoadAborted());
+      const onAbort = (): void => {
+        this.servedWaiters = this.servedWaiters.filter((w) => w !== wake);
+        reject(new LoadAborted());
+      };
+      const wake = (): void => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      this.servedWaiters.push(wake);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  /** Before a load: every call in flight finishes first (no load under an answer, see `serving`). */
+  private async drain(model: string, what: string, signal: AbortSignal | undefined): Promise<void> {
+    if (this.serving.length === 0) return;
+    log.info(
+      `[crucible] ${what}: loading ${model} on "${this.server}" waits for the ${this.serving.length} call(s) in flight in ` +
+        `session ${this.id} to finish first, so no answer is cut off by the load`,
+    );
+    while (this.serving.length > 0) await this.nextRelease(signal);
+  }
+
+  /**
+   * THE WIDTH QUESTION (see `serving`): does the card hold one more request of this size beside the
+   * ones in flight? Asked of the server, remembered for the session per model (a held width covers
+   * every smaller one; a refused width every larger one).
+   */
+  private async holdsWidth(model: string, what: string, request: ResidencyRequest, size: number | null): Promise<boolean> {
+    const want = this.serving.length + 1;
+    const sizes = [...this.serving, size].filter((n): n is number => n !== null);
+    if (sizes.length === 0 || request.act === 'analysis') {
+      this.sayOnce(`unasked:${model}`, () => log.info(
+        `[crucible] ${what}: ${want} calls in flight on ${model} on "${this.server}" ` +
+          (request.act === 'analysis' ? 'on a server that predates the sized capability query' : 'with no stated size') +
+          '; the width is not asked about and the engine is the judge',
+      ));
+      return true;
+    }
+    const tokens = Math.max(...sizes);
+    if ((this.widthHeld.get(model) ?? []).some((h) => h.tokens >= tokens && h.width >= want)) return true;
+    if ((this.widthRefused.get(model) ?? []).some((r) => r.tokens <= tokens && r.width <= want)) return false;
+    // A fan-out that said its width is asked about at that width first: one answer covers it.
+    const widths = request.width !== undefined && request.width > want ? [request.width, want] : [want];
+    for (const width of widths) {
+      const verdict = await this.askWidth(model, what, tokens, width);
+      const list = verdict.held ? this.widthHeld : this.widthRefused;
+      list.set(model, [...(list.get(model) ?? []), { tokens, width }]);
+      if (verdict.held) return true;
+      if (width === want) {
+        this.sayOnce(`narrow:${model}:${tokens}:${want}`, () => log.warn(
+          `[crucible] ${what}: "${this.server}" ${verdict.line} with ${want} requests of ${tokens} tokens in flight, so this ` +
+            `call waits for one of the ${want - 1} in flight on ${model} to finish (LEDGER #270: the card's own accounting)`,
+        ));
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /** One sized capability question about `width` requests of `tokens` on `model`. */
+  private async askWidth(model: string, what: string, tokens: number, width: number): Promise<{ held: boolean; line: string }> {
+    let record: CapabilityRecord;
+    try {
+      record = await this.session.capability({}, { class: 'generate', contextTokens: tokens, concurrency: width });
+    } catch (err) {
+      if (err instanceof CrucibleRefused && err.code === 'context_over_limit') {
+        return { held: false, line: `refused the size (${err.serverMessage})` };
+      }
+      throw callRefusalOf(err, this.server);
+    }
+    const row = record.classes.find((c) => c.capability === 'generate')?.contextCeilings?.find((c) => c.model === model);
+    if (row?.tokens === null || row?.tokens === undefined) {
+      this.sayOnce(`noceiling:${model}`, () => log.info(
+        `[crucible] ${what}: "${this.server}" states no ceiling row for ${model}, so ${width} requests in flight are not ` +
+          'judged here; the engine is the judge',
+      ));
+      return { held: true, line: '' };
+    }
+    const held = row.tokens >= tokens;
+    if (held) {
+      log.info(`[crucible] ${what}: "${this.server}" can serve ${model} with ${width} requests of ${tokens} tokens in flight (its ceiling there: ${row.tokens})`);
+    }
+    return { held, line: `serves ${model} at most ${row.tokens} tokens${row.boundBy ? ` (bound by ${row.boundBy})` : ''}` };
+  }
+
+  private sayOnce(key: string, say: () => void): void {
+    if (this.widthSaid.has(key)) return;
+    this.widthSaid.add(key);
+    say();
+  }
+
   private async ensureUnlocked(model: string, what: string, request: ResidencyRequest): Promise<void> {
     this.assertOpen(what);
     const known = this.resident;
     if (known !== null && known.model === model) {
       const window = known.maxModelLen ?? known.loadedAt;
-      const grows = request.need !== null && window !== null && request.need > window
-        && request.loadContext !== undefined && request.loadContext > window;
+      const grows = (request.need !== null && window !== null && request.need > window
+        && request.loadContext !== undefined && request.loadContext > window)
+        || (request.expected !== undefined && window !== null && request.loadContext !== undefined && request.loadContext > window);
       if (!grows) return;
       const floor = this.floors.get(model);
       if (floor !== undefined) {
@@ -334,9 +497,11 @@ export class CardSession {
       // call needs, and a later smaller call runs in the window already open). A later call
       // that does not fit reloads the model at its own context. Shrinking happens between jobs.
       log.info(
-        `[crucible] ${what}: ${model} on "${this.server}" is served at ${window} tokens and a call needs ` +
-          `${request.need}; reloading it at ${request.loadContext}`,
+        `[crucible] ${what}: ${model} on "${this.server}" is served at ${window} tokens and ` +
+          (request.need !== null && request.need > window ? `a call needs ${request.need}` : `the calls about to go out together need more (${request.expected})`) +
+          `; reloading it at ${request.loadContext}`,
       );
+      await this.drain(model, what, request.signal);
       this.resident = null;
       return this.load(model, what, request);
     }
@@ -393,6 +558,7 @@ export class CardSession {
         );
       }
     }
+    await this.drain(model, what, request.signal);
     return this.load(model, what, request);
   }
 
@@ -752,8 +918,48 @@ export class JobSessions {
   async hold(server: string, model: string, request: HoldRequest): Promise<CardSession> {
     if (this.server === null) this.server = server;
     const card = await this.session(server, { act: request.act, ...(request.signal === undefined ? {} : { signal: request.signal }), hooks: request.hooks });
-    await card.ensure(model, this.what, request);
+    await card.ensure(model, this.what, this.expected(model, request));
     return card;
+  }
+
+  /**
+   * {@link hold}, admitting ONE call to be answered (LEDGER #270): `done` is called once, when its
+   * answer is read or it failed. A load another call needs waits for every admitted call to be done.
+   */
+  async serve(server: string, model: string, request: HoldRequest): Promise<{ card: CardSession; done: () => void }> {
+    if (this.server === null) this.server = server;
+    const card = await this.session(server, { act: request.act, ...(request.signal === undefined ? {} : { signal: request.signal }), hooks: request.hooks });
+    const done = await card.admit(model, this.what, this.expected(model, request));
+    return { card, done };
+  }
+
+  /**
+   * A FAN-OUT'S EXPECTATION (LEDGER #270): `width` calls on `model`, the largest sized `tokens`, are
+   * about to go out together. Until the returned function is called, every call of this job on that
+   * model loads at least at `tokens` (the batch floor's mechanism, LEDGER #266, at the job's grain:
+   * the first call loads where the largest needs, so no call grows the load while others are being
+   * answered) and the width question asks about `width` first. Said in the log.
+   */
+  expect(model: string, tokens: number, width: number, why: string): () => void {
+    const entry = { tokens, width, why };
+    this.expectations.set(model, entry);
+    log.info(`[crucible] ${this.what}: ${width} call(s) on ${model} go out together; the load is at least ${tokens} tokens (${why})`);
+    return () => {
+      if (this.expectations.get(model) === entry) this.expectations.delete(model);
+    };
+  }
+
+  private readonly expectations = new Map<string, { tokens: number; width: number; why: string }>();
+
+  private expected<R extends ResidencyRequest>(model: string, request: R): R {
+    const e = this.expectations.get(model);
+    if (e === undefined) return request;
+    const raised = request.loadContext !== undefined && e.tokens > request.loadContext;
+    return {
+      ...request,
+      width: e.width,
+      ...(raised ? { loadContext: e.tokens, expected: e.why, floor: `${e.why}, ${e.tokens} tokens; this call alone needs ${request.loadContext}` } : {}),
+    };
   }
 
   /** Let go of every session this job holds, once, at its end. Never throws (it runs in a `finally`). */

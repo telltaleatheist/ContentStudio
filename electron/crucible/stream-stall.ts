@@ -162,6 +162,8 @@ export class JobStallClock {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private fired = false;
   private stopped = false;
+  /** Pauses not yet resumed: several of a job's calls may wait for its batch's turn at once (LEDGER #270). */
+  private paused = 0;
   /** When the last sign of life was seen (epoch ms), for the lanes strip and the log. */
   lastBeatAt: number | null = null;
 
@@ -181,6 +183,9 @@ export class JobStallClock {
     if (this.stopped || this.fired) return;
     this.lastBeatAt = this.now();
     if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    // Paused (waiting for its batch): a sign of life from its other calls is noted, not armed.
+    if (this.paused > 0) return;
     this.timer = setTimeout(() => {
       this.timer = null;
       if (this.stopped) return;
@@ -199,16 +204,19 @@ export class JobStallClock {
   }
 
   /**
-   * A batch member waiting at a stage gate for the other jobs of its batch (batch.ts): its silence
-   * is theirs, not its own, so the clock does not run. {@link resume} starts it afresh.
+   * A batch member waiting at a stage gate for the other jobs of its batch (batch.ts), or one of its
+   * local calls waiting for the batch's call turn (LEDGER #270): its silence is theirs, not its own,
+   * so the clock does not run. Counted: the clock runs again, afresh, when the LAST pause resumes.
    */
   pause(): void {
+    this.paused += 1;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
   }
 
   resume(): void {
-    this.beat();
+    this.paused = Math.max(0, this.paused - 1);
+    if (this.paused === 0) this.beat();
   }
 
   stop(): void {

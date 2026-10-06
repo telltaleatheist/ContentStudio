@@ -32,6 +32,7 @@
  */
 
 import { askRules, baselinesOf, Baselines, DecideCallRecord, unitScore } from './checks';
+import { settleTogether, valuesInOrder } from '../../../crucible/fan-out';
 import { ChannelFacts, FIELD_RULES, revisePrompt } from './rules';
 import { rankTitles, RankingResult } from './ranking';
 import { RerollGateSettings } from './settings';
@@ -140,23 +141,27 @@ const whatOf = (input: GateInput, field: GateField, attempt: number) =>
 
 const current = (run: FieldRun) => run.units.map((u) => u.attempts[u.kept]);
 
-/** Attempt 0 of one field: every unit asked, the baselines frozen from it. */
-async function firstCheck(input: GateInput, fin: GateFieldInput, record: GateRecord): Promise<FieldRun> {
+/** Attempt 0 of one field: every unit asked, the baselines frozen from it. Answers its decide calls for the record. */
+async function firstCheck(input: GateInput, fin: GateFieldInput): Promise<{ run: FieldRun; calls: DecideCallRecord[] }> {
   const { field } = fin;
   const settings = input.settings;
   const first = await askRules(field, fin.stateText(fin.units), fin.units, input.facts, input.decide, { what: whatOf(input, field, 0), signal: input.signal });
-  record.decideCalls.push(...first.calls);
   const pYes = fin.units.map((_, i) => Object.fromEntries((first.raw.get(i) ?? []).map((r) => [r.rule, r.pYes])) as Partial<Record<RuleId, number | null>>);
   const baselines = baselinesOf(field, pYes, settings);
   const units: UnitRecord[] = fin.units.map((text, i) => {
     const s = rawToUnit(field, text, first.raw.get(i), baselines, settings, whatOf(input, field, 0));
     return { index: i, attempts: [{ attempt: 0, text, score: s.score, failing: s.failing, readings: s.readings }], kept: 0 };
   });
-  return { fin, baselines, units, rounds: 0, proposed: new Map() };
+  return { run: { fin, baselines, units, rounds: 0, proposed: new Map() }, calls: first.calls };
 }
 
-/** One round's rewrites of one field: one call per rule, each unit under the first rule it fails (FIELD_RULES order). */
-async function revise(input: GateInput, run: FieldRun, attempt: number, record: GateRecord): Promise<void> {
+/**
+ * One round's rewrites of one field: one call per rule, each unit under the first rule it fails
+ * (FIELD_RULES order). The rules' calls go out together (each rewrites its own units and reads no
+ * other rule's answer, LEDGER #270); their answers are checked and applied in rule order, so the
+ * first wrong-shaped answer in that order is the one that throws. Answers the calls for the record.
+ */
+async function revise(input: GateInput, run: FieldRun, attempt: number): Promise<RerollCallRecord[]> {
   const { field } = run.fin;
   const failing = run.units.filter((u) => u.attempts[u.kept].failing.length > 0);
   const byRule = new Map<RuleId, UnitRecord[]>();
@@ -165,26 +170,30 @@ async function revise(input: GateInput, run: FieldRun, attempt: number, record: 
     byRule.set(rule, [...(byRule.get(rule) ?? []), u]);
   }
   run.proposed = new Map();
-  for (const [rule, group] of byRule) {
+  const asked = valuesInOrder(await settleTogether([...byRule].map(([rule, group]) => async () => {
     const sent = group.map((u) => u.attempts[u.kept].text);
     const prompt = revisePrompt(field, rule, sent, input.facts);
     const at = new Date().toISOString();
     const answers = await input.revise({ field, rule, units: sent, attempt, prompt });
+    return { rule, group, sent, prompt, at, answers };
+  })));
+  const calls: RerollCallRecord[] = [];
+  for (const { rule, group, sent, prompt, at, answers } of asked) {
     if (answers.length !== sent.length) {
       throw new GateError('answer_shape', `the ${field} re-roll ${attempt} for ${input.sourceLabel} sent ${sent.length} entr${sent.length === 1 ? 'y' : 'ies'} and got ${answers.length} back; nothing was applied`);
     }
-    record.rerollCalls.push({ field, at, attempt, rule, units: group.map((u) => u.index), prompt, answers });
+    calls.push({ field, at, attempt, rule, units: group.map((u) => u.index), prompt, answers });
     group.forEach((u, k) => run.proposed.set(u.index, answers[k].replace(/\s+/g, ' ').trim()));
   }
+  return calls;
 }
 
-/** One round's check of one field: the rewrites judged in the field as it would ship with them in it. */
-async function recheck(input: GateInput, run: FieldRun, attempt: number, record: GateRecord): Promise<void> {
+/** One round's check of one field: the rewrites judged in the field as it would ship with them in it. Answers its decide calls. */
+async function recheck(input: GateInput, run: FieldRun, attempt: number): Promise<DecideCallRecord[]> {
   const { field } = run.fin;
   const candidate = current(run).map((a, i) => run.proposed.get(i) ?? a.text);
   const which = [...run.proposed.keys()].sort((a, b) => a - b);
   const again = await askRules(field, run.fin.stateText(candidate), candidate, input.facts, input.decide, { what: whatOf(input, field, attempt), which, signal: input.signal });
-  record.decideCalls.push(...again.calls);
   for (const i of which) {
     const s = rawToUnit(field, candidate[i], again.raw.get(i), run.baselines, input.settings, whatOf(input, field, attempt));
     const u = run.units[i];
@@ -195,6 +204,7 @@ async function recheck(input: GateInput, run: FieldRun, attempt: number, record:
     if (s.score > best.score || (s.score === best.score && s.failing.length < best.failing.length)) u.kept = u.attempts.length - 1;
   }
   run.proposed = new Map();
+  return again.calls;
 }
 
 /** One field's record and warnings, once its rounds are over. */
@@ -237,21 +247,33 @@ export async function runGate(input: GateInput): Promise<{ fields: Map<GateField
   const out = new Map<GateField, string[]>();
   const fields = input.fields.filter((fin) => fin.units.length > 0);
   const runs: FieldRun[] = [];
+  // A ROUND'S CALLS GO OUT TOGETHER (LEDGER #270): every field's checks of a round at once (all on
+  // the scorer), then every field's rewrites at once (each on its field's own routed model; the
+  // lane lets one local model's calls run together and holds another model's until they finish),
+  // then their checks. A field's calls read only that field, so nothing in a round waits for
+  // another field's answer. The rounds stay rounds and per field: a field's rewrite still waits
+  // for its own check, and its check for its own rewrite. Records are written in field order,
+  // and the first failure in field order is thrown, once every call of the round has settled.
   if (fields.length > 0) {
     await input.phase?.('check-0');
-    for (const fin of fields) runs.push(await firstCheck(input, fin, record));
+    for (const first of valuesInOrder(await settleTogether(fields.map((fin) => () => firstCheck(input, fin))))) {
+      record.decideCalls.push(...first.calls);
+      runs.push(first.run);
+    }
   }
   for (let attempt = 1; attempt <= input.settings.maxRerolls; attempt++) {
     const pending = runs.filter((run) => run.units.some((u) => u.attempts[u.kept].failing.length > 0));
     if (pending.length === 0) break;
     if (input.signal?.aborted) throw new GateError('cancelled', `${whatOf(input, pending[0].fin.field, attempt)} was cancelled`);
     await input.phase?.(`revise-${attempt}`);
-    for (const run of pending) {
-      run.rounds = attempt;
-      await revise(input, run, attempt, record);
+    for (const run of pending) run.rounds = attempt;
+    for (const calls of valuesInOrder(await settleTogether(pending.map((run) => () => revise(input, run, attempt))))) {
+      record.rerollCalls.push(...calls);
     }
     await input.phase?.(`check-${attempt}`);
-    for (const run of pending) await recheck(input, run, attempt, record);
+    for (const calls of valuesInOrder(await settleTogether(pending.map((run) => () => recheck(input, run, attempt))))) {
+      record.decideCalls.push(...calls);
+    }
   }
   for (const run of runs) out.set(run.fin.field, settle(run, record));
   if (input.rank) {

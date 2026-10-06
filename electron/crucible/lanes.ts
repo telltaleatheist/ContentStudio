@@ -26,12 +26,21 @@
  *               server, and the fast pin's job on the PC runs beside the Mac's. The job OWNS
  *               one queue session on its server, opened by its first piece of GPU work
  *               ({@link CrucibleLanes.sessionOn}) and closed in `runJob`'s finally.
- *   the SLOT    one GPU model call at a time (`aiCall`), taken by the admitted
- *               job's local calls AND by standalone calls (the editor's story
- *               title, the reports page's "more titles"), which interleave with a
+ *   the SLOT    who may send a GPU model call on the server now (`aiCall`), taken by
+ *               the admitted job's local calls AND by standalone calls (the editor's
+ *               story title, the reports page's "more titles"), which interleave with a
  *               running job call by call. A standalone call on a server where a job's
  *               session is open JOINS that session (Crucible matches membership on our
  *               client name; a second session of ours would queue behind the first).
+ *               ONE JOB'S OWN CALLS SHARE IT (LEDGER #270): every engine serves 16 chats
+ *               side by side, so up to {@link JOB_CALLS_PER_SERVER} calls of the ONE
+ *               admitted job ON ONE MODEL hold the slot together, sent by a fan-out
+ *               (fan-out.ts) where the pipeline's calls are independent. Calls on another
+ *               model (a different key) wait for them, so nothing a job sends at once ever
+ *               evicts a model mid-answer; a standalone call, or another job's, takes the
+ *               slot alone exactly as before, and once one waits no further call of the
+ *               running group joins past it. Whether the CARD holds that many at once at
+ *               the calls' size is the session's question (session.ts `admit`).
  *
  * WHERE A JOB GOES is venue-decision.ts's rule: the fast pin's server, else the
  * model routing's server (#222), else the selected one, never another (LEDGER
@@ -58,6 +67,12 @@
  * {@link SessionShare}), and each member's pipeline awaits {@link enterJobStage} at its stage
  * boundaries, where batch.ts's turnstile lets one member at a time do one stage's GPU work and
  * opens a stage only when every member has finished the one before. One row runs as it always did.
+ * After the chapters' boundaries the turn is the CALL turn (LEDGER #270): `aiCall` takes it for a
+ * member's LOCAL call only (`StageBatch.takeCall`), so a member's cloud calls never wait for it
+ * and never hold it, and a batch whose fields are all cloud-routed writes them side by side.
+ * The boundary is the call itself rather than the needs a member states at its gate: a stated
+ * need is an estimate for the load floor (a compilation states none and still loads the 27B),
+ * while a GPU call through the lane is exactly the work that needs the card.
  *
  * THE STARTUP SWEEP GATES GPU ADMISSION. `setAdmissionGate` takes the startup
  * sweep's promise (main.ts); no job is admitted and no standalone GPU call
@@ -77,7 +92,8 @@ import { ServerWatch } from './server-watch';
 import { SESSION_TOUCH_EVERY_MS, type CardSession, type SessionHold, type SessionRequest, type ServerSessions } from './session';
 import { CRUCIBLE_STALL_MS, JobStallClock } from './stream-stall';
 import { decideVenue, intendedServer, type VenueHost } from './venue-decision';
-import { StageBatch, type BatchStage, type LoadFloor, type StageNeed } from './batch';
+import { StageBatch, turnPerCall, type BatchStage, type LoadFloor, type StageNeed } from './batch';
+import { JOB_CALLS_PER_SERVER } from './fan-out';
 import type { CrucibleLanesView, LaneChip, ParkedJobResult, QueuePlan, QueuePlanCandidate, ResumeStage, RoutingView, ServerReach } from './wire';
 
 /** A one-shot activity read's own clock (the renderer's ask, a Re-check): a sleeping server must not stall it. */
@@ -325,22 +341,91 @@ export interface VenuePark {
 
 // ── the lanes ───────────────────────────────────────────────────────────────
 
-/** A FIFO mutex: one GPU model call at a time on one server. */
+/**
+ * Who may send a GPU call on one server now, first come first served (LEDGER #270). A standalone
+ * call holds it ALONE, as every call did before #269. One admitted job's calls on one model share
+ * it: a call whose `group` key matches the holders' joins them while fewer than `cap` are in flight
+ * and nobody else's call is waiting (a waiting standalone call or another job's is never jumped).
+ * A call of the same job on ANOTHER model has another key, so it waits until the group drains:
+ * concurrent calls never make a session load one model under another's answers.
+ */
+interface SlotGroup {
+  /** `<job id>` + the model: the calls that may run together. */
+  readonly key: string;
+  /** At most this many of the group in flight (JOB_CALLS_PER_SERVER). */
+  readonly cap: number;
+  /** The job the call belongs to: a waiter of another owner stops later calls of this group joining. */
+  readonly owner: string;
+}
+
+interface SlotWaiter {
+  readonly group: SlotGroup | null;
+  readonly admit: () => void;
+}
+
 class Slot {
-  private tail: Promise<void> = Promise.resolve();
+  /** The calls sending now: one alone (`key` null), or up to `cap` of one group. */
+  private holder: { key: string | null; active: number } | null = null;
+  private readonly queue: SlotWaiter[] = [];
+  /** Calls holding or waiting for the slot. */
   busy = 0;
 
-  async run<T>(work: () => Promise<T>): Promise<T> {
-    const before = this.tail;
-    let release!: () => void;
-    this.tail = new Promise<void>((resolve) => { release = resolve; });
+  async run<T>(work: () => Promise<T>, group: SlotGroup | null = null): Promise<T> {
     this.busy += 1;
     try {
-      await before;
-      return await work();
+      await this.acquire(group);
+      try {
+        return await work();
+      } finally {
+        this.release();
+      }
     } finally {
       this.busy -= 1;
-      release();
+    }
+  }
+
+  /** How many calls are sending now (a keeper reads it). */
+  get active(): number {
+    return this.holder?.active ?? 0;
+  }
+
+  private acquire(group: SlotGroup | null): Promise<void> {
+    const holder = this.holder;
+    if (holder === null && this.queue.length === 0) {
+      this.holder = { key: group?.key ?? null, active: 1 };
+      return Promise.resolve();
+    }
+    if (group !== null && holder !== null && holder.key === group.key && holder.active < group.cap
+      && !this.queue.some((w) => w.group?.owner !== group.owner)) {
+      holder.active += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((admit) => { this.queue.push({ group, admit }); });
+  }
+
+  private release(): void {
+    const holder = this.holder;
+    if (holder === null) throw new Error('the GPU slot was let go of by a call that did not hold it');
+    holder.active -= 1;
+    if (holder.active === 0) this.holder = null;
+    this.pump();
+  }
+
+  /** Admit waiters in arrival order: the head alone, or the head's group up to its cap. */
+  private pump(): void {
+    while (this.queue.length > 0) {
+      const head = this.queue[0];
+      const holder = this.holder;
+      if (holder === null) {
+        this.holder = { key: head.group?.key ?? null, active: 1 };
+      } else if (head.group !== null && holder.key === head.group.key && holder.active < head.group.cap) {
+        holder.active += 1;
+      } else {
+        return;
+      }
+      this.queue.shift();
+      head.admit();
+      if (head.group === null) return;
     }
   }
 }
@@ -732,7 +817,9 @@ export class CrucibleLanes {
       run.clock.resume();
     }
     run.stage = resumeStageOf(stage);
-    log.info(`[crucible] ${run.jobId} takes ${batch.id}'s turn for ${stage}`);
+    log.info(turnPerCall(stage)
+      ? `[crucible] ${run.jobId} goes into ${batch.id}'s ${stage} stage; its local calls take the turn as they go (LEDGER #270)`
+      : `[crucible] ${run.jobId} takes ${batch.id}'s turn for ${stage}`);
   }
 
   private tellBatchWait(jobId: string, line: string | null): void {
@@ -1002,7 +1089,8 @@ export class CrucibleLanes {
 
   /**
    * Run one model call on its lane: a GPU call takes its server's slot (the
-   * job's venue, or the selected server for a standalone call); a cloud call
+   * job's venue, or the selected server for a standalone call; a job's calls on
+   * one model share it, LEDGER #270); a cloud call
    * takes nothing, and inside a job it keeps the job's open session touched
    * while it runs (work on this side is not activity on the server's).
    */
@@ -1029,11 +1117,33 @@ export class CrucibleLanes {
       const fresh = this.beforeAdmit();
       if (fresh !== null) await fresh;
     }
-    return this.lane(server).slot.run(async () => {
-      const value = await stepStore.run(this.hooks('gpu', server, run), execute);
-      run?.beat();
-      return value;
-    });
+    // A batch member's local call takes the batch's CALL TURN in the stages that have one
+    // (batch.ts, LEDGER #270): its cloud calls never do. Its stall clock rests while it waits.
+    let turnDone: () => void = () => undefined;
+    if (run?.batch) {
+      run.clock.pause();
+      try {
+        turnDone = await run.batch.takeCall(run.jobId, route.model, run.controller.signal);
+      } finally {
+        run.clock.resume();
+      }
+    }
+    // A job's own calls on one model share the slot (LEDGER #270); a standalone call takes it alone.
+    const group = run === undefined ? null : { key: `${run.jobId}\n${route.model}`, cap: JOB_CALLS_PER_SERVER, owner: run.jobId };
+    try {
+      return await this.lane(server).slot.run(async () => {
+        const value = await stepStore.run(this.hooks('gpu', server, run), execute);
+        run?.beat();
+        return value;
+      }, group);
+    } finally {
+      turnDone();
+    }
+  }
+
+  /** How many GPU calls are sending on `server` now (a keeper reads it). */
+  sendingOn(server: string): number {
+    return this.lanes.get(server)?.slot.active ?? 0;
   }
 
   /**

@@ -441,6 +441,34 @@ check('on an item: a unit that still fails is a run warning and a reroll_gate wa
   assert.deepStrictEqual(off.titles, realishItem().titles);
 });
 
+check('a round\'s calls go out together (LEDGER #270), and answers arriving out of order change nothing: the item, its record and its trace are the in-order run\'s', async () => {
+  const strip = (v) => JSON.parse(JSON.stringify(v, (k, x) => (k === 'at' || k === 'ms' ? undefined : x)));
+  const judge = (rule, text, pos) => (rule === 'rank' ? 1 + (pos ?? 0) : judgeItem(rule, text));
+  const runOnce = async (delayed) => {
+    const item = realishItem();
+    let flying = 0;
+    let peakDecide = 0;
+    let peakRevise = 0;
+    let n = 0;
+    // Later calls answer FIRST when delayed: each waits less than the one sent before it.
+    const later = async () => { if (delayed) await new Promise((r) => setTimeout(r, Math.max(0, 60 - 6 * n++))); };
+    const decide = fakeDecide(judge);
+    await service.rerollGateItem(item, {
+      settings: ON, aiManager: { descriptionLinks: () => LINKS }, routing: ROUTING, models: MODELS, lifecycle: null, warnings: [], sourceLabel: 'u1 - test',
+      bind: {
+        decide: async (request, o) => { flying += 1; peakDecide = Math.max(peakDecide, flying); try { await later(); return await decide(request, o); } finally { flying -= 1; } },
+        revise: async (r) => { flying += 1; peakRevise = Math.max(peakRevise, flying); try { await later(); return r.units.map((u) => FIX.get(u) ?? u); } finally { flying -= 1; } },
+      },
+    });
+    return { item, peakDecide, peakRevise };
+  };
+  const inOrder = await runOnce(false);
+  const shuffled = await runOnce(true);
+  assert.ok(shuffled.peakDecide >= 5, `the first round's checks of all five fields were in flight together (${shuffled.peakDecide})`);
+  assert.ok(shuffled.peakRevise >= 3, `the three failing fields' rewrites were in flight together (${shuffled.peakRevise})`);
+  assert.deepStrictEqual(strip(shuffled.item), strip(inOrder.item), 'the same item, record and trace, in the same order');
+});
+
 check('a description whose link block is not on its end is refused, not sent', () => {
   const item = realishItem();
   item.description = 'Prose only.\n\nSome other block';

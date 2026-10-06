@@ -43,9 +43,32 @@
  * at a time, as it always did: "one live job on the Mac's Crucible at a time"). Stage S OPENS when
  * every live member has reached S or a later stage (or ended): nobody is still doing an earlier
  * stage's GPU work. Inside an open stage the turn goes to the waiting member at the lowest stage,
- * in plan order. A member's turn lasts from the gate that admitted it to its next gate, or to
- * `finishJobStage()` (CPU work after a stage — the thumbnails' frame sampling after transcription
- * — runs outside any turn, beside the next member's GPU work), or to its end.
+ * in plan order. HOW LONG A TURN LASTS depends on the stage ({@link turnPerCall}):
+ *
+ *   transcribe, chapters   THE STAGE TURN, as #266 built it: a member's turn lasts from the gate
+ *                          that admitted it to its next gate, or to `finishJobStage()` (CPU work
+ *                          after a stage — the thumbnails' frame sampling after transcription —
+ *                          runs outside any turn, beside the next member's GPU work), or to its
+ *                          end. Every call of these stages is the server's (the asr door, snap's
+ *                          9B), and the asr door does not pass through the lane's `aiCall`.
+ *   every later stage      THE CALL TURN (LEDGER #270; seen live 2026-10-06 17:33-17:36: four
+ *                          videos whose fields all route to `claude -p` wrote them one video at a
+ *                          time while the Mac sat idle). Once the stage is OPEN, every member goes
+ *                          into it at once with no turn. A member takes the turn only for its
+ *                          LOCAL model calls: its first GPU call through the lane (`takeCall`, from
+ *                          lanes.ts `aiCall`) waits for the turn, its calls in flight together
+ *                          share it, and it gives the turn back when its last local call in
+ *                          flight has ended. So a member whose stage work is all cloud (an
+ *                          `anthropic/` id, `claude -p`) never takes the turn and the batch's
+ *                          cloud work runs side by side; a member's cloud calls never hold the
+ *                          turn while another member's local calls wait. THE BOUNDARY is the
+ *                          local call, not the stage: a mixed member holds the turn exactly while
+ *                          it has local calls in flight. Two rules keep it from trading models
+ *                          back and forth: a member that sends its next local call straight after
+ *                          its last one ended (the same event-loop turn: the chapter titles' loop,
+ *                          the field groups) keeps the turn; and when the turn is free, a waiter
+ *                          for the model the batch used last goes before one for another model
+ *                          (then the lowest stage, then plan order).
  *
  * ONE SESSION FOR THE BATCH (lanes.ts `SessionShare`). The batch's first GPU work asks for the
  * queue session, every member's later work runs inside it (Crucible matches membership on our
@@ -152,7 +175,21 @@ export interface LoadFloor {
   why: string;
 }
 
+/**
+ * Whether a stage's turn is the CALL turn (taken per burst of local calls) rather than the STAGE
+ * turn (from gate to gate): every stage after the chapters' boundaries (see the header).
+ */
+export function turnPerCall(stage: BatchStage): boolean {
+  return stage !== 'transcribe' && stage !== 'chapters';
+}
+
 type MemberState = 'unarrived' | 'waiting' | 'turn' | 'between' | 'ended';
+
+interface Waiter {
+  resolve: () => void;
+  reject: (err: unknown) => void;
+  cleanup: () => void;
+}
 
 interface Member {
   readonly jobId: string;
@@ -160,9 +197,17 @@ interface Member {
   /** The stage it is in or waiting for; -1 before it entered any. */
   at: number;
   state: MemberState;
-  waiter: { resolve: () => void; reject: (err: unknown) => void; cleanup: () => void } | null;
+  waiter: Waiter | null;
   needs: Map<number, StageNeed[]>;
   line: string | null;
+  /** The stage it is in takes the CALL turn (see the header). */
+  perCall: boolean;
+  /** Its local calls in flight under the turn (the call turn). */
+  calls: number;
+  /** Waiting for the call turn, for a call on `model`. */
+  callWaiter: (Waiter & { model: string }) | null;
+  /** The call turn kept for one event-loop turn after its last local call ended. */
+  grace: NodeJS.Immediate | null;
 }
 
 export interface StageBatchDeps {
@@ -181,6 +226,8 @@ export class StageBatch {
   private readonly members: Member[];
   private highestOpened = -1;
   private doneCalled = false;
+  /** The model of the last local call the call turn admitted: a waiter for it goes first. */
+  private lastModel: string | null = null;
   readonly createdAt: number;
 
   constructor(
@@ -192,7 +239,9 @@ export class StageBatch {
   ) {
     if (jobIds.length < 2) throw new Error(`a batch is two or more jobs; ${id} was given ${jobIds.length}`);
     if (new Set(jobIds).size !== jobIds.length) throw new Error(`${id} names a job twice: ${jobIds.join(', ')}`);
-    this.members = jobIds.map((jobId, order) => ({ jobId, order, at: -1, state: 'unarrived', waiter: null, needs: new Map(), line: null }));
+    this.members = jobIds.map((jobId, order) => ({
+      jobId, order, at: -1, state: 'unarrived', waiter: null, needs: new Map(), line: null, perCall: false, calls: 0, callWaiter: null, grace: null,
+    }));
     this.createdAt = now;
   }
 
@@ -245,8 +294,12 @@ export class StageBatch {
     if (m.state === 'unarrived') m.state = 'between';
     if (target <= m.at) return Promise.resolve();
     if (m.state === 'waiting') throw new Error(`${jobId} entered ${stage} while already waiting at ${BATCH_STAGES[m.at]}`);
+    if (m.callWaiter !== null) throw new Error(`${jobId} entered ${stage} while a local call of it waited for the turn`);
     const signal = options.signal;
     if (signal?.aborted) return Promise.reject(abortReason(signal, jobId));
+    this.clearGrace(m);
+    m.calls = 0;
+    m.perCall = turnPerCall(stage);
     m.at = target;
     m.needs.set(target, [...(options.needs ?? [])]);
     m.state = 'waiting';
@@ -268,9 +321,69 @@ export class StageBatch {
   /** The member's GPU work for its current stage is done; its next work is CPU until its next gate. */
   finishTurn(jobId: string): void {
     const m = this.member(jobId);
-    if (m === null || m.state !== 'turn') return;
+    if (m === null || m.state !== 'turn' || m.calls > 0) return;
+    this.clearGrace(m);
     m.state = 'between';
     this.pump();
+  }
+
+  /**
+   * THE CALL TURN (see the header): one local call of the member on `model` is about to be sent.
+   * Resolves when it may go, with the function to call once it ended (never throws). In a stage
+   * with the stage turn it never waits and counts nothing: the member's turn is the stage's.
+   * Rejects with the signal's reason when the job is stopped while it waits.
+   */
+  takeCall(jobId: string, model: string, signal?: AbortSignal): Promise<() => void> {
+    const m = this.live(jobId, `a local call on ${model}`);
+    if (!m.perCall) return Promise.resolve(() => undefined);
+    if (m.state === 'turn') {
+      this.clearGrace(m);
+      m.calls += 1;
+      this.lastModel = model;
+      return Promise.resolve(this.callDone(m));
+    }
+    if (m.state !== 'between') throw new Error(`${jobId} sent a local call on ${model} while it ${m.state === 'waiting' ? 'waited at its next gate' : `was ${m.state}`}`);
+    if (signal?.aborted) return Promise.reject(abortReason(signal, jobId));
+    return new Promise<() => void>((resolve, reject) => {
+      const onAbort = (): void => {
+        if (m.callWaiter === null) return;
+        m.callWaiter = null;
+        reject(abortReason(signal!, jobId));
+        this.pump();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      m.callWaiter = {
+        model,
+        resolve: () => resolve(this.callDone(m)),
+        reject,
+        cleanup: () => signal?.removeEventListener('abort', onAbort),
+      };
+      this.pump();
+    });
+  }
+
+  /** The end of one local call under the call turn: the last one in flight gives the turn back (after the grace). */
+  private callDone(m: Member): () => void {
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      m.calls = Math.max(0, m.calls - 1);
+      if (m.calls > 0 || m.state !== 'turn' || !m.perCall) return;
+      this.clearGrace(m);
+      m.grace = setImmediate(() => {
+        m.grace = null;
+        if (m.calls === 0 && m.state === 'turn' && m.perCall) {
+          m.state = 'between';
+          this.pump();
+        }
+      });
+    };
+  }
+
+  private clearGrace(m: Member): void {
+    if (m.grace !== null) clearImmediate(m.grace);
+    m.grace = null;
   }
 
   /**
@@ -282,6 +395,9 @@ export class StageBatch {
     if (m === null || m.state === 'ended') return this.done;
     m.waiter?.cleanup();
     m.waiter = null;
+    m.callWaiter?.cleanup();
+    m.callWaiter = null;
+    this.clearGrace(m);
     m.state = 'ended';
     this.say(m, null);
     this.pump();
@@ -321,12 +437,35 @@ export class StageBatch {
       this.highestOpened = s;
       if (live.some((m) => m.at === s)) this.deps.onStageOpen?.(BATCH_STAGES[s], this.floorsOf(s));
     }
+    // A stage with the call turn admits its members at once, with no turn, once it is open.
+    for (const m of live) {
+      if (m.state !== 'waiting' || !m.perCall || !this.isOpen(m.at)) continue;
+      const waiter = m.waiter!;
+      m.waiter = null;
+      m.state = 'between';
+      waiter.cleanup();
+      this.say(m, null);
+      waiter.resolve();
+    }
     const holder = live.find((m) => m.state === 'turn');
     if (holder === undefined) {
+      // The stage turn's waiters and the call turn's, by stage; a call for the model the batch used
+      // last before one for another model; then plan order.
+      const affinity = (m: Member): number => (m.callWaiter !== null && m.callWaiter.model === this.lastModel ? 0 : 1);
       const next = live
-        .filter((m) => m.state === 'waiting' && this.isOpen(m.at))
-        .sort((a, b) => a.at - b.at || a.order - b.order)[0];
-      if (next !== undefined) {
+        .filter((m) => (m.state === 'waiting' && !m.perCall && this.isOpen(m.at)) || m.callWaiter !== null)
+        .sort((a, b) => a.at - b.at || affinity(a) - affinity(b) || a.order - b.order)[0];
+      if (next !== undefined && next.callWaiter !== null) {
+        const waiter = next.callWaiter;
+        next.callWaiter = null;
+        next.state = 'turn';
+        next.calls = 1;
+        this.lastModel = waiter.model;
+        waiter.cleanup();
+        this.say(next, null);
+        waiter.resolve();
+        this.deps.onTurn?.();
+      } else if (next !== undefined) {
         const waiter = next.waiter!;
         next.waiter = null;
         next.state = 'turn';
@@ -336,7 +475,7 @@ export class StageBatch {
         this.deps.onTurn?.();
       }
     }
-    for (const m of live) if (m.state === 'waiting') this.say(m, this.waitLine(m, live));
+    for (const m of live) if (m.state === 'waiting' || m.callWaiter !== null) this.say(m, this.waitLine(m, live));
   }
 
   private floorsOf(stage: number): Map<string, LoadFloor> {
@@ -363,7 +502,8 @@ export class StageBatch {
         : `${videos(behind.length)} in this batch of ${this.members.length} ${behind.length === 1 ? 'is' : 'are'} still ${stageWords(BATCH_STAGES[lowest])}`;
       return `Next: ${next}. Waiting because ${why}.`;
     }
-    const ahead = live.filter((o) => o !== m && (o.state === 'turn' || (o.state === 'waiting' && this.isOpen(o.at) && (o.at < m.at || (o.at === m.at && o.order < m.order))))).length;
+    const ahead = live.filter((o) => o !== m && (o.state === 'turn'
+      || ((o.state === 'waiting' && !o.perCall && this.isOpen(o.at)) || o.callWaiter !== null) && (o.at < m.at || (o.at === m.at && o.order < m.order)))).length;
     return `Next: ${next}. ${ahead === 1 ? '1 video is' : `${ahead} videos are`} ahead of it on ${this.server}.`;
   }
 

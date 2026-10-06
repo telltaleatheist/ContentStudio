@@ -138,6 +138,29 @@ function incidentItem() {
     ok(/^The description was not cleaned up: /.test(result.failed[0].reason), result.failed[0].reason);
   });
 
+  await check('the plans go out together (LEDGER #270); answered last-first, the failures, the trace and the item keep plan order', async () => {
+    const item = incidentItem();
+    let flying = 0;
+    let peak = 0;
+    const order = ['scrub: description hook', 'scrub: description', 'scrub: chapter titles'];
+    const ai = fakeManager(async (prompt, what) => {
+      flying += 1;
+      peak = Math.max(peak, flying);
+      // The first plan answers last.
+      const k = order.findIndex((o) => what.startsWith(o + ' ') || what.startsWith(o + ' ('));
+      await new Promise((r) => setTimeout(r, 40 - 15 * k));
+      flying -= 1;
+      if (what.startsWith('scrub: chapter titles')) return Array.from({ length: 25 }, (_, i) => `Point ${i + 1}`).join('\n');
+      if (what.startsWith('scrub: description hook')) return 'one\ntwo\nthree';
+      return 'The claim is false, and here is why.';
+    });
+    const result = await scrub.scrubGeneratedItem(item, { option: CLOUD, transport: { aiManager: ai }, origin: 'post-generation' });
+    eq(peak, 3, 'the three plans were in flight together:');
+    eq(item._prompt_trace.map((t) => t.what.split(' for ')[0]), ['scrub: description hook (post-generation)', 'scrub: description (post-generation)', 'scrub: chapter titles (post-generation)'], 'the trace in plan order:');
+    eq(result.failed.map((f) => f.item_key), ['description_hook', 'chapters'], 'the failures in plan order:');
+    eq(item.description, `The claim is false, and here is why.\n\n${LINKS}`, 'the plan that answered applied:');
+  });
+
   await check('a cancelled call still stops the pass', async () => {
     const item = incidentItem();
     const ai = fakeManager(() => {

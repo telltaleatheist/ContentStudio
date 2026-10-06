@@ -71,6 +71,8 @@ import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { loadContextFor } from './context-sizing';
 import { parseLines } from './plain-call';
+import { inOrder, JOB_CALLS_PER_SERVER, settleTogether, valuesInOrder } from '../../crucible/fan-out';
+import type { JobSessions } from '../../crucible/session';
 import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
@@ -266,6 +268,27 @@ export interface MetadataUnit {
   describePrompt(ctx: MetadataRunContext): string;
   /** Resolves to only the fields this unit owns. */
   generate(ctx: MetadataRunContext): Promise<Record<string, unknown>>;
+  /**
+   * The Crucible model this unit's calls load on the job's server, or undefined for a cloud unit
+   * (an `anthropic/` id, `claude -p`), which takes no lane. The scheduler runs one local model's
+   * units at a time (LEDGER #270).
+   */
+  readonly localModel?: string;
+  /**
+   * What this unit's calls will ask of that model's load, when its prompt can be built now (null
+   * while an input it reads is not written yet). The scheduler sizes the group's load from it.
+   */
+  expectedLoad?(ctx: MetadataRunContext): ExpectedLoad | null;
+}
+
+/** One local unit's calls, as the scheduler sizes a group's load from them (LEDGER #270). */
+export interface ExpectedLoad {
+  /** The job's sessions the calls run in. */
+  sessions: JobSessions;
+  /** The largest load context any of its calls asks for. */
+  tokens: number;
+  /** How many calls it sends. */
+  calls: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -628,10 +651,19 @@ export class LocalFieldUnit implements MetadataUnit {
     this.fields = [spec.field];
     this.inputFields = spec.inputFields;
     this.label = `${spec.field} (local ${option.model})`;
+    this.localModel = option.model;
   }
+
+  readonly localModel: string;
 
   describePrompt(ctx: MetadataRunContext): string {
     return this.aiManager.buildMetadataFieldPrompt(this.spec, ctx, { pending: true });
+  }
+
+  expectedLoad(ctx: MetadataRunContext): ExpectedLoad | null {
+    if (this.inputFields.some((field) => ctx.generated[field] === undefined)) return null;
+    const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
+    return { sessions: this.lifecycle.sessions, tokens: loadContextFor(prompt.length, LOCAL_FIELD_NUM_PREDICT), calls: 1 };
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
@@ -1218,21 +1250,10 @@ export async function runMetadataTasks(
   // from the machine's point of view: the next call on the same 27B re-streamed 17GB of weights
   // into unified memory and froze the UI while it did. What a unit made resident is declared to
   // the job's lifecycle and released once, at the end of the job.
-  for (const unit of run.plan.units) {
-    console.log(`[MetadataTasks] ${run.ctx.sourceLabel}: running unit ${unit.label}`);
-    let fields = await unit.generate(run.ctx);
-    if (unit.fields.includes('titles')) {
-      fields = await groundTitlesOnce(unit, run.ctx, fields);
-    }
-    if (unit.fields.includes('tags')) {
-      fields = await usableTagsOrThrow(unit, run.ctx, fields);
-    }
-    // Before the merge, so a later unit that declares this field as INPUT DATA reads exactly
-    // what this one returned — including the second set of titles when the grounding check
-    // re-asked for them.
-    Object.assign(run.ctx.generated, fields);
-    Object.assign(merged, fields);
-  }
+  //
+  // The units go out TOGETHER where independent (LEDGER #270; the dependency map is
+  // `runUnitsTogether`'s header); their answers merge here in PLAN order, as the loop did.
+  for (const fields of await runUnitsTogether(run)) Object.assign(merged, fields);
 
   // Tags and hashtags, assembled from the pools with no model call at all (spec §4, §6.2,
   // §6.3). AFTER the units, because the hashtag rule dedupes against the title and the
@@ -1243,6 +1264,149 @@ export async function runMetadataTasks(
   // the merged object. Per unit they could not be: the links append to a description one
   // unit returns, while the channel tags append to a list assembled just above.
   return aiManager.finalizeMetadata(merged as MetadataResult);
+}
+
+/** One unit's whole node: its call, then the checks that belong to its field (each may ask once more). */
+async function runUnit(unit: MetadataUnit, ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+  console.log(`[MetadataTasks] ${ctx.sourceLabel}: running unit ${unit.label}`);
+  let fields = await unit.generate(ctx);
+  if (unit.fields.includes('titles')) {
+    fields = await groundTitlesOnce(unit, ctx, fields);
+  }
+  if (unit.fields.includes('tags')) {
+    fields = await usableTagsOrThrow(unit, ctx, fields);
+  }
+  return fields;
+}
+
+/** A unit that did not start because another failed first: never the error the item reports. */
+class UnitNotStarted extends Error {
+  constructor(label: string) {
+    super(`${label} was not started: another field of this item had already failed`);
+    this.name = 'UnitNotStarted';
+  }
+}
+
+/**
+ * THE FIELD CALLS' DEPENDENCY MAP, and the schedule it allows (LEDGER #270, Owen 2026-10-06: "Yes,
+ * where independent"). Read off the prompts' own inputs, not assumed:
+ *
+ *   before the units   the channel LESSONS (one distillation call, metadata-generator's
+ *                      `ensureLessons`): the titles call carries the insights block they make. The
+ *                      chapter list and its titles (snap; the titles stay one at a time, each title
+ *                      call reads the ones before it): every field reads the chapter subjects.
+ *   titles             reads the transcript or digest, the chapters, the insights. Nothing else.
+ *   thumbnail_text     reads the TITLES (`inputFields`, the "no core word from the top 3 titles"
+ *                      rule): it waits for the titles unit, including its grounding re-ask, and
+ *                      reads the set that was kept.
+ *   pinned_comment     the transcript and chapters only.
+ *   spoken_keywords    the transcript and chapters only (the shorts channel, on the titles model).
+ *   tags (chapterless) the transcript only; its unusable-list re-ask is inside its own node.
+ *   description        the chapter details, the name/phrase pools and the transcript only (its hook
+ *                      is the first sentence of its own one call, DESCRIPTION_CANDIDATES = 1).
+ *   after the units    tags and hashtags assembled in code (read the first title); the scrub
+ *                      (reads the description, hook, alternates and chapter titles: scrub.ts runs
+ *                      its own plans together); the re-roll gate (reads the scrubbed text; its
+ *                      rounds stay round-major, a round's calls together: reroll/gate.ts).
+ *
+ * THE SCHEDULE. Every unit starts as soon as what it reads exists: titles, pinned comment, tags,
+ * spoken keywords and the description at once, the thumbnail text when the titles are kept. Three
+ * rules keep it equal to the one-at-a-time loop it replaced:
+ *   - ONE LOCAL MODEL AT A TIME, in plan order. The plan groups units by model (titles' first), and
+ *     a local model's units wait until every unit of the local models before it has settled, so the
+ *     card loads each model once, as before. Cloud units (an `anthropic/` id, `claude -p`) take no
+ *     lane and go at once, whatever runs locally.
+ *   - THE LOAD IS SIZED FOR THE GROUP. Before a local model's units go, the job's sessions are told
+ *     how many calls of what largest size are coming (JobSessions.expect): the first call loads
+ *     where the largest needs, so no call grows the load while others are being answered, and the
+ *     server is asked once whether the card holds that many at once (session.ts, the width question).
+ *   - THE OUTPUT IS THE LOOP'S. Answers merge in plan order; each unit's warnings and trace entries
+ *     land in plan order (fan-out.ts `inOrder`). Nothing is swallowed: every started unit is waited
+ *     for, then the FIRST failure in plan order is thrown as itself; a unit whose input failed, or
+ *     that had not started when a failure came, is not run (the loop would not have reached it).
+ *     Two fields failing in one run may name a different one of the two than the loop would have.
+ *
+ * At most JOB_CALLS_PER_SERVER units run at once; there are seven at most.
+ */
+async function runUnitsTogether(run: MetadataTaskRun): Promise<Array<Record<string, unknown>>> {
+  const { units } = run.plan;
+  const ctx = run.ctx;
+  const producerOf = new Map<MetadataFieldId, number>();
+  units.forEach((unit, i) => unit.fields.forEach((field) => producerOf.set(field, i)));
+
+  /** Each unit's answer, for the units that read it (rejected when it failed or never ran). */
+  const answers = units.map(() => deferred<Record<string, unknown>>());
+  /** Each unit's end, either way: a local model's turn waits for every unit of the one before. */
+  const ended = units.map(() => deferred<void>());
+  let failed = false;
+
+  /** Each local model's turn, in plan order: opened when the previous local model's units all ended. */
+  const turns = new Map<string, Promise<() => void>>();
+  let before: Promise<unknown> = Promise.resolve();
+  for (const model of [...new Set(units.map((u) => u.localModel).filter((m): m is string => m !== undefined))]) {
+    const members = units.map((u, i) => (u.localModel === model ? i : -1)).filter((i) => i >= 0);
+    const opened = before.then(() => expectGroup(units.filter((u) => u.localModel === model), ctx, model));
+    turns.set(model, opened);
+    const groupEnded = Promise.all(members.map((i) => ended[i].promise));
+    // Let go of the group's expectation once all of its units ended.
+    void Promise.all([opened, groupEnded]).then(([release]) => release(), () => undefined);
+    before = groupEnded;
+  }
+
+  const tasks = units.map((unit, i) => async (): Promise<Record<string, unknown>> => {
+    try {
+      if (unit.localModel !== undefined) await turns.get(unit.localModel);
+      for (const input of unit.inputFields) {
+        const from = producerOf.get(input);
+        // A failed input rejects here with its own error: this unit is not run.
+        if (from !== undefined && from !== i) await answers[from].promise;
+      }
+      if (failed) throw new UnitNotStarted(unit.label);
+      // The unit's warnings land in plan order, wherever its answer lands in time.
+      const unitCtx: MetadataRunContext = { ...ctx, warn: (message) => inOrder(() => ctx.warn(message)) };
+      const fields = await runUnit(unit, unitCtx);
+      // Before any reader starts, so a unit that declares this field as INPUT DATA reads exactly
+      // what this one returned — including the second set of titles when the grounding check
+      // re-asked for them.
+      Object.assign(ctx.generated, fields);
+      answers[i].resolve(fields);
+      return fields;
+    } catch (err) {
+      failed = true;
+      answers[i].reject(err);
+      throw err;
+    } finally {
+      ended[i].resolve();
+    }
+  });
+
+  const settled = await settleTogether(tasks, JOB_CALLS_PER_SERVER);
+  const first = settled.find((o) => o.status === 'rejected' && !(o.reason instanceof UnitNotStarted));
+  if (first !== undefined && first.status === 'rejected') throw first.reason;
+  return valuesInOrder(settled);
+}
+
+/**
+ * Tell the job's sessions what one local model's group is about to send together: the calls whose
+ * prompts can be built now (a unit still waiting for its input states nothing, and a larger one
+ * grows the load once, after the calls in flight finish: session.ts). Answers the release.
+ */
+function expectGroup(group: MetadataUnit[], ctx: MetadataRunContext, model: string): () => void {
+  const stated = group.map((unit) => unit.expectedLoad?.(ctx) ?? null).filter((e): e is ExpectedLoad => e !== null);
+  const calls = stated.reduce((n, e) => n + e.calls, 0);
+  if (stated.length === 0 || calls < 2) return () => undefined;
+  const tokens = Math.max(...stated.map((e) => e.tokens));
+  const width = Math.min(JOB_CALLS_PER_SERVER, calls);
+  return stated[0].sessions.expect(model, tokens, width, `${ctx.sourceLabel}'s field calls on ${model}`);
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  // Read by the units that need it; a failure nobody reads is thrown by the scheduler instead.
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
 }
 
 /**

@@ -71,10 +71,10 @@ const fieldPrompt = (chars) => `FIELD ${'y'.repeat(chars)}`;
 /** Job 3's content: a field call that needs 32,768 where a thinking title needs 24,576. */
 const LONG = 87_500;
 
-async function world() {
+async function world(extra = {}) {
   const server = await fake.startFakeCrucible({
     name: 'crucible@mac', version: '1.0.80', models: MODELS, catalog: CATALOG, installedJobTypes: ['echo', 'llm', 'asr', 'align'],
-    decideProbs, chatReplies: { '*': chatReply }, asr: { stepMs: 2, decodeFrames: 1, transcribeFrames: 1 },
+    decideProbs, chatReplies: { '*': chatReply }, asr: { stepMs: 2, decodeFrames: 1, transcribeFrames: 1 }, ...extra,
   });
   const made = context();
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
@@ -123,6 +123,14 @@ function pipeline(w, jobId, hooks = {}) {
       if (hooks.inChapters) await hooks.inChapters(jobId);
       const boundaries = await service.chapter(CAPTIONS, { granularity: 'chapters', chat: t.chat, decide: t.decide, summarize: false });
 
+      if (hooks.fields) {
+        // The fields stage as a routing would make it (LEDGER #270): no local need stated for a cloud-only one.
+        await enterJobStage('fields', hooks.fieldNeeds ?? []);
+        stages.push(['fields']);
+        const out = await hooks.fields(jobId, job);
+        await job.releaseAll();
+        return out;
+      }
       const chars = hooks.contentChars ?? 2_000;
       await enterJobStage('fields', [
         needs.titleNeed(boundaries, BIG, { videoTitle: 'Keeper', label: jobId }),
@@ -308,14 +316,112 @@ check('the turnstile: a stage opens only when every member is past the one befor
     assert.deepStrictEqual(got.slice(3), ['b:chapters']);
     assert.strictEqual(b.end('b'), false, 'b fails; the batch goes on');
     await new Promise((r) => setImmediate(r));
-    assert.deepStrictEqual(got.slice(4), ['a:fields'], 'fields opens once b is gone; plan order');
+    // Fields has the CALL turn (LEDGER #270): once open, every member goes in at once.
+    assert.deepStrictEqual(got.slice(4), ['a:fields', 'c:fields'], 'fields opens once b is gone; both go in, no turn');
     assert.deepStrictEqual(opened.at(-1), ['fields', [24576]]);
-    b.finishTurn('a');
+    // A local call takes the turn; c's waits for it, and goes once a's last call in flight ended.
+    const calls = [];
+    const aDone = await b.takeCall('a', 'm');
+    const aDone2 = await b.takeCall('a', 'm');
+    calls.push('a:2 in flight');
+    const cCall = b.takeCall('c', 'm').then((done) => { calls.push('c'); return done; });
     await new Promise((r) => setImmediate(r));
-    assert.deepStrictEqual(got.slice(5), ['c:fields']);
+    assert.deepStrictEqual(calls, ['a:2 in flight'], 'c waits for the turn');
+    aDone();
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(calls, ['a:2 in flight'], 'a still has a call in flight');
+    aDone2();
+    const cDone = await cCall;
+    assert.deepStrictEqual(calls, ['a:2 in flight', 'c'], 'the turn passes when a\'s last local call ended');
+    cDone();
     assert.strictEqual(b.end('a'), false);
     assert.strictEqual(b.end('c'), true, 'empty');
   })();
+});
+
+const CLOUD = 'anthropic/claude-sonnet-5';
+const { ANTHROPIC_MAX_TOKENS } = crucible('transport');
+
+/** One cloud field call of a member, as a field routed to Sonnet makes it. */
+function cloudField(w, jobId) {
+  return w.ctx.lanes.aiCall(routeOfModelId(CLOUD), `${jobId} cloud field`, () => w.ctx.transport.chat({
+    model: CLOUD, prompt: `CLOUD FIELD for ${jobId}`, act: 'generate', thinking: false, maxTokens: ANTHROPIC_MAX_TOKENS,
+    what: `${jobId}'s cloud field call`, trace: null,
+  }));
+}
+
+/** Answers held until the check lets them go: `held` lists them in arrival order. */
+function holding() {
+  const held = [];
+  return {
+    held,
+    hold: (kind, body) => new Promise((resolve) => {
+      const messages = body.messages;
+      held.push({ model: body.model, prompt: Array.isArray(messages) ? String(messages.at(-1).content) : '', resolve });
+    }),
+    release: (test) => { const i = held.findIndex(test); const [h] = held.splice(i, 1); h.resolve(); },
+    releaseAll: () => { for (const h of held.splice(0)) h.resolve(); },
+  };
+}
+
+check('a batch whose fields are all cloud-routed writes them side by side: no member takes the turn, and the three videos\' cloud calls overlap (LEDGER #270)', async () => {
+  const h = holding();
+  // Only the cloud calls are held; the transcription and the 9B's chapter work run as before.
+  const w = await world({ upstreams: { anthropic: { key: 'sk-keeper' } }, holdAnswer: (kind, body) => (body.model === CLOUD ? h.hold(kind, body) : undefined) });
+  try {
+    const fields = (jobId) => Promise.all([cloudField(w, jobId), cloudField(w, jobId)]).then((answers) => answers.map((a) => a.text));
+    const p = { j1: pipeline(w, 'j1', { fields }), j2: pipeline(w, 'j2', { fields }), j3: pipeline(w, 'j3', { fields }) };
+    const q = await startQueue(w, ['j1', 'j2', 'j3'], p);
+    // Every member's two cloud calls in flight at once: six together, across the three videos.
+    await until(() => h.held.length === 6, 5000);
+    assert.strictEqual(w.server.peakAnswering(CLOUD), 6, 'all three videos\' cloud fields in flight together');
+    assert.ok(['j1', 'j2', 'j3'].every((id) => h.held.filter((x) => x.prompt.endsWith(id)).length === 2));
+    const view = w.ctx.lanes.batchViews()[0].members;
+    assert.ok(view.every((m) => m.stage === 'fields' && m.state === 'between'), `nobody holds a turn for cloud work: ${JSON.stringify(view)}`);
+    h.releaseAll();
+    const results = await Promise.all(['j1', 'j2', 'j3'].map((id) => q.outcomes[id]));
+    for (const r of results) assert.ok(r.ok && r.ok.kind === 'done', `every job finished (${r.err?.message ?? ''})`);
+    assert.strictEqual(w.server.requests.filter((r) => r.path === '/v1/queue/sessions' && r.method === 'POST').length, 1, 'still one session');
+    assert.ok(w.server.requests.some((r) => /^\/v1\/queue\/sessions\/[^/]+\/touch$/.test(r.path)), 'the cloud calls kept the batch\'s session touched');
+    assert.deepStrictEqual(w.server.cardLoads, [ASR, NINE], 'the cloud stage loaded nothing');
+  } finally {
+    h.releaseAll();
+    await w.close();
+  }
+});
+
+check('a mixed fields stage: one video\'s local call takes the turn while the others\' cloud calls run beside it; local calls never overlap across videos', async () => {
+  const h = holding();
+  const w = await world({ upstreams: { anthropic: { key: 'sk-keeper' } }, holdAnswer: (kind, body) => (body.model === CLOUD || body.model === BIG ? h.hold(kind, body) : undefined) });
+  try {
+    const localField = (jobId, job) => w.ctx.lanes.aiCall(routeOfModelId(BIG), `${jobId} local field`, () => w.ctx.transport.chat({
+      model: BIG, prompt: `LOCAL FIELD for ${jobId}`, act: 'generate', thinking: false, maxTokens: 2048,
+      loadContext: 8192, job, what: `${jobId}'s local field call`, trace: null,
+    }));
+    const fields = (jobId, job) => Promise.all([cloudField(w, jobId), localField(jobId, job)]).then((answers) => answers.map((a) => a.text));
+    const fieldNeeds = [{ model: BIG, tokens: 8192, why: 'a local field call' }];
+    const p = { j1: pipeline(w, 'j1', { fields, fieldNeeds }), j2: pipeline(w, 'j2', { fields, fieldNeeds }), j3: pipeline(w, 'j3', { fields, fieldNeeds }) };
+    const q = await startQueue(w, ['j1', 'j2', 'j3'], p);
+    // Three cloud calls and ONE local call in flight: j1 holds the turn for its local call.
+    await until(() => h.held.filter((x) => x.model === CLOUD).length === 3 && h.held.some((x) => x.model === BIG), 5000);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepStrictEqual(h.held.filter((x) => x.model === BIG).map((x) => x.prompt), ['LOCAL FIELD for j1'], 'one video\'s local call at a time');
+    // j1's cloud call ending does not move the turn; its local call ending does.
+    h.release((x) => x.prompt.endsWith('j1') && x.model === CLOUD);
+    h.release((x) => x.prompt === 'LOCAL FIELD for j1');
+    await until(() => h.held.some((x) => x.prompt === 'LOCAL FIELD for j2'), 5000);
+    h.release((x) => x.prompt === 'LOCAL FIELD for j2');
+    await until(() => h.held.some((x) => x.prompt === 'LOCAL FIELD for j3'), 5000);
+    h.releaseAll();
+    const results = await Promise.all(['j1', 'j2', 'j3'].map((id) => q.outcomes[id]));
+    for (const r of results) assert.ok(r.ok && r.ok.kind === 'done', `every job finished (${r.err?.message ?? ''})`);
+    assert.strictEqual(w.server.peakAnswering(BIG), 1, 'never two videos\' local calls at once');
+    assert.deepStrictEqual(w.server.loadsUnderAnswers, []);
+    assert.deepStrictEqual(loadsOf(w.server), [[NINE, 8192], [BIG, 8192]], 'the 27B once for the stage');
+  } finally {
+    h.releaseAll();
+    await w.close();
+  }
 });
 
 run('crucible: stage-major batches (one session, each model once)');

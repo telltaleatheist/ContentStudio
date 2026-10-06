@@ -19,6 +19,7 @@
  */
 
 import { readYesNo } from './decide-read';
+import { settleTogether, valuesInOrder } from '../../../crucible/fan-out';
 import { ChannelFacts, FIELD_RULES, QuestionSlot, ruleRequests, WAIVERS } from './rules';
 import { RerollGateSettings, thresholdOf } from './settings';
 import { DecideFn, DecideRequest, DecideResponse, GateError, GateField, RuleId, RuleReading, UnitScore } from './types';
@@ -94,8 +95,10 @@ export async function askRules(
   const raw = new Map<number, Array<{ rule: RuleId; pYes: number | null; read: RuleReading['read']; labelMass: number }>>();
   const calls: DecideCallRecord[] = [];
   const batches = ruleRequests(field, stateText, units, facts, options.which);
-  for (const [k, { request, slots }] of batches.entries()) {
-    if (options.signal?.aborted) throw new GateError('cancelled', `${options.what} was cancelled`);
+  if (options.signal?.aborted) throw new GateError('cancelled', `${options.what} was cancelled`);
+  // The batches go out together (LEDGER #270): each is its own state and questions, and reads no
+  // other's answer. They are read in batch order, so the readings and the record are as before.
+  const asked = valuesInOrder(await settleTogether(batches.map(({ request }, k) => async () => {
     const what = batches.length > 1 ? `${options.what} (${k + 1}/${batches.length})` : options.what;
     const t0 = Date.now();
     const at = new Date(t0).toISOString();
@@ -111,6 +114,10 @@ export async function askRules(
       }
       throw err;
     }
+    return { what, at, response, ms: Date.now() - t0 };
+  })));
+  for (const [k, { request, slots }] of batches.entries()) {
+    const { what, at, response, ms } = asked[k];
     const answers: DecideCallRecord['answers'] = {};
     for (const slot of slots) {
       const reading = readSlot(response, slot, what);
@@ -119,7 +126,7 @@ export async function askRules(
       list.push({ rule: slot.rule, ...reading });
       raw.set(slot.unit, list);
     }
-    calls.push({ what, at, request, answers, ms: Date.now() - t0 });
+    calls.push({ what, at, request, answers, ms });
   }
   return { raw, calls };
 }

@@ -17,6 +17,7 @@ import * as os from 'os';
 import * as log from 'electron-log';
 import { ANTHROPIC_MAX_TOKENS, crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
 import { isUpstreamModelId } from '../../crucible/acts';
+import { inOrder } from '../../crucible/fan-out';
 import type { JobSessions } from '../../crucible/session';
 import { renderChapterList } from './chapter-digest';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
@@ -1492,7 +1493,9 @@ export class AIManagerService {
           if (model.startsWith('claude-cli:')) {
             // Recorded here, not by the Crucible door, BEFORE the call: a request that fails is
             // still a prompt that was sent. The "server" is the transport's own name (Law 8).
-            this.promptTrace.push({ what, model, chars: prompt.length, at: new Date().toISOString(), prompt, server: 'claude -p' });
+            // In the order the calls were asked for when several are in flight (fan-out.ts, LEDGER #270).
+            const traced: PromptTraceRecord = { what, model, chars: prompt.length, at: new Date().toISOString(), prompt, server: 'claude -p' };
+            inOrder(() => this.promptTrace.push(traced));
             console.log(`[AIManager]   Provider: claude -p (subscription)`);
             return await this.makeClaudeCliRequest(prompt, model.replace('claude-cli:', ''), mode === 'plain');
           }

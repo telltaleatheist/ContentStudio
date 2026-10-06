@@ -72,6 +72,7 @@ import { readChatStream, refusalOf, type StreamedChat } from './chat-stream';
 import type { CrucibleClientFactory } from './client-factory';
 import { checkBeforeSending, estimateTokens, loadedContextOf, tokensNeeded } from './context-check';
 import { CrucibleCallError } from './errors';
+import { inOrder } from './fan-out';
 import { crucibleStepHooks, type CrucibleStepHooks } from './lanes';
 import { upstreamServerFor } from './venue-decision';
 import { JobSessions, callRefusalOf, withJobSessions, type CardSession } from './session';
@@ -319,7 +320,7 @@ export class CrucibleTransport {
       const server = upstream ? upstreamServerFor(hooks.routingServer ?? null, this.host.servers) : this.gpuServer(hooks, job, request.what);
       const venue = await this.venue(server, 'generate');
       if (!upstream) job.server ??= server;
-      request.trace?.push({
+      const traced: PromptTraceRecord = {
         what: request.what,
         model,
         chars: request.prompt.length + (request.system?.length ?? 0),
@@ -329,7 +330,9 @@ export class CrucibleTransport {
         maxTokens: request.maxTokens,
         loadContext: upstream ? null : request.loadContext ?? null,
         act: 'generate',
-      });
+      };
+      // In the order the calls were asked for, when several are in flight (fan-out.ts, LEDGER #270).
+      inOrder(() => request.trace?.push(traced));
 
       const need = tokensNeeded(request.prompt.length + (request.system?.length ?? 0), request.maxTokens);
       if (!upstream && request.loadContext !== undefined && need > request.loadContext) {
@@ -345,11 +348,14 @@ export class CrucibleTransport {
       let reensured = false;
       for (;;) {
         let card: CardSession | null = null;
+        // A local call is ADMITTED to the session (LEDGER #270): counted while it is answered, so a
+        // load another call needs waits for it; let go of on every way out of this attempt.
+        let done: () => void = () => undefined;
         if (!upstream) {
-          card = await job.hold(server, model, { act: venue.act, need, loadContext: request.loadContext, signal, hooks });
-          await this.checkContext(card, server, model, request);
+          ({ card, done } = await job.serve(server, model, { act: venue.act, need, loadContext: request.loadContext, signal, hooks }));
         }
         try {
+          if (card !== null) await this.checkContext(card, server, model, request);
           const answer = await this.send(server, model, venue.act, request, signal, hooks, card);
           hooks.beat();
           return this.readAnswer(answer, server, model, venue.act, request);
@@ -361,6 +367,8 @@ export class CrucibleTransport {
             continue;
           }
           throw this.refusal(err, server, model, request.what, signal);
+        } finally {
+          done();
         }
       }
     } finally {
@@ -547,7 +555,7 @@ export class CrucibleTransport {
       job.server ??= server;
       const state = typeof request.state === 'string' ? request.state : JSON.stringify(request.state);
       const images = request.images ?? [];
-      request.trace?.push({
+      const traced: PromptTraceRecord = {
         what: request.what,
         model,
         chars: state.length,
@@ -557,17 +565,18 @@ export class CrucibleTransport {
         maxTokens: 0,
         loadContext: request.loadContext ?? null,
         act: 'decide',
-      });
+      };
+      inOrder(() => request.trace?.push(traced));
       const need = estimateTokens(state.length) + images.length * DECIDE_IMAGE_TOKENS;
       let reensured = false;
       for (;;) {
-        const card = await job.hold(server, model, { act: 'decide', need, loadContext: request.loadContext, signal, hooks });
-        const facts = card.contextFacts(model);
-        checkBeforeSending({
-          model, server, what: request.what, promptChars: state.length, maxTokens: 0,
-          loaded: loadedContextOf({ ...facts, ceiling: null }),
-        });
+        const { card, done } = await job.serve(server, model, { act: 'decide', need, loadContext: request.loadContext, signal, hooks });
         try {
+          const facts = card.contextFacts(model);
+          checkBeforeSending({
+            model, server, what: request.what, promptChars: state.length, maxTokens: 0,
+            loaded: loadedContextOf({ ...facts, ceiling: null }),
+          });
           // The session's own client: every decision is an item of it (X-Crucible-Session).
           const answer = await send(card.session, signal);
           hooks.beat();
@@ -582,6 +591,8 @@ export class CrucibleTransport {
             throw new CrucibleCallError('decide_not_served', `"${server}" cannot serve ${request.what} on ${model}: ${err.serverMessage}`, server, err.status, err.code, null, err);
           }
           throw this.refusal(err, server, model, request.what, signal);
+        } finally {
+          done();
         }
       }
     } finally {

@@ -128,7 +128,7 @@ import { MetadataRoutingOption } from './metadata-routing';
 import { JobCancelledError } from './cancellation';
 import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
-import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
+import type { ExpectedLoad, MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
 
 /**
@@ -323,9 +323,20 @@ export class DescriptionUnit implements MetadataUnit {
     this.local = option.kind === 'local';
     if (this.local) {
       this.label = `description (local ${option.model})`;
+      this.localModel = option.model;
     } else {
       this.label = `description (cloud ${option.model})`;
     }
+  }
+
+  /** The model its calls load, when local (the scheduler's grouping, LEDGER #270). */
+  readonly localModel?: string;
+
+  /** Its calls' size, for the scheduler's group load (LEDGER #270): one prompt, DESCRIPTION_CANDIDATES draws. */
+  expectedLoad(ctx: MetadataRunContext): ExpectedLoad | null {
+    if (!this.local) return null;
+    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '');
+    return { sessions: this.lifecycle.sessions, tokens: loadContextFor(prompt.length, NUM_PREDICT), calls: DESCRIPTION_CANDIDATES };
   }
 
   describePrompt(ctx: MetadataRunContext): string {

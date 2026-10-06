@@ -85,6 +85,7 @@
 import log from 'electron-log';
 
 import { JobCancelledError, isAbortError } from './cancellation';
+import { settleTogether } from '../../crucible/fan-out';
 import { Chapter } from './chapter-generator.service';
 import { linkBlockIndex } from './description-composer';
 import { MetadataRoutingOption, resolveOperatorOption, RoutingModels } from './metadata-routing';
@@ -589,8 +590,10 @@ function sameValue(a: string | string[], b: string | string[]): boolean {
  * here: a cancelled run (a stopped job is not a failed field), and an item with no
  * `_prompt_trace` array, which is the caller's bug rather than the model's answer.
  *
- * SEQUENTIAL on purpose. The local transport serialises through its lane anyway, and a cloud
- * pass that fanned out would report its failures out of the order the log reads them in.
+ * TOGETHER, READ IN ORDER (LEDGER #270; it was sequential, "a cloud pass that fanned out would
+ * report its failures out of the order the log reads them in"). The plans' calls go out at once
+ * and their answers are read in plan order, so the failures, the log and the trace keep the order
+ * the sequential pass gave them. A cancel stops the pass at the first plan that reads it.
  *
  * `_prompt_trace` MUST ALREADY BE ON THE ITEM when this runs: the generation loop slices it off
  * the AI manager's running trace, and these entries are appended to that slice. Appending them
@@ -631,12 +634,24 @@ export async function scrubGeneratedItem(
   // reported as "unchanged" — nobody read it back — it is reported in `failed` instead.
   const applied = new Set<string>();
 
-  for (const plan of plans) {
-    const prompt = buildScrubPrompt(plan, origin);
-    const sentAt = new Date().toISOString();
+  // THE PLANS GO OUT TOGETHER (LEDGER #270). Each reads only its own field's text, taken off the
+  // item before anything was sent, and writes only its own key (the alternates by index, the
+  // chapter titles by position), so no plan reads another's answer. The calls are sent at once;
+  // the answers are read, applied, failed, logged and traced IN PLAN ORDER afterwards, exactly as
+  // the one-at-a-time loop did them. A local model's calls share the job's slot on its server
+  // (lanes.ts); a standalone run (the reports page's button) sends its local calls one at a time
+  // through the slot, as every standalone call goes.
+  const sent = plans.map((plan) => ({ plan, prompt: buildScrubPrompt(plan, origin), sentAt: '' }));
+  const answers = await settleTogether(sent.map((call) => async () => {
+    call.sentAt = new Date().toISOString();
+    return askToRewrite(pass, call.plan, option, transport, sourceLabel, call.prompt);
+  }));
+
+  for (const [k, { plan, prompt, sentAt }] of sent.entries()) {
+    const answer = answers[k];
     try {
-      const text = await askToRewrite(pass, plan, option, transport, sourceLabel, prompt);
-      const { value } = readRewrittenAnswer(pass, plan, text, option.model, sourceLabel);
+      if (answer.status === 'rejected') throw answer.reason;
+      const { value } = readRewrittenAnswer(pass, plan, answer.value, option.model, sourceLabel);
       plan.apply(value, item);
       applied.add(itemKeyOf(plan));
     } catch (error) {
