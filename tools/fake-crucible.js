@@ -450,6 +450,8 @@ async function startFakeCrucible(options = {}) {
     let resident = options.resident ?? null;
     /** The context the resident model was loaded with (`params.context`); null: its default. */
     let residentCtx = null;
+    /** Every model put on the card that was not already there, in order: what a run paid to load. */
+    const cardLoads = [];
     let decideProbs = options.decideProbs;
     const jobs = [];
     const jobListeners = new Map();
@@ -657,6 +659,8 @@ async function startFakeCrucible(options = {}) {
             return;
         resident = model;
         residentCtx = context;
+        if (model !== null && before !== model)
+            cardLoads.push(model);
         if (before !== null && before !== model)
             pushServerEvent('card.unloaded', { subject: before, kind: 'llm', engine: 'mlx-lm', since: '2026-09-23T01:00:00Z', pids: [] });
         if (model !== null)
@@ -1285,7 +1289,12 @@ async function startFakeCrucible(options = {}) {
         const steps = [];
         steps.push(() => {
             job.status = 'running';
-            pushJobEvent(job, 'warming', { message: `loading ${String(job.model)} — mlx: weights mapped` });
+            // The transcriber goes on the card (the aligner rides with it): loaded only when it is
+            // not already there, as a real session keeps it resident between its items.
+            if (resident !== job.model) {
+                setCard(job.model);
+                pushJobEvent(job, 'warming', { message: `loading ${String(job.model)} — mlx: weights mapped` });
+            }
         });
         for (let i = 1; i <= decodeFrames; i++) {
             steps.push(() => pushJobEvent(job, 'progress', {
@@ -2352,6 +2361,8 @@ async function startFakeCrucible(options = {}) {
         installedJobTypes,
         jobs,
         resident: () => resident,
+        /** Every model put on the card that was not there already (load-model, denoise, asr), in order. */
+        cardLoads,
         /** Put `model` on the card (null clears it), optionally as loaded at `context` tokens. */
         setResident(model, context = null) {
             setCard(model, context);

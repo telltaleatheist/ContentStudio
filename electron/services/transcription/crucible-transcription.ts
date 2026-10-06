@@ -29,6 +29,7 @@ import {
   type AsrJobProgress,
   type AsrVenue,
 } from '../../crucible/asr';
+import type { SessionSource } from '../../crucible/session';
 
 // ─────────────────────────────────────────────────────────────────────────────── the venue
 
@@ -157,6 +158,12 @@ export interface CrucibleTranscribeRequest {
   /** The caller's band of its own bar this job fills. */
   readonly band: { readonly from: number; readonly to: number };
   readonly onProgress?: (percent: number, message: string) => void;
+  /**
+   * Where the job's queue session comes from when the caller holds one across several jobs (the
+   * editor's run, run-session.ts, LEDGER #264): every track of the run in one session, the models
+   * loaded once. Absent, the lanes' (the queue job's own, else this install's open one joined).
+   */
+  readonly sessions?: SessionSource;
 }
 
 export interface CrucibleTranscribeOutcome {
@@ -210,6 +217,7 @@ export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): 
               request.onProgress?.(last, `Queued on Crucible on ${server} (position ${position.position})`);
             },
             ...(request.signal === undefined ? {} : { signal: request.signal }),
+            ...(request.sessions === undefined ? {} : { source: request.sessions }),
           });
           session = held;
           return held.client;

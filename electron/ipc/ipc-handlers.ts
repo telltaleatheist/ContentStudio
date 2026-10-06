@@ -3994,7 +3994,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // prompt assets from there.
   // Voice isolation runs on the selected Crucible (LEDGER #200, plan P7): the Denoise toggle
   // reads that server's capability, and each chunk is a `denoise` job there.
-  setupEditorIpc(store, { promptSetsDir: getPromptSetsDirectory(), voiceIsolation: crucibleVoiceIsolation(analytics.crucible) });
+  // One processing run (isolation, then each track's transcription) holds ONE queue session from
+  // its first Crucible call to its last (LEDGER #264): the lanes hand it out (run-session.ts).
+  setupEditorIpc(store, {
+    promptSetsDir: getPromptSetsDirectory(),
+    voiceIsolation: crucibleVoiceIsolation(analytics.crucible),
+    crucibleSessions: analytics.crucible.lanes,
+  });
   // ==================== END EDITOR ====================
 
   // ==================== TRANSCRIPT LINK ====================

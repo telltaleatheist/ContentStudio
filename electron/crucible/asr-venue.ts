@@ -18,7 +18,8 @@
  * Every asr job runs inside a queue session (LEDGER #255): the lanes' `sessionOn` hands back the
  * queue job's own session when the transcription is part of one, else this install's open session
  * on that server joined, else a new one (session.ts). Its client is the SDK's `CrucibleSession`,
- * which sends `X-Crucible-Session` on every request.
+ * which sends `X-Crucible-Session` on every request. A caller with a session of its own (the
+ * editor's processing run, run-session.ts, LEDGER #264) names it as `source`, and the job runs there.
  */
 import type { CrucibleClient } from '@crucible/client';
 import type { AsrCrucibleClient, AsrVenue } from './asr';
@@ -60,8 +61,8 @@ export function crucibleAsrVenue(deps: {
     return {
       server,
       client: engineClient(() => deps.factory.clientFor(server)),
-      session: async ({ onQueue, signal }) => {
-        const hold = await deps.sessions.sessionOn(server, {
+      session: async ({ onQueue, signal, source }) => {
+        const hold = await (source ?? deps.sessions).sessionOn(server, {
           act: 'asr',
           what: jobId === '' ? 'a transcription' : `the transcription of ${jobId}`,
           ...(onQueue === undefined ? {} : { onQueue }),

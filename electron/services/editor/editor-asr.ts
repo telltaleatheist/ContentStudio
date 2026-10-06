@@ -22,6 +22,7 @@
 
 import * as fs from 'fs';
 
+import type { SessionSource } from '../../crucible/session';
 import { transcribeOnCrucible } from '../transcription/crucible-transcription';
 import { readCrucibleTranscript, transcriptTokens } from '../transcription/crucible-transcript';
 
@@ -80,6 +81,8 @@ export async function serveEditorAsrRequest(
     readonly jobId: string;
     readonly signal?: AbortSignal;
     readonly onProgress?: (percent: number, message: string) => void;
+    /** The editor run's session source (run-session.ts, LEDGER #264): every track in one session. */
+    readonly sessions?: SessionSource;
   }
 ): Promise<ServedAsrRequest> {
   const where = request.region ? ` region ${request.region[0].toFixed(1)}-${request.region[1].toFixed(1)}s` : '';
@@ -91,6 +94,7 @@ export async function serveEditorAsrRequest(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     band: { from: 0, to: 100 },
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+    ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
   });
   const transcript = readCrucibleTranscript(outcome.transcript);
   const tokens = transcriptTokens(transcript);
@@ -137,6 +141,8 @@ export function createAsrResponder(options: {
   readonly context: string;
   readonly jobId: string;
   readonly signal?: AbortSignal;
+  /** The editor run's session source (run-session.ts, LEDGER #264), handed to every request's job. */
+  readonly sessions?: SessionSource;
   readonly write: (line: string) => void;
   readonly log: (line: string) => void;
 }): (message: unknown) => boolean {
@@ -151,6 +157,7 @@ export function createAsrResponder(options: {
           context: options.context,
           jobId: options.jobId,
           ...(options.signal === undefined ? {} : { signal: options.signal }),
+          ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
           onProgress: (percent) => options.write(asrProgressLine(request, percent)),
         });
         options.log(`asr_request ${request.id}: ${served.words} words from job ${served.jobId} in ${served.wallSeconds.toFixed(1)} s` +

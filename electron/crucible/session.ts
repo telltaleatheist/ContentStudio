@@ -38,7 +38,9 @@
  * a `claude -p` call, an Anthropic field routed through a Crucible mid-job, ffmpeg, the editor's
  * own Python between denoise chunks. Around a cloud call inside a lane job the lanes touch the
  * job's open session every {@link SESSION_TOUCH_EVERY_MS} (lanes.ts `aiCall`), so a long cloud
- * stage never idles the job's session out; any other gap on this side has the 900 s.
+ * stage never idles the job's session out. The editor's processing run holds ONE session from its
+ * voice isolation to its last track's transcription and touches it on the same clock through the
+ * gaps between (run-session.ts, LEDGER #264); any other gap on this side has the 900 s.
  *
  * NOTHING HERE UNLOADS A MODEL. Closing the session settles the card (the server unloads what
  * nothing else holds). Inside the session a later load evicts an earlier model on its own.

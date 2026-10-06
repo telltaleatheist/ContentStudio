@@ -66,6 +66,11 @@
  * the editor calls when a track is finished and again when the run ends. The
  * editor's own Python between chunks is work on this side, not on the server's:
  * the session's `idle_s` (900 s) covers it.
+ *
+ * Inside the editor's processing run the session is the RUN's (run-session.ts,
+ * LEDGER #264): `open(onLog, run)` asks the run for it, the run keeps it (and
+ * touches it) through the rest of the workflow and the transcription after it,
+ * and `dispose` lets go of nothing the run still holds.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -630,8 +635,12 @@ export class CrucibleVoiceIsolator {
 export interface VoiceIsolationDeps {
   /** Can the selected server isolate voice? A reason on every "no", for the Denoise row. */
   status(): Promise<{ available: boolean; reason: string }>;
-  /** An isolator on the selected server, started (its /v1/info row checked). */
-  open(onLog: (line: string) => void): Promise<CrucibleVoiceIsolator>;
+  /**
+   * An isolator on the selected server, started (its /v1/info row checked). `sessions` is where its
+   * queue session comes from: the editor run's (`RunSession`, run-session.ts, LEDGER #264), so
+   * the transcription after it runs in the same session; the app's lanes when absent.
+   */
+  open(onLog: (line: string) => void, sessions?: SessionSource): Promise<CrucibleVoiceIsolator>;
 }
 
 /** The parts of the Crucible context this door reads (electron/crucible/context.ts). */
@@ -664,7 +673,7 @@ export function crucibleVoiceIsolation(ctx: VoiceIsolationContext): VoiceIsolati
         return { available: false, reason: `Needs a Crucible with voice isolation. The Crucible on ${server} did not answer: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
-    async open(onLog) {
+    async open(onLog, sessions) {
       const server = ctx.routingServer() ?? ctx.servers.selected();
       // A work client: no deadline, which would cut off the event stream.
       const client = await ctx.factory.clientFor(server);
@@ -672,7 +681,7 @@ export function crucibleVoiceIsolation(ctx: VoiceIsolationContext): VoiceIsolati
         server,
         client,
         session: async ({ onQueue, signal }) => {
-          const hold = await ctx.lanes.sessionOn(server, {
+          const hold = await (sessions ?? ctx.lanes).sessionOn(server, {
             act: VOICE_ISOLATION_ACT,
             what: 'the editor\'s voice isolation',
             onQueue,

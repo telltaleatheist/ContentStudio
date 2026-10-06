@@ -44,6 +44,7 @@
  */
 
 import * as fs from 'fs';
+import type { SessionSource } from './session';
 
 // ─────────────────────────────────────────────────────────────── the model and its params
 
@@ -152,9 +153,10 @@ export interface AsrVenue {
   readonly client: AsrCrucibleClient;
   /**
    * The queue session a job runs in (session.ts via lanes.ts `sessionOn`): its client sends
-   * `X-Crucible-Session`. Let go of it once the job has ended.
+   * `X-Crucible-Session`. Let go of it once the job has ended. `source` is where the session
+   * comes from when the caller has its own (the editor run's, run-session.ts, LEDGER #264).
    */
-  session(request: { onQueue?: (position: { position: number; of: number }) => void; signal?: AbortSignal }): Promise<{ client: AsrCrucibleClient; release(): Promise<void> }>;
+  session(request: { onQueue?: (position: { position: number; of: number }) => void; signal?: AbortSignal; source?: SessionSource }): Promise<{ client: AsrCrucibleClient; release(): Promise<void> }>;
   /** P3's in-flight ledger for this venue's jobs, when the wiring has one (P2 wires it). */
   readonly ledger?: AsrJobLedger;
 }

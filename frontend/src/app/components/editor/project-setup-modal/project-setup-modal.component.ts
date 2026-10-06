@@ -736,7 +736,9 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       this.attached = true;
       this.ownedJobId = null;
       try {
-        await this.host.startWorkflow(options);
+        // `transcribeAfter` tells main to keep the run's Crucible queue session for the
+        // transcription that follows (LEDGER #264); main strips it before Python sees the options.
+        await this.host.startWorkflow({ ...options, transcribeAfter: this.transcribeAfter });
       } catch (err: any) {
         this.attached = false;
         this.error = `Could not start processing: ${err?.message || String(err)}`;

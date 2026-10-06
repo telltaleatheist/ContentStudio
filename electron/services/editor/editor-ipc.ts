@@ -17,6 +17,8 @@ import { buildAsrContext } from '../transcription/asr-context';
 import { asrContextTemplate, editorTrackFacts } from '../transcription/asr-facts';
 import { separationProgress } from './separation-protocol';
 import type { CrucibleVoiceIsolator, VoiceIsolationDeps } from '../../crucible/denoise';
+import { EditorRunSessions, type RunSession } from '../../crucible/run-session';
+import type { SessionSource } from '../../crucible/session';
 import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
@@ -494,21 +496,24 @@ interface ProjectScanResult {
 /**
  * What the editor's channels need from the host beyond the store: the story handlers'
  * prompt-assets directory (story-ipc.ts says why), and voice isolation on the selected
- * Crucible (LEDGER #200; electron/crucible/denoise.ts).
+ * Crucible (LEDGER #200; electron/crucible/denoise.ts), and the source of the queue session one
+ * processing run holds from its isolation to its last track's transcription (LEDGER #264;
+ * electron/crucible/run-session.ts).
  */
-export type EditorIpcDeps = StoryIpcDeps & { voiceIsolation: VoiceIsolationDeps };
+export type EditorIpcDeps = StoryIpcDeps & { voiceIsolation: VoiceIsolationDeps; crucibleSessions: SessionSource };
 
 /**
  * Register every editor channel. Called from setupIpcHandlers, following the
  * setupPublishIpc precedent.
  */
 export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
-  setupEditorSessionHandlers(store);
+  const runs = new EditorRunSessions(deps.crucibleSessions);
+  setupEditorSessionHandlers(store, runs);
   setupStoryAnalysisHandlers(store, deps);
   setupTitleHandoffHandlers();
   setupMediaHandlers();
   setupEditorFileHandlers();
-  setupProcessingHandlers(deps.voiceIsolation);
+  setupProcessingHandlers(deps.voiceIsolation, runs);
   setupProjectHandlers();
   setupMuteWordsHandlers();
   setupEditorConfigHandlers();
@@ -535,7 +540,7 @@ export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
  * timeline manifest; a Python failure rejects with the Python message VERBATIM —
  * a manifest is never fabricated.
  */
-function setupEditorSessionHandlers(store: Store<any>): void {
+function setupEditorSessionHandlers(store: Store<any>, runs: EditorRunSessions): void {
   // Editor-scoped seed payload.
   let pendingEditorPayload: { zipPath: string } | null = null;
 
@@ -833,6 +838,10 @@ function setupEditorSessionHandlers(store: Store<any>): void {
 
     const jobId = `transcribe_${Date.now()}`;
     const sender = event.sender;
+    // The queue session every track's job runs in (LEDGER #264): the processing run's, parked for
+    // this zip when it was started with "transcribe when processing finishes", else one of its own,
+    // asked for by the first track. Let go of once, when the transcription ends however it ends.
+    const run: RunSession = runs.startTranscription(jobId, zipPath);
 
     // The session's asr context (LEDGER #206): the verbatim instruction, the session's
     // story titles from its edits sidecar, and the ACTIVE channel's brand terms and promoted
@@ -850,6 +859,7 @@ function setupEditorSessionHandlers(store: Store<any>): void {
     } catch (err: any) {
       const message = `The transcription context could not be built: ${err?.message || String(err)}`;
       log.error(`[${jobId}] ${message}`);
+      void run.release('the transcription context could not be built');
       if (!sender.isDestroyed()) {
         sender.send('transcribe-complete', { jobId, exitCode: -1, result: null, errorMessage: message });
       }
@@ -862,6 +872,7 @@ function setupEditorSessionHandlers(store: Store<any>): void {
         sender.send('transcribe-progress', { jobId, progress, message, etaSeconds });
       },
       onComplete: (code, result, errorMessage) => {
+        void run.release(code === 0 ? 'the transcription is done' : 'the transcription failed or was cancelled');
         if (sender.isDestroyed()) return;
         sender.send('transcribe-complete', {
           jobId,
@@ -870,11 +881,12 @@ function setupEditorSessionHandlers(store: Store<any>): void {
           errorMessage: code === 0 ? null : (errorMessage ?? null),
         });
       },
-    }).catch((err: any) => {
+    }, run).catch((err: any) => {
       // Pre-spawn resolution failure (ffmpeg or the Python runtime not found). Fail loud to
       // the renderer via the same completion channel so the UI never spins.
       const message = err?.message || String(err);
       log.error(`[${jobId}] transcribe failed before spawn: ${message}`);
+      void run.release('the transcription never started');
       if (!sender.isDestroyed()) {
         sender.send('transcribe-complete', {
           jobId,
@@ -1226,7 +1238,9 @@ function setupEditorFileHandlers(): void {
 // Processing: source auto-detection, assets, workflow execution
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
+function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: EditorRunSessions): void {
+  /** Windows whose closing already lets go of a parked run (one listener per window, not per run). */
+  const watchedSenders = new WeakSet<Electron.WebContents>();
   /**
    * The downloadable environment: ffmpeg/ffprobe and the Python runtime, both REQUIRED (the
    * whisper.cpp model and voice-separator-env left with P10: transcription and voice isolation
@@ -1509,15 +1523,26 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
 
       // VOICE ISOLATION ON THE SELECTED CRUCIBLE (LEDGER #200). voice_separation.py asks for
       // each chunk; the isolator is opened on the first request of a track (its /v1/info row is
-      // checked before anything is uploaded), holds a queue session across that track's chunks
-      // (the separator stays resident in it, LEDGER #255), and is disposed on the track's
-      // `separation_release` and again when the run ends.
+      // checked before anything is uploaded) and is disposed on the track's `separation_release`
+      // and again when the run ends.
+      //
+      // ONE QUEUE SESSION FOR THE WHOLE RUN (LEDGER #264): the isolator's session is the RUN's,
+      // asked for by the first chunk and kept (touched every 30 s) through every track, the rest
+      // of the workflow and, when the run was started with "transcribe when processing finishes",
+      // the transcription that follows it, so the separator and then the ASR models load once.
+      // `transcribeAfter` is the renderer's flag for that; it is not the workflow's, so Python
+      // never sees it.
+      const { transcribeAfter, ...workflowInput } = options ?? {};
+      if (transcribeAfter !== undefined && typeof transcribeAfter !== 'boolean') {
+        throw new Error(`execute-workflow: transcribeAfter must be a boolean when given, got ${JSON.stringify(transcribeAfter)}`);
+      }
+      const run = runs.startProcessing(jobId);
       let isolator: Promise<CrucibleVoiceIsolator> | null = null;
       const isolatorLog = (line: string): void => log.info(`[${jobId}] [voice isolation] ${line}`);
 
       pythonService().executeWorkflow(jobId, {
         onSeparationRequest: async (request, signal) => {
-          if (isolator === null) isolator = voiceIsolation.open(isolatorLog);
+          if (isolator === null) isolator = voiceIsolation.open(isolatorLog, run);
           const running = await isolator;
           const done = await running.separate(request.wav, request.out, {
             signal,
@@ -1540,7 +1565,7 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
           const opened = await held.catch(() => null);
           if (opened !== null) await opened.dispose();
         },
-        inputData: options,
+        inputData: workflowInput,
         onOutput: (data) => {
           if (sender.isDestroyed()) return;
           log.info(`[${jobId}] Sending workflow-output (stdout) to renderer:`, data);
@@ -1556,6 +1581,12 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
           sendProgress(progress, message, subProgress);
         },
         onComplete: (code, result) => {
+          // The run's session: parked for the transcription of the zip this run produced, or let go
+          // of now (a failure, a cancel, no transcription asked for, nobody left to start one).
+          const zipPath = typeof result?.zipPath === 'string' && result.zipPath !== '' ? result.zipPath : null;
+          const handOff = code === 0 && transcribeAfter === true && zipPath !== null && !sender.isDestroyed();
+          void runs.processingEnded(run, handOff ? zipPath : null,
+            code === 0 ? 'the processing run finished and nothing transcribes it next' : 'the processing run failed or was cancelled');
           if (sender.isDestroyed()) {
             log.warn(`[${jobId}] Cannot send workflow-complete — WebContents destroyed`);
             return;
@@ -1565,6 +1596,11 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
         }
       });
 
+      // The window that would start the transcription closed: nothing will adopt a parked run.
+      if (!watchedSenders.has(sender)) {
+        watchedSenders.add(sender);
+        sender.once('destroyed', () => runs.letGoOfParked('the editor window closed'));
+      }
       return { success: true, jobId };
     } catch (error: any) {
       log.error('Error executing workflow:', error);

@@ -4,6 +4,7 @@ import * as log from 'electron-log';
 import { EditorPaths } from './app-config';
 import { BinaryResolver } from './binary-resolver';
 import { DuganAutomixer, DuganTrack } from './dugan-automixer';
+import type { SessionSource } from '../../crucible/session';
 import { createAsrResponder } from './editor-asr';
 import {
   SEPARATION_RELEASE,
@@ -906,7 +907,9 @@ export class PythonService {
     callbacks: {
       onProgress?: (progress: number, message: string, etaSeconds: number | null) => void;
       onComplete?: (code: number, result: any, errorMessage: string | null) => void;
-    }
+    },
+    /** The editor run's queue-session source (run-session.ts, LEDGER #264): every track's job runs in it. */
+    sessions?: SessionSource,
   ): Promise<void> {
     log.info(`Starting transcription [${jobId}] for zip: ${zipPath}`);
 
@@ -948,6 +951,7 @@ export class PythonService {
         context: asrContext,
         jobId,
         signal: asrAbort.signal,
+        ...(sessions === undefined ? {} : { sessions }),
         write: (line) => {
           if (!pythonProcess.stdin.destroyed && pythonProcess.stdin.writable) pythonProcess.stdin.write(line);
         },
