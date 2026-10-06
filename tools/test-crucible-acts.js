@@ -95,7 +95,7 @@ check('every routing option that runs through Crucible names its Crucible ids; c
     // The vision rungs (qwen35-9b-vl, qwen35-2b, qwen35-08b, qwen38-27b-vl) went with the thumbnail
     // frame row on 2026-09-29 (REMOVED_ROUTING_OPTIONS).
     sonnet5: ['anthropic/claude-sonnet-5'],
-    opus5: ['anthropic/claude-opus-5'],
+    opus5: ['anthropic/claude-opus-5-5'],
     haiku45: ['anthropic/claude-haiku-4-5-20251001'],
     'claude-cli': null,
     'claude-cli-sonnet': null,

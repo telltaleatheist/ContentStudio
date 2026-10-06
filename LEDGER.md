@@ -1540,3 +1540,11 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Open.** Narrowing on a refused width (waiting) rather than failing is a declared choice awaiting Owen's ruling. A sibling of a failed field is waited for, not aborted. The description writes one candidate (`DESCRIPTION_CANDIDATES` = 1), so it gains nothing inside its own unit. The gate's decide calls state no group floor (a larger state grows the load after the calls in flight finish). The local Crucible manifest gives the Mac 27B-8bit `--decode-concurrency 8`, not 16; past the engine's width the server queues.
 
 [electron/crucible/fan-out.ts (new), lanes.ts, session.ts, transport.ts, batch.ts, stream-stall.ts; electron/services/metadata/metadata-tasks.ts, description-unit.ts, scrub.ts, ai-manager.service.ts, reroll/gate.ts, reroll/checks.ts; tools/fake-crucible.js, test-crucible-fan-out.js (new), test-crucible-batch.js, reroll-checks.js, scrub-reroll-checks.js]
+
+**271. The "Claude Opus" routing option is Opus 5.5 (Owen, 2026-10-06: "it should use the latest opus available, which is currently 5.5").**
+- **claude -p.** The `claude -p` rungs (`claude-cli:opus`) send the `opus` alias, and checked live, Claude Code 2.1.280 resolves it to `claude-opus-5-5`. The alias follows Claude Code's own latest, so nothing changes for those rungs.
+- **The API-key option.** It was pinned to `anthropic/claude-opus-5`. It is now `anthropic/claude-opus-5-5`, labelled "Claude Opus 5.5". The key stays `opus5`, so saved routing keeps pointing at it.
+- **Checked against the latest.** Sonnet 5 and Haiku 4.5 are already the latest of their lines.
+- **Checks.** routing-publish-checks and test-crucible-acts were updated to the new id; check:pure and check:crucible (26 keepers) pass.
+
+[electron/services/metadata/metadata-routing.ts; tools/routing-publish-checks.js; tools/test-crucible-acts.js]

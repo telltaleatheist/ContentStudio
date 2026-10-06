@@ -167,7 +167,9 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOptionDef> 
   // Crucible upstream ids (plan 6.2): the server that runs the call forwards them to Anthropic
   // on ITS key (LEDGER #194). Offered in the dialog only when that server has one configured.
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', crucibleIds: ['anthropic/claude-sonnet-5'], cliModel: null },
-  opus5: { kind: 'cloud', label: 'Claude Opus 5', crucibleIds: ['anthropic/claude-opus-5'], cliModel: null },
+  // The key stays `opus5` (saved routing names it); the model is the latest Opus (Owen, 2026-10-06:
+  // "it should use the latest opus available"), as the `claude -p` rungs' `opus` alias already is.
+  opus5: { kind: 'cloud', label: 'Claude Opus 5.5', crucibleIds: ['anthropic/claude-opus-5-5'], cliModel: null },
   /**
    * The subscription rung (operator, 2026-08-24): the same Sonnet, reached through the
    * `claude -p` CLI on the operator's Claude Code plan instead of the metered API key.

@@ -458,7 +458,7 @@ check('resolution: the Mac runs the 8-bit, WSL the 4-bit, and the job logs which
   eq(wsl.bind('titles', 'sonnet5').model, 'anthropic/claude-sonnet-5', 'an upstream option binds to its one id:');
   eq(wsl.bind('titles', 'claude-cli').model, 'claude-cli:opus', 'claude -p binds to its CLI string:');
   const cloudOnly = routing.RoutingModels.withoutCatalog('the keeper routes no local model');
-  eq(cloudOnly.bind('titles', 'opus5').model, 'anthropic/claude-opus-5', 'a cloud-only job reads no catalog and still binds:');
+  eq(cloudOnly.bind('titles', 'opus5').model, 'anthropic/claude-opus-5-5', 'a cloud-only job reads no catalog and still binds:');
   eq(routing.routesLocal(['sonnet5', 'claude-cli']), false);
   eq(routing.routesLocal(['sonnet5', 'qwen38-27b']), true);
   eq(routing.jobOptionIds(routing.resolveMetadataRouting({ chapters: 'opus5' })).includes('qwen38-27b'), true, 'the job binds its 27B rows');
