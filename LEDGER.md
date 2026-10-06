@@ -1489,3 +1489,19 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** A dev launch quit by AppleScript logged the sweep, "Application is quitting...", "[Quit] exiting (exit code 0)", and the process was gone. check:crucible passes (25 keepers) and build:electron is clean. Owen's ⌘Q on the next build is the real test.
 
 [electron/main.ts]
+
+**269. A batch row says what comes next and why it waits, in plain words (Owen, 2026-10-06, of "Waiting for the batch's the re-roll gate's checks (a batch of 4 on crucible@owens-mac-studio): 3 jobs are still at titles, description and tags": "this doesnt really make sense. can you fix it").**
+- **Stage names.** batch.ts `stageWords` now names each stage by what the job does, with no pipeline names:
+  - transcribing
+  - finding chapters
+  - writing titles, description and tags
+  - checking the titles, description and tags
+  - rewriting the weak ones (round N)
+  - checking the rewrites (round N)
+  - writing thumbnail words and saving
+- **The waiting line** reads in one of two forms:
+  - "Next: checking the titles, description and tags. Waiting because 3 other videos in this batch of 4 are still writing titles, description and tags." (or "… have not started yet");
+  - when the stage is open, "Next: … 1 video is ahead of it on crucible@owens-mac-studio."
+- **Checks.** test-crucible-batch.js asserts the new form; check:crucible passes (25 keepers).
+
+[electron/crucible/batch.ts; tools/test-crucible-batch.js]

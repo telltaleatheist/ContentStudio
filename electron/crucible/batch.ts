@@ -116,16 +116,21 @@ export function stageIndex(stage: BatchStage): number {
   return i;
 }
 
-/** The stage in words, for a row and the log. */
+/**
+ * The stage in plain words, for a row and the log: what the job DOES in it, as a verb phrase
+ * ("checking the titles, description and tags"). No pipeline names: Owen, 2026-10-06, of
+ * "Waiting for the batch's the re-roll gate's checks …": "this doesnt really make sense".
+ */
 export function stageWords(stage: BatchStage): string {
   switch (stage) {
-    case 'transcribe': return 'transcription';
-    case 'chapters': return 'chapter finding';
-    case 'fields': return 'titles, description and tags';
-    case 'finish': return 'thumbnail words and saving';
+    case 'transcribe': return 'transcribing';
+    case 'chapters': return 'finding chapters';
+    case 'fields': return 'writing titles, description and tags';
+    case 'finish': return 'writing thumbnail words and saving';
     default: {
       const [, kind, round] = /^gate-(check|revise)-(\d)$/.exec(stage)!;
-      return kind === 'check' ? `the re-roll gate's checks${round === '0' ? '' : ` (round ${round})`}` : `the re-roll gate's rewrites (round ${round})`;
+      if (kind === 'check') return round === '0' ? 'checking the titles, description and tags' : `checking the rewrites (round ${round})`;
+      return `rewriting the weak ones (round ${round})`;
     }
   }
 }
@@ -347,17 +352,21 @@ export class StageBatch {
   }
 
   private waitLine(m: Member, live: Member[]): string {
-    const words = stageWords(BATCH_STAGES[m.at]);
-    const of = `a batch of ${this.members.length} on ${this.server}`;
+    const next = stageWords(BATCH_STAGES[m.at]);
+    const videos = (n: number) => (n === 1 ? '1 other video' : `${n} other videos`);
     if (!this.isOpen(m.at)) {
+      // This stage starts for the whole batch at once, when every video has caught up.
       const behind = live.filter((o) => o !== m && this.pos(o) < m.at);
       const lowest = Math.min(...behind.map((o) => this.pos(o)));
-      const doing = behind.every((o) => o.at < 0) ? 'not started yet' : `still at ${stageWords(BATCH_STAGES[lowest])}`;
-      return `Waiting for the batch's ${words} (${of}): ${behind.length} ${behind.length === 1 ? 'job is' : 'jobs are'} ${doing}`;
+      const why = behind.every((o) => o.at < 0)
+        ? `${videos(behind.length)} in this batch of ${this.members.length} ${behind.length === 1 ? 'has' : 'have'} not started yet`
+        : `${videos(behind.length)} in this batch of ${this.members.length} ${behind.length === 1 ? 'is' : 'are'} still ${stageWords(BATCH_STAGES[lowest])}`;
+      return `Next: ${next}. Waiting because ${why}.`;
     }
     const ahead = live.filter((o) => o !== m && (o.state === 'turn' || (o.state === 'waiting' && this.isOpen(o.at) && (o.at < m.at || (o.at === m.at && o.order < m.order))))).length;
-    return `Waiting its turn for ${words} (${of}): ${ahead} ${ahead === 1 ? 'job' : 'jobs'} ahead`;
+    return `Next: ${next}. ${ahead === 1 ? '1 video is' : `${ahead} videos are`} ahead of it on ${this.server}.`;
   }
+
 
   private say(m: Member, line: string | null): void {
     if (m.line === line) return;

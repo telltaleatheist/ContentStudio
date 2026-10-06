@@ -184,7 +184,7 @@ check('three jobs on one server are ONE batch: one session, each model loaded on
     assert.ok(last('decide') < first(BIG) && last(NINE) < first(BIG), 'every 9B call before the first 27B call');
     assert.ok(p.j1.stages.length === 3 && p.j1.stages[0][1] === q.plan.start[0].batch.id);
     // The rows were told they waited for the batch's next stage.
-    assert.ok(w.pushed.batchWait.some((x) => x.jobId === 'j2' && /Waiting (for the batch's|its turn for) /.test(x.line ?? '')), JSON.stringify(w.pushed.batchWait.slice(0, 4)));
+    assert.ok(w.pushed.batchWait.some((x) => x.jobId === 'j2' && /^Next: [a-z][^.]*\. (Waiting because|\d+ videos? (is|are) ahead of it on )/.test(x.line ?? '')), JSON.stringify(w.pushed.batchWait.slice(0, 4)));
     assert.deepStrictEqual(w.ctx.lanes.batchViews(), [], 'the batch is gone');
     assert.strictEqual(w.ctx.lanes.view().lanes[0].runningJobId, null, 'the lane is free');
   } finally {
