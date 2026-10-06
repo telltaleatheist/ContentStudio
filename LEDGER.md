@@ -1473,3 +1473,19 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **A batch session the server ends: "Fail them, I'll requeue".** Every unfinished member fails naming the reason. Nothing opens a fresh session for them (#255's session rule).
 
 [electron/crucible/lanes.ts; tools/test-crucible-batch.js]
+
+**268. ⌘Q quits for real: after the Crucible quit sweep the app exits itself instead of asking Electron to quit again (Owen, 2026-10-06: "when i hit cmd+q, it closes the window but doesnt close the program. i have to reopen and hit cmd+q again").**
+- **What the logs showed.** Every failing quit (2026-10-04 12:02, 2026-10-06 15:45, 16:45, and 16:58 when Owen pressed ⌘Q on a debug launch) logged:
+  1. the held pass, "giving back what ContentStudio holds on Crucible first...";
+  2. "Quit sweep: 0 hold(s)";
+  3. the second pass, "Application is quitting...".
+  Then nothing: no `[Quit] will-quit`. The windows closed and the process stayed alive with its lanes `quitting` (#261). The next quit, after `activate` reopened a window, went through.
+  A scripted quit (AppleScript `quit`) went through first time, twice, so the trouble is on the menu's ⌘Q path.
+- **Most likely cause.** With nothing to sweep, the sweep settles at once. The old `finally → app.quit()` then ran while Electron was still inside the first, prevented, quit, and that one's result marked the app as not quitting. A JS-started quit in a minimal repro did not stall either way, and ⌘Q could not be scripted here (osascript may not send keystrokes), so this is the reading, not a reproduction.
+- **The fix.** It does not depend on that reading. Once the sweep settles, main.ts runs the local cleanup itself (`releaseOnQuit`: the archive rsync stopped, the Crucible loops stopped) and calls `app.exit(0)`. Electron's quit state is no longer involved.
+  - The other `before-quit` handlers (thumbnails' text-model release) already ran on the held pass.
+  - `will-quit`'s hotkey release is skipped, because the OS releases a global shortcut when its process exits.
+  - The log now ends "[Quit] exiting (exit code 0)".
+- **Checks.** A dev launch quit by AppleScript logged the sweep, "Application is quitting...", "[Quit] exiting (exit code 0)", and the process was gone. check:crucible passes (25 keepers) and build:electron is clean. Owen's ⌘Q on the next build is the real test.
+
+[electron/main.ts]

@@ -423,27 +423,22 @@ app.on('window-all-closed', () => {
 // Cleanup before quitting.
 //
 // The Crucible half is asynchronous and must finish before the process goes: the running
-// jobs are aborted, given ~2 s to release their own leases (a lease granted after quit began
-// is in no ledger row), and then the ledger is swept, all under a 30 s deadline (plan sections
-// 0a, 13.4). So the first before-quit is held with preventDefault, and the app quits for real
-// once that settles; the second pass through here finds `crucibleQuitDone` and lets it go.
-let crucibleQuitDone = false;
+// jobs are aborted, given ~2 s to release what they hold, and then the ledger is swept, all
+// under a 30 s deadline (plan sections 0a, 13.4). So the first before-quit is held with
+// preventDefault, and once that settles the app EXITS ITSELF (finishQuit): the local cleanup
+// below, then app.exit(0).
+//
+// NOT a second app.quit(). That was the old way, and a ⌘Q quit (the menu's Quit) stalled on it
+// (Owen, 2026-10-06: "when i hit cmd+q, it closes the window but doesnt close the program"):
+// the log showed the held pass, the sweep and the second pass ("Application is quitting...")
+// and then no will-quit; the windows closed and the process stayed, its lanes refusing every
+// job (#261). With nothing to sweep the sweep settles at once, and the second app.quit() ran
+// while Electron was still finishing the first, prevented, quit, whose own result then marked
+// the app as not quitting. Exiting directly takes Electron's quit state out of it.
 let crucibleQuitting = false;
-app.on('before-quit', (event) => {
-  if (crucible !== null && !crucibleQuitDone) {
-    event.preventDefault();
-    if (crucibleQuitting) return;
-    crucibleQuitting = true;
-    log.info('Application is quitting: giving back what ContentStudio holds on Crucible first...');
-    void crucible.quit().then((report) => {
-      log.info(`[crucible] Quit sweep: ${report.rows.length} hold(s) handled, ${report.kept.length} kept for the next start${report.timedOut ? ' (deadline hit)' : ''}`);
-    }).finally(() => {
-      crucibleQuitDone = true;
-      app.quit();
-    });
-    return;
-  }
-  log.info('Application is quitting...');
+
+/** What the process gives back before it goes, whichever way it quits. */
+function releaseOnQuit(): void {
   // An rsync spawned by the archive sync is NOT killed when this process exits — on POSIX
   // it survives and is reparented to PID 1, and with --inplace a second rsync started on
   // the next launch would interleave its writes into the same destination files. Stopping
@@ -454,10 +449,30 @@ app.on('before-quit', (event) => {
   // here stops the local Crucible itself: it is an OS service shared with BookForge, Foundry
   // and Briefcase, and another app may be mid-run (plan section 5).
   crucible?.stop();
-  // No separate session close here: the held quit above aborts every running job, whose
-  // `finally` lets go of its session, closes every session still open (session.ts `closeAll`:
-  // the editor's voice isolation, a held title loop), and then sweeps whatever the ledger
-  // still lists (P3, LEDGER #255).
+  // No separate session close here: the held quit aborts every running job, whose `finally`
+  // lets go of its session, closes every session still open (session.ts `closeAll`: the
+  // editor's voice isolation, a held title loop), and then sweeps whatever the ledger still
+  // lists (P3, LEDGER #255).
+}
+
+app.on('before-quit', (event) => {
+  if (crucible !== null) {
+    event.preventDefault();
+    if (crucibleQuitting) return;
+    crucibleQuitting = true;
+    log.info('Application is quitting: giving back what ContentStudio holds on Crucible first...');
+    void crucible.quit().then((report) => {
+      log.info(`[crucible] Quit sweep: ${report.rows.length} hold(s) handled, ${report.kept.length} kept for the next start${report.timedOut ? ' (deadline hit)' : ''}`);
+    }).finally(() => {
+      log.info('Application is quitting...');
+      releaseOnQuit();
+      log.info('[Quit] exiting (exit code 0)');
+      app.exit(0);
+    });
+    return;
+  }
+  log.info('Application is quitting...');
+  releaseOnQuit();
 });
 
 // Where a quit stops, said in the log: on 2026-10-04 a quit logged "Application is quitting..." and
