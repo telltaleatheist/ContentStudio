@@ -99,6 +99,7 @@ check('every routing option that runs through Crucible names its Crucible ids; c
     haiku45: ['anthropic/claude-haiku-4-5-20251001'],
     'claude-cli': null,
     'claude-cli-sonnet': null,
+    'claude-cli-fable': null,
   };
   for (const [id, option] of Object.entries(routing.METADATA_ROUTING_OPTIONS)) {
     assert.ok(id in expected, `an option this check does not know: ${id}`);

@@ -1548,3 +1548,13 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** routing-publish-checks and test-crucible-acts were updated to the new id; check:pure and check:crucible (26 keepers) pass.
 
 [electron/services/metadata/metadata-routing.ts; tools/routing-publish-checks.js; tools/test-crucible-acts.js]
+
+**272. Titles can run on Fable through claude -p (Owen, 2026-10-06: "can we set titles only to fable with claude -p").**
+- **The option.** A new routing option `claude-cli-fable`, labelled "claude -p (Fable, subscription)", with cliModel `claude-cli:fable`.
+  - Offered on the Titles row only; any other row refuses it by name.
+  - Checked live: Claude Code 2.1.280 resolves the `fable` alias to `claude-fable-5-1`.
+  - Same key-free spawn and same no-fallback rule as the Opus and Sonnet rungs.
+- **Owen's saved routing.** It is set to it only once the build that knows the option is installed. The running app would refuse an option it has never heard of.
+- **Checks.** test-crucible-acts and test-crucible-transport know the option; check:crucible (26 keepers) and check:pure pass.
+
+[electron/services/metadata/metadata-routing.ts; tools/test-crucible-acts.js; tools/test-crucible-transport.js]

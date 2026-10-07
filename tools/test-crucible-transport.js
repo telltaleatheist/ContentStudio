@@ -456,7 +456,7 @@ check('the routing dialog lists only what the selected server offers, Claude onl
     const view = routing.buildRoutingView({ titles: 'sonnet5', description: 'qwen35-4b' }, inventory, { routingServer: null, selectedServer: 'mac' });
     const ids = (task) => view.tasks.find((t) => t.id === task).options.map((o) => `${o.id}:${o.availability}`);
     // Titles: the 27B (installed), claude -p (outside), and the STORED Sonnet shown with the reason.
-    assert.deepStrictEqual(ids('titles'), ['qwen38-27b:installed', 'sonnet5:not-here', 'claude-cli:outside', 'claude-cli-sonnet:outside']);
+    assert.deepStrictEqual(ids('titles'), ['qwen38-27b:installed', 'sonnet5:not-here', 'claude-cli:outside', 'claude-cli-sonnet:outside', 'claude-cli-fable:outside']);
     assert.match(view.tasks.find((t) => t.id === 'titles').options[1].availabilityNote, /has no Anthropic key/);
     // Description: the 9B is pullable (listed, flagged); the stored 4B is not here, with the server's reason.
     assert.deepStrictEqual(ids('description'), ['qwen38-27b:installed', 'qwen35-9b:pullable', 'qwen35-4b:not-here', 'claude-cli:outside', 'claude-cli-sonnet:outside']);

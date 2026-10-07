@@ -189,6 +189,12 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOptionDef> 
    */
   'claude-cli-sonnet': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', crucibleIds: null, cliModel: 'claude-cli:sonnet' },
   /**
+   * The Fable rung of the same transport (Owen, 2026-10-06: "can we set titles only to fable with
+   * claude -p"). Offered on the titles row only. `fable` is Claude Code's alias for the latest
+   * Fable (claude-fable-5-1 on 2.1.280, checked live). Same key-free spawn, same no-fallback rule.
+   */
+  'claude-cli-fable': { kind: 'cloud', label: 'claude -p (Fable, subscription)', crucibleIds: null, cliModel: 'claude-cli:fable' },
+  /**
    * The cheap cloud rung, added 2026-08-24. The prompt harness ran the production prompts
    * against it (tools/prompt-tune, cycle 1): descriptions and chapter details held at n=2
    * with zero factual-check failures. Offered on every big field so the operator can run
@@ -339,7 +345,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'titles',
     label: 'Titles',
-    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet', 'claude-cli-fable'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'metadata',
