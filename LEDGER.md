@@ -1631,3 +1631,21 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - No dual-camera vMix stream is on disk, so a live Cam 2 was checked by proxy through the live Cam 1 quadrant.
 
 [editor-backend/core/video_analysis/camera_detector.py]
+
+**277. The editor finds the master by every placement, including the disabled audio clip, so a set with a file for every picture source opens (Owen, 2026-10-08, the 2026-10-08 OBS set: "Could not open this session … no flattened leaf media file has a filename stem equal to 'master'"; "but there IS a master").**
+- **The miss.** The editor's one video track is the master's flattened segments. `editor_manifest` looked for them among ENABLED leaves only.
+  - The pipeline disables the master's own audio clip (lane -1, under every layout), because each source's own audio is used instead.
+  - On a vMix set the master was always also on screen somewhere, as a quadrant crop: Cam 2, or game, or screen.
+  - The 2026-10-08 OBS set has a dedicated cam, screen and game file, and Cam 2 was off throughout (#276). So the master's picture is nowhere, and the processed set could not be opened.
+- **The rule.**
+  - Disabled subtrees are walked too, but only to record where each file plays (`placements`). Nothing disabled becomes a segment, and disabled files are not registered for the missing-file check.
+  - The master is identified among all placements. Its segments are all its placements, picture or sound, enabled or not.
+  - The existing agreement check still requires every placement covering an instant to play the same point of the master.
+  - The master file must exist on disk.
+- **Checks.**
+  - Old vs new `editor_manifest.py` on every processed set on disk: the five vMix sets that opened (2026-09-27, 09-30, 10-01, 10-05, 10-07) give byte-identical output.
+  - Nine NAS archive copies fail identically before and after (they point at media paths that no longer exist).
+  - 2026-10-08 now builds: a 10407.1 s timeline, 1917 segments on each of video, mic and screen audio, with identical cut times, and the master and processed-mic source times equal at every cut.
+- **Seen in the alignment sidecar of that run.** GCC-PHAT measured mic1 and screen audio at −0.3337 s, and the picture measured screen and game at +0.0334 s and cam1 at −0.0034 s. These match Utility Suite's manifest (−10 frames for the WAVs, +1 frame for screen/game, 0 for cam).
+
+[editor-backend/cli/editor_manifest.py]

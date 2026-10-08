@@ -87,6 +87,7 @@ class ManifestBuilder:
         # Accumulated flattened leaves (before track assignment).
         # Each: dict(kind, timeline_start, timeline_end, source_start, file, label)
         self.leaves = []
+        self.placements = []   # every leaf placement, disabled and srcEnable-filtered ones included
         # All referenced media file paths -> whether they exist (deferred existence check).
         self.referenced_files = {}
 
@@ -119,7 +120,7 @@ class ManifestBuilder:
         return parse_rational(fd, f"frameDuration of format {format_id!r}")
 
     # -- asset -> file path --------------------------------------------------
-    def _asset_file(self, asset_id, context):
+    def _asset_file(self, asset_id, context, register=True):
         asset = self.assets.get(asset_id)
         if asset is None:
             raise ManifestError(f"{context}: asset {asset_id!r} referenced but not defined in <resources>")
@@ -137,7 +138,8 @@ class ManifestBuilder:
         path = unquote(parsed.path)
         if not path:
             raise ManifestError(f"{context}: asset {asset_id!r} media-rep src has empty path: {src!r}")
-        self.referenced_files.setdefault(path, Path(path).exists())
+        if register:
+            self.referenced_files.setdefault(path, Path(path).exists())
         name = asset.get('name') or asset_id
         return path, name, asset
 
@@ -214,7 +216,7 @@ class ManifestBuilder:
 
         return total_declared, frame_seconds
 
-    def _process_items(self, items, A, window, active_srcenable, context, lanes):
+    def _process_items(self, items, A, window, active_srcenable, context, lanes, disabled=False):
         """Process a list of timeline elements sharing the frame (A, window).
 
         A is the absolute-timeline time corresponding to local time 0 of this frame.
@@ -230,8 +232,14 @@ class ManifestBuilder:
         for el in items:
             if el.tag not in TIMELINE_TAGS:
                 continue
-            if el.get('enabled') == '0':
-                continue  # disabled lane / clip — excluded entirely, subtree and all
+            # A disabled lane / clip contributes nothing to the timeline, subtree and all.
+            # It is still walked, in `disabled` mode, for one reason only: to record where
+            # the master plays (self.placements). The pipeline disables the master's own
+            # audio clip under every layout (each source's audio is used instead), and on a
+            # set where every picture source has its own file that clip is the master's only
+            # placement (LEDGER #277). Nothing from a disabled subtree becomes a leaf, and
+            # its files are not registered for the existence check.
+            el_disabled = disabled or el.get('enabled') == '0'
 
             lane_attr = el.get('lane')
             try:
@@ -274,7 +282,7 @@ class ManifestBuilder:
                     raise ManifestError(f"{context}: compound {ref!r} sequence has no <spine>")
                 self._process_items(list(comp_spine), child_A, child_window, my_srcenable,
                                     context=f"{context} > compound {ref!r}",
-                                    lanes=lanes + (lane,))
+                                    lanes=lanes + (lane,), disabled=el_disabled)
                 # (b) this ref-clip's own anchored lane children (nested ref-clips/clips
                 # referencing OTHER compounds/assets). They live in the same compound
                 # frame positionally but each sets its own srcEnable, so reset the filter.
@@ -282,7 +290,7 @@ class ManifestBuilder:
                 if anchored:
                     self._process_items(anchored, child_A, child_window, None,
                                         context=f"{context} > anchored",
-                                        lanes=lanes + (lane,))
+                                        lanes=lanes + (lane,), disabled=el_disabled)
                 continue
 
             if el.tag == 'gap' or (el.tag == 'clip' and (ref is None or ref not in self.assets)):
@@ -292,25 +300,20 @@ class ManifestBuilder:
                 children = [c for c in el if c.tag in TIMELINE_TAGS]
                 self._process_items(children, child_A, child_window, active_srcenable,
                                     context=f"{context} > {el.tag}",
-                                    lanes=lanes + (lane,))
+                                    lanes=lanes + (lane,), disabled=el_disabled)
                 continue
 
             # Leaf: video/audio/asset-clip (or clip) referencing an ASSET.
             if not ref:
                 raise ManifestError(f"{context}: leaf <{el.tag}> has no 'ref' (no media file to resolve)")
             kind = 'video' if el.tag == 'video' else 'audio'
-            if active_srcenable == 'video' and kind != 'video':
-                continue
-            if active_srcenable == 'audio' and kind != 'audio':
-                continue
-
-            path, asset_name, _asset = self._asset_file(ref, context)
+            path, asset_name, _asset = self._asset_file(ref, context, register=not el_disabled)
             # source-file time at the (left-clipped) segment start. Within a leaf, local
             # time == source-file time (v1 is 1:1; any timeMap drift-retime is ignored —
             # its effect is sub-frame over an editor viewer's needs).
             source_start = start + (clip_start - a0)
             label = el.get('name') or asset_name
-            self.leaves.append({
+            leaf = {
                 'kind': kind,
                 'timeline_start': clip_start,
                 'timeline_end': clip_end,
@@ -318,7 +321,21 @@ class ManifestBuilder:
                 'file': path,
                 'label': label,
                 'layer': lanes + (lane,),
-            })
+            }
+            # Every placement, before disabled-ness or the compound's srcEnable decide whether
+            # it contributes. The master recording is found here (LEDGER #277): where it plays
+            # on the timeline is the same whether the compound shows its picture, carries its
+            # sound, or holds a disabled copy, and a set with a dedicated file for every
+            # picture source (an OBS set) shows the master's picture nowhere — only its
+            # disabled audio clip, at lane -1 under each layout, says where each cut plays.
+            self.placements.append(leaf)
+            if el_disabled:
+                continue
+            if active_srcenable == 'video' and kind != 'video':
+                continue
+            if active_srcenable == 'audio' and kind != 'audio':
+                continue
+            self.leaves.append(leaf)
 
     # -- track assembly ------------------------------------------------------
     def _identify_master_file(self):
@@ -330,7 +347,7 @@ class ManifestBuilder:
         via stem.replace(' master', '')). Zero or multiple distinct matches is a
         loud error listing every distinct leaf file stem seen.
         """
-        stems = {l['file']: Path(l['file']).stem for l in self.leaves}
+        stems = {l['file']: Path(l['file']).stem for l in self.placements}
         matches = sorted({f for f, s in stems.items()
                           if s == 'master' or s.endswith(' master')})
         if len(matches) == 1:
@@ -382,8 +399,13 @@ class ManifestBuilder:
 
         master_file = self._identify_master_file()
         master_stem = Path(master_file).stem
+        if not Path(master_file).exists():
+            raise ManifestError(f"master recording {master_file} does not exist on disk")
+        # Every placement of the master, picture or sound, enabled or not: the editor's one
+        # video track is "which part of the master plays now", and the agreement check
+        # below holds each placement to the same answer.
         master_segs = sorted(
-            (l for l in video if l['file'] == master_file),
+            (l for l in self.placements if l['file'] == master_file),
             key=lambda l: (l['timeline_start'], l['timeline_end']))
         if not master_segs:
             raise ManifestError(
