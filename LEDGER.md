@@ -1614,3 +1614,20 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - No live set has been processed; Owen tests.
 
 [electron/services/editor/session-sources.ts, editor-ipc.ts; frontend/src/app/components/editor/project-setup-modal/project-setup-modal.component.ts; editor-backend/cli/electron_workflow.py]
+
+**276. A camera quadrant showing a frozen picture is an inactive camera, so OBS's "No Signal" card no longer reads as a live Cam 2 (Owen, 2026-10-08: "does that mean its going to try to keep cam 2 active? or will it detect no pixel changes and leave it disabled").**
+- **The miss.** The hybrid compounds decide solo vs dual camera by sampling the master's top-right quadrant (`CameraDetector._is_camera_active`).
+  - The detector called a quadrant inactive only when it was a solid colour: vMix's black (never on) or blue (turned off).
+  - OBS shows a colour-bar "No Signal" card for a camera that is off (overall std 215).
+  - On the 2026-10-08 master, where the 90D was off for all 3 h 25 m, the detector called Cam 2 ACTIVE at every point sampled. The hybrids would have shown the test card throughout.
+  - Clearing the Cam 2 slot does not help, because the detector reads the master, not the slot.
+- **The rule.** After the solid-colour tests, a quadrant whose picture changes by less than 0.25 is inactive. Change is the mean |difference| in grey level at 240×135 between frames 2 s apart (`STATIC_DIFF_THRESHOLD`, `STATIC_GAP_SECONDS`).
+  - Measured on the "No Signal" card: 0.001–0.03.
+  - Measured on live cameras: 2.29–37 (Cam 1 on the 2026-10-08 OBS master and on three vMix masters, 2026-08-05, 09-30 and 10-07).
+  - One vMix reading of 0.00 was a solid-black frame (camera off), which the solid-black test catches first.
+- **Checks.**
+  - On the 2026-10-08 master, top-right is inactive at 600 s, 7200 s and 12305 s. The live game quadrant (bottom-right) is active at the same points.
+  - The recent vMix masters' top-right is still inactive (solid black, unchanged path).
+  - No dual-camera vMix stream is on disk, so a live Cam 2 was checked by proxy through the live Cam 1 quadrant.
+
+[editor-backend/core/video_analysis/camera_detector.py]

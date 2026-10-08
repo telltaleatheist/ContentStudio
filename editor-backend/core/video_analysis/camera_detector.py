@@ -10,6 +10,15 @@ from PIL import Image
 import io
 
 
+# A camera quadrant whose picture changes by less than this (mean |difference| of 8-bit grey
+# levels at 240x135) between frames STATIC_GAP_SECONDS apart is a frozen picture, not a live
+# camera. Measured on the 2026-10-08 OBS master (LEDGER #276): OBS's "No Signal" card for a
+# camera that is off changes by 0.001-0.03, and the live camera by 3.8-17 (sensor noise and a
+# person alone keep it far above). The colour bars defeat the solid-colour test (std 215).
+STATIC_DIFF_THRESHOLD = 0.25
+STATIC_GAP_SECONDS = 2.0
+
+
 class CameraDetector:
     """Detect when a second camera is active/inactive in a video."""
 
@@ -205,9 +214,39 @@ class CameraDetector:
         elif is_solid:
             print(f"[CameraDetector] {timestamp}s - SOLID COLOR detected (inactive)", file=sys.stderr)
             return False
-        else:
-            print(f"[CameraDetector] {timestamp}s - varied content (active)", file=sys.stderr)
-            return True
+
+        # A picture with content can still be a dead feed: OBS shows a "No Signal" test card
+        # for a camera that is off. A live camera is never perfectly still.
+        change = self._picture_change(video_path, timestamp, region, video_duration)
+        if change < STATIC_DIFF_THRESHOLD:
+            print(f"[CameraDetector] {timestamp}s - FROZEN PICTURE (change {change:.3f} over "
+                  f"{STATIC_GAP_SECONDS:.0f}s, a test card or dead feed) (inactive)", file=sys.stderr)
+            return False
+        print(f"[CameraDetector] {timestamp}s - varied, moving content (change {change:.2f}) (active)",
+              file=sys.stderr)
+        return True
+
+    def _grey_region(self, video_path: str, timestamp: float, region: str) -> np.ndarray:
+        frame_data = self._extract_frame(video_path, timestamp, region)
+        if not frame_data:
+            raise RuntimeError(f"Empty frame extracted at {timestamp}s from {video_path} "
+                               f"while checking whether the picture is frozen")
+        img = Image.open(io.BytesIO(frame_data)).convert('L').resize((240, 135))
+        return np.array(img, dtype=np.float32)
+
+    def _picture_change(self, video_path: str, timestamp: float, region: str,
+                        video_duration: float) -> float:
+        """Mean |difference| between this frame and one STATIC_GAP_SECONDS away (later, or
+        earlier when the later one would be past the end)."""
+        other = timestamp + STATIC_GAP_SECONDS
+        if other >= video_duration - 2:
+            other = timestamp - STATIC_GAP_SECONDS
+        if other < 0:
+            raise RuntimeError(f"{video_path} is too short ({video_duration}s) to tell a frozen "
+                               f"picture from a live camera")
+        a = self._grey_region(video_path, timestamp, region)
+        b = self._grey_region(video_path, other, region)
+        return float(np.abs(a - b).mean())
 
     def _extract_frame(self, video_path: str, timestamp: float, region: str) -> bytes:
         """
