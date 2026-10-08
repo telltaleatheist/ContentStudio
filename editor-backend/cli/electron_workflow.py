@@ -209,6 +209,30 @@ def create_xml_zip(xml_files, output_dir, session_name):
 
     return str(zip_path)
 
+def _is_obs_set(master_video):
+    """True when the session was recorded by OBS, told by its `<session> sync.json` beside the
+    master (the sync report Owen's Source Record fork writes; Utility Suite names it).
+
+    It matters for one thing: the `vmix_sources` speed factor in drift_corrections.json was
+    measured on vMix's screen/game capture clocks. It is not a measurement of this file, it is
+    applied blind, so on an OBS set it would ADD about 0.25 s of drift over three hours. OBS
+    records every source on one clock, frame-exact against the master (LEDGER #273).
+
+    A file by that name that is not a sync report is an error, not a vMix set.
+    """
+    session_name = Path(master_video).stem.replace(' master', '')
+    report = Path(master_video).parent / f"{session_name} sync.json"
+    if not report.exists():
+        return False
+    with open(report, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or 'frame_interval_ns' not in data or 'sources' not in data:
+        raise ValueError(
+            f"{report.name} is not an OBS sync report (no frame_interval_ns/sources), so "
+            f"this session cannot be told apart from a vMix one")
+    return True
+
+
 def _completed_alignment_audio(master_video):
     """The AUDIO entries recorded by the LAST COMPLETED run, keyed by source type.
 
@@ -1619,6 +1643,16 @@ def main():
                 else:
                     video_drift_factors[src] = spec['driftFactor']
 
+        # An OBS set has no device drift: every capture is held at an explicit 1.0 (identity),
+        # which keeps the vMix capture stretch off it. Offsets are still measured as usual. A
+        # driftFactor the user set by hand stays theirs.
+        if _is_obs_set(master_video):
+            print("\n▶ OBS set (sync report beside the master): no device drift on any video "
+                  "source", file=sys.stderr)
+            for src in ('screen', 'game', 'cam2'):
+                if video_sources.get(src) and src not in video_drift_factors:
+                    video_drift_factors[src] = 1.0
+
         if AUDIO_SYNC_AVAILABLE:
             # Picture alignment crops the master to the quadrant holding each
             # source. Stream-recovery mode's master is a downloaded broadcast with
@@ -1813,7 +1847,8 @@ def main():
             gs_generator = GSGenerator(config)
             gs_solo_path = gs_generator.generate_gs_compound(
                 compound_xml, gs_audio_sources, None, False, video_sources, auto_duck,
-                use_downloaded_stream=use_downloaded_stream
+                use_downloaded_stream=use_downloaded_stream,
+                video_drift_factors=video_drift_factors
             )
             all_xml_files.append(gs_solo_path)
             generated_clips.append({
@@ -1858,7 +1893,8 @@ def main():
             ssb_generator = SSBGenerator(config)
             ssb_solo_path = ssb_generator.generate_ssb_compound(
                 compound_xml, ssb_audio_sources, 'solo', None, False, video_sources,
-                use_downloaded_stream=use_downloaded_stream
+                use_downloaded_stream=use_downloaded_stream,
+                video_drift_factors=video_drift_factors
             )
             all_xml_files.append(ssb_solo_path)
             generated_clips.append({

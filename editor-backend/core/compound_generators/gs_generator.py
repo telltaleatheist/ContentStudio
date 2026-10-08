@@ -23,7 +23,8 @@ class GSGenerator:
     def generate_gs_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                             output_path: Optional[str] = None,
                             apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
-                            auto_duck: bool = False, use_downloaded_stream: bool = False) -> str:
+                            auto_duck: bool = False, use_downloaded_stream: bool = False,
+                            video_drift_factors: Optional[Dict[str, float]] = None) -> str:
         """Generate gs compound clip from existing compound clip XML.
 
         Args:
@@ -34,8 +35,11 @@ class GSGenerator:
             video_sources: Optional dictionary of video source paths (e.g., {'game': '/path/to/game.mp4'})
             auto_duck: Retained for call-site compatibility; ducking is handled upstream by the Dugan automixer in the workflow (not applied here)
             use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
+            video_drift_factors: Optional per-source retime factors r keyed by 'game'/'screen'
+                (manual alignment, or 1.0 on an OBS set). Absent = the auto device-drift path.
         """
         video_sources = video_sources or {}
+        video_drift_factors = video_drift_factors or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -197,7 +201,8 @@ class GSGenerator:
             game_retime_map = self.xml_utils.calculate_retime_map(
                 original_duration, game_fps, 29.97,
                 video_duration=game_video_duration if game_audio_duration else None,
-                audio_duration=game_audio_duration
+                audio_duration=game_audio_duration,
+                speed_factor=video_drift_factors.get('game')
             )
 
             game_asset = self.xml_utils.create_asset_element(
@@ -233,7 +238,8 @@ class GSGenerator:
             screen_retime_map = self.xml_utils.calculate_retime_map(
                 original_duration, screen_fps, 29.97,
                 video_duration=screen_video_duration if screen_audio_duration else None,
-                audio_duration=screen_audio_duration
+                audio_duration=screen_audio_duration,
+                speed_factor=video_drift_factors.get('screen')
             )
 
             screen_asset = self.xml_utils.create_asset_element(

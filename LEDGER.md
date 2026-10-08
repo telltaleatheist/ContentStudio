@@ -1558,3 +1558,17 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** test-crucible-acts and test-crucible-transport know the option; check:crucible (26 keepers) and check:pure pass.
 
 [electron/services/metadata/metadata-routing.ts; tools/test-crucible-acts.js; tools/test-crucible-transport.js]
+
+**273. OBS sets go through the vMix pipeline unchanged, except that their captures get no device drift (Owen, 2026-10-07: "we're keeping the vmix mode as is. is obs mode necessary since things are so similar?").**
+- **No OBS mode.** Utility Suite (Projects\VideoOrganizer on owens-pc) turns OBS's output into a set named exactly like a vMix one: `<set> master`, `cam`, `cam 2`, `screen capture`, `game capture`, and `mic audio` / `mic 2 audio` / `screen audio` / `game audio` WAVs taken losslessly from the program recording's PCM tracks. The existing detection, sync and generators read it as they are.
+  - Owen: the filenames stay vMix-compatible; whatever differs goes in the sync file.
+- **The one difference.** The `vmix_sources` speed factor (0.9999763884) is applied without measuring the file. It was measured on vMix's capture clocks. OBS records every source on one clock, frame-exact against the master (Owen's Source Record fork; the drift is fixed in its C code). On an OBS set the factor would add about 0.25 s over three hours.
+- **How a set is told apart.** By `<set> sync.json` beside the master, the sync report the fork writes. When it is there, screen, game and cam 2 are held at an explicit driftFactor 1.0 (identity), through the same channel as a manual alignment.
+  - A driftFactor set by hand still wins.
+  - Offsets are still measured as before.
+  - A file by that name that is not a sync report (no `frame_interval_ns` / `sources`) stops the run.
+- **Fixed on the way.** The GS Solo and SSB Solo generators never received `video_drift_factors`. They always took the vMix stretch, so even a manual driftFactor never reached those two compounds. Both now take it.
+  - Still open: they also take no `video_offsets`, so a measured or manual screen/game offset reaches only the dual-camera compounds.
+- **Checks.** py_compile is clean. `_is_obs_set` was exercised on no report, a valid report and a malformed one. `calculate_retime_map(speed_factor=1.0)` gives an identity timeMap. No live set has been processed; Owen tests.
+
+[editor-backend/cli/electron_workflow.py; editor-backend/core/compound_generators/gs_generator.py, ssb_generator.py]

@@ -22,7 +22,8 @@ class SSBGenerator:
     def generate_ssb_compound(self, compound_xml_path: str, audio_sources: Dict[str, str],
                                 mode: str = "solo", output_path: Optional[str] = None,
                                 apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
-                                use_downloaded_stream: bool = False) -> str:
+                                use_downloaded_stream: bool = False,
+                                video_drift_factors: Optional[Dict[str, float]] = None) -> str:
             """Generate ssb compound clip from existing compound clip XML.
 
             Args:
@@ -33,8 +34,11 @@ class SSBGenerator:
                 apply_audio_sync: Whether to apply 29.97fps sync correction
                 video_sources: Optional dictionary of video source paths (e.g., {'cam1': '/path/to/cam.mp4', 'screen': '/path/to/screen.mp4'})
                 use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
+                video_drift_factors: Optional per-source retime factors r keyed by 'screen'
+                    (manual alignment, or 1.0 on an OBS set). Absent = the auto device-drift path.
             """
             video_sources = video_sources or {}
+            video_drift_factors = video_drift_factors or {}
             
             # Load the original compound clip XML
             tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -213,7 +217,8 @@ class SSBGenerator:
                 screen_retime_map = self.xml_utils.calculate_retime_map(
                     original_duration, screen_fps, 29.97,
                     video_duration=screen_video_duration if screen_audio_duration else None,
-                    audio_duration=screen_audio_duration
+                    audio_duration=screen_audio_duration,
+                    speed_factor=video_drift_factors.get('screen')
                 )
 
                 # Create asset for the screen video
