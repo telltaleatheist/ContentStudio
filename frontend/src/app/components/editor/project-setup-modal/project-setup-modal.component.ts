@@ -543,12 +543,16 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * The files this slot may be given: the right kind, minus any file another slot has already
-   * claimed — one file cannot feed two sources. A VIDEO slot takes video files only; an AUDIO
-   * slot also accepts video, because the pipeline extracts the audio track from one.
+   * The files this slot may be given: the right kind, minus any file another slot OF THE SAME
+   * KIND has already claimed. A VIDEO slot takes video files only; an AUDIO slot also accepts
+   * video, because the pipeline extracts the audio track from one. So a camera recording can be
+   * both a video source and the mic source its audio carries (an OBS set's "cam 2.mp4" holds
+   * Mic 2, LEDGER #275), but never two audio sources or two video sources.
    */
   slotOptions(slot: SourceSlot): FileCandidate[] {
-    const taken = new Set(this.slots.filter(s => s !== slot && s.path).map(s => s.path));
+    const taken = new Set(this.slots
+      .filter(s => s !== slot && s.path && s.isVideo === slot.isVideo)
+      .map(s => s.path));
     return this.candidates.filter(c => {
       if (taken.has(c.path)) return false;
       if (slot.isVideo) return c.isVideo;
@@ -689,14 +693,19 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     this.starting = true;
     this.error = null;
     try {
-      // The dropdowns already hide a file another slot claims; Browse… can still land on one.
-      // Two sources fed the same file would be aligned and mixed twice — refuse, don't guess.
+      // The dropdowns already hide a file another slot of the same kind claims; Browse… can
+      // still land on one. Two audio sources fed the same file would be aligned and mixed twice,
+      // and two video sources would show one picture twice — refuse, don't guess. One video and
+      // one audio source on the same file is the picture and its own sound, and is allowed.
       const chosen = this.slots.filter(s => s.path);
-      const duplicate = chosen.find((s, i) => chosen.findIndex(o => o.path === s.path) !== i);
+      const duplicate = chosen.find((s, i) =>
+        chosen.findIndex(o => o.path === s.path && o.isVideo === s.isVideo) !== i);
       if (duplicate) {
-        const others = chosen.filter(s => s.path === duplicate.path).map(s => s.label).join(' and ');
+        const others = chosen
+          .filter(s => s.path === duplicate.path && s.isVideo === duplicate.isVideo)
+          .map(s => s.label).join(' and ');
         this.error = `“${this.basename(duplicate.path)}” is assigned to ${others}. ` +
-                     `Each file can only feed one source.`;
+                     `A file can feed only one ${duplicate.isVideo ? 'video' : 'audio'} source.`;
         return;
       }
 

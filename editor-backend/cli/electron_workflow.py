@@ -211,7 +211,8 @@ def create_xml_zip(xml_files, output_dir, session_name):
 
 def _is_obs_set(master_video):
     """True when the session was recorded by OBS, told by its `<session> sync.json` beside the
-    master (the sync report Owen's Source Record fork writes; Utility Suite names it).
+    master: the OBS-set manifest Utility Suite writes (`"format": "obs-set"`, version 1; the
+    same file the setup modal reads to find the mic audio carried inside a camera file).
 
     It matters for one thing: the `vmix_sources` speed factor in drift_corrections.json was
     measured on vMix's screen/game capture clocks. It is not a measurement of this file, it is
@@ -226,10 +227,14 @@ def _is_obs_set(master_video):
         return False
     with open(report, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    if not isinstance(data, dict) or 'frame_interval_ns' not in data or 'sources' not in data:
+    if not isinstance(data, dict) or data.get('format') != 'obs-set':
         raise ValueError(
-            f"{report.name} is not an OBS sync report (no frame_interval_ns/sources), so "
+            f"{report.name} is not an OBS-set manifest (its format is not \"obs-set\"), so "
             f"this session cannot be told apart from a vMix one")
+    if data.get('version') != 1:
+        raise ValueError(
+            f"{report.name} is OBS-set manifest version {data.get('version')!r}; this build "
+            f"reads version 1 only")
     return True
 
 

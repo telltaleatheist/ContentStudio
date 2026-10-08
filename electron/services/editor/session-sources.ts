@@ -6,6 +6,7 @@
  *
  * No Electron import: the Thumbnails tab's checks require this under plain Node.
  */
+import * as fs from 'fs';
 import * as path from 'path';
 
 /**
@@ -41,4 +42,59 @@ export function sessionVideoPatterns(session: string): { [key: string]: RegExp }
     'gameVideo2': new RegExp(`^${escapedSession}\\s+game\\s*capture\\s*2\\.(mp4|mov|avi|mkv)$`, 'i'),
     'gameVideo3': new RegExp(`^${escapedSession}\\s+game\\s*capture\\s*3\\.(mp4|mov|avi|mkv)$`, 'i'),
   };
+}
+
+/**
+ * An OBS set's camera, screen and game recordings each carry one mic or feed in their own audio
+ * track, and Utility Suite extracts a lossless WAV for only some of them (mic audio, screen
+ * audio). This is which audio source each recording role's sound is, read from the set's
+ * manifest (LEDGER #275).
+ */
+const OBS_ROLE_AUDIO: { [role: string]: string } = {
+  cam: 'mic1',
+  cam2: 'mic2',
+  screen: 'screen',
+  game: 'game',
+};
+
+/**
+ * The audio sources an OBS set carries only inside its video recordings, keyed by audio type
+ * (`{ mic2: '/…/2026-10-08 cam 2.mp4' }`), from `<session> sync.json` beside the master: the
+ * manifest Utility Suite writes, `"format": "obs-set"`, version 1, whose `files` list names each
+ * present file's `role`. Returns null when there is no manifest (a vMix set).
+ *
+ * The caller fills a slot from this only when no WAV was detected for it, because the WAVs are
+ * lossless and the recordings' audio is AAC.
+ *
+ * A manifest that cannot be read, is not an obs-set v1, or names a file that is not in the
+ * folder is an error, never "no manifest": it would otherwise silently drop Mic 2.
+ */
+export function obsSetEmbeddedAudio(masterVideoPath: string): { [audioType: string]: string } | null {
+  const { session } = sessionOfMaster(masterVideoPath);
+  const dir = path.dirname(masterVideoPath);
+  const manifestPath = path.join(dir, `${session} sync.json`);
+  if (!fs.existsSync(manifestPath)) return null;
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  if (manifest?.format !== 'obs-set') {
+    throw new Error(`${path.basename(manifestPath)} is not an OBS-set manifest (format is not "obs-set")`);
+  }
+  if (manifest.version !== 1) {
+    throw new Error(`${path.basename(manifestPath)} is OBS-set manifest version ${manifest.version}; this build reads version 1 only`);
+  }
+  if (!Array.isArray(manifest.files)) {
+    throw new Error(`${path.basename(manifestPath)} has no "files" list`);
+  }
+
+  const embedded: { [audioType: string]: string } = {};
+  for (const entry of manifest.files) {
+    const audioType = OBS_ROLE_AUDIO[entry?.role];
+    if (!audioType) continue;
+    const filePath = path.join(dir, String(entry.file));
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`${path.basename(manifestPath)} lists "${entry.file}" (${entry.role}), which is not in ${dir}`);
+    }
+    embedded[audioType] = filePath;
+  }
+  return embedded;
 }

@@ -28,7 +28,7 @@ import {
   readMuteCatalog, loadProjectMuteSettings, saveProjectMuteSettings, ensureProjectMuteSettings,
 } from './mute-words';
 import { createEditorWindow, getEditorWindow } from './editor-window';
-import { sessionOfMaster, sessionVideoPatterns } from './session-sources';
+import { obsSetEmbeddedAudio, sessionOfMaster, sessionVideoPatterns } from './session-sources';
 import { getMainWindow } from '../../main';
 
 /**
@@ -1496,6 +1496,16 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
           detectedVideo[videoType] = candidates[0];
           log.info(`Detected ${videoType}: ${path.basename(candidates[0])}`);
         }
+      }
+
+      // An OBS set (LEDGER #275) carries some audio only inside a video recording: Mic 2 is in
+      // "cam 2.mp4" and game audio in "game capture.mp4", with no WAV beside them. The set's
+      // manifest says which recording holds which; a detected WAV always wins, being lossless.
+      const embeddedAudio = obsSetEmbeddedAudio(masterVideoPath);
+      for (const [audioType, filePath] of Object.entries(embeddedAudio || {})) {
+        if (detectedAudio[audioType]) continue;
+        detectedAudio[audioType] = filePath;
+        log.info(`Detected ${audioType} (inside OBS recording): ${path.basename(filePath)}`);
       }
 
       return { success: true, audioFiles: detectedAudio, videoFiles: detectedVideo };

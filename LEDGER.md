@@ -1592,3 +1592,25 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - No live session was processed; Owen tests.
 
 [editor-backend/core/xml_utils.py, audio_sync.py; core/compound_generators/gs_generator.py, ssb_generator.py; cli/electron_workflow.py]
+
+**275. An OBS set is told by Utility Suite's manifest, and its Mic 2 and game audio come from inside the recordings (obs-setup-pc's final OBS-set design, approved by Owen 2026-10-07).**
+- **The set Utility Suite delivers.** The filenames are exactly the vMix-era ones:
+  - `<set> master`, `cam` (Lumix + Mic 1), `cam 2` (90D + Mic 2), `screen capture` (+ Mac) and `game capture` (+ game audio), all Hybrid MP4 straight from OBS.
+  - Three lossless WAVs from the main recording: `mic audio`, `screen audio` and `master audio`.
+  - There is no `mic 2 audio` or `game audio` WAV.
+  - The one OBS addition is `<set> sync.json`. It is now a manifest: `"format": "obs-set"`, version 1, and `files` gives each present file's `role` (cam, cam2, screen, game, master, mic1-audio, …), its final filename and its `offset_frames` against master.mp4.
+- **#273's check followed the old report and would have stopped every OBS set.** It required `frame_interval_ns` and `sources`, and the manifest has `files`. `_is_obs_set` now requires `format` "obs-set" and version 1, and anything else at that name is an error.
+- **Mic 2 and game audio exist only inside `cam 2.mp4` and `game capture.mp4`.**
+  - `auto-detect-audio` reads the manifest (`obsSetEmbeddedAudio` in session-sources.ts). It fills mic1 from cam, mic2 from cam2, screen from screen and game from game, but only where no WAV was detected. The WAVs are lossless and the recordings' audio is AAC, so in practice it adds mic2 and game.
+  - A manifest that is unreadable, of another format or version, or that lists a file not in the folder is an error. It never counts as "no manifest", because that would silently drop Mic 2.
+  - The processing side already syncs a video in an audio slot as audio (#274).
+- **One file, one source of each kind.** The setup modal refused a file in two slots. It now refuses only two audio slots or two video slots on one file, so `cam 2.mp4` can be cam 2's picture and Mic 2's sound. Nothing in processing collides: screen, game and cam videos are never rendered, and the audio becomes `<stem>_processed.wav`.
+- **Not used.** The manifest's offsets: audio is still measured by GCC-PHAT and video by picture, as on a vMix set. Video roles are still found by filename, because the names are vMix's.
+- **Checks.**
+  - build:electron is clean and the frontend tsc (tsconfig.app.json) is clean.
+  - A fake set folder with the manifest: the embedded audio map gave mic1/mic2/screen/game, and the video patterns found cam, cam 2, screen capture and game capture.
+  - A listed file missing raised, a wrong format raised, and no manifest returned null.
+  - py_compile is clean. thumbnail-pipeline-checks (28) and check:pure pass.
+  - No live set has been processed; Owen tests.
+
+[electron/services/editor/session-sources.ts, editor-ipc.ts; frontend/src/app/components/editor/project-setup-modal/project-setup-modal.component.ts; editor-backend/cli/electron_workflow.py]
