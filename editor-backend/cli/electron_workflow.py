@@ -1399,7 +1399,8 @@ def main():
                                 source_path=audio_path,
                                 search_window=30,
                                 offset_override=offset_override,
-                                drift_factor=drift_factor
+                                drift_factor=drift_factor,
+                                audio_only=True
                             )
                         except InterruptedError:
                             skip_was_requested = True
@@ -1848,7 +1849,8 @@ def main():
             gs_solo_path = gs_generator.generate_gs_compound(
                 compound_xml, gs_audio_sources, None, False, video_sources, auto_duck,
                 use_downloaded_stream=use_downloaded_stream,
-                video_drift_factors=video_drift_factors
+                video_drift_factors=video_drift_factors,
+                video_offsets=video_offsets
             )
             all_xml_files.append(gs_solo_path)
             generated_clips.append({
@@ -1894,7 +1896,8 @@ def main():
             ssb_solo_path = ssb_generator.generate_ssb_compound(
                 compound_xml, ssb_audio_sources, 'solo', None, False, video_sources,
                 use_downloaded_stream=use_downloaded_stream,
-                video_drift_factors=video_drift_factors
+                video_drift_factors=video_drift_factors,
+                video_offsets=video_offsets
             )
             all_xml_files.append(ssb_solo_path)
             generated_clips.append({

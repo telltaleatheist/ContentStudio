@@ -24,7 +24,8 @@ class GSGenerator:
                             output_path: Optional[str] = None,
                             apply_audio_sync: bool = False, video_sources: Optional[Dict[str, str]] = None,
                             auto_duck: bool = False, use_downloaded_stream: bool = False,
-                            video_drift_factors: Optional[Dict[str, float]] = None) -> str:
+                            video_drift_factors: Optional[Dict[str, float]] = None,
+                            video_offsets: Optional[Dict[str, float]] = None) -> str:
         """Generate gs compound clip from existing compound clip XML.
 
         Args:
@@ -37,9 +38,13 @@ class GSGenerator:
             use_downloaded_stream: Whether to use stream recovery transforms for downloaded stream masters
             video_drift_factors: Optional per-source retime factors r keyed by 'game'/'screen'
                 (manual alignment, or 1.0 on an OBS set). Absent = the auto device-drift path.
+            video_offsets: Optional per-source video alignment delays (seconds) keyed by
+                'cam1'/'game'/'screen', placed by FCPXMLUtils.solo_video_delay. Applied to a
+                dedicated source only, never to a crop of the master.
         """
         video_sources = video_sources or {}
         video_drift_factors = video_drift_factors or {}
+        video_offsets = video_offsets or {}
         
         # Load the original compound clip XML
         tree = self.xml_utils.parse_fcpxml(compound_xml_path)
@@ -429,14 +434,17 @@ class GSGenerator:
                     }
                 }
 
+            camera_offset, camera_start = self.xml_utils.solo_video_delay(
+                video_offsets.get('cam1', 0.0) if cam1_asset_id else 0.0)
             camera_clip = self.xml_utils.create_video_clip(
                 camera_name_for_clip,
                 camera_asset,
                 "2",
-                "0s",
+                camera_offset,
                 original_duration,
                 camera_transforms,
-                retime_map=None  # Never retime cam1 - it's recorded with master
+                retime_map=None,  # Never retime cam1 - it's recorded with master
+                start=camera_start
             )
             gap.append(camera_clip)
             
@@ -506,14 +514,17 @@ class GSGenerator:
                     }
                 }
 
+            game_offset, game_start = self.xml_utils.solo_video_delay(
+                video_offsets.get('game', 0.0) if game_asset_id else 0.0)
             game_clip = self.xml_utils.create_video_clip(
                 game_name_for_clip,
                 game_video_asset,
                 "4",
-                "0s",
+                game_offset,
                 original_duration,
                 game_transforms,
-                retime_map=game_retime_map if game_asset_id else None
+                retime_map=game_retime_map if game_asset_id else None,
+                start=game_start
             )
             gap.append(game_clip)
             
@@ -586,14 +597,17 @@ class GSGenerator:
                     }
                 }
 
+            screen_offset, screen_start = self.xml_utils.solo_video_delay(
+                video_offsets.get('screen', 0.0) if screen_asset_id else 0.0)
             screen_clip = self.xml_utils.create_video_clip(
                 screen_name_for_clip,
                 screen_video_asset,
                 "6",
-                "0s",
+                screen_offset,
                 original_duration,
                 screen_transforms,
-                retime_map=screen_retime_map if screen_asset_id else None
+                retime_map=screen_retime_map if screen_asset_id else None,
+                start=screen_start
             )
             gap.append(screen_clip)
             

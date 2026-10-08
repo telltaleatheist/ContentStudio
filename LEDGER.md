@@ -1568,7 +1568,27 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - Offsets are still measured as before.
   - A file by that name that is not a sync report (no `frame_interval_ns` / `sources`) stops the run.
 - **Fixed on the way.** The GS Solo and SSB Solo generators never received `video_drift_factors`. They always took the vMix stretch, so even a manual driftFactor never reached those two compounds. Both now take it.
-  - Still open: they also take no `video_offsets`, so a measured or manual screen/game offset reaches only the dual-camera compounds.
+  - They also took no `video_offsets`; fixed in #274.
 - **Checks.** py_compile is clean. `_is_obs_set` was exercised on no report, a valid report and a malformed one. `calculate_retime_map(speed_factor=1.0)` gives an identity timeMap. No live set has been processed; Owen tests.
 
 [editor-backend/cli/electron_workflow.py; editor-backend/core/compound_generators/gs_generator.py, ssb_generator.py]
+
+**274. Solo compounds take the measured video offsets, and a video file in an audio slot gives its audio (Owen, 2026-10-07: "ok. continue", the two items #273 left open).**
+- **Solo GS and SSB placed every dedicated source at 0s.** The measured or manual cam1, screen and game offsets reached only the dual-camera compounds, so the solo ones showed each source as many frames off as the measurement had corrected in the dual ones.
+  - Both now place them through `FCPXMLUtils.solo_video_delay`, using the same 29.97 frame rounding as the dual compounds.
+  - A positive tau delays the clip.
+  - A negative tau cannot move a clip left of a compound that starts at 0s (the dual compounds have a 60-frame lead-in for that). Instead it trims the clip's in-point (`start`) by |tau|, which shows the same source frame at the same instant.
+  - A crop of the master is never shifted.
+- **An audio slot holding a video was synced as a video.** The setup modal offers video files for audio slots ("the pipeline extracts the audio track from one"). But `sync_file` chose by extension, so a camera file in a mic slot was re-encoded whole with libx264 into `<stem>_processed.mp4`, and that file became the "audio" source.
+  - The workflow's audio loop now passes `audio_only=True`, which always yields `<stem>_processed.wav`. That is the name the modal and the reuse check already expect.
+  - A video with no audio stream given as audio is an error.
+  - `apply_sync_to_audio` passes `-vn`.
+- **Not changed.** The modal still lets one file feed only one slot, so one camera file cannot be both a video source and a mic source. Utility Suite hands OBS sets lossless WAVs, so nothing needs that.
+- **Checks.**
+  - py_compile is clean.
+  - `solo_video_delay` gives ("0s", None) for 0 and sub-half-frame tau, a frame-rounded offset for positive tau, and a frame-rounded `start` for negative tau.
+  - `sync_file(audio_only=True)` on a generated H.264+AAC clip gave a pcm_s24le `cam_processed.wav` with the 0.1 s override applied.
+  - The same call on a clip with no audio stream raised.
+  - No live session was processed; Owen tests.
+
+[editor-backend/core/xml_utils.py, audio_sync.py; core/compound_generators/gs_generator.py, ssb_generator.py; cli/electron_workflow.py]

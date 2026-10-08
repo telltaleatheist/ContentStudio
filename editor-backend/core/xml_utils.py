@@ -46,6 +46,27 @@ class FCPXMLUtils:
         return f"{numerator}/{denominator}s"
 
     @staticmethod
+    def solo_video_delay(tau_seconds: float) -> Tuple[str, Optional[str]]:
+        """(offset, start) that align a dedicated companion video in a SOLO compound.
+
+        tau is the per-source video alignment delay the workflow measured (or the user set):
+        POSITIVE delays the clip rightward. The dual-camera compounds add it to a 60-frame
+        lead-in (dc_gs_generator._offset_with_video_delay); a solo compound starts at 0s, so a
+        negative tau cannot move the clip left of the compound. It trims the clip's in-point
+        by |tau| instead, which shows the same source frame at the same timeline instant.
+
+        tau is frame-rounded to the 29.97fps grid exactly as the dual compounds round it, so
+        both kinds of compound place a source on the same frame. tau == 0 (no offset)
+        returns ("0s", None), the placement solo compounds always used.
+        """
+        tau_frames = round(tau_seconds * 30000 / 1001) if tau_seconds else 0
+        if tau_frames > 0:
+            return f"{tau_frames * 1001}/30000s", None
+        if tau_frames < 0:
+            return "0s", f"{-tau_frames * 1001}/30000s"
+        return "0s", None
+
+    @staticmethod
     def calculate_trim_duration(frame_duration_str: str, trim_frames: int = 60) -> str:
         """Calculate trim duration from frame duration string.
 

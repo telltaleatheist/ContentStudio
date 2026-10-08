@@ -716,6 +716,7 @@ class MediaSyncProcessor:
         # plain RIFF.
         cmd = [
             'ffmpeg', '-i', str(input_path),
+            '-vn',  # the input may be a camera recording; only its audio is wanted
             '-filter:a', filter_str,
             '-c:a', 'pcm_s24le',  # High quality PCM
             '-rf64', 'auto',
@@ -849,7 +850,8 @@ class MediaSyncProcessor:
                  output_path: Optional[str] = None,
                  search_window: float = 30,
                  offset_override: Optional[float] = None,
-                 drift_factor: Optional[float] = None) -> Tuple[str, Dict]:
+                 drift_factor: Optional[float] = None,
+                 audio_only: bool = False) -> Tuple[str, Dict]:
         """Complete sync workflow: analyze and apply corrections.
 
         Args:
@@ -864,6 +866,10 @@ class MediaSyncProcessor:
                 When != 1.0, the audio is resampled to match the master clock before
                 the offset is applied (see apply_sync_to_audio). Only meaningful for
                 audio sources; ignored on the video branch.
+            audio_only: The caller wants this file's AUDIO, whatever its container (a camera
+                recording picked as a mic source). The result is then always the synced
+                `<stem>_processed.wav`, never a re-encoded video, and a file with no audio
+                stream is an error.
 
         Returns:
             Tuple of (synced_file_path, sync_info_dict)
@@ -871,7 +877,12 @@ class MediaSyncProcessor:
         # Check if source has audio (required for cross-correlation)
         source_path_obj = Path(source_path)
         video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.mpg', '.mpeg', '.m4v', '.webm'}
-        is_video = source_path_obj.suffix.lower() in video_extensions
+        is_video = (source_path_obj.suffix.lower() in video_extensions) and not audio_only
+
+        if audio_only and source_path_obj.suffix.lower() in video_extensions \
+                and not self._has_audio_stream(source_path):
+            raise ValueError(
+                f"{source_path_obj.name} was given as an audio source but has no audio stream")
 
         if is_video:
             # Check if video has audio stream
@@ -896,11 +907,6 @@ class MediaSyncProcessor:
         analyzer = AudioSyncAnalyzer(self.config)
         sync_info = analyzer.analyze_sync(master_path, source_path, search_window,
                                           offset_override=offset_override)
-
-        # Determine if source is video or audio
-        source_path_obj = Path(source_path)
-        video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.mpg', '.mpeg', '.m4v', '.webm'}
-        is_video = source_path_obj.suffix.lower() in video_extensions
 
         # Apply sync
         if is_video:
