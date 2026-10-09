@@ -39,6 +39,7 @@ import type { JobModelLifecycle } from '../model-lifecycle';
 import { parseLines } from '../plain-call';
 import { promptAssets } from '../prompt-assets';
 import { gpuCall, queueAITask } from '../../queue-manager.service';
+import { pendingStep } from '../../../crucible/pending-work';
 import { GateFieldInput, GatePhase, GateRecord, runGate } from './gate';
 import { channelFacts, joinSentences, splitSentences } from './rules';
 import { RerollGateSettings } from './settings';
@@ -202,7 +203,8 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
   const facts = channelFacts(channel.name, channel.brandTerms);
   const fields = fieldsOf(item, run.aiManager.descriptionLinks(), run.sourceLabel);
 
-  const decide: DecideFn = run.bind?.decide ?? ((request, o) =>
+  // Each decide and revise is a named step of a batch member (crucible/pending-work.ts, LEDGER #279).
+  const decide: DecideFn = run.bind?.decide ?? ((request, o) => pendingStep(`the decide ${o.what}`, () =>
     queueAITask(gpuCall(REROLL_SCORER_MODEL), `reroll-${Date.now()}`, `Re-roll gate: ${run.sourceLabel}`, async () => {
       const answer = await crucibleTransport().decide({
         model: REROLL_SCORER_MODEL,
@@ -220,12 +222,12 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
         trace: null,
       });
       return { answers: answer.answers as never };
-    }));
+    })));
 
   const revise: ReviseFn = run.bind?.revise ?? (async (request) => {
     const option = routingOption(FIELD_TASK[request.field], run.routing[FIELD_TASK[request.field]], run.models);
     const what = `re-roll gate: ${request.field} re-roll ${request.attempt} (${request.rule}) for ${run.sourceLabel}`;
-    const text = await run.aiManager.runPlainRequest(
+    const text = await pendingStep(`the rewrite ${what} on ${option.model}`, () => run.aiManager.runPlainRequest(
       request.prompt,
       option.model,
       what,
@@ -237,7 +239,7 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
             timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
           }
         : { thinking: true },
-    );
+    ));
     if (!text) throw new GateError('no_answer', `${what} on "${option.model}" came back empty`);
     return parseLines(text, what);
   });

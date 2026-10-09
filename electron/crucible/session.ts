@@ -63,6 +63,7 @@ import {
   type QueueSessionEnd,
 } from '@crucible/client';
 import { CrucibleCallError } from './errors';
+import { pendingStep } from './pending-work';
 import type { LoadFloor } from './batch';
 import type { InFlightLedger } from './in-flight-ledger';
 import type { CrucibleStepHooks } from './lanes';
@@ -917,8 +918,8 @@ export class JobSessions {
   /** Make `model` resident in the job's session on `server`, and answer the session. */
   async hold(server: string, model: string, request: HoldRequest): Promise<CardSession> {
     if (this.server === null) this.server = server;
-    const card = await this.session(server, { act: request.act, ...(request.signal === undefined ? {} : { signal: request.signal }), hooks: request.hooks });
-    await card.ensure(model, this.what, this.expected(model, request));
+    const card = await pendingStep(`the queue session on "${server}"`, () => this.session(server, { act: request.act, ...(request.signal === undefined ? {} : { signal: request.signal }), hooks: request.hooks }));
+    await pendingStep(`${model} made resident on "${server}"`, () => card.ensure(model, this.what, this.expected(model, request)));
     return card;
   }
 
@@ -928,8 +929,9 @@ export class JobSessions {
    */
   async serve(server: string, model: string, request: HoldRequest): Promise<{ card: CardSession; done: () => void }> {
     if (this.server === null) this.server = server;
-    const card = await this.session(server, { act: request.act, ...(request.signal === undefined ? {} : { signal: request.signal }), hooks: request.hooks });
-    const done = await card.admit(model, this.what, this.expected(model, request));
+    const card = await pendingStep(`the queue session on "${server}"`, () => this.session(server, { act: request.act, ...(request.signal === undefined ? {} : { signal: request.signal }), hooks: request.hooks }));
+    // The admission waits for a load, the session's lock and the width question (pending-work.ts names it if it never ends).
+    const done = await pendingStep(`the session's admission of a call on ${model}`, () => card.admit(model, this.what, this.expected(model, request)));
     return { card, done };
   }
 

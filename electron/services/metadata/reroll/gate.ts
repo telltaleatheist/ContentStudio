@@ -33,6 +33,7 @@
 
 import { askRules, baselinesOf, Baselines, DecideCallRecord, unitScore } from './checks';
 import { settleTogether, valuesInOrder } from '../../../crucible/fan-out';
+import { pendingStep } from '../../../crucible/pending-work';
 import { ChannelFacts, FIELD_RULES, revisePrompt } from './rules';
 import { rankTitles, RankingResult } from './ranking';
 import { RerollGateSettings } from './settings';
@@ -254,9 +255,12 @@ export async function runGate(input: GateInput): Promise<{ fields: Map<GateField
   // another field's answer. The rounds stay rounds and per field: a field's rewrite still waits
   // for its own check, and its check for its own rewrite. Records are written in field order,
   // and the first failure in field order is thrown, once every call of the round has settled.
+  // Every awaited point is a named step of a batch member (crucible/pending-work.ts, LEDGER #279):
+  // a stall here says which phase and which field it sits in.
+  const phase = (p: GatePhase): Promise<void> => (input.phase === undefined ? Promise.resolve() : pendingStep(`the re-roll gate's ${p} gate`, () => input.phase!(p)));
   if (fields.length > 0) {
-    await input.phase?.('check-0');
-    for (const first of valuesInOrder(await settleTogether(fields.map((fin) => () => firstCheck(input, fin))))) {
+    await phase('check-0');
+    for (const first of valuesInOrder(await settleTogether(fields.map((fin) => () => pendingStep(`the gate's check-0 of ${fin.field}`, () => firstCheck(input, fin)))))) {
       record.decideCalls.push(...first.calls);
       runs.push(first.run);
     }
@@ -265,13 +269,13 @@ export async function runGate(input: GateInput): Promise<{ fields: Map<GateField
     const pending = runs.filter((run) => run.units.some((u) => u.attempts[u.kept].failing.length > 0));
     if (pending.length === 0) break;
     if (input.signal?.aborted) throw new GateError('cancelled', `${whatOf(input, pending[0].fin.field, attempt)} was cancelled`);
-    await input.phase?.(`revise-${attempt}`);
+    await phase(`revise-${attempt}`);
     for (const run of pending) run.rounds = attempt;
-    for (const calls of valuesInOrder(await settleTogether(pending.map((run) => () => revise(input, run, attempt))))) {
+    for (const calls of valuesInOrder(await settleTogether(pending.map((run) => () => pendingStep(`the gate's revise-${attempt} of ${run.fin.field}`, () => revise(input, run, attempt)))))) {
       record.rerollCalls.push(...calls);
     }
-    await input.phase?.(`check-${attempt}`);
-    for (const calls of valuesInOrder(await settleTogether(pending.map((run) => () => recheck(input, run, attempt))))) {
+    await phase(`check-${attempt}`);
+    for (const calls of valuesInOrder(await settleTogether(pending.map((run) => () => pendingStep(`the gate's check-${attempt} of ${run.fin.field}`, () => recheck(input, run, attempt)))))) {
       record.decideCalls.push(...calls);
     }
   }
@@ -286,7 +290,7 @@ export async function runGate(input: GateInput): Promise<{ fields: Map<GateField
           'and ranking a cut of the list would order titles the operator never sees next to the ones it left out.',
       );
     } else {
-      record.ranking = await rankTitles(titles, input.facts.channel, input.decide, `re-roll gate: title ranking for ${input.sourceLabel}`, input.signal);
+      record.ranking = await pendingStep('the gate\'s title ranking', () => rankTitles(titles, input.facts.channel, input.decide, `re-roll gate: title ranking for ${input.sourceLabel}`, input.signal));
       if (record.ranking.skippedRotations > 0) {
         record.warnings.push(`re-roll gate: ${record.ranking.skippedRotations} of ${titles.length} ranking rotations came back with almost no weight on any title and were left out of the mean.`);
       }

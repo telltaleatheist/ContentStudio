@@ -90,7 +90,7 @@ export interface CrucibleContextDeps {
   /** The ledger's file name under `stateDir`. Default `crucible-in-flight.json`; a CLI names its own. */
   ledgerFile?: string;
   /** The lanes' clocks, replaceable by a keeper. */
-  lanes?: { now?: () => number; stallMs?: number; watchRetryMs?: number; touchEveryMs?: number };
+  lanes?: { now?: () => number; stallMs?: number; watchRetryMs?: number; touchEveryMs?: number; pendingStallMs?: number; pendingCheckEveryMs?: number };
   /** The install seam, injectable so a keeper never installs, spawns or reads GitHub. Default: the real machine. */
   local?: Partial<LocalEngineDeps>;
 }

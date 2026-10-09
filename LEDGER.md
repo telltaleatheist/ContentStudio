@@ -1666,3 +1666,31 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** Frontend tsc (tsconfig.app.json) is clean. Not run live; Owen tests.
 
 [frontend/src/app/components/inputs/inputs.ts; frontend/src/app/features/transcript-link/transcript-link.types.ts]
+
+**279. A batch member's local calls sent together all go when its turn comes, and a batch member's stall names itself (Owen, 2026-10-09: "looks like these videos have taken 45 minutes so far ... why is it so slow on this?", then "can we run a test to see directly"; coordinating session, from Owen's live batch of 4 on crucible@owens-mac-studio: at 17:56 the gate's first checks opened for all four, one job finished its gate, the next got four decides answered, and then nothing was sent until Crucible ended the idle session at 18:11; the rows kept "Next: checking the titles... 1 video is ahead of it").**
+- **The cause** (batch.ts `takeCall`, reproduced offline). A member waiting for the CALL turn had ONE waiter slot (`callWaiter`). The gate's checks go out together (#270): every field's decide batches call `takeCall` in the same tick. The first member found the turn free and took it, so its later calls simply joined. Every other member found the turn held, and each of its calls REPLACED the waiter before it. Only the last call's promise was ever resolved; the others were never settled, so that member's fan-out (`settleTogether`) never finished.
+  - This matches the hung process: three members `between` at gate-check-0, `calls` 0, no waiter, an empty slot, nothing in flight, no timer.
+  - Earlier keepers missed it: each member in them sent one local call at a time.
+- **The fix.** A member keeps a LIST of call waiters (`callWaiters`); when its turn comes, all of them go together and share it (`calls` = how many). A Stop removes only its own call's waiter. A member that ends with a wait still pending has it rejected by name, so no turnstile promise is left with nothing to settle it.
+- **The watch** (crucible/pending-work.ts, new). Every awaited step of a batch member registers its start and end with a short label:
+  - lanes.ts: the stage gates, the call turn, each model call (`aiCall`, so every `queueAITask` call, cloud and `claude -p` included) and its GPU slot;
+  - session.ts: the queue session, residency, the admission;
+  - gate.ts: the phase gates, each field's check-N and revise-N, the title ranking;
+  - reroll.service.ts: each decide and each rewrite.
+  - A timer (unref'd, armed only while a step is pending) looks every 15 s. A member with steps pending and none started or ended for 90 s is named once per stall in a warn line, `[crucible] <job> at <stage>: Nothing has moved for N s. Still waiting on: <steps with their ages>`, and the same line is sent as its row line.
+  - A member waiting on the batch itself (at a stage gate, or for the call turn) is not named: its row already says why.
+  - When a named member moves again, its row gets its batch line back. The watch never cancels or times out anything.
+- **Honest rows.** A wait line that clears (the turn came, the stage opened) used to be sent as null, which main.ts drops, so the row kept its old "ahead of it" line while the job worked. It is now replaced by what the job does now, "Now: checking the titles, description and tags." An ended member's row is left to its result.
+- **Checks.**
+  - New keeper tools/test-crucible-gate-batch.js (7) runs the REAL gate (`rerollGateItem` → `runGate`, phases on the batch stages as metadata-generator wires them), the real AI manager, lanes, sessions, transport and fan-out, on the fake. Four jobs make one batch, with titles routed to a `claude -p` stand-in (`makeClaudeCliRequest` replaced on the instance, so nothing is spawned) and the other fields routed to the 27B. The checks:
+    - (a) every check passes;
+    - (b) units fail check-0, so revise-1 runs on the 27B and on the stand-in;
+    - (c) the live shape: the first job needs no rewrite, the others do;
+    - (d) a Stop mid-gate;
+    - the turnstile's several-waiters rule;
+    - the watch, live: a held decide is named with its job, stage and steps, on the log and the row, and the row line comes back afterwards;
+    - the watch's own rules.
+  - Before the fix, (a)–(d) and the turnstile check hung exactly as live: "f2 at finish waiting; f1, f3, f4 at gate-check-0 between".
+  - test-crucible-batch.js (8) and test-crucible-fan-out.js (6) pass, as do check:crucible (27 keepers), check:pure and reroll-checks (21). build:electron is clean. No live Crucible was contacted, and the app was not launched.
+
+[electron/crucible/batch.ts, pending-work.ts (new), lanes.ts, session.ts, context.ts; electron/main.ts; electron/services/metadata/reroll/gate.ts, reroll.service.ts; tools/test-crucible-gate-batch.js (new)]

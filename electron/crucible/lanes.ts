@@ -93,6 +93,7 @@ import { SESSION_TOUCH_EVERY_MS, type CardSession, type SessionHold, type Sessio
 import { CRUCIBLE_STALL_MS, JobStallClock } from './stream-stall';
 import { decideVenue, intendedServer, type VenueHost } from './venue-decision';
 import { StageBatch, turnPerCall, type BatchStage, type LoadFloor, type StageNeed } from './batch';
+import { PendingWork, pendingStart, pendingStep, withPendingScope, type PendingStall } from './pending-work';
 import { JOB_CALLS_PER_SERVER } from './fan-out';
 import type { CrucibleLanesView, LaneChip, ParkedJobResult, QueuePlan, QueuePlanCandidate, ResumeStage, RoutingView, ServerReach } from './wire';
 
@@ -497,9 +498,13 @@ export interface LanesDeps {
   watchRetryMs?: number;
   /** How often a lane job's open session is touched while its cloud calls run (a keeper shortens it). */
   touchEveryMs?: number;
+  /** The pending-work watch's limit and tick (pending-work.ts; a keeper shortens them). */
+  pendingStallMs?: number;
+  pendingCheckEveryMs?: number;
   /**
-   * A batch member's waiting line (batch.ts), or null once its turn came: the job's row says it
-   * (ipc wiring sends it as the job's `waiting` progress line).
+   * A batch member's row line: its waiting line (batch.ts); once its turn came, what it does now
+   * ("Now: …", LEDGER #279: a cleared line used to leave the old wait on the row); or the
+   * pending-work watch's stall line. The ipc wiring sends it as the job's `waiting` progress line.
    */
   onBatchWait?(jobId: string, line: string | null): void;
 }
@@ -526,9 +531,22 @@ export class CrucibleLanes {
   private readonly now: () => number;
   readonly stallMs: number;
   private readonly touchEveryMs: number;
+  /**
+   * Every batch member's awaited steps (pending-work.ts, LEDGER #279): a step pending past the
+   * limit is said in the log and on the job's row, naming the job, its stage and the steps.
+   */
+  private readonly pending: PendingWork;
 
   constructor(private readonly deps: LanesDeps) {
     this.now = deps.now ?? Date.now;
+    this.pending = new PendingWork({
+      ...(deps.pendingStallMs === undefined ? {} : { limitMs: deps.pendingStallMs }),
+      ...(deps.pendingCheckEveryMs === undefined ? {} : { everyMs: deps.pendingCheckEveryMs }),
+      onStall: (stall) => this.pendingStalled(stall),
+      onClear: (jobId) => this.tellBatchWait(jobId, this.batchOf(jobId)?.lineOf(jobId) ?? null),
+      // Waiting at a stage gate or for the call turn is the batch's own wait, and its row says why.
+      explained: (jobId) => this.batchOf(jobId)?.waits(jobId) === true,
+    });
     this.stallMs = deps.stallMs ?? CRUCIBLE_STALL_MS;
     this.touchEveryMs = deps.touchEveryMs ?? SESSION_TOUCH_EVERY_MS;
     this.watch = new ServerWatch({
@@ -578,6 +596,7 @@ export class CrucibleLanes {
 
   stop(): void {
     this.setPolling(false);
+    this.pending.stop();
     this.offRegistry?.();
     this.offRegistry = null;
   }
@@ -812,18 +831,39 @@ export class CrucibleLanes {
     }
     run.clock.pause();
     try {
-      await batch.enter(run.jobId, stage, { signal: run.controller.signal, needs });
+      await pendingStep(`the batch's ${stage} stage gate`, () => batch.enter(run.jobId, stage, { signal: run.controller.signal, needs }));
     } finally {
       run.clock.resume();
     }
+    this.pending.setStage(run.jobId, stage);
     run.stage = resumeStageOf(stage);
     log.info(turnPerCall(stage)
       ? `[crucible] ${run.jobId} goes into ${batch.id}'s ${stage} stage; its local calls take the turn as they go (LEDGER #270)`
       : `[crucible] ${run.jobId} takes ${batch.id}'s turn for ${stage}`);
   }
 
-  private tellBatchWait(jobId: string, line: string | null): void {
-    if (line !== null) log.info(`[crucible] ${jobId}: ${line}`);
+  /** A batch member's step pending past the limit (pending-work.ts): said loudly, and on its row. */
+  private pendingStalled(stall: PendingStall): void {
+    const where = stall.stage === null ? 'before its first stage' : `at ${stall.stage}`;
+    log.warn(`[crucible] ${stall.jobId} ${where}: ${stall.line}`);
+    this.tellBatchWait(stall.jobId, stall.line, false);
+  }
+
+  /** What a batch member waits on, to the log and its row (`pending`: its steps, for the quit log). */
+  pendingOf(jobId: string): Array<{ label: string; ms: number }> {
+    return this.pending.pendingOf(jobId);
+  }
+
+  /**
+   * A batch member's row line. A wait line cleared (its turn came, its stage opened) is replaced by
+   * what it does now ("Now: checking the titles, description and tags."), so the row never keeps an
+   * old "1 video is ahead of it" line while the job works (LEDGER #279). An ended member's row is
+   * left to its result.
+   */
+  private tellBatchWait(jobId: string, given: string | null, logIt = true): void {
+    const line = given ?? this.batchOf(jobId)?.lineOf(jobId) ?? null;
+    if (line === null) return;
+    if (logIt && given !== null) log.info(`[crucible] ${jobId}: ${line}`);
     try {
       this.deps.onBatchWait?.(jobId, line);
     } catch (err) {
@@ -917,9 +957,13 @@ export class CrucibleLanes {
       let failure: unknown = null;
       try {
         value = await runStore.run(run, async () => {
-          // A batch member waits for its first stage like any other (a held job starts at `fields`).
-          if (batch !== null) await this.enterStage(run, options.stage, []);
-          return work(run);
+          if (batch === null) return work(run);
+          // A batch member's awaited steps are watched (pending-work.ts); it waits for its first
+          // stage like any other (a held job starts at `fields`).
+          return withPendingScope(this.pending, run.jobId, async () => {
+            await this.enterStage(run, options.stage, []);
+            return work(run);
+          });
         });
       } catch (err) {
         failure = err;
@@ -932,6 +976,7 @@ export class CrucibleLanes {
     } finally {
       run.clock.stop();
       this.stopTouching(run);
+      this.pending.forget(run.jobId);
       if (run.batch !== null) {
         // A member leaves; the batch's session and lane go with its LAST member (closeBatch).
         if (run.batch.end(run.jobId)) await this.closeBatch(run.batch);
@@ -1095,6 +1140,11 @@ export class CrucibleLanes {
    * while it runs (work on this side is not activity on the server's).
    */
   async aiCall<T>(route: AiCallRoute, name: string, execute: () => Promise<T>): Promise<T> {
+    // The whole call, as one step of a batch member (pending-work.ts; nothing outside one).
+    return pendingStep(`${route.lane === 'cloud' ? 'the cloud call' : 'the local call'} ${name} on ${route.model}`, () => this.aiCallUnwatched(route, name, execute));
+  }
+
+  private async aiCallUnwatched<T>(route: AiCallRoute, name: string, execute: () => Promise<T>): Promise<T> {
     const run = runStore.getStore();
     // A standalone upstream call goes through a Crucible server too (`claude-cli:` does not).
     if (route.lane === 'cloud' && run === undefined && !route.model.startsWith('claude-cli:')) {
@@ -1123,20 +1173,23 @@ export class CrucibleLanes {
     if (run?.batch) {
       run.clock.pause();
       try {
-        turnDone = await run.batch.takeCall(run.jobId, route.model, run.controller.signal);
+        turnDone = await pendingStep(`the batch's call turn for ${name}`, () => run.batch!.takeCall(run.jobId, route.model, run.controller.signal));
       } finally {
         run.clock.resume();
       }
     }
     // A job's own calls on one model share the slot (LEDGER #270); a standalone call takes it alone.
     const group = run === undefined ? null : { key: `${run.jobId}\n${route.model}`, cap: JOB_CALLS_PER_SERVER, owner: run.jobId };
+    const slotWait = pendingStart(`the GPU slot on "${server}" for ${name}`);
     try {
       return await this.lane(server).slot.run(async () => {
+        slotWait();
         const value = await stepStore.run(this.hooks('gpu', server, run), execute);
         run?.beat();
         return value;
       }, group);
     } finally {
+      slotWait();
       turnDone();
     }
   }
