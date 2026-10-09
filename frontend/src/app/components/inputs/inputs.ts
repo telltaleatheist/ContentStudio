@@ -611,10 +611,14 @@ export class Inputs implements OnInit, OnDestroy {
   // instead of the final export's; chapters never move. Nothing blocks on it, nothing is
   // pre-selected, and an item nobody touched runs exactly as it did before Phase 2.
   //
-  // The finder still only hints — 75% of the 40 live exports get a candidate and about 1
-  // in 4 of those is the wrong story — so a hint is offered in the menu and never taken
-  // on the operator's behalf. What IS recorded, on every run, is which branch it took and
-  // why: linked, declared final-only, or unlinked by default. See PHASE-1-2-SPEC.md §3.2.
+  // The finder only hints for a LABEL match — 75% of the 40 live exports get a candidate
+  // and about 1 in 4 of those is the wrong story — so such a hint is offered in the menu
+  // and never taken on the operator's behalf. An EXACT-TITLE match that is the only
+  // candidate is different: the export is named after the story it was cut from, so it is
+  // linked automatically and the row says so (Owen, 2026-10-09: "it detects the stories
+  // directly, but it makes me pick them by hand even though it knows where they are";
+  // LEDGER #278). What is recorded, on every run, is which branch it took and why: linked
+  // (by hand or automatically), declared final-only, or unlinked by default (spec §3.2).
 
   /** Scan results keyed by item.path. Not persisted: it is a fact about disk, re-read each session. */
   transcriptScans = signal<Record<string, CandidateScan>>({});
@@ -705,11 +709,49 @@ export class Inputs implements OnInit, OnDestroy {
       }
 
       // Drift is part of the offer, so measure it before the menu is opened. Nothing to
-      // measure when nothing matched, and nothing is decided either way.
+      // measure when nothing matched. The one exception that decides: a sole exact-title
+      // match with a transcript ready is linked once its drift is in.
       if (scan.candidates.length > 0) {
-        void this.probeCandidateDrift(item.path, scan);
+        void this.probeCandidateDrift(item.path, scan).then(() => this.autoLinkExactStory(item.path, scan));
       }
     }
+  }
+
+  /**
+   * Link the story whose title is this export's own name, when it is the ONLY candidate.
+   *
+   * Never over a choice already on the item (the operator's, or a declared final-only), never
+   * for a label match, never with two or more candidates, and never for a story whose
+   * transcript has not been exported (no ref to link). The link carries `auto`, so the row and
+   * the report say the app made it; the operator changes it the same way as any other link.
+   */
+  private autoLinkExactStory(itemPath: string, scan: CandidateScan): void {
+    if (scan.candidates.length !== 1) return;
+    const candidate = scan.candidates[0];
+    if (candidate.via !== 'exact-title' || !candidate.ref) return;
+    if (this.transcriptChoiceFor(itemPath)) return;
+    // The scan may be stale by the time the probe returns (re-scanned, item removed).
+    if (this.transcriptScans()[itemPath] !== scan) return;
+
+    const drift = this.transcriptDrift()[this.driftKey(itemPath, candidate.transcriptPath)] || null;
+    this.setTranscriptChoice(itemPath, {
+      mode: 'linked',
+      ref: { ...candidate.ref, linkedAt: new Date().toISOString() },
+      driftSec: drift ? drift.driftSec : null,
+      driftPct: drift ? drift.driftPct : null,
+      auto: true,
+    });
+  }
+
+  /** The choice already on this item, on the page or in a waiting job — whichever has one. */
+  private transcriptChoiceFor(itemPath: string): TranscriptChoice | undefined {
+    const onPage = this.inputsState.inputItems().find(it => it.path === itemPath);
+    if (onPage?.transcriptChoice) return onPage.transcriptChoice;
+    for (const job of this.jobQueue.getPendingJobs()) {
+      const queued = job.inputs.find(it => it.path === itemPath);
+      if (queued?.transcriptChoice) return queued.transcriptChoice;
+    }
+    return undefined;
   }
 
   /** ffprobe the export once per candidate, so the row can show the drift line up front. */
@@ -889,7 +931,7 @@ export class Inputs implements OnInit, OnDestroy {
       const drift = choice.driftPct === null
         ? 'drift not measured'
         : `${choice.driftPct > 0 ? '+' : ''}${choice.driftPct.toFixed(1)}% vs final`;
-      return `${choice.ref.storyTitle} · ${choice.ref.sourceSession} · ${drift}`;
+      return `${choice.auto ? 'auto-linked · ' : ''}${choice.ref.storyTitle} · ${choice.ref.sourceSession} · ${drift}`;
     }
     if (choice) return 'final export only';
     if (this.isScanningTranscript(item)) return 'looking…';
@@ -912,7 +954,10 @@ export class Inputs implements OnInit, OnDestroy {
         ? 'drift could not be measured'
         : `${Math.abs(choice.driftPct).toFixed(1)}% ${choice.driftPct < 0 ? 'shorter' : 'longer'} ` +
           'than the story';
-      return `Content fields come from story ${choice.ref.storyNumber} "${choice.ref.storyTitle}" ` +
+      const how = choice.auto
+        ? 'Linked automatically: it is the only story whose title is this export\'s name. '
+        : '';
+      return `${how}Content fields come from story ${choice.ref.storyNumber} "${choice.ref.storyTitle}" ` +
         `of session ${choice.ref.sourceSession} (${choice.ref.via}). The final cut is ${drift}. ` +
         'Chapters still come from the final export.';
     }

@@ -120,6 +120,11 @@ export type TranscriptChoice =
       /** Measured at confirm time and shown on the queue row. Null if the probe failed. */
       driftSec: number | null;
       driftPct: number | null;
+      /**
+       * Made by the app, not the operator: the scan found exactly one story whose title is
+       * this export's own name (LEDGER #278). Absent on a link the operator picked.
+       */
+      auto?: true;
     }
   | {
       mode: 'final-only';

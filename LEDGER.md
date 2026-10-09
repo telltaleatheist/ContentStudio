@@ -1649,3 +1649,20 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Seen in the alignment sidecar of that run.** GCC-PHAT measured mic1 and screen audio at −0.3337 s, and the picture measured screen and game at +0.0334 s and cam1 at −0.0034 s. These match Utility Suite's manifest (−10 frames for the WAVs, +1 frame for screen/game, 0 for cam).
 
 [editor-backend/cli/editor_manifest.py]
+
+**278. A video whose name is exactly one editor story's title is linked to it automatically (Owen, 2026-10-09: "it seems to detect the stories directly, but it makes me pick them by hand even though it knows where they are. can you have it auto-link the editor stories to the uploaded files?").**
+- **The rule.** After the scan and its drift probe, an item is linked when all of these hold:
+  - the scan found exactly ONE candidate;
+  - that candidate is an `exact-title` match (the export is named after the story);
+  - its transcript is exported, so there is a ref;
+  - nothing is already chosen for the item, on the page or in a waiting job.
+- **What stays manual.** A label match is still only offered, because about 1 in 4 of those are the wrong story, the reason the Phase 2 design never took hints. Two or more candidates, or a story with no exported transcript, are also left for the operator.
+- **How it shows.** The link carries `auto: true`. The row reads "auto-linked · <story> · <session> · <drift>", the tooltip says why, and it changes like any other link.
+- **The drift number.** Owen asked why "f1 - jim bakker dies" read 27.3% against its story. The number is a LENGTH comparison, and it was right:
+  - the editor story is 30.5 min, and the per-story FCPX project it exported is 31.0 min;
+  - the final .mov is 22.2 min;
+  - f2's final is 2.5 min LONGER than its story (12.2 → 14.7).
+  - So the difference was made in FCPX. Length cannot tell trimming from material moved between videos. A word-level coverage measure against the final's own transcript (which the run makes anyway, for chapters) is the open follow-up.
+- **Checks.** Frontend tsc (tsconfig.app.json) is clean. Not run live; Owen tests.
+
+[frontend/src/app/components/inputs/inputs.ts; frontend/src/app/features/transcript-link/transcript-link.types.ts]
