@@ -13,21 +13,26 @@
  *    and the wait is logged with what it is waiting on (Law 8). Another CLIENT holding the lane
  *    is not queued behind: its 409 fails the item with the holder's line (P3 parks it).
  *  - THE CHECK before the upload (`/v1/info`'s asr and align rows), the job, the progress
- *    bands, and the model name the saved transcript records: `crucible:<server>:qwen3-asr-1.7b`.
+ *    bands, and the model name the saved transcript records: `crucible:<server>:<model>`.
+ *
+ * THE MODEL IS THE CALLER'S (LEDGER #281): the metadata pipeline passes its routing row's
+ * transcriber (metadata-routing.ts `transcriptionModelOf`, the 0.6B by default), the editor
+ * passes EDITOR_ASR_MODEL (the 1.7B). Nothing here picks one.
  */
 
 import * as crypto from 'crypto';
 import * as log from 'electron-log';
 
 import {
-  QWEN_ASR_MODEL,
   asrParams,
+  requireAsrModel,
   requireAsrOffer,
   runAsrJob,
   safeUploadName,
   CrucibleAsrError,
   type AsrJobProgress,
   type AsrVenue,
+  type QwenAsrModel,
 } from '../../crucible/asr';
 import type { SessionSource } from '../../crucible/session';
 
@@ -55,9 +60,9 @@ export function resolveAsrVenue(): AsrVenue {
   return venueResolver();
 }
 
-/** What the saved transcript and the editor sidecar record as the model: which server, which model. */
-export function crucibleModelName(server: string): string {
-  return `crucible:${server}:${QWEN_ASR_MODEL}`;
+/** What the saved transcript and the editor sidecar record as the model: which server, which model (0.6B or 1.7B, #281). */
+export function crucibleModelName(server: string, model: QwenAsrModel): string {
+  return `crucible:${server}:${model}`;
 }
 
 // ────────────────────────────────────────────────────────────── one job per server, here
@@ -130,6 +135,9 @@ export function asrProgressToBand(server: string, p: AsrJobProgress, from: numbe
     }
     case 'queued':
       return { percent: at(0.03), message: `Queued on Crucible on ${server}${p.position !== null && p.position > 0 ? ` (position ${p.position})` : ''}...` };
+    case 'installing':
+      // Crucible's own words for what it is doing (#281): "pulling the model 'qwen3-asr-0.6b' ...".
+      return { percent: at(0.03), message: `Crucible on ${server} is installing ${p.model}...${p.message ? ` ${p.message}` : ''}` };
     case 'warming':
       return { percent: at(0.04), message: `Crucible on ${server}: ${p.message ?? 'loading the model...'}` };
     case 'decoding':
@@ -148,6 +156,8 @@ export function asrProgressToBand(server: string, p: AsrJobProgress, from: numbe
 export interface CrucibleTranscribeRequest {
   /** The audio to send: 16 kHz mono FLAC (pipeline) or a compact WAV (editor). */
   readonly audioFile: string;
+  /** The transcriber (#281): the metadata routing row's, or EDITOR_ASR_MODEL. Required: nothing here defaults it. */
+  readonly model: QwenAsrModel;
   /** From asr-context.ts: the instruction and the item's facts. */
   readonly context: string;
   /** `pipeline:<jobId>` or `editor:<jobId>:<track>`; a random tail is added (unique per submit). */
@@ -164,6 +174,8 @@ export interface CrucibleTranscribeRequest {
    * loaded once. Absent, the lanes' (the queue job's own, else this install's open one joined).
    */
   readonly sessions?: SessionSource;
+  /** Only a test shortens these: the install wait's poll and budget (asr.ts INSTALL_POLL_MS, INSTALL_BUDGET_MS). */
+  readonly installTimings?: { readonly pollMs?: number; readonly budgetMs?: number };
 }
 
 export interface CrucibleTranscribeOutcome {
@@ -172,13 +184,14 @@ export interface CrucibleTranscribeOutcome {
   readonly jobId: string;
   /** `transcript.json`, parsed. */
   readonly transcript: unknown;
-  /** `crucible:<server>:qwen3-asr-1.7b`. */
+  /** `crucible:<server>:<model>`, e.g. `crucible:mac:qwen3-asr-0.6b`. */
   readonly model: string;
   readonly wallSeconds: number;
 }
 
 /** One asr job for one file, on the wired server, in its lane. */
 export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): Promise<CrucibleTranscribeOutcome> {
+  const model = requireAsrModel(request.model);
   const venue = resolveAsrVenue();
   const { server } = venue;
   const params = asrParams(request.context);
@@ -195,9 +208,10 @@ export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): 
     if (request.signal?.aborted) {
       throw new CrucibleAsrError('cancelled', 'cancelled', server, 'The transcription was cancelled before it reached Crucible.');
     }
-    const { version } = await requireAsrOffer(venue);
+    const { version, installed } = await requireAsrOffer(venue, model);
+    if (!installed) say(`${server} offers ${model} and has not downloaded it yet: Crucible installs it when the job is submitted (LEDGER #281)`);
     const started = Date.now();
-    say(`transcribing ${request.audioFile} on ${server} (Crucible ${version ?? 'version not stated'}) with ${QWEN_ASR_MODEL}: ` +
+    say(`transcribing ${request.audioFile} on ${server} (Crucible ${version ?? 'version not stated'}) with ${model}: ` +
       `language ${params.language}, vad_filter false, word_timestamps true, context of ${params.context.length} characters`);
     // The queue session the job runs in (LEDGER #255): held from the submit to the job's end, and
     // let go of then (a queue job's session stays the job's; a standalone one closes).
@@ -207,6 +221,9 @@ export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): 
       outcome = await runAsrJob({
         venue,
         params,
+        model,
+        ...(request.installTimings?.pollMs === undefined ? {} : { installPollMs: request.installTimings.pollMs }),
+        ...(request.installTimings?.budgetMs === undefined ? {} : { installBudgetMs: request.installTimings.budgetMs }),
         file: request.audioFile,
         filename: safeUploadName(request.audioFile),
         clientRef: `contentstudio:${request.clientRefStem}:${crypto.randomBytes(4).toString('hex')}`,
@@ -238,7 +255,7 @@ export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): 
       serverVersion: version,
       jobId: outcome.jobId,
       transcript: outcome.transcript,
-      model: crucibleModelName(server),
+      model: crucibleModelName(server, model),
       wallSeconds,
     };
   }, (ahead) => {

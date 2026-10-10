@@ -35,6 +35,7 @@ const door = require(path.join(ROOT, 'services/transcription/crucible-transcript
 const editorAsr = require(path.join(ROOT, 'services/editor/editor-asr.js'));
 const promptAssetsModule = require(path.join(ROOT, 'services/metadata/prompt-assets.js'));
 const facts = require(path.join(ROOT, 'services/transcription/asr-facts.js'));
+const vocab = require(path.join(ROOT, 'services/transcription/asr-vocabulary.js'));
 
 // The repo's own prompt tree (what this commit ships), as tools/routing-publish-checks.js does.
 promptAssetsModule.initPromptAssets(path.join(__dirname, '..', 'electron', 'assets', 'prompts'));
@@ -170,7 +171,8 @@ check('params are EXACTLY {language:"en", vad_filter:false, word_timestamps:true
   const p = asr.asrParams('ctx');
   eq(Object.keys(p).sort(), ['context', 'language', 'vad_filter', 'word_timestamps']);
   eq(p, { language: 'en', vad_filter: false, word_timestamps: true, context: 'ctx' });
-  eq(asr.QWEN_ASR_MODEL, 'qwen3-asr-1.7b', 'the model (never -mlx, #205):');
+  eq(asr.QWEN_ASR_MODELS, ['qwen3-asr-0.6b', 'qwen3-asr-1.7b'], 'the official models (never -mlx, #205):');
+  eq(asr.EDITOR_ASR_MODEL, 'qwen3-asr-1.7b', 'the editor keeps the 1.7B (#281):');
 });
 check('a blank context is refused before anything is sent', () => {
   let e = null;
@@ -242,6 +244,71 @@ check('an earlier run\'s titles, tags and description are found by source key', 
   eq([prior.titles, prior.tags, prior.description], [['Jake Lang returns'], ['jake lang', 'j6'], 'Hook. Body.']);
   ok(f.names.includes('owen morgan') && f.promotedItems.length > 0, 'the channel\'s brand terms / promoted items');
   eq(f.title, 'jake lang');
+});
+
+// ────────────────────────────────────────────────── the story vocabulary (#281)
+
+section('the story vocabulary (asr-vocabulary.ts, LEDGER #281)');
+/**
+ * A story fixture as the editor's words list carries it (one word per entry, punctuation on the
+ * word): names mid-sentence and sentence-initial, multi-word runs, sentence-opening common words,
+ * fillers, and a few uncommon words, some said more than once.
+ */
+const STORY_TEXT =
+  'So um Jim Bakker built the PTL Club in the seventies. Bakker said the PTL Club needed money. ' +
+  'Uh, Tammy Faye cried on camera, and Jim Bakker asked for more. Ministries like this sold timeshares. ' +
+  'The televangelists promised Heritage USA would last. Honestly the timeshares were oversold, ' +
+  'and Jessica Hahn spoke out. Prosperity preachers still sell timeshares and miracle water today.';
+const STORY = STORY_TEXT.split(' ').map((text) => ({ text, start: 0, end: 0 }));
+
+check('names and multi-word runs kept whole; sentence-initial single words, fillers and common words left out; most said first', () => {
+  const terms = vocab.storyVocabulary(STORY);
+  // "Bakker" (opening a sentence) folds into "Jim Bakker": 3 in all. "PTL Club" twice. Then once
+  // each, in the order said. "timeshares", "seventies", "preachers" are in the 30,000 common words.
+  eq(terms, ['Jim Bakker', 'PTL Club', 'Tammy Faye', 'televangelists', 'Heritage USA', 'oversold', 'Jessica Hahn'], 'the terms, most said first:');
+  for (const gone of ['So', 'Ministries', 'Prosperity', 'Honestly', 'The', 'Uh', 'um', 'Bakker', 'seventies', 'camera', 'money', 'miracle', 'timeshares']) {
+    ok(!terms.includes(gone), `${gone} should not be a term: ${terms.join(', ')}`);
+  }
+  eq(new Set(terms.map((t) => t.toLowerCase())).size, terms.length, 'one term per spelling:');
+  ok(terms.every((t) => !/[,.!?;:]$/.test(t)), 'punctuation stripped');
+});
+check('one spelling per term, case-insensitively, the first spelling in the story kept', () => {
+  const words = 'The Kunneman prophecy. kunneman said it again, and KUNNEMAN stood by it.'.split(' ').map((text) => ({ text }));
+  eq(vocab.storyVocabulary(words), ['Kunneman'], 'one term, the first spelling ("prophecy" is common):');
+});
+check('no story words, no vocabulary; no vocabulary, the context is exactly as before', () => {
+  eq(vocab.storyVocabulary([]), []);
+  const without = ctx.buildAsrContext({ title: 'jim bakker', jobName: 'week 41' }, TEMPLATE);
+  const empty = ctx.buildAsrContext({ title: 'jim bakker', jobName: 'week 41', vocabulary: [] }, TEMPLATE);
+  eq(empty, without);
+  ok(!without.includes(TEMPLATE.labels.vocabulary), 'no vocabulary line');
+});
+check('the vocabulary rides right after the title and job, labelled from transcription.yml (Law 2)', () => {
+  eq(TEMPLATE.labels.vocabulary, 'Names and words said in this recording');
+  const c = ctx.buildAsrContext({ title: 'jim bakker', jobName: 'week 41', vocabulary: vocab.storyVocabulary(STORY), otherTitles: ['PTL'], tags: ['ptl'] }, TEMPLATE);
+  const lines = c.split('\n').slice(1);
+  eq(lines.slice(0, 2), ['Title: jim bakker', 'Job: week 41']);
+  ok(lines[2] === 'Names and words said in this recording: Jim Bakker, PTL Club, Tammy Faye, televangelists, Heritage USA, oversold, Jessica Hahn', lines[2]);
+  ok(lines[3].startsWith('Also titled:'), lines[3]);
+});
+check('the budget cut keeps the title and the vocabulary\'s top terms, cutting whole terms from the rare end', () => {
+  const many = ['Jim Bakker', 'PTL Club', ...Array.from({ length: 400 }, (_, i) => `Rareterm${i} Name${i}`)];
+  const c = ctx.buildAsrContext({ title: 'jim bakker', vocabulary: many, tags: ['a tag'], description: 'a description' }, TEMPLATE);
+  ok(ctx.estimateTokens(c) <= ctx.ASR_CONTEXT_TOKEN_BUDGET, `over budget: ${ctx.estimateTokens(c)}`);
+  ok(c.includes('Title: jim bakker'), 'the title was cut');
+  ok(!c.includes('Description:') && !c.includes('Names and topics:'), 'tags and description go before the vocabulary');
+  const line = c.split('\n').find((l) => l.startsWith('Names and words said in this recording: '));
+  ok(line !== undefined && line.includes(': Jim Bakker, PTL Club, Rareterm0 Name0'), 'the top terms survive');
+  const kept = line.slice(line.indexOf(': ') + 2).split(', ');
+  ok(kept.length < many.length && kept.every((t, i) => t === many[i]), 'whole terms, from the front, none cut in half');
+  ok(!line.endsWith('…'), 'a term list is never cut mid-term');
+});
+check('the pipeline\'s facts carry a linked story\'s vocabulary, and say so in the account', () => {
+  const { facts: f } = facts.pipelineItemFacts({ videoPath: '/x/complete/u1 - bakker.mov', storyTitle: 'u1 - bakker', storyVocabulary: ['Jim Bakker', 'PTL Club'] });
+  eq(f.vocabulary, ['Jim Bakker', 'PTL Club']);
+  const { context, account } = facts.pipelineAsrContext({ videoPath: '/x/complete/u1 - bakker.mov', storyTitle: 'u1 - bakker', storyVocabulary: ['Jim Bakker', 'PTL Club'] });
+  ok(context.includes('\nNames and words said in this recording: Jim Bakker, PTL Club'), context);
+  ok(/the story's 2 vocabulary term\(s\)/.test(account), account);
 });
 
 // ────────────────────────────────────────────────────────────────── progress
@@ -336,7 +403,7 @@ section('the job (asr.ts) against a scripted Crucible');
 check('upload → submit (model, params exactly, one named input, a clientRef) → events → transcript.json', async () => {
   const client = fakeClient({ script: [{ event: 'queued', data: { position: 1 } }, progressEv('transcribing', 60, 120), progressEv('aligning', 120, 120), { event: 'done', data: {} }] });
   const seen = [];
-  const out = await asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'contentstudio:test:1', onProgress: (p) => seen.push(p.kind), ...FAST });
+  const out = await asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'contentstudio:test:1', onProgress: (p) => seen.push(p.kind), ...FAST });
   const submit = client.calls.find((c) => c[0] === 'submit')[1];
   eq(submit, { type: 'asr', model: 'qwen3-asr-1.7b', params: { language: 'en', vad_filter: false, word_timestamps: true, context: 'C' }, inputs: { 'clip.flac': { blobId: 'blob-1' } }, clientRef: 'contentstudio:test:1' });
   eq(client.calls.map((c) => c[0]), ['upload', 'submit', 'events', 'artifact']);
@@ -346,7 +413,7 @@ check('upload → submit (model, params exactly, one named input, a clientRef) �
 check('cancel → DELETE on the server, and the job ends cancelled (never abandoned)', async () => {
   const client = fakeClient({ script: [progressEv('transcribing', 10, 100), 'hang'] });
   const abort = new AbortController();
-  const p = asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', signal: abort.signal, ...FAST });
+  const p = asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', signal: abort.signal, ...FAST });
   setTimeout(() => abort.abort(), 20);
   const e = await rejects(p);
   eq([e.kind, e.jobId], ['cancelled', 'job-1']);
@@ -355,22 +422,22 @@ check('cancel → DELETE on the server, and the job ends cancelled (never abando
 check('a failed job fails with the SERVER\'s code and message, loop range included', async () => {
   const message = 'the piece at 3600.0-3780.0s (1:00:00-1:03:00) still loops after re-decoding at every window in the budget (180 s, 60 s, 20 s)';
   const client = fakeClient({ script: [{ event: 'failed', data: { error: { code: 'asr_decode_loop', message } } }] });
-  const e = await rejects(asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
+  const e = await rejects(asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
   eq([e.kind, e.code], ['failed', 'asr_decode_loop']);
   ok(e.message.includes(message), e.message);
 });
 check('a missing model or aligner refuses BY NAME before any upload (never whisper)', async () => {
   const noAligner = fakeClient({ info: { server: { version: '1.0.35' }, host: { backend: 'mlx-darwin' }, jobTypes: ['asr', 'align'], capabilities: [{ jobType: 'asr', models: [{ id: 'qwen3-asr-1.7b', installed: true }] }, { jobType: 'align', models: [{ id: 'qwen3-aligner', installed: false }] }] } });
-  const e1 = await rejects(asr.requireAsrOffer({ server: 'mac', client: noAligner }));
+  const e1 = await rejects(asr.requireAsrOffer({ server: 'mac', client: noAligner }, 'qwen3-asr-1.7b'));
   ok(e1.kind === 'unavailable' && /qwen3-aligner/.test(e1.message), e1.message);
   const onlyMlx = fakeClient({ info: { server: { version: '1.0.35' }, host: { backend: 'mlx-darwin' }, jobTypes: ['asr', 'align'], capabilities: [{ jobType: 'asr', models: [{ id: 'qwen3-asr-1.7b-mlx', installed: true }] }, { jobType: 'align', models: [{ id: 'qwen3-aligner', installed: true }] }] } });
-  const e2 = await rejects(asr.requireAsrOffer({ server: 'mac', client: onlyMlx }));
+  const e2 = await rejects(asr.requireAsrOffer({ server: 'mac', client: onlyMlx }, 'qwen3-asr-1.7b'));
   ok(/does not offer qwen3-asr-1\.7b/.test(e2.message), e2.message);
   eq([noAligner.calls.some((c) => c[0] === 'upload'), onlyMlx.calls.some((c) => c[0] === 'upload')], [false, false]);
 });
 check('a busy refusal (not met inside our own session) fails the item with the holder\'s line', async () => {
   const busy = new Error('409'); busy.name = 'CrucibleBusy'; busy.code = 'server_busy'; busy.busyLine = 'BookForge is narrating on mac (job j-9)';
-  const e = await rejects(asr.runAsrJob({ venue: venueOf(fakeClient({ failSubmit: busy })), inSession: async () => venueOf.last.client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
+  const e = await rejects(asr.runAsrJob({ venue: venueOf(fakeClient({ failSubmit: busy })), inSession: async () => venueOf.last.client, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
   eq(e.kind, 'busy');
   ok(e.message.includes('BookForge is narrating'), e.message);
 });
@@ -379,22 +446,22 @@ check('the job runs in a queue session asked for AFTER the upload; a session the
   const order = [];
   const realUpload = client.upload.bind(client);
   client.upload = async (...a) => { order.push('upload'); return realUpload(...a); };
-  await asr.runAsrJob({ venue: venueOf(client), inSession: async () => { order.push('session'); return client; }, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST });
+  await asr.runAsrJob({ venue: venueOf(client), inSession: async () => { order.push('session'); return client; }, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST });
   eq(order, ['upload', 'session'], 'a blob waits for nobody\'s turn: the upload goes first');
   const closed = new Error('409'); closed.name = 'CrucibleSessionClosed'; closed.code = 'session_closed'; closed.reason = 'idle';
-  const e = await rejects(asr.runAsrJob({ venue: venueOf(fakeClient({ failSubmit: closed })), inSession: async () => venueOf.last.client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
+  const e = await rejects(asr.runAsrJob({ venue: venueOf(fakeClient({ failSubmit: closed })), inSession: async () => venueOf.last.client, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'r', ...FAST }));
   eq([e.kind, e.code], ['session', 'session_closed']);
   ok(/\(idle\)/.test(e.message), e.message);
 });
 check('a submit whose answer was lost is found by its clientRef, not sent twice', async () => {
   const client = fakeClient({ loseFirstSubmitAnswer: true, script: [{ event: 'done', data: {} }] });
-  const out = await asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'lost-1', ...FAST });
+  const out = await asr.runAsrJob({ venue: venueOf(client), inSession: async () => client, model: 'qwen3-asr-1.7b', params: asr.asrParams('C'), file: AUDIO, filename: 'clip.flac', clientRef: 'lost-1', ...FAST });
   eq(out.jobId, 'job-1');
   eq(client.calls.filter((c) => c[0] === 'submit').length, 1, 'submits:');
 });
 check('the door refuses by name when no Crucible is connected (and never runs whisper)', async () => {
   door.setAsrVenueResolver(null);
-  const e = await rejects(door.transcribeOnCrucible({ audioFile: AUDIO, context: 'C', clientRefStem: 't', tag: 't', band: { from: 0, to: 100 } }));
+  const e = await rejects(door.transcribeOnCrucible({ audioFile: AUDIO, model: 'qwen3-asr-1.7b', context: 'C', clientRefStem: 't', tag: 't', band: { from: 0, to: 100 } }));
   eq([e.kind, e.code], ['unavailable', 'crucible_not_connected']);
 });
 check('the door serializes this app\'s jobs per server and names the model crucible:<server>:qwen3-asr-1.7b', async () => {
@@ -410,7 +477,7 @@ check('the door serializes this app\'s jobs per server and names the model cruci
   client.artifact = async (...a) => { await new Promise((r) => setTimeout(r, 10)); live--; return realArtifact(...a); };
   const shared = venueOf(client);
   door.setAsrVenueResolver(() => shared);
-  const run = (n) => door.transcribeOnCrucible({ audioFile: AUDIO, context: 'C', clientRefStem: `n${n}`, tag: `n${n}`, band: { from: 0, to: 100 } });
+  const run = (n) => door.transcribeOnCrucible({ audioFile: AUDIO, model: 'qwen3-asr-1.7b', context: 'C', clientRefStem: `n${n}`, tag: `n${n}`, band: { from: 0, to: 100 } });
   const outs = await Promise.all([run(1), run(2), run(3)]);
   eq(order, ['n1', 'n2', 'n3']);
   eq(outs[0].model, 'crucible:mac:qwen3-asr-1.7b');

@@ -85,7 +85,8 @@ export interface SavedTranscriptRecord {
   video: SavedTranscriptVideoStamp;
   /**
    * The model that produced these segments, as the run resolved it. Since P5 (LEDGER #206)
-   * `crucible:<server>:qwen3-asr-1.7b`; older records name a whisper.cpp model (`base`,
+   * `crucible:<server>:<model>`: `qwen3-asr-0.6b` or `qwen3-asr-1.7b`, whichever the routing's
+   * Transcription row named (LEDGER #281), and a reuse logs it; older records name a whisper.cpp model (`base`,
    * `large-v3-turbo`) and stay reusable. The key keeps its old name so they do.
    */
   whisper_model: string;

@@ -37,6 +37,12 @@ export interface CatalogInventory {
   error?: string;
   /** Crucible model id -> what the server offers for it. Only `llm` rows are read. */
   models: Record<string, ModelOfferView>;
+  /**
+   * The catalog's `asr` rows, apart from the chat models (LEDGER #281): asr model id -> installed
+   * or pullable. Read by the routing dialog's Transcription row. Absent on an inventory that could
+   * not be read.
+   */
+  asr?: Record<string, ModelOfferView>;
   /** True when the server has an Anthropic key; null when its settings could not be read. */
   anthropicConfigured: boolean | null;
   /**
@@ -61,7 +67,9 @@ export function inventoryOf(
   settings: SettingsDocument | null,
 ): CatalogInventory {
   const offers: Record<string, ModelOfferView> = {};
+  const asr: Record<string, ModelOfferView> = {};
   for (const row of catalog) {
+    if (row.kind === 'model' && row.jobType === 'asr') asr[row.id] = { offer: row.installed ? 'installed' : 'pullable', reason: null };
     if (row.kind !== 'model' || row.jobType !== 'llm') continue;
     offers[row.id] = { offer: row.installed ? 'installed' : 'pullable', reason: null };
   }
@@ -76,6 +84,7 @@ export function inventoryOf(
     server,
     reachable: true,
     models: offers,
+    asr,
     modalities,
     anthropicConfigured: settings === null ? null : anthropic !== null && anthropic !== undefined && anthropic.configured,
   };

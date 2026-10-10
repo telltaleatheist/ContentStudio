@@ -75,6 +75,14 @@
  *  - P7: a `denoise` job (`postDenoise` below) with the two separators'
  *    catalog rows, `options.denoise` / `setDenoise()` for its script, and
  *    `denoise` in the stocked job types.
+ *  - (LEDGER #281) `installOnSubmit`: an asr job naming a model the catalog lists and has not
+ *    installed starts ONE module task pulling it and is refused `409 installing` with
+ *    `details.task_id`, as Crucible's install-on-submit does (crucible/installonsubmit.py); a
+ *    submit while that task runs is pointed at it; once it is done the model is installed and
+ *    the next submit is admitted. `{ stepMs }` paces the task's steps (so a client sees it
+ *    running), `{ failWith: {code, message} }` fails it, reported ONCE to the next submit as
+ *    `409 <code>` and retried on the one after, as the server does. Off by default: the plain
+ *    `409 model_not_installed` refusal stays.
  *  - (P2) the chat door refuses an `X-Crucible-Act` it does not know (and, on a
  *    `legacyActs` server, `generate`/`decide`), answers `stream: true` as an
  *    OpenAI chunk stream, and a canned reply with `finishReason: null` leaves
@@ -502,7 +510,8 @@ async function startFakeCrucible(options = {}) {
         ?? catalog.filter((row) => row.jobType === 'asr' && row.installed).map((row) => row.id));
     const asrRows = () => {
         const installed = asrInstalled();
-        return [...ASR_IDS, ...(backend === 'mlx-darwin' ? ASR_IDS_MLX_ONLY : [])].map((id) => ({
+        // `asrIds` (LEDGER #281) plays a server whose lineup lacks a model: it is not offered at all.
+        return [...(options.asrIds ?? ASR_IDS), ...(backend === 'mlx-darwin' ? ASR_IDS_MLX_ONLY : [])].map((id) => ({
             id, revision: 'f'.repeat(40), source: `hf:fake/${id}`, installed: installed.has(id), resident: false, vram_bytes: 1_000_000_000,
         }));
     };
@@ -927,6 +936,8 @@ async function startFakeCrucible(options = {}) {
         started: '2026-09-23T01:00:00Z',
         finished: task.state === 'running' ? null : '2026-09-23T01:05:00Z',
         unmet: task.unmet,
+        // A task started by `POST /v1/jobs` says what it is doing while it runs (#281).
+        message: task.state === 'running' ? task.message ?? null : null,
     });
     const pushTaskEvent = (task, event, data) => {
         task.events.push({ id: task.events.length + 1, event, data });
@@ -1008,8 +1019,39 @@ async function startFakeCrucible(options = {}) {
         send(res, 201, { task_id: task.taskId });
         runModule(task, module);
     }
+    /**
+     * Crucible's install-on-submit for one model (LEDGER #281, crucible/installonsubmit.py): a
+     * failed earlier install is reported once, a running one is pointed at, else one module task
+     * pulling the model is started; every answer but the failure is `409 installing`.
+     */
+    function installOnSubmit(res, jobType, model) {
+        const mine = tasks.filter((t) => t.installs === model);
+        const failed = mine.find((t) => (t.state === 'failed' || t.state === 'cancelled') && !t.reported);
+        if (failed !== undefined) {
+            failed.reported = true;
+            const error = failed.events.at(-1)?.data ?? {};
+            refusal(res, 409, String(error['code'] ?? 'install_failed'), `installing what this job needs failed: ${String(error['message'] ?? 'the task failed')}. Submitting again tries again (task ${failed.taskId})`, { task_id: failed.taskId, reason: String(error['message'] ?? '') });
+            return;
+        }
+        let task = mine.find((t) => t.state === 'running');
+        const message = `pulling the model '${model}' (about 1.9 GB)`;
+        if (task === undefined) {
+            const subjects = [{ kind: 'model', id: model }];
+            task = {
+                taskId: `task-${nextTask++}`, type: 'module', state: 'running', events: [], unmet: [], installs: model, message,
+                request: { type: 'module', module: { name: `install on submit: ${jobType}`, version: '1', job_types: [], subjects } },
+            };
+            tasks.push(task);
+            const plan = options.installOnSubmit === true ? {} : options.installOnSubmit;
+            runModule(task, { job_types: [], needs: [], subjects }, { stepMs: plan.stepMs, failWith: plan.failWith });
+        }
+        refusal(res, 409, 'installing', `${message}; submit this job again after it. Task ${task.taskId} is doing it: GET /v1/tasks/${task.taskId}`, {
+            job_type: jobType, task_id: task.taskId, reason: 'installing', message, plan: null,
+            steps: [`pull model ${model}`], step: null, progress: null, line: null,
+        });
+    }
     /** Walk the module a few milliseconds apart, the way the server streams it. */
-    function runModule(task, module) {
+    function runModule(task, module, pace = {}) {
         const steps = [];
         const total = module.job_types.length + module.needs.length + module.subjects.length + 1;
         let index = 0;
@@ -1056,9 +1098,15 @@ async function startFakeCrucible(options = {}) {
             });
         }
         steps.push(() => {
-            if (options.failModuleWith !== undefined) {
+            const failWith = pace.failWith ?? options.failModuleWith;
+            if (failWith !== undefined) {
                 task.state = 'failed';
-                pushTaskEvent(task, 'failed', { code: options.failModuleWith.code, message: options.failModuleWith.message });
+                // Install-on-submit's pull did not land (#281): the model stays not installed.
+                if (task.installs !== undefined) {
+                    const row = catalog.find((r) => r.id === task.installs);
+                    if (row !== undefined) row.installed = false;
+                }
+                pushTaskEvent(task, 'failed', { code: failWith.code, message: failWith.message });
                 return;
             }
             index += 1;
@@ -1075,9 +1123,9 @@ async function startFakeCrucible(options = {}) {
             if (next === undefined)
                 return;
             next();
-            setTimeout(tick, 5).unref?.();
+            setTimeout(tick, pace.stepMs ?? 5).unref?.();
         };
-        setTimeout(tick, 5).unref?.();
+        setTimeout(tick, pace.stepMs ?? 5).unref?.();
     }
     // ── jobs ─────────────────────────────────────────────────────────────
     const jobStatusDoc = (job) => ({
@@ -1254,6 +1302,10 @@ async function startFakeCrucible(options = {}) {
         }
         const qwen = String(model).startsWith('qwen3-asr-');
         if (row['installed'] !== true) {
+            if (options.installOnSubmit) {
+                installOnSubmit(res, 'asr', String(model));
+                return;
+            }
             refusal(res, 409, 'model_not_installed', `'${model}' is not installed`);
             return;
         }

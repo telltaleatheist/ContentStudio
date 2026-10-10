@@ -2,10 +2,21 @@
  * ONE CRUCIBLE `asr` JOB, END TO END: upload → submit → follow events → fetch
  * `transcript.json` (CRUCIBLE-MIGRATION-PLAN.md §8, P5; LEDGER #203, #206).
  *
- * Every transcription ContentStudio makes is this job on `qwen3-asr-1.7b` (#206: "no more
- * local whisper ... we'll be using qwen asr ... probably the big model, 1.7b, since we want
- * accuracy"). The official id, never the `-mlx` port (#205, §21 Q15): the port drops fillers,
- * and Owen keeps the ums and uhs to cut on (#203).
+ * Every transcription ContentStudio makes is this job on one of the two official Qwen3-ASR ids
+ * (#206: "no more local whisper ... we'll be using qwen asr"). WHICH one is the caller's to say
+ * (LEDGER #281): the metadata pipeline reads its routing row (`transcription`, the 0.6B by
+ * default: Owen, 2026-10-09: "switch to 0.6b ... for the metadata step (as opposed to editor,
+ * which should keep 1.7b)"), and the editor names {@link EDITOR_ASR_MODEL}. Never the `-mlx`
+ * ports (#205, §21 Q15): they drop fillers, and Owen keeps the ums and uhs to cut on (#203).
+ *
+ * A MODEL THE SERVER OFFERS BUT HAS NOT DOWNLOADED IS INSTALLED THROUGH CRUCIBLE (#281: "do it
+ * through crucible, not direct download"). Crucible's install-on-submit (its docs/API.md
+ * `POST /v1/jobs`; docs/internals/jobs-runtime.md §8): the submit is refused `409 installing`
+ * with `details.task_id`, the server's own install task, and "submit this job again after it".
+ * The job's row says so, the task is read until it ends (on a stated budget, the session touched
+ * meanwhile), and the job is submitted again; an install that failed is the server's sentence on
+ * that next submit. A model the server does not offer at all is still refused by name, and so is
+ * an aligner that is not installed (the word times: chapter starts come from them).
  *
  * PORTED from Briefcase `backend/src/crucible/asr/crucible-asr-job.ts` and `asr-models.ts`
  * (cb7c45d), not re-derived. Kept: the upload streamed from disk (`fs.openAsBlob`, never read
@@ -30,9 +41,10 @@
  * HOW IT ENDS, as one error class with a `kind` the caller can branch on (Law 10: a type, not a
  * message substring):
  *
- *   unavailable  Crucible cannot take the work: unreachable, no asr, the model or its aligner
- *                not offered or not downloaded, the token refused, the stream lost past its
- *                budget. Never "so use whisper" (Law 1, #206): the item fails naming the gap.
+ *   unavailable  Crucible cannot take the work: unreachable, no asr, the model not offered,
+ *                its aligner not offered or not downloaded, an install that failed or ran past
+ *                its budget, the token refused, the stream lost past its budget. Never "so use
+ *                whisper" (Law 1, #206): the item fails naming the gap.
  *   busy         another client holds the server (409 server_busy / session_open). Does not
  *                arise inside our own session; fails the item with the holder's line if it does.
  *   session      our queue session ended under the job (idle, operator, server_restart, …)
@@ -48,8 +60,23 @@ import type { SessionSource } from './session';
 
 // ─────────────────────────────────────────────────────────────── the model and its params
 
-/** The transcriber (#206). One id on both backends since Crucible 1.0.29. */
-export const QWEN_ASR_MODEL = 'qwen3-asr-1.7b';
+/**
+ * The transcribers a job may name (#206, #281): the OFFICIAL ids only, each one id on both
+ * backends since Crucible 1.0.29, loaded at the precision their manifests state (bfloat16 on the
+ * Mac: "loading qwen3-asr-1.7b on qwen-asr at bfloat16"). No quantization is ever asked for.
+ */
+export const QWEN_ASR_MODELS = ['qwen3-asr-0.6b', 'qwen3-asr-1.7b'] as const;
+export type QwenAsrModel = (typeof QWEN_ASR_MODELS)[number];
+/** The editor's transcriber, unchanged by #281 (Owen: "editor, which should keep 1.7b"). */
+export const EDITOR_ASR_MODEL: QwenAsrModel = 'qwen3-asr-1.7b';
+
+/** `model` as a transcriber a job may name, or a refusal by name (a `-mlx` port included, #205). */
+export function requireAsrModel(model: unknown): QwenAsrModel {
+  if (typeof model === 'string' && (QWEN_ASR_MODELS as readonly string[]).includes(model)) return model as QwenAsrModel;
+  throw new CrucibleAsrError('refused', 'crucible_asr_model_unknown', '',
+    `${JSON.stringify(model)} is not a transcriber ContentStudio sends (the official ids: ${QWEN_ASR_MODELS.join(', ')}; ` +
+    'never a -mlx port, which drops the fillers, LEDGER #205)');
+}
 /** Its forced aligner, an `align` model: word timestamps need it installed (plan §8 note). */
 export const QWEN_ALIGNER_MODEL = 'qwen3-aligner';
 /**
@@ -144,6 +171,17 @@ export interface AsrCrucibleClient {
     readonly running: readonly { readonly jobId: string; readonly type: string }[];
     readonly queued: readonly { readonly jobId: string; readonly type: string }[];
   }>;
+  /** `GET /v1/tasks/{id}`: the install task a `409 installing` named, read until it ends (#281). */
+  task(taskId: string): Promise<{ readonly state: string; readonly message: string | null }>;
+}
+
+/**
+ * The client of the queue session a job runs in: the SDK's `CrucibleSession`, which also says
+ * the session is still wanted while our side waits on an install (`POST .../touch`; session.ts:
+ * work on this side is not activity on the server's).
+ */
+export interface AsrSessionClient extends AsrCrucibleClient {
+  touch(): Promise<void>;
 }
 
 /** A server and the client that reaches it. `server` is the registry name, used in every sentence. */
@@ -156,7 +194,7 @@ export interface AsrVenue {
    * `X-Crucible-Session`. Let go of it once the job has ended. `source` is where the session
    * comes from when the caller has its own (the editor run's, run-session.ts, LEDGER #264).
    */
-  session(request: { onQueue?: (position: { position: number; of: number }) => void; signal?: AbortSignal; source?: SessionSource }): Promise<{ client: AsrCrucibleClient; release(): Promise<void> }>;
+  session(request: { onQueue?: (position: { position: number; of: number }) => void; signal?: AbortSignal; source?: SessionSource }): Promise<{ client: AsrSessionClient; release(): Promise<void> }>;
   /** P3's in-flight ledger for this venue's jobs, when the wiring has one (P2 wires it). */
   readonly ledger?: AsrJobLedger;
 }
@@ -236,7 +274,9 @@ export function classifyDoorError(err: unknown, server: string, verb: string): C
   }
   // A server refusal (`CrucibleRefused`, 4xx with a code): env_missing and model_not_installed
   // are the server saying it cannot do this at all, which is `unavailable` by name.
-  if (code === 'env_missing' || code === 'model_not_installed' || code === 'unknown_model' || code === 'job_type_disabled') {
+  // An install-on-submit that failed or was cancelled is reported once, on the next submit (#281).
+  if (code === 'env_missing' || code === 'model_not_installed' || code === 'unknown_model' || code === 'job_type_disabled' ||
+      code === 'install_failed' || code === 'install_cancelled') {
     return new CrucibleAsrError('unavailable', code, server, `${at} cannot run ${verb} (${code}): ${errText(err)}`);
   }
   return new CrucibleAsrError('refused', code ?? 'crucible_refused', server, `${at} refused ${verb}${code ? ` (${code})` : ''}: ${errText(err)}`);
@@ -252,35 +292,39 @@ function modelRow(info: AsrServerInfo, jobType: string, id: string): AsrModelRow
 }
 
 /**
- * Why `server` cannot transcribe with Qwen right now, or null when it can: the `asr` and
+ * Why `server` cannot transcribe with `model` right now, or null when it can: the `asr` and
  * `align` rows of `/v1/info` read BEFORE anything is uploaded (plan §0a "Mechanics"), so a
- * missing model or env refuses by name instead of after a multi-gigabyte upload. Never a
- * reason to use another model (#206).
+ * model or env the server does not offer refuses by name instead of after a multi-gigabyte
+ * upload. Never a reason to use another model (#206).
+ *
+ * OFFERED BUT NOT DOWNLOADED IS NOT A REFUSAL (#281): Crucible installs it when the job is
+ * submitted (`409 installing`, followed in runAsrJob). The aligner is still required installed.
  */
-export function asrUnavailableReason(server: string, info: AsrServerInfo): string | null {
+export function asrUnavailableReason(server: string, info: AsrServerInfo, model: QwenAsrModel): string | null {
   const at = `Crucible on ${server}`;
   if (!info.jobTypes.includes('asr')) return `${at} has no transcription engine (no asr job type).`;
-  const qwen = modelRow(info, 'asr', QWEN_ASR_MODEL);
-  if (qwen === null) return `${at} does not offer ${QWEN_ASR_MODEL}. Update it to Crucible 1.0.29 or later.`;
-  if (!qwen.installed) return `${at} has not downloaded ${QWEN_ASR_MODEL} yet.`;
-  if (!info.jobTypes.includes('align')) return `${at} has no align job type, which ${QWEN_ASR_MODEL}'s word timings need.`;
+  if (modelRow(info, 'asr', model) === null) return `${at} does not offer ${model}. Update it to Crucible 1.0.29 or later.`;
+  if (!info.jobTypes.includes('align')) return `${at} has no align job type, which ${model}'s word timings need.`;
   const aligner = modelRow(info, 'align', QWEN_ALIGNER_MODEL);
-  if (aligner === null) return `${at} does not offer ${QWEN_ALIGNER_MODEL}, which ${QWEN_ASR_MODEL}'s word timings need.`;
+  if (aligner === null) return `${at} does not offer ${QWEN_ALIGNER_MODEL}, which ${model}'s word timings need.`;
   if (!aligner.installed) return `${at} has not downloaded ${QWEN_ALIGNER_MODEL} (the word timings) yet.`;
   return null;
 }
 
-/** Read `/v1/info` and refuse by name when the server cannot run the job. Returns the version for the record. */
-export async function requireAsrOffer(venue: AsrVenue): Promise<{ version: string | null }> {
+/**
+ * Read `/v1/info` and refuse by name when the server cannot run the job. Returns the version for
+ * the record, and whether `model` is already installed (false: the submit installs it, #281).
+ */
+export async function requireAsrOffer(venue: AsrVenue, model: QwenAsrModel): Promise<{ version: string | null; installed: boolean }> {
   let info: AsrServerInfo;
   try {
     info = await venue.client.info();
   } catch (err) {
     throw classifyDoorError(err, venue.server, 'the question of what it offers (/v1/info)');
   }
-  const why = asrUnavailableReason(venue.server, info);
+  const why = asrUnavailableReason(venue.server, info, model);
   if (why !== null) throw new CrucibleAsrError('unavailable', 'crucible_asr_unavailable', venue.server, why);
-  return { version: info.server.version };
+  return { version: info.server.version, installed: modelRow(info, 'asr', model)!.installed };
 }
 
 // ────────────────────────────────────────────────────────────────────────────── progress
@@ -289,6 +333,8 @@ export async function requireAsrOffer(venue: AsrVenue): Promise<{ version: strin
 export type AsrJobProgress =
   | { readonly kind: 'uploading'; readonly sentBytes: number | null; readonly totalBytes: number }
   | { readonly kind: 'queued'; readonly position: number | null }
+  /** Crucible installing the model (or the env) before it takes the job (#281): its own words. */
+  | { readonly kind: 'installing'; readonly model: string; readonly taskId: string; readonly message: string | null }
   | { readonly kind: 'warming'; readonly message: string | null }
   /** The server decoding the input to samples; `processedS` moves, nothing is transcribed yet. */
   | { readonly kind: 'decoding'; readonly processedS: number | null }
@@ -335,6 +381,16 @@ export const DOOR_DELAYS_MS: readonly number[] = [1_000, 3_000];
 export const STREAM_DELAYS_MS: readonly number[] = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 45_000];
 /** An upload in flight reports this often, so a long upload never looks stalled. */
 export const UPLOAD_TICK_MS = 5_000;
+/**
+ * How long one job waits for Crucible to install what it needs (#281), across every install it is
+ * pointed at. The 0.6B's weights are about 1.9 GB and the 1.7B's about 4.7 GB; an hour is room for
+ * a slow link and an env build, and past it the job fails naming the task, never waits on silently.
+ */
+export const INSTALL_BUDGET_MS = 60 * 60_000;
+/** How often the install task is read while it runs (and the session touched). */
+export const INSTALL_POLL_MS = 3_000;
+/** A submit pointed at an install more often than this is refused: the server is not converging. */
+export const INSTALL_ROUNDS = 4;
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -349,7 +405,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 /** P3's in-flight ledger plugs in here: a job written down when admitted, settled when it ends. */
 export interface AsrJobLedger {
-  record(jobId: string): void;
+  /** `model` is the transcriber the job names, so a sweep's record says which one (#281). */
+  record(jobId: string, model: string): void;
   settle(jobId: string): void;
 }
 
@@ -370,7 +427,9 @@ export interface RunAsrJobOptions {
    * The client the job is submitted, followed, fetched and cancelled through, asked for once the
    * audio is uploaded: the queue session's (transcribeOnCrucible holds it and lets go of it).
    */
-  readonly inSession: () => Promise<AsrCrucibleClient>;
+  readonly inSession: () => Promise<AsrSessionClient>;
+  /** The transcriber the job names (requireAsrModel's): the routing row's, or the editor's. */
+  readonly model: QwenAsrModel;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: AsrJobProgress) => void;
   readonly onLog?: (line: string) => void;
@@ -379,6 +438,8 @@ export interface RunAsrJobOptions {
   readonly doorDelaysMs?: readonly number[];
   readonly streamDelaysMs?: readonly number[];
   readonly uploadTickMs?: number;
+  readonly installBudgetMs?: number;
+  readonly installPollMs?: number;
 }
 
 export interface AsrJobOutcome {
@@ -466,6 +527,81 @@ export async function findByClientRef(client: AsrCrucibleClient, clientRef: stri
   return null;
 }
 
+/** `details` of a `409 installing` refusal, as much as is read (the SDK's `InstallingDetails`). */
+function installingDetails(err: unknown): { taskId: string; reason: string; message: string | null } | null {
+  const details = (err as { details?: unknown })?.details as { task_id?: unknown; reason?: unknown; message?: unknown } | null | undefined;
+  if (typeof details?.task_id !== 'string' || details.task_id === '') return null;
+  return {
+    taskId: details.task_id,
+    reason: typeof details.reason === 'string' ? details.reason : 'installing',
+    message: typeof details.message === 'string' && details.message !== '' ? details.message : null,
+  };
+}
+
+/** A task's terminal states (the SDK's `TASK_TERMINAL_STATES`). */
+const TASK_ENDED = new Set(['done', 'failed', 'cancelled']);
+
+/**
+ * Wait for the install task a `409 installing` named to end (#281), saying so on the row each
+ * time it is read. `reason` `task_busy` is another task holding the server's one task lane: the
+ * submit after it starts ours, which is waited on the same way. The session is touched on every
+ * read, so a long download never idles it out. The task's own end is not judged here: the next
+ * submit is the server's answer (a failed install is reported to it once, by name).
+ */
+async function waitForInstall(args: {
+  client: AsrSessionClient;
+  server: string;
+  model: string;
+  err: unknown;
+  deadline: number;
+  log: (line: string) => void;
+  options: RunAsrJobOptions;
+}): Promise<void> {
+  const { client, server, model, err, deadline, log, options } = args;
+  const details = installingDetails(err);
+  if (details === null) {
+    throw new CrucibleAsrError('refused', 'crucible_asr_installing_unnamed', server,
+      `Crucible on ${server} answered the ${model} job "installing" without naming the task doing it: ${errText(err)}`);
+  }
+  const { taskId } = details;
+  const say = (message: string | null): void => options.onProgress?.({ kind: 'installing', model, taskId, message });
+  log(`${server} is ${details.reason === 'task_busy' ? 'finishing another task before installing' : 'installing'} what the ${model} job needs ` +
+    `(task ${taskId}): ${errText(err)}`);
+  say(details.message);
+  const poll = options.installPollMs ?? INSTALL_POLL_MS;
+  let last: string | null = details.message;
+  for (;;) {
+    if (Date.now() >= deadline) {
+      throw new CrucibleAsrError('unavailable', 'crucible_asr_install_timeout', server,
+        `Crucible on ${server} was still installing what ${model} needs when this job's ${Math.round((options.installBudgetMs ?? INSTALL_BUDGET_MS) / 60_000)}-minute ` +
+        `install budget ran out (task ${taskId}${last ? `: ${last}` : ''}). The install goes on there; queue the item again once it is done.`);
+    }
+    await sleep(poll, options.signal);
+    if (options.signal?.aborted) return;
+    try {
+      await client.touch();
+    } catch (touchErr) {
+      throw classifyDoorError(touchErr, server, `the wait for the ${model} install (task ${taskId})`);
+    }
+    let status: { state: string; message: string | null };
+    try {
+      status = await client.task(taskId);
+    } catch (taskErr) {
+      if (isUnreachable(taskErr)) {
+        log(`reading install task ${taskId} on ${server} failed (${errText(taskErr)}); reading it again in ${poll / 1000}s`);
+        continue;
+      }
+      throw classifyDoorError(taskErr, server, `reading the ${model} install (task ${taskId})`);
+    }
+    if (status.message !== null && status.message !== '') last = status.message;
+    if (TASK_ENDED.has(status.state)) {
+      log(`install task ${taskId} on ${server} is ${status.state}; submitting the ${model} job again`);
+      return;
+    }
+    say(last);
+  }
+}
+
 export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcome> {
   const { venue, signal, clientRef } = options;
   const { server } = venue;
@@ -518,7 +654,7 @@ export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcom
   if (signal?.aborted) throw cancelledBeforeSubmit();
 
   // ── The session the job is an item of, once the audio is on the server. ──
-  let client: AsrCrucibleClient;
+  let client: AsrSessionClient;
   try {
     client = await options.inSession();
   } catch (err) {
@@ -529,20 +665,35 @@ export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcom
 
   // ── Submit: the reservation. A submit with no answer may still have been admitted (the
   // answer, not the request, was lost): before it is sent again the job is looked for by its
-  // client_ref, and a refusal on the resend that names a job is checked the same way. ──
+  // client_ref, and a refusal on the resend that names a job is checked the same way. A submit
+  // refused `409 installing` waits for the install task it names and is sent again (#281); those
+  // rounds are counted apart from the weather's. ──
+  const model = requireAsrModel(options.model);
+  const installDeadline = Date.now() + (options.installBudgetMs ?? INSTALL_BUDGET_MS);
+  let installRounds = 0;
   let unanswered = false;
   let jobId: string | undefined;
-  for (let attempt = 0; jobId === undefined; attempt++) {
+  for (let attempt = 0; jobId === undefined;) {
     try {
       jobId = await client.submit({
         type: 'asr',
-        model: QWEN_ASR_MODEL,
+        model,
         params: { ...options.params },
         inputs: { [options.filename]: { blobId: blobId! } },
         clientRef,
       });
     } catch (err) {
       if (signal?.aborted) throw cancelledBeforeSubmit();
+      if (errCode(err) === 'installing') {
+        installRounds += 1;
+        if (installRounds > INSTALL_ROUNDS) {
+          throw new CrucibleAsrError('unavailable', 'crucible_asr_install_unsettled', server,
+            `Crucible on ${server} answered the ${model} job "installing" ${INSTALL_ROUNDS} times over; the last: ${errText(err)}`);
+        }
+        await waitForInstall({ client, server, model, err, deadline: installDeadline, log, options });
+        if (signal?.aborted) throw cancelledBeforeSubmit();
+        continue;
+      }
       if (unanswered) {
         const named = jobNamedBy(err);
         if (named !== null && await isOurs(client, named, clientRef)) {
@@ -562,6 +713,7 @@ export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcom
         if (attempt < doorDelays.length) {
           log(`${server} did not answer the asr submit (${errText(err)}); asking again in ${doorDelays[attempt]! / 1000}s`);
           await sleep(doorDelays[attempt]!, signal);
+          attempt += 1;
           if (signal?.aborted) throw cancelledBeforeSubmit();
           continue;
         }
@@ -570,8 +722,8 @@ export async function runAsrJob(options: RunAsrJobOptions): Promise<AsrJobOutcom
     }
   }
   const admitted = jobId;
-  options.ledger?.record(admitted);
-  log(`${server} admitted asr job ${admitted} (${QWEN_ASR_MODEL}, ${clientRef})`);
+  options.ledger?.record(admitted, model);
+  log(`${server} admitted asr job ${admitted} (${model}, ${clientRef})`);
 
   // ── Cancel is a DELETE. ──
   let cancelAsked = false;

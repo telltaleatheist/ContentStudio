@@ -101,6 +101,7 @@ import {
   resolveSnapBoundaryModels,
   routedModelString,
   routingOption,
+  transcriptionModelOf,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
 import { resolveRerollGateSettings } from '../services/metadata/reroll/settings';
@@ -727,7 +728,12 @@ async function runPipeline(job: PipelineJob): Promise<any> {
     // channel, whose brand terms and promoted items can spell what the audio alone guesses at.
     const inputHandler = new InputHandlerService(
       transcriptionService, outputDir,
-      { jobName: job.metadataParams.jobName ?? null, promptSet: job.metadataParams.promptSet ?? null },
+      {
+        jobName: job.metadataParams.jobName ?? null,
+        promptSet: job.metadataParams.promptSet ?? null,
+        // The Transcription row of the routing read at job time (LEDGER #281: the 0.6B by default).
+        asrModel: transcriptionModelOf(job.metadataParams.metadataRouting),
+      },
       job.progressCallback, speakerTagger);
 
     // Normalize inputs

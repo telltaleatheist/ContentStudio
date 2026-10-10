@@ -268,7 +268,7 @@ check('the shipped defaults are all local, and the big fields share one model', 
   // Option ids: which build runs is the job's server's to say (RoutingModels logs it at the job's start).
   eq(routing.describeRouting(resolved, null),
     'titles=qwen38-27b, description=qwen38-27b, chapters=qwen38-27b, tags=qwen35-9b, ' +
-    'thumbnail_text=qwen38-27b, pinned_comment=qwen38-27b, server=(the selected server)');
+    'thumbnail_text=qwen38-27b, pinned_comment=qwen38-27b, transcription=qwen3-asr-0.6b, server=(the selected server)');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
@@ -382,6 +382,47 @@ check('the Thumbnails row: its own group, words on the 27B; the frame and tone/p
   eq(view.tasks.filter((t) => t.group === 'thumbnails').map((t) => t.id).join(','), 'thumbnail_words', 'the dialog shows the one thumbnails row');
   const wordsRow = view.tasks.find((t) => t.id === 'thumbnail_words').options.find((o) => o.id === 'qwen38-27b');
   eq([wordsRow.availability, wordsRow.model], ['installed', 'qwen3.8-27b-8bit']);
+});
+
+/**
+ * THE TRANSCRIPTION ROW (LEDGER #281, Owen 2026-10-09: "switch to 0.6b ... for the metadata step (as
+ * opposed to editor, which should keep 1.7b)"): its own group, the 0.6B by default, the two official
+ * ids only, an unknown or -mlx value refused by name, never bound as a chat model, out of the job's
+ * catalog binding, and judged in the dialog against the server's asr rows (offered-not-downloaded
+ * is "installed on first use", not a refusal).
+ */
+check('the Transcription row: its own group, 0.6B by default, the official ids only, unknown refused; the editor stays on 1.7B', () => {
+  const row = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'transcription');
+  eq([row.group, row.modal, row.defaultOptionId, row.options.join(',')], ['transcription', true, 'qwen3-asr-0.6b', 'qwen3-asr-0.6b,qwen3-asr-1.7b']);
+  eq(routing.metadataRunTasks().some((t) => t.id === 'transcription'), false, 'not a metadata field row (no change-all, no ceiling):');
+  eq(routing.transcriptionModelOf(routing.resolveMetadataRouting(undefined)), 'qwen3-asr-0.6b', 'the shipped default:');
+  eq(routing.transcriptionModelOf(routing.resolveMetadataRouting({ transcription: 'qwen3-asr-1.7b' })), 'qwen3-asr-1.7b');
+  for (const bad of ['qwen3-asr-0.6b-mlx', 'whisper-large-v3-turbo', 'qwen38-27b', 'claude-cli']) {
+    let threw = null;
+    try { routing.resolveMetadataRouting({ transcription: bad }); } catch (e) { threw = e.message; }
+    if (!threw || !threw.includes(bad)) throw new Error(`transcription=${bad} was not refused by name (${threw})`);
+  }
+  for (const id of ['qwen3-asr-0.6b', 'qwen3-asr-1.7b']) {
+    if (routing.METADATA_ROUTING_OPTIONS[id].crucibleIds.join() !== id) throw new Error(id + ' must send its own official id');
+  }
+  eq(routing.jobOptionIds(routing.resolveMetadataRouting(undefined)).some((id) => /asr/.test(id)), false, 'the job binds no asr option from its LLM catalog:');
+  let bound = null;
+  try { onMac().bind('transcription', 'qwen3-asr-0.6b'); } catch (e) { bound = e.message; }
+  if (!bound || !/never bound/.test(bound)) throw new Error('the transcription row was bound as a chat model: ' + bound);
+  const asr = require(path.join(ROOT, 'crucible/asr.js'));
+  eq(asr.EDITOR_ASR_MODEL, 'qwen3-asr-1.7b', 'the editor keeps the 1.7B:');
+  const inventory = {
+    server: 'mac', reachable: true, anthropicConfigured: false, models: {},
+    asr: { 'qwen3-asr-1.7b': { offer: 'installed', reason: null }, 'qwen3-asr-0.6b': { offer: 'pullable', reason: null } },
+  };
+  const view = routing.buildRoutingView(undefined, inventory, { routingServer: null, selectedServer: 'mac' });
+  const shown = view.tasks.find((t) => t.id === 'transcription');
+  eq([shown.group, shown.selectedOptionId], ['transcription', 'qwen3-asr-0.6b']);
+  eq(shown.options.map((o) => [o.id, o.availability]), [['qwen3-asr-0.6b', 'pullable'], ['qwen3-asr-1.7b', 'installed']]);
+  if (!/installs it on the first transcription/.test(shown.options[0].availabilityNote)) throw new Error('the pullable note: ' + shown.options[0].availabilityNote);
+  const bare = routing.buildRoutingView(undefined, { ...inventory, asr: { 'qwen3-asr-1.7b': { offer: 'installed', reason: null } } }, { routingServer: null, selectedServer: 'mac' });
+  eq(bare.tasks.find((t) => t.id === 'transcription').options.map((o) => [o.id, o.availability]), [['qwen3-asr-0.6b', 'not-here'], ['qwen3-asr-1.7b', 'installed']],
+    'a model the server does not offer is shown only as the stored choice, marked not-here:');
 });
 
 check('chapter resolution reads the chapters entry, and the view carries the modal flags', () => {

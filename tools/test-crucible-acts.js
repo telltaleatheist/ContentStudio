@@ -100,6 +100,9 @@ check('every routing option that runs through Crucible names its Crucible ids; c
     'claude-cli': null,
     'claude-cli-sonnet': null,
     'claude-cli-fable': null,
+    // The Transcription row's asr models (LEDGER #281): the official ids, never the -mlx ports.
+    'qwen3-asr-0.6b': ['qwen3-asr-0.6b'],
+    'qwen3-asr-1.7b': ['qwen3-asr-1.7b'],
   };
   for (const [id, option] of Object.entries(routing.METADATA_ROUTING_OPTIONS)) {
     assert.ok(id in expected, `an option this check does not know: ${id}`);

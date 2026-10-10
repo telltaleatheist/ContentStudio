@@ -108,7 +108,7 @@ function pipeline(w, jobId, hooks = {}) {
       const venue = w.ctx.asrVenue();
       const held = await venue.session({});
       await asr.runAsrJob({
-        venue, inSession: async () => held.client, params: asr.asrParams('a keeper video'), file: w.audio, filename: 'clip.flac',
+        venue, inSession: async () => held.client, model: ASR, params: asr.asrParams('a keeper video'), file: w.audio, filename: 'clip.flac',
         clientRef: `contentstudio:keeper:${jobId}:${Math.random().toString(36).slice(2)}`, doorDelaysMs: [], streamDelaysMs: [], uploadTickMs: 1000,
       });
       await held.release();

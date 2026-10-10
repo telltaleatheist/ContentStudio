@@ -22,15 +22,12 @@
  * editor's processing run, run-session.ts, LEDGER #264) names it as `source`, and the job runs there.
  */
 import type { CrucibleClient } from '@crucible/client';
-import type { AsrCrucibleClient, AsrVenue } from './asr';
+import type { AsrCrucibleClient, AsrSessionClient, AsrVenue } from './asr';
 import type { CrucibleClientFactory } from './client-factory';
 import type { InFlightLedger } from './in-flight-ledger';
 import { currentJobVenue } from './lanes';
 import type { SessionSource } from './session';
 import type { CrucibleServers } from './servers';
-
-/** The ASR model every job names (LEDGER #206; the official id, never `-mlx`, #205). */
-const ASR_MODEL = 'qwen3-asr-1.7b';
 
 function engineClient(get: () => Promise<CrucibleClient>): AsrCrucibleClient {
   return {
@@ -44,6 +41,7 @@ function engineClient(get: () => Promise<CrucibleClient>): AsrCrucibleClient {
     cancel: async (jobId) => (await get()).cancel(jobId),
     job: async (jobId) => (await get()).job(jobId),
     activity: async () => (await get()).activity(),
+    task: async (taskId) => (await get()).task(taskId),
   };
 }
 
@@ -69,10 +67,13 @@ export function crucibleAsrVenue(deps: {
           ...(signal === undefined ? {} : { signal }),
         });
         const session = hold.card.session;
-        return { client: engineClient(async () => session), release: () => hold.release() };
+        // Touched while the job waits on a Crucible install (asr.ts, LEDGER #281).
+        const client: AsrSessionClient = { ...engineClient(async () => session), touch: () => session.touch() };
+        return { client, release: () => hold.release() };
       },
       ledger: {
-        record: (id) => deps.ledger.record({ server, kind: 'job', id, jobType: 'asr', model: ASR_MODEL, jobId }),
+        // The model the job named (the metadata row's or the editor's, #281), as the record's.
+        record: (id, model) => deps.ledger.record({ server, kind: 'job', id, jobType: 'asr', model, jobId }),
         settle: (id) => deps.ledger.settle(server, 'job', id),
       },
     };

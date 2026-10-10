@@ -7,11 +7,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
 import { TranscriptionService, SRTSegment } from './transcription.service';
+import { requireAsrModel, type QwenAsrModel } from '../../crucible/asr';
 
 /** What a run knows about all of its videos, for the asr context (LEDGER #206). null = the run has none. */
 export interface TranscriptionRunFacts {
   jobName: string | null;
   promptSet: string | null;
+  /**
+   * The transcriber every video of the run is sent to: the metadata routing's Transcription row,
+   * resolved at job time (metadata-routing.ts `transcriptionModelOf`, LEDGER #281). Required: a
+   * handler built without it has no model to name.
+   */
+  asrModel: QwenAsrModel;
 }
 import type { TranscriptImportMeta } from './transcript-import.service';
 import {
@@ -27,6 +34,7 @@ import type { FinalOnlyDeclaration, TranscriptLink } from './editor-transcript-l
 import type { TranscriptRef } from '../publish/publish-types';
 import type { SavedTranscriptReuse } from './item-identity';
 import { loadSavedTranscript, saveTranscript } from './saved-transcript.service';
+import { storyVocabulary } from '../transcription/asr-vocabulary';
 
 /**
  * The SECOND transcript of a video input: the editor story the operator linked it to.
@@ -324,8 +332,10 @@ export class InputHandlerService {
       throw new Error('InputHandlerService requires the run output directory (saved transcripts live under it)');
     }
     if (!runFacts || typeof runFacts !== 'object' || !('jobName' in runFacts) || !('promptSet' in runFacts)) {
-      throw new Error('InputHandlerService requires the run facts { jobName, promptSet } (null where the run has none) for the transcription context');
+      throw new Error('InputHandlerService requires the run facts { jobName, promptSet, asrModel } (null where the run has none) for the transcription context');
     }
+    // The routing's transcriber, checked here so a handler never starts a video without one (#281).
+    requireAsrModel(runFacts.asrModel);
     this.transcriptionService = transcriptionService;
     this.outputDir = outputDir;
     this.runFacts = runFacts;
@@ -411,9 +421,17 @@ export class InputHandlerService {
     // THE ONLY BRANCH. The operator either asked for the saved transcript or he did not,
     // and past this line nothing knows which — the item is built once, from `transcript`,
     // so a reused transcript cannot generate a differently-shaped item than a fresh one.
+    //
+    // A declared link is resolved FIRST (LEDGER #281): the story's words are the transcriber's
+    // spelling seed (its proper nouns and unusual words, asr-vocabulary.ts), so they are read
+    // before the transcription that uses them. A link that cannot be honored fails the item
+    // here, before an hour of transcription is spent, with the same sentence as before.
+    const linked = transcriptRef
+      ? await this.resolveContentSource(videoPath, transcriptRef, customNotes)
+      : undefined;
     const transcript: VideoTranscript = useSavedTranscript
       ? this.reuseSavedTranscript(videoPath, itemIndex)
-      : await this.transcribeAndSave(videoPath, itemIndex, customNotes, transcriptRef?.storyTitle ?? null);
+      : await this.transcribeAndSave(videoPath, itemIndex, customNotes, transcriptRef?.storyTitle ?? null, linked?.vocabulary ?? null);
 
     // Convert segments to text.
     //
@@ -431,13 +449,11 @@ export class InputHandlerService {
       content += `\n\nAdditional context:\n${customNotes.trim()}`;
     }
 
-    // A declared link is HONORED here or the item fails; there is no third outcome. Out
-    // here rather than inside either branch above, so a link that cannot be honored is
-    // never reported as a transcription failure — the words arrived; this is a different
-    // fault, and it reads the same whichever way they arrived.
-    const contentSource = transcriptRef
-      ? await this.resolveContentSource(videoPath, transcriptRef, customNotes)
-      : undefined;
+    // A declared link is HONORED (resolved above) or the item failed; there is no third outcome.
+    // Outside both transcript branches, so a link that cannot be honored is never reported as a
+    // transcription failure — this is a different fault, and it reads the same whichever way
+    // the words arrive.
+    const contentSource = linked?.source;
 
     return {
       content,
@@ -474,7 +490,8 @@ export class InputHandlerService {
     videoPath: string,
     itemIndex: number | undefined,
     customNotes: string | undefined,
-    storyTitle: string | null
+    storyTitle: string | null,
+    storyVocabulary: string[] | null
   ): Promise<VideoTranscript> {
     let result: Awaited<ReturnType<TranscriptionService['transcribeVideo']>>;
     try {
@@ -493,15 +510,18 @@ export class InputHandlerService {
       // The tagger goes IN, rather than tagging out here, because the audio it scores is the WAV
       // transcribeVideo extracted and deletes on the way out. The facts go in for the asr
       // context (LEDGER #206): the run's job name and channel, where earlier reports live, the
-      // operator's notes on this input, and a linked story's title.
+      // operator's notes on this input, and a linked story's title and vocabulary (#281).
       result = await this.transcriptionService.transcribeVideo(videoPath, {
         speakerTagger: this.speakerTagger,
+        // The routing's Transcription row (LEDGER #281), resolved once for the run.
+        asrModel: this.runFacts.asrModel,
         facts: {
           jobName: this.runFacts.jobName,
           promptSet: this.runFacts.promptSet,
           outputDir: this.outputDir,
           notes: customNotes?.trim() || null,
           storyTitle,
+          storyVocabulary,
         },
       });
 
@@ -623,7 +643,8 @@ export class InputHandlerService {
   }
 
   /**
-   * Turn a declared link into the story's words, or fail the item saying why.
+   * Turn a declared link into the story's words (and their vocabulary, #281), or fail the item
+   * saying why.
    *
    * §3.4 rule 4: "a declared link whose file is missing/changed FAILS the run — it never
    * quietly runs final-only". So there is no recovery path in here. Both non-'ok'
@@ -640,7 +661,7 @@ export class InputHandlerService {
     videoPath: string,
     ref: TranscriptRef,
     customNotes?: string
-  ): Promise<ContentSource> {
+  ): Promise<{ source: ContentSource; vocabulary: string[] }> {
     const resolution = resolveRef(ref);
     if (resolution.state !== 'ok') {
       throw new Error(
@@ -674,7 +695,15 @@ export class InputHandlerService {
       `(${probe.driftPct.toFixed(1)}%)`
     );
 
-    return {
+    // The story's proper nouns and unusual words, the 0.6B's spelling seed (#281). Made by the
+    // 1.7B in the editor, so its spellings are the better ones.
+    const vocabulary = storyVocabulary(parsed.data.words);
+    log.info(
+      `[InputHandler] ${vocabulary.length} vocabulary term(s) from editor story "${ref.storyTitle}" for the transcription context` +
+      (vocabulary.length > 0 ? `: ${vocabulary.slice(0, 12).join(', ')}${vocabulary.length > 12 ? ', ...' : ''}` : '')
+    );
+
+    return { vocabulary, source: {
       text,
       // Asked of the story's OWN segments, which are the segments `text` was joined from. The
       // final export's segments are a different transcript with a different attribution, and
@@ -684,7 +713,7 @@ export class InputHandlerService {
       ref,
       driftSec: probe.driftSec,
       driftPct: probe.driftPct,
-    };
+    } };
   }
 
   /**

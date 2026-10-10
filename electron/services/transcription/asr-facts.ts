@@ -14,7 +14,7 @@
  *                    context through the channel's brand terms ("owen morgan").
  *   existing title / an EARLIER RUN over the same file (the newest report item whose
  *   description      `source_key` matches: its titles, tags and description), a LINKED EDITOR
- *                    STORY (its title), the operator's NOTES on the input, and in the editor the
+ *                    STORY (its title, and its words' vocabulary, #281), the operator's NOTES on the input, and in the editor the
  *                    session's STORY TITLES. A transcript import never reaches asr: it arrives
  *                    with its own words.
  *
@@ -42,6 +42,7 @@ export function asrContextTemplate(): AsrContextTemplate {
     labels: {
       title: label('title'),
       job: label('job'),
+      vocabulary: label('vocabulary'),
       also_titled: label('also_titled'),
       names: label('names'),
       tags: label('tags'),
@@ -123,6 +124,8 @@ export interface PipelineItemFactsInput {
   readonly notes?: string | null;
   /** A linked editor story's title, when the input carries a TranscriptRef. */
   readonly storyTitle?: string | null;
+  /** That story's proper nouns and unusual words (asr-vocabulary.ts), most-said first (#281). */
+  readonly storyVocabulary?: readonly string[] | null;
 }
 
 /** Everything the pipeline knows about one input, as facts. */
@@ -133,6 +136,7 @@ export function pipelineItemFacts(input: PipelineItemFactsInput): { facts: AsrIt
     facts: {
       title: titleFromFilename(input.videoPath),
       jobName: input.jobName ?? null,
+      vocabulary: input.storyVocabulary ?? [],
       otherTitles: [input.storyTitle ? titleFromFilename(input.storyTitle) : null, ...(prior?.titles ?? [])],
       names: channel.names,
       tags: prior?.tags ?? [],
@@ -153,6 +157,7 @@ export function pipelineAsrContext(input: PipelineItemFactsInput): { context: st
     (input.jobName ? `, job "${input.jobName}"` : '') +
     (input.promptSet ? `, channel ${input.promptSet}` : ', no channel') +
     (input.storyTitle ? `, story "${input.storyTitle}"` : '') +
+    (input.storyVocabulary && input.storyVocabulary.length > 0 ? `, the story's ${input.storyVocabulary.length} vocabulary term(s)` : '') +
     (prior ? `, an earlier run's titles/tags/description (${prior.from})` : ', no earlier run') +
     (input.notes ? ', operator notes' : '');
   return { context, account };

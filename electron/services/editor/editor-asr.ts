@@ -22,6 +22,7 @@
 
 import * as fs from 'fs';
 
+import { EDITOR_ASR_MODEL } from '../../crucible/asr';
 import type { SessionSource } from '../../crucible/session';
 import { transcribeOnCrucible } from '../transcription/crucible-transcription';
 import { readCrucibleTranscript, transcriptTokens } from '../transcription/crucible-transcript';
@@ -88,6 +89,9 @@ export async function serveEditorAsrRequest(
   const where = request.region ? ` region ${request.region[0].toFixed(1)}-${request.region[1].toFixed(1)}s` : '';
   const outcome = await transcribeOnCrucible({
     audioFile: request.wav,
+    // The editor keeps the 1.7B (LEDGER #281, Owen: "as opposed to editor, which should keep 1.7b"):
+    // the metadata routing row is never read here.
+    model: EDITOR_ASR_MODEL,
     context: options.context,
     clientRefStem: `editor:${options.jobId}:${request.trackId}${request.region ? ':loop' : ''}`,
     tag: `${options.jobId} ${request.trackId}${where}`,

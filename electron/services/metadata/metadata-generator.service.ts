@@ -28,6 +28,7 @@ import {
   MetadataRoutingTaskId,
   jobOptionIds,
   metadataRunTasks,
+  transcriptionModelOf,
   ResolvedMetadataRouting,
   resolveChapterModelOption,
   resolveCompilationPackagingOption,
@@ -359,7 +360,8 @@ export class MetadataGeneratorService {
       // Progress callback passed through so the handler can send 'preparing' events.
       const inputHandler = new InputHandlerService(
         transcriptionService, runOutputDir,
-        { jobName: params.jobName ?? null, promptSet: params.promptSet ?? null },
+        // The routing's Transcription row (LEDGER #281), for the videos this path transcribes itself.
+        { jobName: params.jobName ?? null, promptSet: params.promptSet ?? null, asrModel: transcriptionModelOf(this.routing(params)) },
         params.progressCallback, speakerTagger);
 
       /**

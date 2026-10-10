@@ -149,6 +149,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
           @if (task.id === thumbnailTasks()[0]?.id) {
             <div class="group-heading">Thumbnails. Used by metadata runs (the A/B thumbnails) and the reports page's Thumbnails window.</div>
           }
+          @if (task.id === transcriptionTasks()[0]?.id) {
+            <div class="group-heading">Transcription. The metadata run's transcriber; the editor always transcribes on Qwen3-ASR 1.7B.</div>
+          }
           <div class="routing-row">
             <div class="field-label">
               <span class="task-label">{{ task.label }}</span>
@@ -162,7 +165,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
                   <mat-option [value]="option.id">
                     {{ option.label }}
                     @if (option.availability === 'pullable') {
-                      <span class="option-flag unknown">— not downloaded on {{ server().name }}</span>
+                      @if (task.group === 'transcription') {
+                        <span class="option-flag unknown">— installed on first use on {{ server().name }}</span>
+                      } @else {
+                        <span class="option-flag unknown">— not downloaded on {{ server().name }}</span>
+                      }
                     }
                     @if (option.availability === 'not-here') {
                       <span class="option-flag missing">— not on {{ server().name }}</span>
@@ -179,7 +186,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
             </mat-form-field>
           </div>
           @if (chosenOption(task); as chosen) {
-            @if (chosen.availability === 'not-here' || chosen.availability === 'pullable' || chosen.availability === 'ambiguous') {
+            <!-- A transcriber that is offered and not downloaded is installed by Crucible on the
+                 first transcription (#281), so it is a note, not a "won't run". -->
+            @if (task.group === 'transcription' && chosen.availability === 'pullable') {
+              <p class="row-note unknown">{{ chosen.availabilityNote }}</p>
+            } @else if (chosen.availability === 'not-here' || chosen.availability === 'pullable' || chosen.availability === 'ambiguous') {
               <p class="row-note missing">
                 {{ chosen.availabilityNote || (chosen.label + ' is not on ' + server().name + '.') }}
                 {{ task.label }} won't run until you pick a model this server
@@ -359,11 +370,13 @@ export class ModelRoutingDialog implements OnInit {
    * thumbnail row (#236, #240; the words, the one left since the frame and judge rows were
    * retired 2026-09-29) is grouped apart, because it decides no field's words.
    */
-  readonly modalTasks = computed(() => this.tasks().filter(task => task.modal && task.group !== 'thumbnails'));
+  readonly modalTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'metadata'));
   /** The thumbnail rows, shown under their own heading after the metadata rows. */
   readonly thumbnailTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'thumbnails'));
+  /** The transcription row (#281): its own heading, last, and never set by change-all (its options are asr models). */
+  readonly transcriptionTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'transcription'));
   /** Every row the dialog shows, metadata first. */
-  readonly rowTasks = computed(() => [...this.modalTasks(), ...this.thumbnailTasks()]);
+  readonly rowTasks = computed(() => [...this.modalTasks(), ...this.thumbnailTasks(), ...this.transcriptionTasks()]);
   readonly selections = signal<Record<string, string>>({});
   /**
    * The Crucible server the payload was judged against. The placeholder is never rendered —

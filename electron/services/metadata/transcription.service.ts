@@ -1,5 +1,6 @@
 /**
- * The pipeline's transcriber — Crucible's `asr` job on `qwen3-asr-1.7b` (P5, LEDGER #206).
+ * The pipeline's transcriber — Crucible's `asr` job (P5, LEDGER #206) on the model the
+ * metadata routing's Transcription row names (LEDGER #281: the 0.6B by default).
  *
  * It carried whisper.cpp's name (whisper.service.ts) until P10 took whisper.cpp out of the app
  * and renamed it for what it is.
@@ -39,6 +40,7 @@ import {
 import type { SpeakerTagger, SpeakerTaggingSummary } from './speaker-tagging.service';
 import { pipelineAsrContext, type PipelineItemFactsInput } from '../transcription/asr-facts';
 import { transcribeOnCrucible } from '../transcription/crucible-transcription';
+import type { QwenAsrModel } from '../../crucible/asr';
 import { transcriptToSegments, type TranscriptWord } from '../transcription/crucible-transcript';
 
 export interface TranscriptionProgress {
@@ -68,6 +70,8 @@ export interface TranscribeVideoOptions {
   speakerTagger?: SpeakerTagger;
   /** The facts that seed the context. REQUIRED as an object: `{}` states "nothing known beyond the file". */
   facts: TranscriptionFacts;
+  /** The transcriber: the routing's Transcription row (LEDGER #281). Required; nothing here defaults it. */
+  asrModel: QwenAsrModel;
 }
 
 interface TranscriptionJob {
@@ -112,7 +116,7 @@ export class TranscriptionService extends EventEmitter {
     /** The aligner's words, punctuated (crucible-transcript.ts `segmentTokens`), in seconds. */
     words: TranscriptWord[];
     durationSec: number | null;
-    /** `crucible:<server>:qwen3-asr-1.7b` — what the saved transcript records. */
+    /** `crucible:<server>:<model>` (0.6B or 1.7B, #281) — what the saved transcript records. */
     model: string;
     /** Present only when a tagger ran. Absent means this run was in the untagged mode. */
     speakerTagging?: SpeakerTaggingSummary;
@@ -160,6 +164,7 @@ export class TranscriptionService extends EventEmitter {
 
       const outcome = await transcribeOnCrucible({
         audioFile: flacPath,
+        model: options.asrModel,
         context,
         clientRefStem: `pipeline:${jobId}`,
         tag: jobId,

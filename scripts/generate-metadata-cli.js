@@ -517,9 +517,10 @@ async function main() {
     };
   }
 
-  // The whisperModel setting no longer chooses anything (P5): every transcription is
-  // qwen3-asr-1.7b on Crucible, on the server this run's model calls go to. openCliLanes wired
-  // that venue (the registry's client and the in-flight ledger, P2); this is its server.
+  // The whisperModel setting no longer chooses anything (P5): every transcription is Crucible's
+  // asr job, on the server this run's model calls go to, on the model the routing's Transcription
+  // row names (LEDGER #281; --route transcription=qwen3-asr-1.7b overrides it for a run).
+  // openCliLanes wired that venue (the registry's client and the in-flight ledger, P2); this is its server.
   const asrVenue = { server: runServer };
 
   const channel = args.channel || settings.promptSet;
@@ -637,7 +638,8 @@ async function main() {
     for (const note of granularityNotes(filter.selected)) console.error(`     - ${note}`);
     console.error('');
   }
-  console.error(`  transcriber: crucible:${asrVenue.server}:qwen3-asr-1.7b`);
+  const asrModel = routing.transcriptionModelOf(resolvedRouting);
+  console.error(`  transcriber: crucible:${asrVenue.server}:${asrModel}`);
   console.error(`  routing:     ${Object.entries(resolvedRouting).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   // Chapters route per-field since 2026-08-24 (the `chapters` entry above); the summarizer
   // follows the chapters selection, falling to SUMMARIZATION_OPTION (bound on the run's server) only
@@ -704,7 +706,7 @@ async function main() {
     const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
 
     const inputHandler = new InputHandlerService(
-      transcriptionService, outputDir, { jobName: path.basename(args.input), promptSet: channel }, progressCallback, speakerTagger);
+      transcriptionService, outputDir, { jobName: path.basename(args.input), promptSet: channel, asrModel }, progressCallback, speakerTagger);
     const inputFailures = [];
     contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map());
     if (contentItems.length === 0) {
@@ -716,7 +718,7 @@ async function main() {
     // A transcript-file input is imported as it is and runs no ASR: its stamp and the summary
     // say so, never "transcription" (the input handler's own type is the one fact read here).
     const imported = contentItems.every((item) => item.contentType === 'transcript_file');
-    const transcriber = imported ? 'imported transcript file (no ASR)' : `crucible:${asrVenue.server}:qwen3-asr-1.7b`;
+    const transcriber = imported ? 'imported transcript file (no ASR)' : `crucible:${asrVenue.server}:${asrModel}`;
     writeCache(caches.transcript, {
       // 2: the ContentItem's segments may now carry speaker tags, and its `content` may be
       // screenplay-prefixed because of them. A version-1 cache is a transcript from before

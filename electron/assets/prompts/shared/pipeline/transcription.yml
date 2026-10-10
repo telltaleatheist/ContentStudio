@@ -4,6 +4,7 @@ instruction: |-
 labels:
   title: "Title"
   job: "Job"
+  vocabulary: "Names and words said in this recording"
   also_titled: "Also titled"
   names: "Names"
   tags: "Names and topics"

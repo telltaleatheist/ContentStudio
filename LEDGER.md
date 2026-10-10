@@ -1707,3 +1707,33 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** chaptering-checks (57; new: Auto at 10 min, at exactly 20 min, at 20 min + 1 s, Chapters on a 3-hour video, Stories on 5 min, and a missing runtime refused). check:pure and check:crucible (27 keepers) pass, build:electron and the frontend tsc are clean. Not run live; Owen tests.
 
 [electron/services/metadata/chaptering/granularity.ts; electron/services/metadata/metadata-generator.service.ts; frontend/src/app/services/chapter-pick.ts, inputs-state.ts; frontend/src/app/components/inputs/inputs.html; scripts/generate-metadata-cli.js; tools/chaptering-checks.js]
+
+**281. Metadata transcription runs on Qwen3-ASR 0.6B through its own routing row, installed through Crucible, seeded with the linked story's vocabulary; the editor stays on 1.7B (Owen, 2026-10-09: "switch to 0.6b ... for the metadata step (as opposed to editor, which should keep 1.7b) ... do it through crucible, not direct download. and it should be full quant." and "find the proper nouns and unusual words from the original story, and feed them into the prompt for it. the 1.7b gets proper nouns right more often. it could help the 0.6b get it right.").**
+- **The row.** Model routing has a `transcription` row in its own group (`transcription`): options `qwen3-asr-0.6b` and `qwen3-asr-1.7b`, the official ids only (never `-mlx`, #205), default the 0.6B.
+  - The pipeline reads it through `transcriptionModelOf`: ipc-handlers' runPipeline, the generator's own input stage, and the metadata CLI (`--route transcription=qwen3-asr-1.7b` overrides it for a run).
+  - It is never bound as a chat model, it is left out of the job's catalog binding (`jobOptionIds`), the change-all menu and the transcript ceiling, and an unknown value is refused by name. `describeRouting` names it.
+  - The dialog shows it under its own heading, judged against the server's asr catalog rows. Offered but not downloaded reads "installed on first use".
+- **The model is a parameter of the asr job.** `QWEN_ASR_MODEL` is gone. `runAsrJob` and `transcribeOnCrucible` require `model`, checked by `requireAsrModel`. The editor passes `EDITOR_ASR_MODEL` (1.7B) and never reads the row.
+  - The saved transcript and the in-flight ledger record `crucible:<server>:<model>`, so reuse says 0.6B or 1.7B.
+  - No quantization param is sent: the official ids load at their manifests' bfloat16.
+  - The aligner stays on (word timestamps): chapter starts come from the captions.
+- **Install through Crucible.** The offer check no longer refuses a model the server offers but has not downloaded.
+  - The submit meets Crucible's install-on-submit (crucible docs/API.md `POST /v1/jobs`; docs/internals/jobs-runtime.md §8): `409 installing` naming `details.task_id`. The row says "Crucible on <server> is installing qwen3-asr-0.6b... <the server's words>".
+  - The task is read every 3 s until it ends, and the queue session is touched on each read. Then the job is submitted again.
+  - The budget is one hour (`INSTALL_BUDGET_MS`). Past it, the job fails naming the task. At most 4 install rounds.
+  - A failed install fails the item with the server's own sentence (`install_failed`, unavailable).
+  - A model the server does not offer is still refused by name before the upload, and so is an aligner that is not installed.
+- **The vocabulary.** When a video links an editor story, its words (the 1.7B's, from the editor) are read before the transcription (asr-vocabulary.ts `storyVocabulary`). The link is now resolved before transcribing, so a broken link fails the item before an hour of transcription.
+  - Proper nouns come from `extractProperNouns`: multi-word runs kept whole, a shorter mention folded into the longer, and one-word mentions that only ever open a sentence dropped.
+  - Unusual words are lowercase words of 4+ letters that are not in the 30,000 most frequent words of Norvig's count_1w (common-english.ts), checked with plain inflections taken off.
+  - Fillers are trimmed and punctuation is stripped. Terms are de-duplicated case-insensitively, keeping the first spelling, and ranked by count in the story.
+  - In the context, the vocabulary is the field right after the title and job (label in transcription.yml, `labels.vocabulary`). A budget cut drops whole terms from the rare end, after tags and description are gone. With no link there is no field, and the context is unchanged.
+- **Crucible side.** No change needed. Its manifests declare `qwen3-asr-0.6b` on mlx-darwin and cuda-linux at bfloat16 with the aligner. Its context limit is the family's 1,024 tokens. Install-on-submit pulls a missing asr model.
+- **Checks.**
+  - test-crucible-asr-install.js (new, 7): install-on-submit against the fake, which now answers `409 installing` then installs (`installOnSubmit`); a failed install; the budget; not offered; `-mlx` refused; the editor on 1.7B.
+  - routing-publish-checks: the row.
+  - asr-checks: 6 vocabulary/context checks.
+  - test-crucible-acts and test-crucible-batch know the model.
+  - check:pure, check:crucible (28 keepers), check:asr, chaptering-checks (57), build:electron and the frontend tsc pass. Not run live; Owen tests.
+
+[electron/crucible/asr.ts, asr-venue.ts, catalog.ts; electron/services/transcription/crucible-transcription.ts, asr-context.ts, asr-facts.ts, asr-vocabulary.ts (new), common-english.ts (new); electron/services/metadata/metadata-routing.ts, input-handler.service.ts, transcription.service.ts, metadata-generator.service.ts, saved-transcript.service.ts; electron/services/editor/editor-asr.ts; electron/ipc/ipc-handlers.ts; electron/assets/prompts/shared/pipeline/transcription.yml; frontend/src/app/services/electron.ts; frontend/src/app/components/model-routing-dialog/model-routing-dialog.ts; scripts/generate-metadata-cli.js; tools/fake-crucible.js, test-crucible-asr-install.js (new), asr-checks.js, routing-publish-checks.js, test-crucible-acts.js, test-crucible-batch.js, asr-acceptance.js]

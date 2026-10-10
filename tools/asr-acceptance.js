@@ -8,13 +8,16 @@
  *
  *   window    one stretch of a recording, transcribed as the pipeline would send it:
  *               --src <media> --start <s> --dur <s> --out <dir> --context bare|editor
- *               [--edits <session>_edits.json] [--channel <prompt set>]
+ *               [--edits <session>_edits.json] [--channel <prompt set>] --model qwen3-asr-0.6b|qwen3-asr-1.7b
  *             `bare` is the instruction alone (what #203 measured); `editor` adds the session's
  *             facts as editor:transcribe builds them.
  *   pipeline  one video through InputHandlerService → TranscriptionService (extract, context, job,
  *             captions, the saved transcript) with a scratch output dir seeded with copies of
  *             --report <job.json> (an earlier run's report):
  *               --input <video> --out <dir> [--report <job.json>]... [--channel <id>] [--job-name <s>]
+ *               --model qwen3-asr-0.6b|qwen3-asr-1.7b
+ *             `--model` is required in both (LEDGER #281: the pipeline's row is the 0.6B by default,
+ *             the editor's model the 1.7B); the editor mode always runs the editor's 1.7B.
  *   editor    transcribe.py over a COPY of a session's compounds zip (the sidecar lands in --out,
  *             never beside the real session), answering its asr_requests with the app's responder:
  *               --zip <zip> --out <dir> [--max-seconds N] [--channel <id>]
@@ -115,7 +118,7 @@ async function windowMode(a) {
   fs.writeFileSync(path.join(a.out, `context-${a.context}.txt`), context);
   const t0 = Date.now();
   const outcome = await door.transcribeOnCrucible({
-    audioFile: flac, context, clientRefStem: `acceptance:window:${a.context}`, tag: `window ${a.context}`,
+    audioFile: flac, model: requiredModel(a), context, clientRefStem: `acceptance:window:${a.context}`, tag: `window ${a.context}`,
     signal: abort.signal, band: { from: 0, to: 100 },
     onProgress: (p, m) => process.stderr.write(`\r  ${String(p).padStart(3)}% ${m.slice(0, 90).padEnd(90)}`),
   });
@@ -136,6 +139,12 @@ async function windowMode(a) {
   console.log(JSON.stringify(summary, null, 2));
 }
 
+/** The transcriber this run names: `--model`, required (#281), refused by name when it is not an official Qwen3-ASR id. */
+function requiredModel(a) {
+  if (!a.model) throw new Error('--model is required: qwen3-asr-0.6b (the metadata row\'s default) or qwen3-asr-1.7b (the editor\'s)');
+  return require(path.join(DIST, 'crucible/asr.js')).requireAsrModel(a.model);
+}
+
 async function pipelineMode(a) {
   const out = path.resolve(a.out);
   fs.mkdirSync(path.join(out, '.contentstudio', 'metadata'), { recursive: true });
@@ -153,7 +162,7 @@ async function pipelineMode(a) {
     if (p.percent !== last) process.stderr.write(`\r  ${String(p.percent).padStart(3)}% ${p.message.slice(0, 90).padEnd(90)}`);
     last = p.percent;
   });
-  const handler = new InputHandlerService(whisper, out, { jobName: a.jobName || null, promptSet: a.channel || null }, undefined, tagger);
+  const handler = new InputHandlerService(whisper, out, { jobName: a.jobName || null, promptSet: a.channel || null, asrModel: requiredModel(a) }, undefined, tagger);
   const failures = [];
   const t0 = Date.now();
   const items = await handler.processMultipleInputs([a.input], new Map(), failures, new Map());

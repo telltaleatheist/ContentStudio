@@ -15,6 +15,9 @@
  *     Jake Lang on 2026-08-24 and must not be lost), the job name, the channel's brand terms and
  *     promoted items, known speaker names, and whatever titles, tags and description an earlier
  *     run, a linked editor story or the operator's notes already wrote.
+ *  3. A LINKED EDITOR STORY'S VOCABULARY (#281): the proper nouns and unusual words of the story
+ *     transcript the 1.7B made in the editor (asr-vocabulary.ts), right after the title, so the
+ *     0.6B the metadata run uses gets the 1.7B's spellings as its seed.
  *
  * PORTED from Briefcase `backend/src/crucible/asr/asr-context.ts` (cb7c45d): the conservative
  * token estimate, the control-token scrub, the word-boundary cut. Changed for ContentStudio:
@@ -35,6 +38,11 @@ export interface AsrItemFacts {
   readonly title?: string | null;
   /** The queue job's name, when the operator gave one. */
   readonly jobName?: string | null;
+  /**
+   * A linked editor story's proper nouns and unusual words (asr-vocabulary.ts `storyVocabulary`,
+   * #281), most-said first. Absent when the item links no story: the context is then as before.
+   */
+  readonly vocabulary?: readonly (string | null | undefined)[];
   /** Other titles the item already has: an earlier run's titles, a linked editor story's title. */
   readonly otherTitles?: readonly (string | null | undefined)[];
   /** People known to speak or be discussed: speaker names, the channel's brand terms. */
@@ -55,6 +63,7 @@ export interface AsrContextTemplate {
   readonly labels: {
     readonly title: string;
     readonly job: string;
+    readonly vocabulary: string;
     readonly also_titled: string;
     readonly names: string;
     readonly tags: string;
@@ -130,6 +139,19 @@ function uniqueList(values: readonly (string | null | undefined)[] | undefined, 
 interface Field {
   readonly label: string;
   readonly value: string;
+  /**
+   * A list field cut by whole terms (the vocabulary): a cut drops terms from the end, the least
+   * said, and never leaves half a name ("Jim…" of "Jim Bakker").
+   */
+  readonly terms?: readonly string[];
+  readonly separator?: string;
+}
+
+/** As many of `terms`, from the front, as fit `tokens` joined by `separator` ('' when none does). */
+function fitTerms(terms: readonly string[], separator: string, tokens: number): string {
+  let kept = terms.length;
+  while (kept > 0 && estimateTokens(terms.slice(0, kept).join(separator)) > tokens) kept -= 1;
+  return terms.slice(0, kept).join(separator);
 }
 
 function render(instruction: string, fields: readonly Field[]): string {
@@ -141,9 +163,10 @@ function render(instruction: string, fields: readonly Field[]): string {
  * (#203), so a recording nothing is known about still gets its fillers.
  *
  * ORDER, most specific first, which is also the order in which they SURVIVE: title, job name,
- * other titles, names, tags, promoted items, notes, description. Over the budget, the LAST
- * field still present is cut to the room left at a word boundary (or dropped, if that room is
- * under {@link MIN_FIELD_TOKENS}), then the one before it, until the whole fits — so the
+ * a linked story's vocabulary (#281), other titles, names, tags, promoted items, notes,
+ * description. Over the budget, the LAST field still present is cut to the room left at a word
+ * boundary (the vocabulary at a term boundary, its least-said terms first), or dropped if that
+ * room is under {@link MIN_FIELD_TOKENS}, then the one before it, until the whole fits — so the
  * description goes first and the title last. The instruction itself is never cut: should it
  * alone overrun the budget the template is wrong, and that throws naming the file.
  */
@@ -159,6 +182,7 @@ export function buildAsrContext(facts: AsrItemFacts, template: AsrContextTemplat
   const title = scrub(facts.title);
   const job = scrub(facts.jobName);
   const titleKeys = new Set<string>([title.toLowerCase(), job.toLowerCase()].filter((k) => k !== ''));
+  const vocabulary = uniqueList(facts.vocabulary);
   const otherTitles = uniqueList(facts.otherTitles, titleKeys);
   const names = uniqueList(facts.names);
   const tags = uniqueList(facts.tags, new Set(names.map((n) => n.toLowerCase())));
@@ -167,6 +191,7 @@ export function buildAsrContext(facts: AsrItemFacts, template: AsrContextTemplat
   const fields: Field[] = [];
   if (title) fields.push({ label: L.title, value: title });
   if (job && job.toLowerCase() !== title.toLowerCase()) fields.push({ label: L.job, value: job });
+  if (vocabulary.length > 0) fields.push({ label: L.vocabulary, value: vocabulary.join(', '), terms: vocabulary, separator: ', ' });
   if (otherTitles.length > 0) fields.push({ label: L.also_titled, value: otherTitles.join(' / ') });
   if (names.length > 0) fields.push({ label: L.names, value: names.join(', ') });
   if (tags.length > 0) fields.push({ label: L.tags, value: tags.join(', ') });
@@ -179,7 +204,9 @@ export function buildAsrContext(facts: AsrItemFacts, template: AsrContextTemplat
   while (fields.length > 0 && estimateTokens(render(instruction, fields)) > ASR_CONTEXT_TOKEN_BUDGET) {
     const last = fields.pop()!;
     const room = ASR_CONTEXT_TOKEN_BUDGET - estimateTokens(`${render(instruction, fields)}\n${last.label}: `);
-    const fitted = room >= MIN_FIELD_TOKENS ? fitTo(last.value, room) : '';
+    const fitted = room < MIN_FIELD_TOKENS ? ''
+      : last.terms !== undefined ? fitTerms(last.terms, last.separator ?? ', ', room)
+      : fitTo(last.value, room);
     if (fitted !== '') {
       fields.push({ label: last.label, value: fitted });
       break;

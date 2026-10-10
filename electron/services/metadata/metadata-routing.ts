@@ -35,6 +35,7 @@
 import * as log from 'electron-log';
 import type { CatalogInventory } from '../../crucible/catalog';
 import { offerFor } from '../../crucible/catalog';
+import { requireAsrModel, type QwenAsrModel } from '../../crucible/asr';
 
 export type MetadataRoutingTaskId =
   | 'titles'
@@ -43,7 +44,8 @@ export type MetadataRoutingTaskId =
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
-  | 'thumbnail_words';
+  | 'thumbnail_words'
+  | 'transcription';
 
 /**
  * Which part of the app a routing row serves. `metadata` rows are the metadata run's fields;
@@ -55,8 +57,14 @@ export type MetadataRoutingTaskId =
  * tab they were made for is retired (phase 2). The run's transcript ceiling, its routing log line and
  * the dialog's change-all menu cover the metadata rows only: the thumbnail words decide no field's
  * words.
+ *
+ * `transcription` is the metadata run's transcriber (LEDGER #281): which Qwen3-ASR model the
+ * pipeline's asr job names. It is apart from the `metadata` rows because it writes no field and
+ * is not a chat model: the change-all menu, the transcript ceiling and RoutingModels never read
+ * it, and its options are judged against the server's asr catalog rows. The editor's
+ * transcription does not read it (it stays on the 1.7B).
  */
-export type MetadataRoutingGroup = 'metadata' | 'thumbnails';
+export type MetadataRoutingGroup = 'metadata' | 'thumbnails' | 'transcription';
 
 /**
  * One row of the option TABLE: a MODEL, never a quant (Owen, 2026-09-29: "crucible's job is to
@@ -265,6 +273,16 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOptionDef> 
    * thumbnail_words), as the 8-bit option was from 2026-09-28.
    */
   'qwen38-27b': { kind: 'local', label: 'Qwen 3.8 · 27B', crucibleIds: ['qwen3.8-27b-8bit', 'qwen3.8-27b-4bit'], cliModel: null },
+  /**
+   * THE TRANSCRIBERS (LEDGER #281), offered on the `transcription` row only. The official ids
+   * (never the `-mlx` ports, #205: they drop the fillers), each one id on every backend, loaded at
+   * the precision its manifest states (bfloat16): the option names the model and nothing about a
+   * quant is sent. Owen, 2026-10-09: "switch to 0.6b ... for the metadata step ... do it through
+   * crucible, not direct download. and it should be full quant." A server that offers one and has
+   * not downloaded it installs it when the job is submitted (electron/crucible/asr.ts).
+   */
+  'qwen3-asr-0.6b': { kind: 'local', label: 'Qwen3-ASR · 0.6B', crucibleIds: ['qwen3-asr-0.6b'], cliModel: null },
+  'qwen3-asr-1.7b': { kind: 'local', label: 'Qwen3-ASR · 1.7B', crucibleIds: ['qwen3-asr-1.7b'], cliModel: null },
   // THE VISION RUNGS (qwen35-9b-vl, qwen35-2b, qwen35-08b, qwen38-27b-vl) were offered on the
   // thumbnail frame row only; they went with it on 2026-09-29 (REMOVED_ROUTING_OPTIONS).
 };
@@ -458,7 +476,41 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     modal: true,
     group: 'thumbnails',
   },
+  {
+    /**
+     * THE METADATA RUN'S TRANSCRIBER (LEDGER #281, Owen, 2026-10-09: "switch to 0.6b ... for the
+     * metadata step (as opposed to editor, which should keep 1.7b)"). The 0.6B by default; the
+     * 1.7B stays offered, because it gets proper nouns right more often and a run can want that.
+     * The word timestamps (the aligner) stay on whichever is picked: chapter starts come from the
+     * captions, and a Qwen segment without them is a 30 s piece.
+     *
+     * Read by the pipeline's transcription only (transcriptionModelOf): ipc-handlers' runPipeline,
+     * the generator's own input stage and the metadata CLI. The editor names EDITOR_ASR_MODEL.
+     */
+    id: 'transcription',
+    label: 'Transcription',
+    options: ['qwen3-asr-0.6b', 'qwen3-asr-1.7b'],
+    defaultOptionId: 'qwen3-asr-0.6b',
+    modal: true,
+    group: 'transcription',
+  },
 ];
+
+/**
+ * The Crucible asr model the metadata pipeline's transcription names: the `transcription` row's
+ * selection (LEDGER #281). Not bound through RoutingModels: an asr model is not a chat model on
+ * the job's card, and one the server offers but has not downloaded is installed by Crucible on
+ * submit, which a bound option would refuse. Validated against the row like any selection.
+ */
+export function transcriptionModelOf(resolved: ResolvedMetadataRouting): QwenAsrModel {
+  const optionId = resolved.transcription;
+  validateRoutingSelection('transcription', optionId);
+  const ids = routingOptionDef(optionId).crucibleIds;
+  if (ids === null || ids.length !== 1) {
+    throw new Error(`The transcription option "${optionId}" must name exactly one Crucible asr id`);
+  }
+  return requireAsrModel(ids[0]);
+}
 
 /**
  * Which model the chapter pipeline runs on: the `chapters` task's own selection.
@@ -1050,14 +1102,15 @@ export function resolveOperatorOption(
 }
 
 /**
- * One line naming what this run will use, for the job log: every field's model, then the
- * routing's server (LEDGER #222), or that it names none and the selected server runs the job.
+ * One line naming what this run will use, for the job log: every field's model, the transcriber
+ * (LEDGER #281), then the routing's server (LEDGER #222), or that it names none and the selected
+ * server runs the job.
  */
 export function describeRouting(routing: ResolvedMetadataRouting, server: string | null): string {
   // Option ids: which build of a local model runs is the job's server's to say, and the job logs
   // it when it resolves (RoutingModels).
   const models = metadataRunTasks().map((t) => `${t.id}=${routing[t.id]}`).join(', ');
-  return `${models}, server=${server === null ? '(the selected server)' : server}`;
+  return `${models}, transcription=${routing.transcription}, server=${server === null ? '(the selected server)' : server}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,6 +1230,9 @@ export class RoutingModels {
   bind(taskId: MetadataRoutingTaskId, optionId: string): MetadataRoutingOption {
     validateRoutingSelection(taskId, optionId);
     const task = taskDef(taskId)!;
+    if (task.group === 'transcription') {
+      throw new Error(`The ${task.label} row names an asr model, which is read by transcriptionModelOf and never bound as a chat model`);
+    }
     return this.bindAs(optionId, `The ${task.label} row`);
   }
 
@@ -1254,7 +1310,8 @@ export class RoutingModels {
  * server's catalog only when one of these is local.
  */
 export function jobOptionIds(routing: ResolvedMetadataRouting): string[] {
-  const ids = METADATA_ROUTING_TASKS.map((task) => routing[task.id]);
+  // Not the transcription row (#281): its asr model is not bound from the job's LLM catalog.
+  const ids = METADATA_ROUTING_TASKS.filter((task) => task.group !== 'transcription').map((task) => routing[task.id]);
   if (routingOptionDef(routing.chapters).kind === 'local') ids.push(SUMMARIZATION_OPTION);
   return [...new Set(ids)];
 }
@@ -1390,6 +1447,28 @@ export function optionAvailability(
   };
 }
 
+/**
+ * One transcriber option judged against the server's asr catalog rows (LEDGER #281). `pullable`
+ * here is not a refusal: Crucible installs the model when the job is submitted, and the note says
+ * so. Not offered at all is `not-here`, which a run refuses by name.
+ */
+export function asrOptionAvailability(
+  option: MetadataRoutingOptionDef,
+  inventory: CatalogInventory
+): { availability: MetadataRoutingAvailability; model: string; note?: string } {
+  const id = option.crucibleIds?.[0];
+  if (option.kind !== 'local' || id === undefined || option.crucibleIds!.length !== 1) {
+    throw new Error(`asrOptionAvailability was handed "${option.label}", which is not one Crucible asr model`);
+  }
+  if (!inventory.reachable) return { availability: 'unknown', model: id, ...(inventory.error === undefined ? {} : { note: inventory.error }) };
+  const offer = inventory.asr?.[id]?.offer ?? 'not-here';
+  if (offer === 'installed') return { availability: 'installed', model: id };
+  if (offer === 'pullable') {
+    return { availability: 'pullable', model: id, note: `${option.label} is not downloaded on "${inventory.server}" yet; Crucible installs it on the first transcription.` };
+  }
+  return { availability: 'not-here', model: id, note: `"${inventory.server}" does not offer ${id}.` };
+}
+
 /** Is this availability one the dialog LISTS? `pullable` is listed: the server can hold it. */
 function offered(availability: MetadataRoutingAvailability): boolean {
   return availability === 'installed' || availability === 'pullable' || availability === 'upstream' || availability === 'outside';
@@ -1418,7 +1497,7 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory, r
       label: task.label,
       options: task.options.flatMap((id) => {
         const option = METADATA_ROUTING_OPTIONS[id];
-        const judged = optionAvailability(option, inventory);
+        const judged = task.group === 'transcription' ? asrOptionAvailability(option, inventory) : optionAvailability(option, inventory);
         if (!offered(judged.availability) && id !== resolved[task.id]) return [];
         return [{
           id,
