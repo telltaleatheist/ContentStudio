@@ -1838,3 +1838,25 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - check:pure, check:digest, check:reroll (21), check:chaptering (57), check:thumbnail, check:thumbnail-lab, check:crucible, build:electron and the frontend tsc pass. Not run live.
 
 [electron/services/metadata/stretch-summary.ts (new), metadata-generator.service.ts, metadata-tasks.ts, input-handler.service.ts, ai-manager.service.ts, metadata-routing.ts; electron/services/thumbnails/pipeline.ts, prompts.ts, words-writer.ts, report-thumbnails.ts; electron/assets/prompts/shared/pipeline/stretch-summary.yml (new), thumbnails.yml; frontend/src/app/components/model-routing-dialog/model-routing-dialog.ts; frontend/src/app/services/electron.ts; tools/stretch-summary-checks.js (new); package.json]
+
+**289. A video's local calls share their prefill: its content is the system message, and the first call prefills alone (Owen, 2026-10-10: "i would like to be able to use the 27b. claude -p is a stopgap"; crucible-pc-1 on how the Mac's prompt cache works).**
+- **Crucible's terms** (crucible-pc-1, 2026-10-10):
+  - mlx-lm 0.31.3's LRUPromptCache keeps a hybrid model's cache only at segment ends (the end of the system messages, the end of the user turn), and reuses one only as an exact token prefix.
+  - A hit needs the segment already saved by a request that finished prefilling.
+  - A reload drops the cache.
+  - The reply's `usage.prompt_tokens_details.cached_tokens` says how much was reused.
+- **Before this**, every local call was one user message with the video's content inside it, so nothing was ever reused. Last night's three thumbnail-text calls each prefilled the same 14–26k tokens again.
+- **The change.**
+  - `PlainCallShape.sharedPrefix` / `ChatRequest.sharedPrefix`: the start of the prompt that every call about this video shares. On a local model it is sent as the system message and the rest as the user message. The prompt is unchanged and traced whole.
+  - A prefix the prompt doesn't start with, or one stated beside a system turn, is refused before sending. Cloud and claude -p calls are untouched.
+  - The field units send `PLAIN_SYSTEM + the subject block` as the prefix (`buildMetadataFieldPromptParts`). Since #288 that is the stretch summary for titles, thumbnail text and the pinned comment, so the three share one prefill.
+  - The thumbnail words send their source block (`buildWordsPromptParts`; thumbnails.yml `text` must open with `{source}`), shared by the three pairs.
+- **The first call prefills alone.** A second call with the same (server, model, prefix) is not sent until the first's first streamed frame (its prefill is done) or its end, whichever comes first. The answers still decode side by side, so the fan-out (#270) keeps its overlap. A first call that fails only means the prefix was not saved; the waiter prefills it itself.
+- The answer's log line now says how many prompt tokens came from the cache.
+- **Not changed:** the load sizes. With the summary, the fields' prompts are a few thousand tokens, inside the 16k floor, so a video's calls do not reload the model between them.
+- **Checks.**
+  - New keeper test-crucible-shared-prefix.js (3): the system/user split with the trace whole; a second call with the same prefix held until the first has answered, while another prefix and a plain call go at once; a wrong prefix refused with nothing sent.
+  - test-crucible-fan-out and test-crucible-transport stub the new builder.
+  - check:crucible (29 keepers), check:pure, check:thumbnail, check:thumbnail-lab, check:reroll (21), check:chaptering (57), check:digest, build:electron and the frontend tsc pass. Not run live; the first live run with the 27B is Owen's, watched (crucible-pc-1, Crucible 1.0.131's freeze fix).
+
+[electron/crucible/transport.ts, chat-stream.ts; electron/services/metadata/ai-manager.service.ts, metadata-tasks.ts; electron/services/thumbnails/prompts.ts, words-writer.ts; tools/test-crucible-shared-prefix.js (new), test-crucible-fan-out.js, test-crucible-transport.js]

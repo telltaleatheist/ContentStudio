@@ -674,7 +674,7 @@ export class LocalFieldUnit implements MetadataUnit {
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
-    const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
+    const { prompt, shared } = this.aiManager.buildMetadataFieldPromptParts(this.spec, ctx);
     const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
     // This call's own step (LEDGER #209): its prompt, its answer budget, the margin. The door
     // checks the call against the window actually loaded before sending (plan 6.1).
@@ -694,6 +694,9 @@ export class LocalFieldUnit implements MetadataUnit {
       loadContext,
       job: this.lifecycle.sessions,
       timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
+      // The video's content as the system message, so the engine's prefill of it is reused by the
+      // other fields' calls about this video (LEDGER #289).
+      sharedPrefix: shared,
     });
     if (!text) {
       throw new Error(`The local "${this.spec.field}" call on ${this.option.model} for ${ctx.sourceLabel} returned no answer text`);

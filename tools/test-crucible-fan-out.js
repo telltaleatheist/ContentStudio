@@ -133,6 +133,9 @@ function fieldRun(controller) {
     if (!Array.isArray(titles) || titles.length === 0) throw new Error(`the ${spec.field} call needs the titles, and there are none`);
     return `FIELD ${spec.field} reading the titles: ${titles.join(' | ')}`;
   };
+  // No shared prefix here: these stub prompts share nothing, and the prefix gate has its own
+  // keeper (test-crucible-shared-prefix.js).
+  ai.buildMetadataFieldPromptParts = (spec, ctx) => ({ prompt: ai.buildMetadataFieldPrompt(spec, ctx), shared: '' });
   const spec = (field, model, inputFields = []) => ({ field, model, insights: false, inputFields });
   const units = [
     new tasks.LocalFieldUnit(ai, spec('titles', BIG), local(BIG), lifecycle),

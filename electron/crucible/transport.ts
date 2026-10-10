@@ -153,6 +153,14 @@ export interface ChatRequest {
   maxTokens: number;
   /** Local only: the chapter stage's consensus samples (LEDGER #159). Refused on an upstream (LEDGER #194). */
   temperature?: number;
+  /**
+   * Local only (LEDGER #289): the start of `prompt` that the other calls about this video share.
+   * Sent as the system message and the rest as the user message, so Crucible's mlx-lm prompt
+   * cache (which saves at the end of the system messages) reuses the prefill; a second call with
+   * the same prefix waits for the first to finish, so the prefix is saved before it is asked for.
+   * `prompt` is unchanged, traced whole, and must start with it.
+   */
+  sharedPrefix?: string;
   /** The compilation package's JSON on a local model (Law 12's one exception). */
   responseFormat?: { type: 'json_object' };
   /** Local only: the context to load the model at when this job loads it (today's num_ctx, LEDGER #111). */
@@ -172,6 +180,8 @@ export interface ChatUsage {
   promptTokens: number | null;
   completionTokens: number | null;
   totalTokens: number | null;
+  /** Of `promptTokens`, how many the engine reused from its prompt cache (LEDGER #289); null or absent when unstated. */
+  cachedTokens?: number | null;
 }
 
 export interface ChatResult {
@@ -345,6 +355,14 @@ export class CrucibleTransport {
         );
       }
 
+      // THE FIRST CALL OF A SHARED PREFIX PREFILLS ALONE (LEDGER #289): the engine saves the prefix's
+      // cache only once a request has prefilled it, so a call sent while the first is still
+      // prefilling would prefill it again. It waits for the first one's first streamed frame (its
+      // prefill done), or its end, then goes; the answers still decode side by side.
+      const primed = !upstream && request.sharedPrefix !== undefined && request.sharedPrefix !== ''
+        ? await primeShared(`${server}\n${model}\n${request.sharedPrefix}`, request.what, signal)
+        : () => undefined;
+      try {
       let reensured = false;
       for (;;) {
         let card: CardSession | null = null;
@@ -356,7 +374,7 @@ export class CrucibleTransport {
         }
         try {
           if (card !== null) await this.checkContext(card, server, model, request);
-          const answer = await this.send(server, model, venue.act, request, signal, hooks, card);
+          const answer = await this.send(server, model, venue.act, request, signal, hooks, card, primed);
           hooks.beat();
           return this.readAnswer(answer, server, model, venue.act, request);
         } catch (err) {
@@ -370,6 +388,9 @@ export class CrucibleTransport {
         } finally {
           done();
         }
+      }
+      } finally {
+        primed();
       }
     } finally {
       if (oneCall) await job.releaseAll();
@@ -389,13 +410,17 @@ export class CrucibleTransport {
     hooks: CrucibleStepHooks,
     /** The session a local call is an item of; null for an upstream call, which holds no session. */
     card: CardSession | null,
+    /** Called once, at the first streamed frame: the prompt has been prefilled (LEDGER #289). */
+    prefilled: () => void = () => undefined,
   ): Promise<StreamedChat & { sampling: Record<string, string> | null }> {
     const upstream = isUpstreamModelId(model);
     const clock = request.timeoutMs === undefined ? undefined : AbortSignal.timeout(request.timeoutMs);
     const combined = anySignal(signal, clock);
-    const messages = request.system === undefined
-      ? [{ role: 'user', content: request.prompt }]
-      : [{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }];
+    const messages = !upstream && request.sharedPrefix !== undefined && request.sharedPrefix !== ''
+      ? splitShared(request)
+      : request.system === undefined
+        ? [{ role: 'user', content: request.prompt }]
+        : [{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }];
     const body: Record<string, unknown> = {
       model,
       messages,
@@ -426,6 +451,7 @@ export class CrucibleTransport {
       if (!response.ok) throw await refusalOf(response, url);
       let last = 0;
       const streamed = await readChatStream(response, url, () => {
+        prefilled();
         const now = Date.now();
         if (now - last < BEAT_EVERY_MS) return;
         last = now;
@@ -458,7 +484,8 @@ export class CrucibleTransport {
     }
     log.info(
       `[crucible] ${request.what}: ${model} on "${server}" (${act}) answered ${answer.text.length} chars, ` +
-        `finish ${answer.finishReason}, tokens ${usage?.promptTokens ?? 'unstated'} in / ${usage?.completionTokens ?? 'unstated'} out`,
+        `finish ${answer.finishReason}, tokens ${usage?.promptTokens ?? 'unstated'} in / ${usage?.completionTokens ?? 'unstated'} out` +
+        (typeof usage?.cachedTokens === 'number' ? `, ${usage.cachedTokens} of them from the prompt cache` : ''),
     );
     return { text: answer.text, finishReason: answer.finishReason, usage, server, model, act, sampling: answer.sampling };
   }
@@ -737,4 +764,54 @@ export function crucibleTransport(): CrucibleTransport {
     );
   }
   return installed;
+}
+
+
+/**
+ * The messages of a call with a shared prefix (LEDGER #289): the prefix as the system message, the
+ * rest as the user message. A prefix the prompt does not start with is a caller's bug and throws.
+ */
+function splitShared(request: ChatRequest): Array<{ role: string; content: string }> {
+  const prefix = request.sharedPrefix!;
+  if (!request.prompt.startsWith(prefix)) {
+    throw new CrucibleCallError('refused', `${request.what}: its shared prefix is not the start of its prompt; nothing was sent.`);
+  }
+  if (request.system !== undefined) {
+    throw new CrucibleCallError('refused', `${request.what} states both a system turn and a shared prefix; nothing was sent.`);
+  }
+  const rest = request.prompt.slice(prefix.length).replace(/^\n+/, '');
+  return [{ role: 'system', content: prefix }, { role: 'user', content: rest }];
+}
+
+/** The first in-flight call per (server, model, prefix), and when it ends. */
+const priming = new Map<string, Promise<void>>();
+
+/**
+ * Wait while another call with this prefix is still prefilling, then go (or go at once). Returns
+ * the function to call once this call's prefill is done (its first frame) or it ends; idempotent. The first call's failure does not fail the waiter: it only
+ * means the prefix was not saved, and the waiter prefills it itself.
+ */
+async function primeShared(key: string, what: string, signal: AbortSignal | undefined): Promise<() => void> {
+  for (;;) {
+    const first = priming.get(key);
+    if (first === undefined) break;
+    log.info(`[crucible] ${what}: waiting for the call already prefilling the same video content, so its cache is reused`);
+    await Promise.race([
+      first.catch(() => undefined),
+      new Promise<void>((_, reject) => {
+        if (signal?.aborted) reject(signal.reason ?? new Error('Stopped.'));
+        signal?.addEventListener('abort', () => reject(signal.reason ?? new Error('Stopped.')), { once: true });
+      }),
+    ]);
+  }
+  let end!: () => void;
+  const mine = new Promise<void>((resolve) => { end = resolve; });
+  priming.set(key, mine);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (priming.get(key) === mine) priming.delete(key);
+    end();
+  };
 }

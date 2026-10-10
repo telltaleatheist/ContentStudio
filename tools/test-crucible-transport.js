@@ -99,6 +99,7 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
   const lifecycle = new JobModelLifecycle('the keeper job');
   // titles (LocalFieldUnit, thinking off, 2048 since P4)
   ai.buildMetadataFieldPrompt = () => 'Write ten titles.';
+  ai.buildMetadataFieldPromptParts = () => ({ prompt: 'Write ten titles.', shared: '' });
   const titles = new tasks.LocalFieldUnit(ai, { field: 'titles', model: local.model, insights: false, inputFields: [] }, local, lifecycle);
   await titles.generate({ sourceLabel: 'keeper.mp4', promptSetName: 'youtube-telltale', warn: () => {} });
   // chapter detail (thinking ON) and a stage-1 consensus sample (thinking off, temperature 0.7)
@@ -142,6 +143,7 @@ check('6.3 rows, cloud: no sampling to Anthropic, max_tokens 16000, thinking sta
   const ai = manager({ promptSet: 'youtube-telltale' });
   ai.loadPrompts();
   ai.buildMetadataFieldPrompt = () => 'Write ten titles.';
+  ai.buildMetadataFieldPromptParts = () => ({ prompt: 'Write ten titles.', shared: '' });
   await new tasks.CloudFieldUnit(ai, { field: 'titles', model: sonnet.model, insights: false, inputFields: [] })
     .generate({ sourceLabel: 'keeper.mp4', promptSetName: 'youtube-telltale', warn: () => {} });
   // The compilation package: the one JSON caller left.

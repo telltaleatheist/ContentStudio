@@ -66,6 +66,14 @@ export function transcriptLines(segments: ReadonlyArray<{ start: string; text: s
  * slot is empty and the prompt is exactly the one without it.
  */
 export function buildWordsPrompt(input: { channel: string; creator: string; title: string; transcript: readonly string[]; summary?: string; avoid?: readonly string[] }): string {
+  return buildWordsPromptParts(input).prompt;
+}
+
+/**
+ * The words prompt and its shared prefix (LEDGER #289): the source block (the summary or the
+ * transcript), identical for every pair of the video, which a local engine prefills once.
+ */
+export function buildWordsPromptParts(input: { channel: string; creator: string; title: string; transcript: readonly string[]; summary?: string; avoid?: readonly string[] }): { prompt: string; shared: string } {
   // The stretch summary when the item has one (LEDGER #288); the transcript otherwise.
   const summary = input.summary?.trim() ?? '';
   if (summary === '' && input.transcript.length === 0) throw new Error('The thumbnail words need the video\'s transcript, and it has no lines.');
@@ -93,7 +101,9 @@ export function buildWordsPrompt(input: { channel: string; creator: string; titl
     // The paragraph sits after the three kinds' descriptions, before the answer's shape.
     values.more = '\n\n' + asset('more').replace(/\{written\}/g, () => avoid.join('\n'));
   }
-  return fill(asset('text'), values, 'text');
+  const prompt = fill(asset('text'), values, 'text');
+  if (!prompt.startsWith(source)) throw new Error('thumbnails.yml "text" must open with {source}: its shared prefix is what a local engine reuses across the pairs.');
+  return { prompt, shared: source };
 }
 
 export interface WordOptions {

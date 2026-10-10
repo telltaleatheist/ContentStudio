@@ -142,6 +142,12 @@ export interface PlainCallShape {
   job?: JobSessions;
   /** A wall clock on the answer (the old per-call timeouts). */
   timeoutMs?: number;
+  /**
+   * Local only (LEDGER #289): the start of `prompt` that every call about this video shares, sent
+   * as the system message so the engine reuses its cached prefill (Crucible's mlx-lm caches at the
+   * end of the system messages). The prompt itself is unchanged; it must start with this.
+   */
+  sharedPrefix?: string;
 }
 
 export interface MetadataResult {
@@ -935,6 +941,15 @@ export class AIManagerService {
     ctx: MetadataRunContext,
     options?: { pending?: boolean }
   ): string {
+    return this.buildMetadataFieldPromptParts(spec, ctx, options).prompt;
+  }
+
+  /** The field prompt and its shared prefix (LEDGER #289): `prompt` starts with `shared`. */
+  buildMetadataFieldPromptParts(
+    spec: MetadataFieldUnitSpec,
+    ctx: MetadataRunContext,
+    options?: { pending?: boolean }
+  ): { prompt: string; shared: string } {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
@@ -1002,10 +1017,11 @@ export class AIManagerService {
     // above the rules held every check.
     const insightsBlock = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
 
-    return (
-      `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${this.fillSubject(subject)}` +
-      `${inputData ? `\n${inputData}` : ''}${insightsBlock}\n\n${instructions.text}`
-    );
+    // THE SHARED PREFIX (LEDGER #289): the plain contract and the subject, identical for every field
+    // call about this video that reads the same content, so a local engine reuses its prefill.
+    const shared = `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${this.fillSubject(subject)}`;
+    const prompt = shared + `${inputData ? `\n${inputData}` : ''}${insightsBlock}\n\n${instructions.text}`;
+    return { prompt, shared };
   }
 
   /**
@@ -1536,6 +1552,7 @@ export class AIManagerService {
             ...(job === undefined ? {} : { job }),
             ...(this.config.abortSignal === undefined ? {} : { signal: this.config.abortSignal }),
             ...(shape.timeoutMs === undefined ? {} : { timeoutMs: shape.timeoutMs }),
+            ...(cloud || shape.sharedPrefix === undefined ? {} : { sharedPrefix: shape.sharedPrefix }),
             what,
             trace: this.promptTrace,
           });

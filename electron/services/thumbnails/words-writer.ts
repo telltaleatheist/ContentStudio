@@ -11,7 +11,7 @@ import type { JobSessions } from '../../crucible/session';
 import { loadContextFor } from '../metadata/context-sizing';
 import { LOCAL_FIELD_TIMEOUT_MS } from '../metadata/metadata-tasks';
 import type { MetadataRoutingOption } from '../metadata/metadata-routing';
-import { buildWordsPrompt, parseThumbnailWords, type WordOptions } from './prompts';
+import { buildWordsPromptParts, parseThumbnailWords, type WordOptions } from './prompts';
 
 /** The answer's budget: fifteen short lines and three headers need a few hundred tokens. */
 export const WORDS_MAX_TOKENS = 1024;
@@ -37,14 +37,14 @@ export async function writeThumbnailWords(input: {
   /** Lines already written for this title, for "More options": the model is asked for others. */
   avoid?: readonly string[];
 }): Promise<WordsResult> {
-  const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript, ...(input.summary === undefined ? {} : { summary: input.summary }), avoid: input.avoid ?? [] });
+  const { prompt, shared } = buildWordsPromptParts({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript, ...(input.summary === undefined ? {} : { summary: input.summary }), avoid: input.avoid ?? [] });
   const what = `thumbnail text for ${input.sourceLabel}`;
   const answer = await input.aiManager.runPlainRequest(
     prompt,
     input.option.model,
     what,
     input.option.kind === 'local'
-      ? { thinking: false, maxTokens: WORDS_MAX_TOKENS, loadContext: loadContextFor(prompt.length, WORDS_MAX_TOKENS), timeoutMs: LOCAL_FIELD_TIMEOUT_MS, ...(input.job === undefined ? {} : { job: input.job }) }
+      ? { thinking: false, maxTokens: WORDS_MAX_TOKENS, loadContext: loadContextFor(prompt.length, WORDS_MAX_TOKENS), timeoutMs: LOCAL_FIELD_TIMEOUT_MS, sharedPrefix: shared, ...(input.job === undefined ? {} : { job: input.job }) }
       : { thinking: false },
   );
   if (!answer) throw new Error(`The request for ${what} on "${input.option.model}" came back empty.`);

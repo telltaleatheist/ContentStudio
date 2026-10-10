@@ -39,7 +39,7 @@ export interface StreamedChat {
   /** The engine's word, from the frame that carried it. Never defaulted. */
   finishReason: string;
   /** Null when no usage frame came; each count null where the engine did not state it. */
-  usage: { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } | null;
+  usage: { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null; cachedTokens?: number | null } | null;
   /** Characters of reasoning the engine streamed beside the answer (none when thinking is off). */
   reasoningChars: number;
 }
@@ -172,6 +172,10 @@ export async function readChatStream(response: Response, url: string, onLife: ()
           promptTokens,
           completionTokens,
           totalTokens: count(u, 'total_tokens') ?? (promptTokens !== null && completionTokens !== null ? promptTokens + completionTokens : null),
+          // How much of the prompt the engine took from its prompt cache (LEDGER #289); null unstated.
+          cachedTokens: u['prompt_tokens_details'] !== null && typeof u['prompt_tokens_details'] === 'object'
+            ? count(u['prompt_tokens_details'] as Record<string, unknown>, 'cached_tokens')
+            : null,
         };
       }
       onLife();
