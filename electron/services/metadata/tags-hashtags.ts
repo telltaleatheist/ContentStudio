@@ -26,6 +26,19 @@
  */
 
 import { COMMON_WORDS, extractProperNouns, occursIn } from './entity-extraction';
+import { SPREAKER_MAX_TAGS } from '../publish/publish-types';
+import { COMMON_ENGLISH } from '../transcription/common-english';
+
+/**
+ * HOW A CHANNEL'S TAGS LOOK, declared by its channel file (`tag_style`, LEDGER #285).
+ *
+ *  - `youtube`: names and search phrases of two to four words, misspellings of names, under a
+ *    400-character budget (assembleTags).
+ *  - `spreaker`: single words only, at most SPREAKER_MAX_TAGS (assembleWordTags). Spreaker takes
+ *    one-word tags (Owen, 2026-10-10) and refuses an episode carrying more than 20.
+ */
+export type TagStyle = 'youtube' | 'spreaker';
+export const TAG_STYLES: readonly TagStyle[] = ['youtube', 'spreaker'];
 
 /** Spec §4: stop adding at ~400 characters so the channel tags still fit under YouTube's 500. */
 export const GENERATED_TAG_BUDGET_CHARS = 400;
@@ -271,6 +284,91 @@ export function assembleTags(inputs: TagInputs): TagAssembly {
   return { tags, cost: joinedCost(tags), dropped, notInContent };
 }
 
+/**
+ * A phrase word must be rarer than this to be a tag: the 3,000 most frequent words of the web
+ * ("church", "money", "people") label a million episodes. A name's words are exempt; a name is a
+ * tag however common its words are.
+ */
+const COMMON_TAG_WORD_RANK = 3000;
+const COMMON_TAG_WORDS: ReadonlySet<string> = new Set(Array.from(COMMON_ENGLISH).slice(0, COMMON_TAG_WORD_RANK));
+
+/**
+ * Spreaker's tags (LEDGER #285): ONE WORD each, at most SPREAKER_MAX_TAGS, from the same pools and
+ * in the same order as assembleTags — the primary phrase's words, then the names' words, then the
+ * phrases' words. The same filters run: in the content (`occursIn`), not generic, not noise. No
+ * misspellings: Spreaker shows its tags on its discovery pages, where a misspelling is a typo on
+ * display (the spreaker variant of shared/fields/tags.yml says the same to the model).
+ *
+ * A name gives its distinctive word, the last that is not ordinary ("Jim Bakker" → "Bakker", "Fox
+ * News" → "Fox"); a phrase gives its words that are not ordinary — the web's COMMON_TAG_WORD_RANK
+ * most frequent, the generic list, the function words. Possessives lose their 's, hyphens split,
+ * and a word under three letters is not a tag. The cap STOPS rather than choosing: the
+ * order is the chapter list's, and what does not fit is recorded in `dropped`.
+ */
+export function assembleWordTags(inputs: TagInputs): TagAssembly {
+  const wordsOf = (text: string) =>
+    text.replace(/['’]s\b/g, '').split(/[\s\-–—/]+/).map((w) => w.replace(/[^A-Za-z0-9]/g, '')).filter((w) => w.length >= 3);
+  const ordinary = (word: string) => {
+    const key = word.toLowerCase();
+    return COMMON_WORDS.has(key) || COMMON_TAG_WORDS.has(key) || GENERIC_SINGLE_WORDS.has(key);
+  };
+  // A name's casing wins wherever its word turns up, so "bakker" from a phrase is "Bakker".
+  const casing = new Map<string, string>();
+  for (const entity of inputs.entities) for (const w of wordsOf(entity)) if (!casing.has(w.toLowerCase())) casing.set(w.toLowerCase(), w);
+
+  const offered: Array<{ word: string; name: boolean }> = [];
+  // The words a name does NOT give ("Jim" of "Jim Bakker"): a phrase that carries the name
+  // ("televangelist jim bakker") must not bring the first name in by the back door.
+  const passedOver = new Set<string>();
+  // A name gives ONE word: its last that is not ordinary ("Jim Bakker" → "Bakker", "Fox News" →
+  // "Fox"); a one-word name is itself. A name made only of ordinary words ("Central Kitchen")
+  // gives none.
+  const offerName = (entity: string) => {
+    const words = wordsOf(entity);
+    if (words.length === 1) {
+      if (!GENERIC_SINGLE_WORDS.has(words[0].toLowerCase()) && !COMMON_WORDS.has(words[0].toLowerCase())) offered.push({ word: words[0], name: true });
+      return;
+    }
+    const distinctive = [...words].reverse().find((w) => !ordinary(w));
+    for (const w of words) if (w !== distinctive) passedOver.add(w.toLowerCase());
+    if (distinctive) offered.push({ word: distinctive, name: true });
+  };
+  // A phrase gives each of its words that is not ordinary.
+  const offerPhrase = (phrase: string) => {
+    for (const w of wordsOf(phrase)) if (!ordinary(w) && !passedOver.has(w.toLowerCase())) offered.push({ word: casing.get(w.toLowerCase()) ?? w.toLowerCase(), name: casing.has(w.toLowerCase()) });
+  };
+  // Names are read first so `passedOver` is whole before any phrase is offered; the ORDER stays
+  // primary phrase, names, phrases.
+  for (const entity of inputs.entities) offerName(entity);
+  const names = offered.splice(0);
+  offerPhrase(inputs.primaryPhrase);
+  offered.push(...names);
+  for (const phrase of inputs.phrases.slice(0, PHRASE_TAG_LIMIT)) offerPhrase(phrase);
+
+  const tags: string[] = [];
+  const dropped: string[] = [];
+  const notInContent: string[] = [];
+  const seen = new Set<string>();
+  for (const { word, name } of offered) {
+    const key = word.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!occursIn(inputs.contentText, word)) {
+      notInContent.push(word);
+      continue;
+    }
+    if (TAG_PROFANITY.test(word)) continue;
+    // A name's word is tested as the name it came from was: capitalized mid-sentence somewhere.
+    if (name && isNoiseCandidate(word, inputs.contentText)) continue;
+    if (tags.length >= SPREAKER_MAX_TAGS) {
+      dropped.push(word);
+      continue;
+    }
+    tags.push(word);
+  }
+  return { tags, cost: joinedCost(tags), dropped, notInContent };
+}
+
 function joinedCost(tags: string[]): number {
   return tags.join(',').length;
 }
@@ -496,6 +594,8 @@ export interface CodeOwnedTagInputs {
   brandTag: string | undefined;
   /** Whether this item's tags are assembled here (a chaptered item on a channel that publishes tags). */
   assembleTags: boolean;
+  /** The channel's declared tag style (its channel file's `tag_style`). */
+  tagStyle: TagStyle;
   /** Whether this channel publishes hashtags. */
   assembleHashtags: boolean;
 }
@@ -518,12 +618,13 @@ export interface CodeOwnedTagFields {
 export function codeOwnedTagFields(inputs: CodeOwnedTagInputs): CodeOwnedTagFields {
   const out: CodeOwnedTagFields = {};
   if (inputs.assembleTags) {
-    const assembled = assembleTags({
+    const tagInputs: TagInputs = {
       primaryPhrase: inputs.phrases[0] || inputs.entities[0] || '',
       entities: inputs.entities,
       phrases: inputs.phrases,
       contentText: inputs.contentText,
-    });
+    };
+    const assembled = inputs.tagStyle === 'spreaker' ? assembleWordTags(tagInputs) : assembleTags(tagInputs);
     out.tags = assembled.tags.join(',');
     out.tagAssembly = assembled;
   }
@@ -583,7 +684,7 @@ const RUN_ON_WORDS = 5;
  *
  * PURE. Returns the reason, or undefined when the list is usable.
  */
-export function unusableTagList(value: unknown): string | undefined {
+export function unusableTagList(value: unknown, style: TagStyle = 'youtube'): string | undefined {
   if (typeof value !== 'string' || value.trim().length === 0) {
     return `it came back as ${value === undefined ? 'nothing' : JSON.stringify(value)} rather than a tag list`;
   }
@@ -600,6 +701,17 @@ export function unusableTagList(value: unknown): string | undefined {
       `it came back as one ${tags[0].length}-character run-on with no comma anywhere, so the whole ` +
       `answer reads as a single tag: "${tags[0]}"`
     );
+  }
+
+  // Spreaker's two rules (LEDGER #285) are format, not taste: a multi-word tag is not one it
+  // takes, and more than SPREAKER_MAX_TAGS fails the upload. Re-splitting on spaces would invent
+  // tags nobody wrote, so the answer is refused and asked for again.
+  if (style === 'spreaker') {
+    const phrase = tags.find((t) => /\s/.test(t));
+    if (phrase) return `"${phrase}" is more than one word, and Spreaker's tags are one word each`;
+    if (tags.length > SPREAKER_MAX_TAGS) {
+      return `it holds ${tags.length} tags, and Spreaker refuses an episode carrying more than ${SPREAKER_MAX_TAGS}`;
+    }
   }
 
   const runaway = tags.find((t) => t.length > RUNAWAY_TAG_CHARS);

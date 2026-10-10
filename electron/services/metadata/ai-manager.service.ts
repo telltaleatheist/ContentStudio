@@ -37,6 +37,7 @@ import { queueAITask, routeOfModelId } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { stripThinking } from './plain-call';
 import { loadContextFor } from './context-sizing';
+import type { TagStyle } from './tags-hashtags';
 
 /**
  * How much raw transcript each transport reads BEFORE anything is condensed.
@@ -1100,6 +1101,11 @@ export class AIManagerService {
    * the channel uses one, and the prompt set is the thing that knows whether it does. Empty
    * when the set declares none — nothing is guessed from the set's filename.
    */
+  /** The loaded channel's declared tag style (its channel file's `tag_style`, LEDGER #285). */
+  tagStyle(): TagStyle {
+    return this.channel().tagStyle;
+  }
+
   channelTags(): string[] {
     return (this.currentPromptSet?.channel_tags || []).map((t) => t.trim()).filter((t) => t.length > 0);
   }

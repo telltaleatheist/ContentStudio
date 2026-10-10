@@ -28,6 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import * as log from 'electron-log';
+import { TAG_STYLES, type TagStyle } from './tags-hashtags';
 
 /** The subdirectory of the prompt-sets directory that holds the whole tree. */
 export const PROMPTS_SUBDIR = 'prompts';
@@ -53,6 +54,12 @@ export interface ChannelData {
    * true or false on its own.
    */
   thumbnails: boolean | null;
+  /**
+   * How this channel's tags look (LEDGER #285): `youtube` (names and search phrases under a
+   * 400-character budget) or `spreaker` (one word each, at most 20). Required: the two are
+   * different platforms' rules, and a channel that says nothing has not said which it is on.
+   */
+  tagStyle: TagStyle;
   /** Replaces the shared titles length/format line where the channel has its own convention. */
   titleFormat?: string;
   /**
@@ -306,9 +313,16 @@ export class PromptAssets {
           `Write thumbnails: true or thumbnails: false.`
       );
     }
+    if (!TAG_STYLES.includes(raw.tag_style)) {
+      throw new Error(
+        `Channel "${id}" (${filePath}) has a "tag_style" of ${JSON.stringify(raw.tag_style)}. ` +
+          `Write tag_style: ${TAG_STYLES.join(' or tag_style: ')}.`
+      );
+    }
     return {
       id,
       thumbnails: raw.thumbnails === undefined ? null : raw.thumbnails,
+      tagStyle: raw.tag_style as TagStyle,
       name: this.requireString(raw, filePath, 'name'),
       editorialVariant: this.requireString(raw, filePath, 'editorial_variant'),
       fieldVariant: this.requireString(raw, filePath, 'field_variant'),

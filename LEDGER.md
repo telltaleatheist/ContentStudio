@@ -1771,3 +1771,20 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - check:thumbnail-lab (34 + pipeline + 16 electron), check:thumbnail, check:ab-thumbnails, check:pure pass.
 
 [electron/services/thumbnails/frame-sampler.ts; tools/thumbnail-lab-checks.js]
+
+**285. Spreaker's tags are one word each, at most 20 (Owen, 2026-10-10: "spreaker is using the same number of tags as youtube apparently. it only accepts one-word tags. can you research how spreaker tags should look and update it to use that format for spreaker podcast episodes?"; three episodes refused at 23–24 tags).**
+- **Research.** Spreaker's API reference says only "Comma-separated list of tags/keywords related to the content" (developers.spreaker.com/api/episodes), with no count or word rule. Its tag endpoint says a tag with spaces must be URL-encoded. The 20 cap is Spreaker's own refusal (#7, `SPREAKER_MAX_TAGS`). The tags stored on uploaded episodes cannot be read back: the episode object carries no `tags` field, authenticated or not. So the one-word rule is Owen's, from Spreaker's editor.
+- **The cause.** A chaptered item's tags are assembled in code (assembleTags: names, 2–4-word phrases and misspellings, 400 characters), the same for every channel. The spreaker variant of the tags prompt only reached chapterless items, so podcast episodes got YouTube's 23–24 phrase tags.
+- **The change.**
+  - Every channel file declares `tag_style: youtube | spreaker` (required; prompt-assets refuses anything else). Only spreaker.yml is spreaker.
+  - `assembleWordTags`, for spreaker, reads the same pools in the same order: the primary phrase, then the names, then the phrases. Each tag is one word, and the list stops at 20; what doesn't fit goes in `dropped`.
+    - A name gives its distinctive word, the last that is not ordinary: "Jim Bakker" → Bakker, "Fox News" → Fox. A name of only ordinary words gives nothing ("Central Kitchen").
+    - Its other words are passed over, so a phrase cannot bring a first name back in.
+    - A phrase gives its words outside the web's 3,000 most frequent (common-english.ts), the generic list and the function words.
+    - The same in-content, profanity and name-noise tests run. There are no misspellings.
+  - A model-written spreaker list (chapterless items) is refused and asked again when a tag has a space or there are more than 20. The spreaker prompt now asks for 10–15 one-word tags and shows that shape.
+  - The run plan and the chapter re-roll both read the channel's style.
+- **On the three refused episodes** (the 2026-10-04 podcasts), the new assembly gives 20, 19 and 17 one-word tags (e.g. televangelist, Bakker, Fox, Gortner, Haiti, Vaughn, BLM, Nephilim, Bailey, …). The YouTube assembly of the same items is unchanged. Their saved tags are still the old ones.
+- **Checks.** New in routing-publish-checks: the word assembly, the 20 cap, the style switch, the spreaker refusals, and every channel's declared style. The ordering-wording check reads per style. check:pure, check:reroll (21), check:chaptering (57), build:electron and the frontend tsc pass.
+
+[electron/services/metadata/tags-hashtags.ts, prompt-assets.ts, metadata-tasks.ts, ai-manager.service.ts, section-reroll.ts; electron/ipc/ipc-handlers.ts; electron/assets/prompts/channels/*.yml; electron/assets/prompts/shared/fields/tags.yml; tools/routing-publish-checks.js, scrub-reroll-checks.js]

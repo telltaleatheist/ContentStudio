@@ -847,7 +847,7 @@ check('the grounding corpus is everything the model was actually given', () => {
 function stubManager(channelId, extraFields) {
   const channel = assets.channel(channelId);
   const sections = [...channel.fields, ...(extraFields || [])].map((f) => tasks.METADATA_FIELD_SECTIONS[f].section);
-  return { promptSetSectionKeys: () => new Set(sections) };
+  return { promptSetSectionKeys: () => new Set(sections), tagStyle: () => 'youtube' };
 }
 
 function plan(channelId, options) {
@@ -971,7 +971,9 @@ check('every tags variant states the specificity ordering, in the labelling regi
     const channel = assets.channel(id);
     if (!channel.fields.includes('tags')) continue;
     const text = assets.fieldSection(channel, 'tags');
-    if (!/most specific two-to-four-word phrase/.test(text)) {
+    // A spreaker channel's tags are one word each (LEDGER #285), so its specific end is single words.
+    const specific = channel.tagStyle === 'spreaker' ? /most specific single words/ : /most specific two-to-four-word phrase/;
+    if (!specific.test(text)) {
       throw new Error('channel "' + id + '" TAGS section does not open the list on the most specific phrase');
     }
     if (!/broad category terms/.test(text)) {
@@ -1212,6 +1214,47 @@ check('tags on a chaptered item are exactly the chapter-derived pools, in that o
   eq(nonMisspelt, ['jackson parish', 'Fox News', 'Thirteenth Amendment', 'prison labor contract', 'prisoner exception'],
     'the tags a chaptered item publishes:');
   eq(assembled.notInContent, [], 'nothing ungrounded was even offered:');
+});
+
+// LEDGER #285: Spreaker takes one-word tags, at most 20.
+check('a spreaker channel\'s tags are one word each, a name giving its distinctive word, at most 20', () => {
+  const content =
+    'Televangelist Jim Bakker sold food buckets. Then Jim Bakker sold a silver solution. Bill Clinton met ' +
+    'Monica Lewinsky. They watched Fox News and the Jehovah\'s Witnesses doorstep everyone in Branson.';
+  const assembled = tagsHashtags.assembleWordTags({
+    primaryPhrase: 'televangelist jim bakker',
+    entities: ['Jim Bakker', 'Bill Clinton', 'Monica Lewinsky', 'Fox News', 'Branson', 'Central Kitchen'],
+    phrases: ['food buckets', 'silver solution'],
+    contentText: content,
+  });
+  eq(assembled.tags, ['televangelist', 'Bakker', 'Clinton', 'Lewinsky', 'Fox', 'Branson', 'buckets'],
+    'one word each, surnames not first names, ordinary words ("silver", "solution", "food") left out:');
+  if (assembled.tags.some((t) => /\s/.test(t))) throw new Error('a tag with a space: ' + assembled.tags.join(','));
+
+  const many = Array.from({ length: 30 }, (_, i) => `Zorbex${String.fromCharCode(97 + (i % 26))}${i}`);
+  const text = many.map((w) => `then ${w} spoke`).join('. ');
+  const capped = tagsHashtags.assembleWordTags({ primaryPhrase: '', entities: many, phrases: [], contentText: text });
+  eq(capped.tags.length, 20, 'never past Spreaker\'s 20:');
+  eq(capped.dropped.length, 10, 'what did not fit is recorded:');
+
+  // The run's switch: a spreaker channel gets this assembly, a youtube channel the phrase one.
+  const inputs = { entities: ['Jim Bakker'], phrases: ['food buckets'], contentText: content, firstTitle: 't', videoTitle: 'v', brandTag: undefined, assembleTags: true, assembleHashtags: false };
+  eq(tagsHashtags.codeOwnedTagFields({ ...inputs, tagStyle: 'spreaker' }).tags, 'buckets,Bakker', 'spreaker:');
+  eq(tagsHashtags.codeOwnedTagFields({ ...inputs, tagStyle: 'youtube' }).tags, 'food buckets,Jim Bakker', 'youtube:');
+});
+
+check('a spreaker model-written tag list with a multi-word tag or more than 20 is refused, a youtube one is not', () => {
+  if (!/one word/.test(tagsHashtags.unusableTagList('Bakker,food buckets', 'spreaker') || '')) throw new Error('a two-word spreaker tag passed');
+  const twentyOne = Array.from({ length: 21 }, (_, i) => `word${i}`).join(',');
+  if (!/more than 20/.test(tagsHashtags.unusableTagList(twentyOne, 'spreaker') || '')) throw new Error('21 spreaker tags passed');
+  eq(tagsHashtags.unusableTagList('Bakker,televangelist,atheism', 'spreaker'), undefined, 'one-word spreaker tags are usable:');
+  eq(tagsHashtags.unusableTagList('Bakker,food buckets', 'youtube'), undefined, 'a youtube phrase tag is usable:');
+});
+
+check('every shipped channel declares its tag style, and only the podcast is spreaker', () => {
+  const pa = assets;
+  const styles = Object.fromEntries(pa.channelIds().map((id) => [id, pa.channel(id).tagStyle]));
+  eq(styles, { 'podcast-spreaker': 'spreaker', 'youtube-fireside': 'youtube', 'youtube-shorts': 'youtube', 'youtube-telltale': 'youtube', 'youtube-unfiltered': 'youtube' }, 'tag styles:');
 });
 
 check('a chapter list that shares nothing with the transcript is DECLARED, not filled from elsewhere', () => {

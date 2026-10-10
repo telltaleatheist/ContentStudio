@@ -3020,7 +3020,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
               working,
               content.text,
               promptAssets().channel(job.prompt_set).fields,
-              aiManager.channelTags()[0]
+              aiManager.channelTags()[0],
+              promptAssets().channel(job.prompt_set).tagStyle
             );
             const finished = aiManager.finalizeTagFields(built);
             if (finished.tags !== undefined) working.tags = finished.tags;

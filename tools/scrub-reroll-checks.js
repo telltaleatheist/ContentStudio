@@ -340,9 +340,9 @@ function incidentItem() {
       titles: ['A title about nothing'],
       chapters: [{ timestamp: '0:00', endTimestamp: '1:00', title: 'Old words nobody said', detail: '' }],
     };
-    const before = reroll.rederiveTagFields(item, contentText, ['tags', 'hashtags'], 'Telltale');
+    const before = reroll.rederiveTagFields(item, contentText, ['tags', 'hashtags'], 'Telltale', 'youtube');
     reroll.applySnapshot(item, 'chapters', { titles: ['Gene Bailey and the prosperity gospel'], details: ['Kenneth Copeland agrees.'], tags: before.tags ?? null, hashtags: before.hashtags ?? null });
-    const after = reroll.rederiveTagFields(item, contentText, ['tags', 'hashtags'], 'Telltale');
+    const after = reroll.rederiveTagFields(item, contentText, ['tags', 'hashtags'], 'Telltale', 'youtube');
     ok(!/gene bailey/i.test(before.tags || ''), 'the old list has no Gene Bailey: ' + before.tags);
     ok(/gene bailey/i.test(after.tags) && /Kenneth Copeland/.test(after.tags), 'the new list carries the new names: ' + after.tags);
     const pools = tagsHashtags.chapterPools({
@@ -352,9 +352,9 @@ function incidentItem() {
       entityLimit: tagsHashtags.ENTITY_POOL_SIZE,
       phraseLimit: tagsHashtags.PHRASE_POOL_SIZE,
     });
-    const run = tagsHashtags.codeOwnedTagFields({ ...pools, contentText: 'Gene Bailey said the prosperity gospel is true. Kenneth Copeland agreed about the prosperity gospel.', firstTitle: 'A title about nothing', videoTitle: 'vid', brandTag: 'Telltale', assembleTags: true, assembleHashtags: true });
+    const run = tagsHashtags.codeOwnedTagFields({ ...pools, contentText: 'Gene Bailey said the prosperity gospel is true. Kenneth Copeland agreed about the prosperity gospel.', firstTitle: 'A title about nothing', videoTitle: 'vid', brandTag: 'Telltale', assembleTags: true, assembleHashtags: true, tagStyle: 'youtube' });
     eq(after, { tags: run.tags, hashtags: run.hashtags }, 'identical to the run\'s assembly over the same list:');
-    eq(reroll.rederiveTagFields(item, contentText, ['titles'], 'Telltale'), {}, 'a channel that publishes neither gets neither:');
+    eq(reroll.rederiveTagFields(item, contentText, ['titles'], 'Telltale', 'youtube'), {}, 'a channel that publishes neither gets neither:');
   });
 
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });

@@ -85,6 +85,7 @@ import { DESCRIPTION_FIELDS, DescriptionUnit } from './description-unit';
 import {
   codeOwnedTagFields,
   unusableTagList,
+  type TagStyle,
   GENERATED_TAG_BUDGET_CHARS,
 } from './tags-hashtags';
 import { promptAssets } from './prompt-assets';
@@ -782,6 +783,8 @@ export interface MetadataRunPlan {
    */
   assembleTags: boolean;
   assembleHashtags: boolean;
+  /** The channel's declared tag style (LEDGER #285), for the assembly and the model-written list's check. */
+  tagStyle: TagStyle;
   /** The distinct local models this run will make resident, and what pulls each one in. */
   roster: ModelRoster;
   /**
@@ -1096,7 +1099,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     ...(assemblesTags ? ['tags (code)'] : []),
     ...(assemblesHashtags ? ['hashtags (code)'] : []),
   ].join(' | ');
-  return { units, assembleTags: assemblesTags, assembleHashtags: assemblesHashtags, roster, warnings, summary };
+  return { units, assembleTags: assemblesTags, assembleHashtags: assemblesHashtags, tagStyle: aiManager.tagStyle(), roster, warnings, summary };
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,14 +1269,14 @@ export async function runMetadataTasks(
 }
 
 /** One unit's whole node: its call, then the checks that belong to its field (each may ask once more). */
-async function runUnit(unit: MetadataUnit, ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+async function runUnit(unit: MetadataUnit, ctx: MetadataRunContext, tagStyle: TagStyle): Promise<Record<string, unknown>> {
   console.log(`[MetadataTasks] ${ctx.sourceLabel}: running unit ${unit.label}`);
   let fields = await unit.generate(ctx);
   if (unit.fields.includes('titles')) {
     fields = await groundTitlesOnce(unit, ctx, fields);
   }
   if (unit.fields.includes('tags')) {
-    fields = await usableTagsOrThrow(unit, ctx, fields);
+    fields = await usableTagsOrThrow(unit, ctx, fields, tagStyle);
   }
   return fields;
 }
@@ -1363,7 +1366,7 @@ async function runUnitsTogether(run: MetadataTaskRun): Promise<Array<Record<stri
       if (failed) throw new UnitNotStarted(unit.label);
       // The unit's warnings land in plan order, wherever its answer lands in time.
       const unitCtx: MetadataRunContext = { ...ctx, warn: (message) => inOrder(() => ctx.warn(message)) };
-      const fields = await runUnit(unit, unitCtx);
+      const fields = await runUnit(unit, unitCtx, run.plan.tagStyle);
       // Before any reader starts, so a unit that declares this field as INPUT DATA reads exactly
       // what this one returned — including the second set of titles when the grounding check
       // re-asked for them.
@@ -1428,9 +1431,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 async function usableTagsOrThrow(
   unit: MetadataUnit,
   ctx: MetadataRunContext,
-  first: Record<string, unknown>
+  first: Record<string, unknown>,
+  style: TagStyle
 ): Promise<Record<string, unknown>> {
-  const fault = unusableTagList(first.tags);
+  const fault = unusableTagList(first.tags, style);
   if (!fault) return first;
 
   log.warn(
@@ -1438,7 +1442,7 @@ async function usableTagsOrThrow(
   );
 
   const second = await unit.generate(ctx);
-  const secondFault = unusableTagList(second.tags);
+  const secondFault = unusableTagList(second.tags, style);
   if (!secondFault) {
     log.info(`[MetadataTasks] ${ctx.sourceLabel}: the second tag list is readable; keeping it`);
     return second;
@@ -1497,6 +1501,7 @@ function assembleCodeOwnedFields(
     brandTag: aiManager.channelTags()[0],
     assembleTags: run.plan.assembleTags,
     assembleHashtags: run.plan.assembleHashtags,
+    tagStyle: run.plan.tagStyle,
   });
 
   if (run.plan.assembleTags && built.tags !== undefined && built.tagAssembly !== undefined) {

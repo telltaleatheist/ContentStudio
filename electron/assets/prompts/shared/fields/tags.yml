@@ -33,11 +33,12 @@ overrides:
     instructions: |-
       ## TAGS (SPREAKER)
 
-      - Write 8 to 15 tags. Spreaker refuses any episode carrying more than 20, so never go past 15.
-      - Start with the most specific two-to-four-word phrase for the episode's subject, then the people, organizations, claims and doctrines it covers, then the niche identifiers (atheism, skepticism, cult recovery) and broad category terms it belongs to.
+      - Write 10 to 15 tags, each ONE word: Spreaker takes single-word tags only, and refuses an episode carrying more than 20.
+      - Start with the most specific single words for the episode's subject: the surnames and one-word names of the people, organizations and groups it covers, then the single words for its claims and doctrines, then the niche identifiers (atheism, skepticism) and the broad category terms it belongs to.
+      - A name of two words becomes its distinctive word: Jim Bakker becomes Bakker, Kenneth Copeland becomes Copeland.
       - Accurate and boring beats clever — tags are a labelling job, not a hook.
       - Every tag is spelled correctly and no two tags name the same thing — these tags appear on Spreaker's own discovery pages, where a misspelling is a typo on display, not search coverage.
       - Every tag names the episode's subject: these tags power Spreaker's own discovery pages, so they say what the episode is about.
-      - Answer with the whole list on one line, a comma between every tag: "subject full name,the specific claim,a niche identifier,a broad category term"
+      - Answer with the whole list on one line, a comma between every tag and no spaces inside a tag: "Bakker,televangelist,prophecy,atheism,skepticism"
     self_check:
-      - "The tags value is one string with a comma between every tag — if any two tags are separated by a space alone, the comma goes back in"
+      - "The tags value is one string with a comma between every tag, and every tag is one word with no space in it"

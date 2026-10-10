@@ -73,6 +73,7 @@ import {
   PHRASE_POOL_SIZE,
 } from './tags-hashtags';
 import { stripSpeakerPrefixes } from './transcript-import.service';
+import type { TagStyle } from './tags-hashtags';
 
 // ---------------------------------------------------------------------------
 // The sections
@@ -683,7 +684,8 @@ export function rederiveTagFields(
   item: any,
   contentText: string,
   channelFields: readonly string[],
-  brandTag: string | undefined
+  brandTag: string | undefined,
+  tagStyle: TagStyle
 ): { tags?: string; hashtags?: string } {
   const chapters: any[] = Array.isArray(item?.chapters) ? item.chapters : [];
   const text = stripSpeakerPrefixes(contentText);
@@ -704,6 +706,7 @@ export function rederiveTagFields(
     brandTag,
     assembleTags: channelFields.includes('tags') && chapters.length > 0,
     assembleHashtags: channelFields.includes('hashtags'),
+    tagStyle,
   });
   return {
     ...(built.tags === undefined ? {} : { tags: built.tags }),
