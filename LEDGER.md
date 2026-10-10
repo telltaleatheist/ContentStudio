@@ -1737,3 +1737,10 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - check:pure, check:crucible (28 keepers), check:asr, chaptering-checks (57), build:electron and the frontend tsc pass. Not run live; Owen tests.
 
 [electron/crucible/asr.ts, asr-venue.ts, catalog.ts; electron/services/transcription/crucible-transcription.ts, asr-context.ts, asr-facts.ts, asr-vocabulary.ts (new), common-english.ts (new); electron/services/metadata/metadata-routing.ts, input-handler.service.ts, transcription.service.ts, metadata-generator.service.ts, saved-transcript.service.ts; electron/services/editor/editor-asr.ts; electron/ipc/ipc-handlers.ts; electron/assets/prompts/shared/pipeline/transcription.yml; frontend/src/app/services/electron.ts; frontend/src/app/components/model-routing-dialog/model-routing-dialog.ts; scripts/generate-metadata-cli.js; tools/fake-crucible.js, test-crucible-asr-install.js (new), asr-checks.js, routing-publish-checks.js, test-crucible-acts.js, test-crucible-batch.js, asr-acceptance.js]
+
+**282. The Spreaker podcast set names its creator (Owen, 2026-10-09, a podcast run: "podcast 2.mp3: bad_setting: the prompt set "Podcast - Spreaker" declares no brand_terms, so nothing says who its creator is and the creator rules cannot be asked").**
+- `channels/spreaker.yml` gains `brand_terms: ["owen morgan", "telltale", "telltale atheist"]`, the same terms the three YouTube channels declare.
+- The creator rules of the re-roll gate (reroll/rules.ts) and the thumbnail pipeline refuse a set without them by name, which is correct. The podcast set was the only one missing them.
+- **Checks.** check:pure and reroll-checks pass.
+
+[electron/assets/prompts/channels/spreaker.yml]
