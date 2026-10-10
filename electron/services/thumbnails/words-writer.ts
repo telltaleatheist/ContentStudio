@@ -29,13 +29,15 @@ export async function writeThumbnailWords(input: {
   creator: string;
   title: string;
   transcript: readonly string[];
+  /** The item's stretch summary (LEDGER #288): read in place of the transcript when there is one. */
+  summary?: string;
   sourceLabel: string;
   /** The window's held job for this local model; absent for cloud. */
   job?: JobSessions;
   /** Lines already written for this title, for "More options": the model is asked for others. */
   avoid?: readonly string[];
 }): Promise<WordsResult> {
-  const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript, avoid: input.avoid ?? [] });
+  const prompt = buildWordsPrompt({ channel: input.channel, creator: input.creator, title: input.title, transcript: input.transcript, ...(input.summary === undefined ? {} : { summary: input.summary }), avoid: input.avoid ?? [] });
   const what = `thumbnail text for ${input.sourceLabel}`;
   const answer = await input.aiManager.runPlainRequest(
     prompt,

@@ -65,14 +65,26 @@ export function transcriptLines(segments: ReadonlyArray<{ start: string; text: s
  * title, shown to the model in the asset's `more` paragraph so it writes others. Empty: the `more`
  * slot is empty and the prompt is exactly the one without it.
  */
-export function buildWordsPrompt(input: { channel: string; creator: string; title: string; transcript: readonly string[]; avoid?: readonly string[] }): string {
-  if (input.transcript.length === 0) throw new Error('The thumbnail words need the video\'s transcript, and it has no lines.');
+export function buildWordsPrompt(input: { channel: string; creator: string; title: string; transcript: readonly string[]; summary?: string; avoid?: readonly string[] }): string {
+  // The stretch summary when the item has one (LEDGER #288); the transcript otherwise.
+  const summary = input.summary?.trim() ?? '';
+  if (summary === '' && input.transcript.length === 0) throw new Error('The thumbnail words need the video\'s transcript, and it has no lines.');
   if (input.title.trim() === '') throw new Error('The thumbnail words are written as a pair with a title, and no title was picked.');
-  const values: Record<string, string> = {
+  const fill = (template: string, values: Record<string, string>, key: string): string =>
+    template.replace(/\{([a-z_]+)\}/g, (whole, name: string) => {
+      const value = values[name];
+      if (value === undefined) throw new Error(`thumbnails.yml "${key}" has a slot {${name}} that nothing fills.`);
+      return value;
+    });
+  const sourceKey = summary !== '' ? 'source_summary' : 'source_transcript';
+  const source = fill(asset(sourceKey), {
     channel: input.channel,
     creator: input.creator,
+    ...(summary !== '' ? { summary } : { transcript: input.transcript.join('\n') }),
+  }, sourceKey);
+  const values: Record<string, string> = {
+    source,
     title: input.title.trim(),
-    transcript: input.transcript.join('\n'),
     per_kind: String(OPTIONS_PER_KIND),
     more: '',
   };
@@ -81,11 +93,7 @@ export function buildWordsPrompt(input: { channel: string; creator: string; titl
     // The paragraph sits after the three kinds' descriptions, before the answer's shape.
     values.more = '\n\n' + asset('more').replace(/\{written\}/g, () => avoid.join('\n'));
   }
-  return asset('text').replace(/\{([a-z_]+)\}/g, (whole, name: string) => {
-    const value = values[name];
-    if (value === undefined) throw new Error(`thumbnails.yml "text" has a slot {${name}} that nothing fills.`);
-    return value;
-  });
+  return fill(asset('text'), values, 'text');
 }
 
 export interface WordOptions {

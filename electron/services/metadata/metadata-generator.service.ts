@@ -90,6 +90,7 @@ import { snapTransports, toChapterPipelineResult } from './snap-chapters';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
+import { clockSeconds, summarizeStretches, summaryParagraphs } from './stretch-summary';
 
 // ENTITY_POOL_SIZE and PHRASE_POOL_SIZE live in tags-hashtags.ts (LEDGER #223): the chapter
 // re-roll rebuilds the same pools from the same two numbers.
@@ -849,6 +850,16 @@ export class MetadataGeneratorService {
           // produced, each chapter's detail written from its own raw transcript — and an item
           // that is over the ceiling with no chapters fails loudly rather than being condensed
           // by something nobody chose (chapter-digest.ts).
+          // ---- The stretch summary (LEDGER #288) --------------------------------
+          // Written in the batch's chapters stage when there was one; here otherwise, cut at the
+          // chapters just resolved. Titles, thumbnail text, the pinned comment and the thumbnail
+          // words read it. One that could not be written fails the item here, by name.
+          if (item.stretchSummaryFailure !== undefined) {
+            const reason = item.stretchSummaryFailure instanceof Error ? item.stretchSummaryFailure.message : String(item.stretchSummaryFailure);
+            throw new Error(`The summary of ${sourceLabel} could not be written: ${reason}`);
+          }
+          await this.ensureStretchSummary(item, aiManager, params, sourceLabel, (chapters || []).map((c) => clockSeconds(c.timestamp)), i, contentItems.length);
+
           console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
           params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 60, undefined, i);
           const fieldContent = resolveFieldContent({
@@ -879,6 +890,9 @@ export class MetadataGeneratorService {
           (metadata as any)._title = this.getCleanTitle(item);
           (metadata as any)._prompt_set = params.promptSet;
           (metadata as any)._is_compilation = false;
+          // What titles, thumbnail text, the pinned comment and the thumbnail words read (#288),
+          // kept so the Thumbnails window's words read the same text the run's did.
+          if (item.stretchSummary) (metadata as any)._stretch_summary = item.stretchSummary;
 
           if (chapters) {
             metadata.chapters = chapters;
@@ -1258,6 +1272,7 @@ export class MetadataGeneratorService {
         chapterSubjects: subjects,
         chapterDetails: chapterDetails || [],
         digestChapters: digestChapters || [],
+        stretchSummary: item.stretchSummary ?? null,
         videoTitle: this.getCleanTitle(item),
         promptSetName: params.promptSet || 'unknown',
         entities: pools.entities,
@@ -1660,6 +1675,43 @@ export class MetadataGeneratorService {
   }
 
   /**
+   * Write this item's stretch summary (stretch-summary.ts, LEDGER #288) on the Summary row's model,
+   * once: an item that has one, or has no timed transcript, is left as it is. `sectionStarts` are
+   * the outline's section starts in seconds, which no paragraph crosses.
+   */
+  private static async ensureStretchSummary(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    sourceLabel: string,
+    sectionStarts: number[],
+    itemIndex: number,
+    itemCount: number,
+  ): Promise<void> {
+    if (item.stretchSummary !== undefined || !item.srtSegments || item.srtSegments.length === 0) return;
+    const option = routingOption('summary', this.routing(params).summary, this.models(params));
+    const segments = item.srtSegments;
+    const durationSec = typeof item.finalDurationSec === 'number' && item.finalDurationSec > 0
+      ? item.finalDurationSec
+      : srtSeconds(segments[segments.length - 1].end);
+    const started = Date.now();
+    item.stretchSummary = await summarizeStretches({
+      aiManager,
+      option,
+      segments,
+      durationSec,
+      sectionStarts,
+      sourceLabel,
+      progress: (done, total) => params.progressCallback?.('generating', `Summarizing ${itemIndex + 1}/${itemCount}: ${done} of ${total} stretches...`, 55, undefined, itemIndex),
+    });
+    log.info(
+      `[MetadataGenerator] ${sourceLabel}: summary written on ${option.model}, ${item.stretchSummary.paragraphs.length} paragraph(s) ` +
+        `over ${sectionStarts.length} section(s), ${summaryParagraphs(item.stretchSummary).length} chars, ${((Date.now() - started) / 1000).toFixed(0)} s` +
+        (item.stretchSummary.speakerTagged ? ', speaker-tagged' : ', untagged'),
+    );
+  }
+
+  /**
    * A STAGE-MAJOR BATCH MEMBER's chapter stage (crucible/batch.ts, LEDGER #266): wait for the batch's
    * `chapters` stage stating the scorer's largest load (exact, stage-needs.ts), draw every snap item's
    * BOUNDARIES there (outline, assign, ads, level 2: the 9B only), then wait for the `fields` stage
@@ -1689,13 +1741,25 @@ export class MetadataGeneratorService {
       if (need !== null) scorerNeeds.push(need);
     }
     await enterJobStage('chapters', scorerNeeds);
-    for (const { item, i } of todo) {
+    for (const { item, i, label } of todo) {
       this.throwIfCancelled(params, `before the chapter boundaries for item ${i + 1}`);
+      let boundaries: ChapteringResult | null = null;
       try {
-        staged.set(i, { boundaries: await this.snapBoundaries(item, aiManager, params, i, contentItems.length, lifecycle) });
+        boundaries = await this.snapBoundaries(item, aiManager, params, i, contentItems.length, lifecycle);
+        staged.set(i, { boundaries });
       } catch (error) {
         if (this.isCancellation(params, error)) throw error;
         staged.set(i, { failed: error });
+      }
+      // The stretch summary in the same stage (LEDGER #288): on the 9B by default, which the
+      // boundaries just used, so the batch loads it once. Cut at the sections just drawn; a video
+      // whose boundaries failed is cut every ~5 minutes. A failure is kept and fails the item
+      // before its fields (the item's chapter failure is reported apart from it).
+      try {
+        await this.ensureStretchSummary(item, aiManager, params, label, boundaries ? boundaries.chapters.map((c) => c.startSec) : [], i, contentItems.length);
+      } catch (error) {
+        if (this.isCancellation(params, error)) throw error;
+        item.stretchSummaryFailure = error;
       }
     }
     await enterJobStage('fields', this.fieldsStageNeeds(contentItems, staged, args));

@@ -1,8 +1,5 @@
 text: |-
-  Below is the transcript of a video on the YouTube channel "{channel}". The video was made by the channel's creator, known as {creator}. He is the host: he plays clips of other people and speaks throughout as their commentator. The people, the claims and the events in the clips are the video's subject.
-
-  The transcript, one line per caption, with the time each starts:
-  {transcript}
+  {source}
 
   Write the words that go on this video's thumbnail. The thumbnail sits beside this title, and the viewer reads the two together:
   {title}
@@ -11,7 +8,7 @@ text: |-
   - is 2 to 5 words, in capital letters;
   - reads as a complete thought to a stranger who has never heard of the video, and leaves them wanting to know more;
   - adds something the title leaves unsaid, so the title and the words together say more than either one alone: a viewer the title did not win gets a second chance to be won by the words, so never repeat the title's words or its point;
-  - comes from the transcript: a claim the subject actually makes, lightly paraphrased, or the host's own reaction to it;
+  - comes from the video: a claim the subject actually makes, lightly paraphrased, or the host's own reaction to it;
   - never reads as the host's own view or as a fact when it is the subject's claim. The host is debunking these people, and a viewer scrolling past sees only the thumbnail: a bare HITLER WAS A SOCIALIST would look like the channel agrees. So the subject's claim always carries its marking: in quotation marks, as "TRANS PEOPLE ARE DESTROYING AMERICA", or ending in a question mark, as HITLER WAS A SOCIALIST?
 
   Write three kinds of option, {per_kind} of each:
@@ -37,3 +34,18 @@ text: |-
 more: |-
   These options were already written for this title. Every option you write now must be a new one: none of these, and none that says the same thing in other words.
   {written}
+
+
+# What the words read (LEDGER #288): the run's stretch summary when the item has one, else the
+# transcript (an item made before the summary existed, read again in the Thumbnails window).
+source_summary: |-
+  Below is a summary of a video on the YouTube channel "{channel}". The video was made by the channel's creator, known as {creator}. He is the host: he plays clips of other people and speaks throughout as their commentator. The people, the claims and the events in the clips are the video's subject.
+
+  The video, one paragraph for every five minutes of it, with the time each stretch starts:
+  {summary}
+
+source_transcript: |-
+  Below is the transcript of a video on the YouTube channel "{channel}". The video was made by the channel's creator, known as {creator}. He is the host: he plays clips of other people and speaks throughout as their commentator. The people, the claims and the events in the clips are the video's subject.
+
+  The transcript, one line per caption, with the time each starts:
+  {transcript}

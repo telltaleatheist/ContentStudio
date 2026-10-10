@@ -505,7 +505,7 @@ export interface MetadataRoutingTask {
    * `thumbnails`: a Thumbnails-tab row (#236), shown apart and left out of change-all.
    * `transcription`: the metadata run's transcriber (#281), shown apart and left out of change-all.
    */
-  group: 'metadata' | 'thumbnails' | 'transcription';
+  group: 'metadata' | 'thumbnails' | 'summary' | 'transcription';
 }
 
 /**

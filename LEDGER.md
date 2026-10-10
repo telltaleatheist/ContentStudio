@@ -1813,3 +1813,28 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:pure and check:reroll (21) pass. Not run on a model yet.
 
 [electron/assets/prompts/shared/fields/titles.yml]
+
+**288. The stretch summary: titles, the pinned comment and the thumbnail words read a paragraph per section instead of the transcript (Owen, 2026-10-10: "summary is far superior from the single test we just ran… i think summaries produce better titles… yes. lets build this"; then "we could have the system write an outline… and then create a summary for each outline section").**
+- **The tests that decided it.** In scratch, on u4 (Metaxas, 47 min) and u6 (Logan Paul, 33 min): Opus wrote a paragraph per 5 minutes; Fable wrote titles from that instead of the 3-chapter list. Owen judged the summary titles more specific and better. On u4 the 9B's paragraphs gave Fable titles as good as Opus's. Its summary did misattribute host and clip on the untagged transcript (the host's own book plug credited to Metaxas). That is why tagged segments carry their HOST/CLIP labels and the prompt explains them.
+- **The cut** (stretch-summary.ts `stretchesOf`). One stretch per outline section, and a long section cut into equal parts of about 5 minutes (u4: 8:09–46:04 in 8 parts). No paragraph crosses a section. With no sections, the whole video is cut about every 5 minutes. Every caption is in exactly one stretch.
+- **The calls.** One per stretch, in order, on the new **Summary** routing row: the 9B by default; the 27B, the cloud models and claude -p offered.
+  - The row has its own group, so it is never planned as a field. It gets its own heading in Model Routing.
+  - Each call is about 1.2k tokens in and up to 700 out, thinking off. An empty paragraph fails the item, naming the stretch.
+  - The prompt is a prompt asset: shared/pipeline/stretch-summary.yml (instruction, tagged, block).
+- **Where it runs.**
+  - A batch member writes it in the chapters stage, right after its boundaries, cut at the sections just drawn, so the 9B loads once. A failure there is kept and fails the item before its fields.
+  - A single job writes it just before the fields, cut at its resolved chapters.
+- **Who reads it** (ai-manager `SUMMARY_READING_FIELDS`): titles, thumbnail text and the pinned comment, in place of the transcript and the chapter list. The coverage is stated once, under its own header.
+  - The thumbnail words (the "thumbnail text for … (pair N)" calls, 13–26k tokens on the 27B before) read it in place of the transcript. That includes the Thumbnails window, from the report.
+  - The description keeps the whole transcript. An item with no timed transcript (a text subject) has no summary and reads as before.
+- **Stored** on the report as `_stretch_summary` (model, tagged or not, the timed paragraphs). Reports-page re-rolls replay the recorded prompt, so they read the same summary.
+- **Checks.** New tools/stretch-summary-checks.js, in check:pure. It covers:
+  - the cut against u4's real sections, and captions past the end;
+  - every prompt slot filled, the label sentence only on a tagged stretch, a `$` kept;
+  - the calls in order with the model recorded, and an empty answer refused;
+  - the routing row and its group;
+  - every summary-reading field reads the summary and not the transcript, while the description doesn't;
+  - the thumbnail words' two sources; the stored round trip.
+  - check:pure, check:digest, check:reroll (21), check:chaptering (57), check:thumbnail, check:thumbnail-lab, check:crucible, build:electron and the frontend tsc pass. Not run live.
+
+[electron/services/metadata/stretch-summary.ts (new), metadata-generator.service.ts, metadata-tasks.ts, input-handler.service.ts, ai-manager.service.ts, metadata-routing.ts; electron/services/thumbnails/pipeline.ts, prompts.ts, words-writer.ts, report-thumbnails.ts; electron/assets/prompts/shared/pipeline/stretch-summary.yml (new), thumbnails.yml; frontend/src/app/components/model-routing-dialog/model-routing-dialog.ts; frontend/src/app/services/electron.ts; tools/stretch-summary-checks.js (new); package.json]

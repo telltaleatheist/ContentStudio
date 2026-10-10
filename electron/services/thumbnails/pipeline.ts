@@ -62,6 +62,7 @@ import type { StoredRender } from './pipeline-record';
 import { resolveStorySource } from './story-source';
 import { resolveThumbnailStory } from './story-match';
 import { writeThumbnailWords } from './words-writer';
+import { storedStretchSummary, summaryParagraphs, type StretchSummary } from '../metadata/stretch-summary';
 import {
   PAIR_COUNT,
   PAIR_KINDS,
@@ -219,6 +220,8 @@ export interface ThumbnailJobDoors {
 /** What the words stage reads off the generated item. */
 export interface GeneratedFields {
   titles: unknown;
+  /** The run's stretch summary (LEDGER #288): what the words read in place of the transcript. */
+  _stretch_summary?: unknown;
   reroll_gate?: { ranking?: { order?: Array<{ title: string }> } | null } | null;
 }
 
@@ -634,7 +637,7 @@ export class ItemThumbnailRun {
     await this.stage('words', async () => {
       const titles = pairSubjects(fields);
       this.rec.titles = titles;
-      await this.words(titles.subjects);
+      await this.words(titles.subjects, storedStretchSummary(fields._stretch_summary));
     });
   }
 
@@ -649,7 +652,7 @@ export class ItemThumbnailRun {
     }
   }
 
-  private async words(subjects: readonly string[]): Promise<void> {
+  private async words(subjects: readonly string[], summary: StretchSummary | null): Promise<void> {
     const option = routed(this.doors.routing, this.doors.models, 'thumbnail_words');
     const creator = creatorOf(this.item.channel);
     const transcript = transcriptLines(this.item.segments);
@@ -667,6 +670,7 @@ export class ItemThumbnailRun {
         creator,
         title,
         transcript,
+        ...(summary === null ? {} : { summary: summaryParagraphs(summary) }),
         sourceLabel: `${this.item.sourceLabel} (pair ${i + 1})`,
       });
       const { claim, stakes, reaction, warnings } = result.options;

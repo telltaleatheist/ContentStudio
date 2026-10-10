@@ -38,6 +38,7 @@ import { JobCancelledError } from './cancellation';
 import { stripThinking } from './plain-call';
 import { loadContextFor } from './context-sizing';
 import type { TagStyle } from './tags-hashtags';
+import { summaryBlock } from './stretch-summary';
 
 /**
  * How much raw transcript each transport reads BEFORE anything is condensed.
@@ -224,6 +225,9 @@ export interface PromptSet {
    */
   channel_tags?: string[];
 }
+
+/** The fields that read the stretch summary in place of the transcript (LEDGER #288). The description keeps the transcript. */
+export const SUMMARY_READING_FIELDS: readonly string[] = ['titles', 'thumbnail_text', 'pinned_comment'];
 
 export class AIManagerService {
   /**
@@ -956,7 +960,14 @@ export class AIManagerService {
     // item has an empty digest and keeps the transcript — there is nothing else to stand on.
     const titlesOnChapters =
       spec.field === 'titles' && !digestMode && ctx.digestChapters.length > 0;
-    const subject = titlesOnChapters
+    // THE STRETCH SUMMARY (LEDGER #288, Owen 2026-10-10: "i think summaries produce better
+    // titles"): titles, thumbnail text and the pinned comment read the paragraph-per-section summary
+    // in place of the transcript and the chapter list whenever the item has one. One statement of
+    // what the video covers, as with the digest.
+    const summary = SUMMARY_READING_FIELDS.includes(spec.field) ? ctx.stretchSummary ?? null : null;
+    const subject = summary !== null
+      ? this.buildSubjectBlock(summaryBlock(summary), ctx.sourceLabel, undefined, undefined, undefined)
+      : titlesOnChapters
       ? this.buildSubjectBlock(
           formatPrompt(SYSTEM_PROMPTS.CHAPTER_DIGEST_CHOSEN, {
             chapterList: renderChapterList(ctx.digestChapters),

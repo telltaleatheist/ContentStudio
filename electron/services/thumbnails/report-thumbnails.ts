@@ -103,6 +103,7 @@ import {
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { OUTPUT_HEIGHT, OUTPUT_WIDTH, safeFileName } from './renderer';
 import { writeThumbnailWords } from './words-writer';
+import { storedStretchSummary, summaryParagraphs } from '../metadata/stretch-summary';
 
 /** How long the window keeps its text model held after its last words step. */
 export const TEXT_HOLD_IDLE_MS = 5 * 60_000;
@@ -920,6 +921,7 @@ export class ReportThumbnails {
    */
   private async wordsCall(jobId: string, itemId: string, loc: Located, n: number, title: string, avoid: readonly string[], line: string): Promise<{ claim: string[]; stakes: string[]; reaction: string[]; warnings: string[]; model: string }> {
     const ctx = this.itemContext(loc);
+    const summary = storedStretchSummary(loc.item._stretch_summary);
     const option = (await this.routed('thumbnail_words', 'the Thumbnails window\'s words')).option;
     this.deps.progress({ jobId, itemId, line });
     const ai = this.deps.aiManager();
@@ -932,6 +934,8 @@ export class ReportThumbnails {
         creator: ctx.creator,
         title,
         transcript: ctx.transcript,
+        // The run's stretch summary, when the report has one (LEDGER #288): the same text the run's words read.
+        ...(summary === null ? {} : { summary: summaryParagraphs(summary) }),
         sourceLabel: `${loc.item._title ?? itemId} (pair ${n})`,
         avoid,
       }));
@@ -1141,8 +1145,8 @@ export class ReportThumbnails {
   }
 
   /** The item's fields the words read (as the metadata run hands them over). */
-  private fieldsOf(item: any): { titles: unknown; reroll_gate: any } {
-    return { titles: item.titles, reroll_gate: item.reroll_gate ?? null };
+  private fieldsOf(item: any): { titles: unknown; reroll_gate: any; _stretch_summary?: unknown } {
+    return { titles: item.titles, reroll_gate: item.reroll_gate ?? null, ...(item._stretch_summary === undefined ? {} : { _stretch_summary: item._stretch_summary }) };
   }
 
   /**

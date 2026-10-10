@@ -45,6 +45,7 @@ export type MetadataRoutingTaskId =
   | 'thumbnail_text'
   | 'pinned_comment'
   | 'thumbnail_words'
+  | 'summary'
   | 'transcription';
 
 /**
@@ -64,7 +65,7 @@ export type MetadataRoutingTaskId =
  * it, and its options are judged against the server's asr catalog rows. The editor's
  * transcription does not read it (it stays on the 1.7B).
  */
-export type MetadataRoutingGroup = 'metadata' | 'thumbnails' | 'transcription';
+export type MetadataRoutingGroup = 'metadata' | 'thumbnails' | 'summary' | 'transcription';
 
 /**
  * One row of the option TABLE: a MODEL, never a quant (Owen, 2026-09-29: "crucible's job is to
@@ -475,6 +476,22 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     defaultOptionId: 'qwen38-27b',
     modal: true,
     group: 'thumbnails',
+  },
+  {
+    /**
+     * THE STRETCH SUMMARY (LEDGER #288, Owen, 2026-10-10: "i think summaries produce better
+     * titles"): a paragraph per outline section, one per ~5 minutes of a long one, that titles,
+     * thumbnail text, the pinned comment and the thumbnail words read in place of the transcript
+     * (stretch-summary.ts). The 9B by default: each call is one ~1.2k-token stretch, and on u4 its
+     * paragraphs gave Fable titles as good as Opus's did. Its own group, so it is never planned as
+     * a field unit of its own.
+     */
+    id: 'summary',
+    label: 'Summary',
+    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    defaultOptionId: 'qwen35-9b',
+    modal: true,
+    group: 'summary',
   },
   {
     /**

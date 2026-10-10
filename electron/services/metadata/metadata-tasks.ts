@@ -98,6 +98,7 @@ import type { AIManagerService, MetadataResult } from './ai-manager.service';
 // Type-only for the same reason, one link further round: chapter-digest.ts imports the ceiling
 // from ai-manager.service, which imports this module.
 import type { FieldContentMode } from './chapter-digest';
+import type { StretchSummary } from './stretch-summary';
 
 /**
  * A metadata field a unit can be responsible for.
@@ -185,6 +186,12 @@ export interface MetadataRunContext {
    * carries an empty list here, and such a call falls back to the transcript it always read.
    */
   digestChapters: DigestChapter[];
+  /**
+   * The stretch summary (LEDGER #288), or null on an item without one (a text subject). Titles,
+   * thumbnail text and the pinned comment read it in place of the transcript and the chapter list
+   * (ai-manager buildMetadataFieldPrompt).
+   */
+  stretchSummary: StretchSummary | null;
   /** The video's title or filename. Context seeding for the description calls (spec §6.1 lever 2). */
   videoTitle: string;
   /** The loaded prompt set, which in this app IS the channel. */

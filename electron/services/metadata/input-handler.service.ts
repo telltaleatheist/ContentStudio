@@ -35,6 +35,7 @@ import type { TranscriptRef } from '../publish/publish-types';
 import type { SavedTranscriptReuse } from './item-identity';
 import { loadSavedTranscript, saveTranscript } from './saved-transcript.service';
 import { storyVocabulary } from '../transcription/asr-vocabulary';
+import type { StretchSummary } from './stretch-summary';
 
 /**
  * The SECOND transcript of a video input: the editor story the operator linked it to.
@@ -137,6 +138,14 @@ export interface ContentItem {
    * the generator, not the input stage, is what writes provenance.
    */
   savedTranscript?: SavedTranscriptReuse;
+  /**
+   * The stretch summary (stretch-summary.ts, LEDGER #288), written once after the chapters: in the
+   * batch's chapters stage, or just before the fields on a single job. Absent until then, and on an
+   * item with no timed transcript.
+   */
+  stretchSummary?: StretchSummary;
+  /** A summary that could not be written in the chapters stage, kept so the item fails with it before its fields. */
+  stretchSummaryFailure?: unknown;
   /**
    * Whether `content` above is rendered in screenplay form, with a speaker label on every turn.
    *

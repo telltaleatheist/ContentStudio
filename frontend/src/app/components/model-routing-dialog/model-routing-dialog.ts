@@ -149,6 +149,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
           @if (task.id === thumbnailTasks()[0]?.id) {
             <div class="group-heading">Thumbnails. Used by metadata runs (the A/B thumbnails) and the reports page's Thumbnails window.</div>
           }
+          @if (task.id === summaryTasks()[0]?.id) {
+            <div class="group-heading">Summary. The paragraph-per-section summary that titles, thumbnail text, the pinned comment and the thumbnail words read.</div>
+          }
           @if (task.id === transcriptionTasks()[0]?.id) {
             <div class="group-heading">Transcription. The metadata run's transcriber; the editor always transcribes on Qwen3-ASR 1.7B.</div>
           }
@@ -374,9 +377,10 @@ export class ModelRoutingDialog implements OnInit {
   /** The thumbnail rows, shown under their own heading after the metadata rows. */
   readonly thumbnailTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'thumbnails'));
   /** The transcription row (#281): its own heading, last, and never set by change-all (its options are asr models). */
+  readonly summaryTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'summary'));
   readonly transcriptionTasks = computed(() => this.tasks().filter(task => task.modal && task.group === 'transcription'));
   /** Every row the dialog shows, metadata first. */
-  readonly rowTasks = computed(() => [...this.modalTasks(), ...this.thumbnailTasks(), ...this.transcriptionTasks()]);
+  readonly rowTasks = computed(() => [...this.modalTasks(), ...this.thumbnailTasks(), ...this.summaryTasks(), ...this.transcriptionTasks()]);
   readonly selections = signal<Record<string, string>>({});
   /**
    * The Crucible server the payload was judged against. The placeholder is never rendered —
