@@ -205,7 +205,9 @@ export async function sampleFrames(req: {
     const first = written;
     const decoded = await samplePass(req, pass, every, first);
     for (let k = 0; k < decoded.length; k++) {
-      const t = pass.start + k * every;
+      // The frame's own time, read off ffmpeg (samplePass), never computed from k: the full-size
+      // frame is later taken at this `t`, and it must be this picture (LEDGER #284).
+      const t = pass.start + decoded[k].pts;
       const n = String(first + k + 1).padStart(5, '0');
       if (pass.spans.some((s) => t >= s.start - 1e-6 && t < s.end)) {
         measures.push({ index: first + k, t, hash: decoded[k].hash, sharpness: decoded[k].sharpness, colour: decoded[k].colour });
@@ -232,19 +234,31 @@ export async function sampleFrames(req: {
   return { frames, start: spans[0].start, end: spans[spans.length - 1].end, spans, seconds, every, video: facts };
 }
 
-/** One ffmpeg pass over [pass.start, pass.end]: the pictures on disk from file number first+1, the grey measures back. */
+/**
+ * One ffmpeg pass over [pass.start, pass.end]: the pictures on disk from file number first+1, the
+ * grey measures back, each with its frame's time in the pass (`pts`, seconds after pass.start).
+ *
+ * WHICH FRAME (LEDGER #284): for each slot k*every the FIRST frame at or after it, kept with its own
+ * timestamp (select, not fps, which retimes its output to the slot), and that timestamp is read
+ * back from showinfo. extractFullFrame seeks to the same time and lands on the same frame, which
+ * an fps filter could not promise: its default rounding gave the frame half an interval late.
+ */
 function samplePass(
   req: { ffmpeg: string; video: string; outDir: string; signal?: AbortSignal },
   pass: { start: number; end: number },
   every: number,
   first: number,
-): Promise<Array<{ hash: FrameMeasure['hash']; sharpness: number; colour: Uint8Array }>> {
-  const fps = 1 / every;
+): Promise<Array<{ hash: FrameMeasure['hash']; sharpness: number; colour: Uint8Array; pts: number }>> {
+  const e = every.toFixed(6);
+  const pick = `select='eq(n,0)+gt(floor(t/${e}),floor(prev_t/${e}))',showinfo`;
   const args = [
-    '-hide_banner', '-nostdin', '-v', 'error',
+    '-hide_banner', '-nostdin', '-nostats', '-v', 'info',
     '-ss', pass.start.toFixed(3), '-t', (pass.end - pass.start).toFixed(3), '-i', req.video,
+    // Every output keeps exactly the selected frames, none duplicated. -vsync, not -fps_mode: the
+    // app's ffmpeg is @ffmpeg-installer's 4.4, which has no -fps_mode.
+    '-vsync', 'passthrough',
     '-filter_complex',
-    `[0:v]fps=${fps.toFixed(6)},split=3[a][b][c];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h},split=2[small][s2];` +
+    `[0:v]${pick},split=3[a][b][c];[a]scale=${LARGE.w}:${LARGE.h}[big];[b]scale=${SMALL.w}:${SMALL.h},split=2[small][s2];` +
       `[s2]scale=${SIG_COLS}:${SIG_ROWS}:flags=area,format=rgb24[col];[c]scale=${GREY_WIDTH}:${GREY_HEIGHT},format=gray[g]`,
     '-map', '[big]', '-q:v', '3', '-start_number', String(first + 1), path.join(req.outDir, 'f%05d.jpg'),
     '-map', '[small]', '-q:v', '5', '-start_number', String(first + 1), path.join(req.outDir, 's%05d.jpg'),
@@ -277,7 +291,18 @@ function samplePass(
         out.push({ hash: differenceHash(gray, GREY_WIDTH, GREY_HEIGHT), sharpness: laplacianVariance(gray, GREY_WIDTH, GREY_HEIGHT) });
       }
     });
-    stderr.on('data', (d: Buffer) => { err += d.toString(); });
+    const pts: number[] = [];
+    let line = '';
+    stderr.on('data', (d: Buffer) => {
+      line += d.toString();
+      const lines = line.split(/\r?\n/);
+      line = lines.pop() ?? '';
+      for (const l of lines) {
+        const m = /Parsed_showinfo.*\bn:\s*\d+.*\bpts_time:(-?[\d.]+)/.exec(l);
+        if (m) pts.push(Number(m[1]));
+        else if (!/Parsed_showinfo/.test(l)) err += l + '\n';
+      }
+    });
     child.on('error', (e) => reject(new Error(`ffmpeg could not be started (${req.ffmpeg}): ${e.message}`)));
     child.on('close', (code) => {
       req.signal?.removeEventListener('abort', abort);
@@ -285,7 +310,9 @@ function samplePass(
       else if (code !== 0) reject(new Error(`ffmpeg failed while sampling ${path.basename(req.video)} from ${clock(pass.start)} to ${clock(pass.end)} (exit ${code}): ${err.trim().slice(-400)}`));
       else if (colours.length !== out.length) {
         reject(new Error(`ffmpeg streamed ${out.length} grey frames and ${colours.length} colour signatures for ${path.basename(req.video)} from ${clock(pass.start)} to ${clock(pass.end)}; they must match.`));
-      } else resolve(out.map((m, k) => ({ ...m, colour: colours[k] })));
+      } else if (pts.length !== out.length) {
+        reject(new Error(`ffmpeg streamed ${out.length} grey frames and reported ${pts.length} frame times for ${path.basename(req.video)} from ${clock(pass.start)} to ${clock(pass.end)}; they must match.`));
+      } else resolve(out.map((m, k) => ({ ...m, colour: colours[k], pts: pts[k] })));
     });
   });
 }
@@ -299,7 +326,10 @@ export async function extractFullFrame(ffmpeg: string, video: string, t: number,
   fs.mkdirSync(path.dirname(outPng), { recursive: true });
   const partial = path.join(path.dirname(outPng), `.${path.basename(outPng, '.png')}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
   try {
-    await run(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-ss', t.toFixed(3), '-i', video, '-frames:v', '1', '-y', partial], signal);
+    // Rounded DOWN to the millisecond: the seek keeps the first frame at or after it, and `t` is a
+    // frame's own time (sampleFrames), so rounding up would step past it to the next frame (#284).
+    const seek = (Math.floor(t * 1000) / 1000).toFixed(3);
+    await run(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-ss', seek, '-i', video, '-frames:v', '1', '-y', partial], signal);
     if (!fs.existsSync(partial) || fs.statSync(partial).size === 0) throw new Error(`ffmpeg wrote no frame at ${clock(t)} of ${path.basename(video)}.`);
     fs.renameSync(partial, outPng);
   } finally {

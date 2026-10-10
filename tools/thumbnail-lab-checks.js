@@ -305,6 +305,44 @@ check('sampling: one frame a second inside the stretches only, both JPEG sizes w
   }
 });
 
+check('sampling: the full-size frame taken at a sampled frame\'s t is that same picture (LEDGER #284: fps\'s rounding gave the grid a frame half a second late)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thumb-lab-exact-'));
+  try {
+    // 60 fps with B-frames and a stream start of one frame, like an OBS capture; each frame shows its
+    // own number as 12 black/white bars, so a picture names the frame it is.
+    const video = path.join(dir, 'numbered.mp4');
+    execFileSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i',
+      "color=c=black:s=640x360:r=60:d=24,format=gray,geq=lum='if(mod(floor(N/pow(2\\,floor(X/53)))\\,2)\\,235\\,16)'",
+      '-c:v', 'libx264', '-bf', '2', '-pix_fmt', 'yuv420p', '-output_ts_offset', '0.016667', video]);
+    const numberOf = (file) => {
+      const g = execFileSync(FFMPEG, ['-v', 'error', '-i', file, '-vf', 'scale=640:360,format=gray', '-f', 'rawvideo', '-']);
+      let n = 0;
+      for (let k = 0; k < 12; k++) if (g[180 * 640 + k * 53 + 26] > 128) n |= 1 << k;
+      return n;
+    };
+    // Odd starts and a gap, so the slots fall between frames.
+    const spans = [{ start: 1.3, end: 6.7 }, { start: 9.1, end: 20 }];
+    const out = await sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video, spans, outDir: path.join(dir, 'frames') });
+    const misses = [];
+    for (const f of out.frames) {
+      const full = path.join(dir, 'full', `${f.index}.png`);
+      await sampler.extractFullFrame(FFMPEG, video, f.t, full);
+      const grid = numberOf(f.large), big = numberOf(full);
+      if (grid !== big) misses.push(`t ${f.t.toFixed(4)}: grid frame ${grid}, full frame ${big}`);
+    }
+    assert.ok(out.frames.length >= 15, `${out.frames.length} frames`);
+    assert.deepStrictEqual(misses, [], misses.join('; '));
+    // And each one is the slot's own frame, not one half an interval on: within a frame of the slot.
+    for (const f of out.frames) {
+      const pass = sampler.passesFor(out.spans).find((p) => f.t >= p.start && f.t <= p.end);
+      const slot = pass.start + Math.round((f.t - pass.start) / out.every) * out.every;
+      assert.ok(f.t >= slot - 1e-3 && f.t - slot < 1 / 60 + 1e-3, `frame at ${f.t} is not its slot ${slot}'s first frame`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 check('sampling: the rate is one a second up to the cap, and bad stretches are refused by name', () => {
   assert.deepStrictEqual(sampler.samplingFor(1349), { count: 1349, every: 1 });
   const long = sampler.samplingFor(7200);

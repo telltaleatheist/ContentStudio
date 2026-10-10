@@ -1757,3 +1757,17 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** build:electron, the frontend tsc, check:pure and check:asr pass. Not run live; Owen tests.
 
 [electron/services/metadata/input-handler.service.ts, metadata-generator.service.ts, metadata-tasks.ts, tags-hashtags.ts; frontend/src/app/components/inputs/inputs.ts; frontend/src/app/features/transcript-link/transcript-link.types.ts; frontend/src/app/features/publish/publish.types.ts]
+
+**284. A thumbnail is drawn on the frame Owen picked (Owen, 2026-10-10: "i selected one and what went to the final thumbnail was one or two frames before or after. it was darker like it was fading out at that exact moment. multiple instances of it").**
+- **The cause, measured.** The grid was sampled with ffmpeg's `fps` filter, whose default `round=near` emits, for the slot at k·every, the last frame before (k+0.5)·every. Each grid picture was half an interval (29–30 frames at 60 fps) LATER than the `t` it was recorded at. The full-size frame for the render is taken at `t` (extractFullFrame), so it was a different picture, half a second earlier: darker in a fade. Shown on a 60 fps frame-numbered clip on both the app's ffmpeg (@ffmpeg-installer 4.4) and Homebrew's 8.1.
+- **The change** (frame-sampler.ts):
+  - Each slot keeps its FIRST frame at or after the slot time (`select`, not `fps`, so no retiming). Its own timestamp is read back from `showinfo` and becomes `t`.
+  - `-vsync passthrough` keeps exactly the selected frames (4.4 has no `-fps_mode`). A count of times that differs from the grey frames fails the pass by name.
+  - extractFullFrame rounds its seek DOWN to the millisecond: `toFixed(3)` rounding up stepped past the frame to the next one.
+- **Already-sampled runs keep their old grid.** Their pictures are still half a second off their `t`, and a full frame already extracted under `full/` is reused. Re-sampling the run's frames fixes it.
+- **Checks.**
+  - New in thumbnail-lab-checks: on a frame-numbered 60 fps B-frame clip with odd stretches, every grid picture is the full-size frame at its `t`, and each is its slot's first frame. It fails on the old sampler (grid 108 vs full 78 …).
+  - The real 2026-10-07 screen capture: 120 frames, grid vs full within JPEG noise.
+  - check:thumbnail-lab (34 + pipeline + 16 electron), check:thumbnail, check:ab-thumbnails, check:pure pass.
+
+[electron/services/thumbnails/frame-sampler.ts; tools/thumbnail-lab-checks.js]
