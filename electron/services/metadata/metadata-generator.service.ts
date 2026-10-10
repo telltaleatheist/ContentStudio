@@ -1202,9 +1202,8 @@ export class MetadataGeneratorService {
     const hasChapters = subjects.length > 0;
 
     // The pools the description prompts, the assembled tags and the derived hashtags all read
-    // (spec §2). Both are measured from the app's CONTENT text — the ad-free editor transcript
-    // when one is linked, the final export's otherwise — which is the same resolution every
-    // content field in this service goes through and never the timed final export by accident.
+    // (spec §2). Both are measured from the app's CONTENT text — the final export's transcript
+    // (#283) — which is the same resolution every content field in this service goes through.
     const resolvedContent = this.contentTextOf(item);
     const contentText = resolvedContent.text;
 
@@ -2163,15 +2162,10 @@ export class MetadataGeneratorService {
      */
     speakerTagged: boolean;
   } {
-    if (item.contentSource) {
-      // Never "if it's non-empty": an empty story transcript is a fault to see, not a
-      // reason to silently generate from the ad-carrying final export instead.
-      return {
-        text: item.contentSource.text,
-        origin: item.contentSource.origin,
-        speakerTagged: item.contentSource.speakerTagged,
-      };
-    }
+    // ONE source since LEDGER #283: the final export's own transcript, linked or not. A linked
+    // editor story is the cut before its trims, so its words can describe a segment the video no
+    // longer has (f1's story held the Kid Rock segment cut from it). The link seeds the
+    // transcriber's vocabulary and records the drift; it never supplies these words.
     return {
       text: item.content,
       origin: 'final-export-whisper',
@@ -2248,24 +2242,11 @@ export class MetadataGeneratorService {
    * What a COMPILATION was generated from — one record for N inputs.
    *
    * A compilation has no single source file (its `source_key` is an explicit null for
-   * exactly this reason) and therefore no single ref, duration or drift. What it does
-   * have is one content origin, and a set whose inputs disagree about that origin has
-   * none: rather than pick one and quietly mislabel the other half, this throws, and it
-   * is called BEFORE the first model call so the operator finds out in seconds rather
-   * than after a full run.
+   * exactly this reason) and therefore no single ref, duration or drift. Its content origin is
+   * always the final exports' (#283); a set may mix linked and unlinked inputs, because a link
+   * only seeds vocabulary.
    */
   private static compilationProvenanceOf(items: ContentItem[]): ItemProvenance {
-    const linked = items.filter((item) => !!item.contentSource);
-
-    if (linked.length > 0 && linked.length < items.length) {
-      const linkedNames = linked.map((i) => i.contentSource!.ref.storyTitle).join(', ');
-      throw new Error(
-        `This compilation mixes sources: ${linked.length} of ${items.length} inputs are linked ` +
-        `to an editor story (${linkedNames}) and the rest are final-export only. One item ` +
-        `cannot record two content origins — link every input or none of them.`
-      );
-    }
-
     // N inputs, one declaration. Where they disagree the STRONGEST claim wins — an
     // explicit declaration outranks a default, which outranks "there was nothing to
     // link" — and the reason names the mix rather than letting the winner speak for
@@ -2283,7 +2264,8 @@ export class MetadataGeneratorService {
       : declarations[0]?.reason ?? null;
 
     return {
-      content_fields: linked.length > 0 ? 'editor-story-transcript' : 'final-export-whisper',
+      // Every input's words are its final export's (#283), so a mixed set no longer has two origins.
+      content_fields: 'final-export-whisper',
       // One record per input that reused one. A compilation cannot answer this with a
       // single ref any more than it can answer `transcript_ref` with one, and an omitted
       // answer would read as "all N were transcribed on this run".

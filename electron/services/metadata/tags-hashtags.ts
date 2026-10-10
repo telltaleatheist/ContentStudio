@@ -185,8 +185,7 @@ export interface TagInputs {
   phrases: string[];
   /**
    * The text every tag must occur in (spec §6.2). This is the app's CONTENT text —
-   * `contentTextOf(item)`, the ad-free editor transcript when one is linked and the final
-   * export's otherwise.
+   * `contentTextOf(item)`, the final export's transcript (#283).
    */
   contentText: string;
 }

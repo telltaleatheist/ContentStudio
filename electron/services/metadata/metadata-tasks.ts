@@ -206,8 +206,7 @@ export interface MetadataRunContext {
    */
   phrases: string[];
   /**
-   * The app's CONTENT text: the ad-free editor transcript when one is linked, the final
-   * export's otherwise (`contentTextOf`). Tag assembly tests every candidate against it,
+   * The app's CONTENT text: the final export's transcript (`contentTextOf`, #283). Tag assembly tests every candidate against it,
    * because YouTube reads a tag that is not in the content as a spam signal (spec §6.2).
    */
   contentText: string;

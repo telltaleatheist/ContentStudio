@@ -1744,3 +1744,16 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:pure and reroll-checks pass.
 
 [electron/assets/prompts/channels/spreaker.yml]
+
+**283. Every metadata field reads the video's own transcript; a linked editor story only seeds the transcriber (Owen, 2026-10-10: "i think its conflating videos. i think we should fully transcribe from the video to be sure it gets the content right. the jim bakker died video is suggesting titles based on the kid rock video transcript").**
+- **The cause.** The editor story "f1 - jim bakker dies" (2026-10-07 session, 30.5 min) is the cut before its trims. It holds the Kid Rock ("Geezer Rock") segment, which the final cut dropped and which became its own video. The final f1 is 27.3% of the story. Since PR #40, content fields were written from the linked story's words (for being ad-free). So f1's titles could cite a segment that is not in it.
+- **The change.** `contentTextOf` returns the final export's transcript on every item. A link still:
+  - seeds the transcriber's vocabulary (#281);
+  - records the drift, the ref and the 'linked' declaration in `content_provenance`.
+  - `content_fields` is now always `final-export-whisper`, and a compilation may mix linked and unlinked inputs, because there is one origin now.
+  - Reports made before this change keep reading their recorded origin (finished-item-content.ts is unchanged).
+- **Known cost, declared.** A sponsor read in the final export now reaches the content fields, as it already did for unlinked items. The chapter pipeline still drops promo chapters.
+- The Inputs tooltip and the report's provenance line say the story is for vocabulary only.
+- **Checks.** build:electron, the frontend tsc, check:pure and check:asr pass. Not run live; Owen tests.
+
+[electron/services/metadata/input-handler.service.ts, metadata-generator.service.ts, metadata-tasks.ts, tags-hashtags.ts; frontend/src/app/components/inputs/inputs.ts; frontend/src/app/features/transcript-link/transcript-link.types.ts; frontend/src/app/features/publish/publish.types.ts]

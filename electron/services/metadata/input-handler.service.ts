@@ -45,19 +45,12 @@ import { storyVocabulary } from '../transcription/asr-vocabulary';
  * resolver (`contentTextOf`) is what decides that content FIELDS read `text` from here.
  */
 export interface ContentSource {
-  /** The story's words, joined exactly as the transcript-import path joins them. */
-  text: string;
   /**
-   * Whether `text` above carries screenplay speaker labels on its turns.
-   *
-   * Recorded here rather than sniffed out of the string later, because THIS is where the
-   * question has an answer: the joiner that decided whether to write the labels was called two
-   * lines above. An editor story with a mic track and a screen track answers true; a
-   * single-track one answers false.
+   * The link, already resolved 'ok' against the file on disk. Since LEDGER #283 it supplies the
+   * transcriber's vocabulary and the drift record only: the content fields read the final
+   * export's own transcript, because a story is the cut BEFORE its trims and can carry a
+   * segment the video no longer has (f1's story held the Kid Rock segment cut from it).
    */
-  speakerTagged: boolean;
-  origin: 'editor-story-transcript';
-  /** The link that produced `text`, already resolved 'ok' against the file on disk. */
   ref: TranscriptRef;
   /** probeDrift, measured at GENERATION time: final export duration − story duration. */
   driftSec: number;
@@ -427,7 +420,7 @@ export class InputHandlerService {
     // before the transcription that uses them. A link that cannot be honored fails the item
     // here, before an hour of transcription is spent, with the same sentence as before.
     const linked = transcriptRef
-      ? await this.resolveContentSource(videoPath, transcriptRef, customNotes)
+      ? await this.resolveContentSource(videoPath, transcriptRef)
       : undefined;
     const transcript: VideoTranscript = useSavedTranscript
       ? this.reuseSavedTranscript(videoPath, itemIndex)
@@ -659,8 +652,7 @@ export class InputHandlerService {
    */
   private async resolveContentSource(
     videoPath: string,
-    ref: TranscriptRef,
-    customNotes?: string
+    ref: TranscriptRef
   ): Promise<{ source: ContentSource; vocabulary: string[] }> {
     const resolution = resolveRef(ref);
     if (resolution.state !== 'ok') {
@@ -676,45 +668,26 @@ export class InputHandlerService {
       throw new Error(`The linked editor transcript ${ref.path} cannot be parsed: ${parsed.error}`);
     }
 
-    // `content`, not a bespoke join: buildImportedContentItem is the one place that turns
-    // parsed words into the text the summarizer reads, notes appended and all. Only its
-    // text is kept — its srtSegments belong to the EDITOR timeline, and nothing timed may
-    // ever be built from those (they would move every chapter by the drift below).
-    const imported = buildImportedContentItem(parsed.data, ref.path, customNotes);
-    const text = imported.content;
-
     // Measured now, against the file that is being generated from, rather than trusted
     // from the Inputs row: the row's number was measured when the operator linked, and
     // the export can be re-rendered between linking and queueing. probeDrift is the
     // single source of truth for drift on this branch.
     const probe = await probeDrift(videoPath, ref);
 
-    log.info(
-      `[InputHandler] Content fields will come from editor story "${ref.storyTitle}" ` +
-      `(${ref.sourceSession}): ${text.length} chars, drift ${probe.driftSec.toFixed(1)}s ` +
-      `(${probe.driftPct.toFixed(1)}%)`
-    );
-
     // The story's proper nouns and unusual words, the 0.6B's spelling seed (#281). Made by the
-    // 1.7B in the editor, so its spellings are the better ones.
+    // 1.7B in the editor, so its spellings are the better ones. This is ALL the story gives the
+    // run (#283): its words never reach a content field, because the story is the cut before
+    // its trims and the video is what the metadata describes.
     const vocabulary = storyVocabulary(parsed.data.words);
     log.info(
-      `[InputHandler] ${vocabulary.length} vocabulary term(s) from editor story "${ref.storyTitle}" for the transcription context` +
+      `[InputHandler] Editor story "${ref.storyTitle}" (${ref.sourceSession}) linked for vocabulary: ` +
+      `${vocabulary.length} term(s), drift ${probe.driftSec.toFixed(1)}s (${probe.driftPct.toFixed(1)}%)` +
       (vocabulary.length > 0 ? `: ${vocabulary.slice(0, 12).join(', ')}${vocabulary.length > 12 ? ', ...' : ''}` : '')
     );
 
-    return { vocabulary, source: {
-      text,
-      // Asked of the story's OWN segments, which are the segments `text` was joined from. The
-      // final export's segments are a different transcript with a different attribution, and
-      // this field describes the words the content fields will actually read.
-      speakerTagged: segmentsCarrySpeakerAttribution(imported.srtSegments || []),
-      origin: 'editor-story-transcript',
-      ref,
-      driftSec: probe.driftSec,
-      driftPct: probe.driftPct,
-    } };
+    return { vocabulary, source: { ref, driftSec: probe.driftSec, driftPct: probe.driftPct } };
   }
+
 
   /**
    * Process a transcript file

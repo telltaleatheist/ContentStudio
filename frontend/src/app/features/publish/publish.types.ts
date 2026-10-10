@@ -99,8 +99,8 @@ export const THUMBNAIL_EXTENSIONS: readonly string[] = ['.png', '.jpg', '.jpeg']
  * A link to one story's editor transcript (Phase 2).
  *
  * The Inputs page finds, confirms and stores one, and it rides the job. As of PR 5 the
- * generator CONSUMES it: content fields are written from the linked story's words, while
- * chapters stay on the final export's Whisper transcript, always.
+ * generator CONSUMES it. Since LEDGER #283 it seeds the transcriber's vocabulary and records the
+ * drift; every field is written from the final export's own transcript.
  */
 export interface TranscriptRef {
   kind: 'acs-story';

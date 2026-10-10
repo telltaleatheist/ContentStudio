@@ -607,9 +607,9 @@ export class Inputs implements OnInit, OnDestroy {
   // ==================== Editor transcript link (Phase 2) ====================
   //
   // An OFFER, not a question. A video item may be linked to the editor story it was cut
-  // from, and then the content fields are written from that story's ad-free transcript
-  // instead of the final export's; chapters never move. Nothing blocks on it, nothing is
-  // pre-selected, and an item nobody touched runs exactly as it did before Phase 2.
+  // from, and then that story's names and unusual words seed the transcriber (LEDGER #283:
+  // every field reads the final export's own transcript, because a story is the cut before its
+  // trims). Nothing blocks on it, and an item nobody touched runs exactly as it did before.
   //
   // The finder only hints for a LABEL match — 75% of the 40 live exports get a candidate
   // and about 1 in 4 of those is the wrong story — so such a hint is offered in the menu
@@ -957,9 +957,10 @@ export class Inputs implements OnInit, OnDestroy {
       const how = choice.auto
         ? 'Linked automatically: it is the only story whose title is this export\'s name. '
         : '';
-      return `${how}Content fields come from story ${choice.ref.storyNumber} "${choice.ref.storyTitle}" ` +
-        `of session ${choice.ref.sourceSession} (${choice.ref.via}). The final cut is ${drift}. ` +
-        'Chapters still come from the final export.';
+      return `${how}Story ${choice.ref.storyNumber} "${choice.ref.storyTitle}" of session ` +
+        `${choice.ref.sourceSession} (${choice.ref.via}) gives the transcriber its names and unusual ` +
+        `words. The final cut is ${drift}. Every field, chapters included, comes from the final ` +
+        'export\'s own transcript.';
     }
 
     const tail = 'Content fields come from the final export\'s own transcript, sponsor reads ' +

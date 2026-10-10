@@ -240,7 +240,10 @@ export function describeProvenance(p: ItemProvenance | null | undefined): string
         ? ' No editor story was linked — the default for an unlinked item.'
         : p.content_declaration === 'final-only-unlinkable'
           ? ' This input had no editor story to link.'
-          : '';
+          : p.content_declaration === 'linked' && p.transcript_ref
+            ? ` Editor story ${p.transcript_ref.sourceSession} · story ${p.transcript_ref.storyNumber} ` +
+              `"${p.transcript_ref.storyTitle}" was linked for the transcriber's vocabulary only.`
+            : '';
     return 'Content fields generated from the final export’s transcript — includes any ' +
       `sponsor reads. Chapters from the same transcript.${why}${reuse}`;
   }
