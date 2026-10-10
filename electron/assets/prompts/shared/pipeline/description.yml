@@ -10,6 +10,12 @@ transcript_block: |-
   The transcript of the video, in full:
   {items}
 
+# What the description reads in place of the transcript when the item has a stretch summary
+# (LEDGER #292, Owen 2026-10-10: "yes, we can switch to the summary").
+summary_block: |-
+  The video, summarized in order: one paragraph for every five minutes of it, each written from that stretch's own transcript, so the names, claims and quotes in it are the video's own:
+  {items}
+
 speaker_tags_block: |-
   The transcript is tagged by speaker, line by line:
   - HOST: is the creator of this video talking. His words are the channel's own argument.

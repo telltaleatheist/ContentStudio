@@ -137,7 +137,30 @@ check('the fields: titles, thumbnail text and the pinned comment read the summar
   has(titlesNone, 'What follows is the video in chapter form', 'with no summary, titles read the chapter list as before');
   const titlesOld = manager.buildMetadataFieldPrompt({ field: 'titles', model: 'anthropic/claude-sonnet-5', insights: false, inputFields: [] }, { ...ctx(null), stretchSummary: undefined });
   has(titlesOld, 'What follows is the video in chapter form', 'a context built without the field (an older caller) reads as none');
-  eq(aiManagerModule.SUMMARY_READING_FIELDS.includes('description'), false, 'the description keeps the transcript:');
+});
+
+check('the description reads the summary under its own label, never as "the transcript, in full", and with no speaker-tag block', () => {
+  const { DescriptionUnit } = require(path.join(ROOT, 'services/metadata/description-unit.js'));
+  const { JobModelLifecycle } = require(path.join(ROOT, 'services/metadata/model-lifecycle.js'));
+  const manager = new aiManagerModule.AIManagerService({ transcriptCeiling: 'local', promptSet: 'youtube-telltale', promptSetsDir: ASSETS_DIR });
+  manager.loadPrompts();
+  const unit = new DescriptionUnit(manager, { kind: 'cloud', id: 'sonnet5', label: 'Sonnet', model: 'anthropic/claude-sonnet-5' }, new JobModelLifecycle('the summary checks'));
+  const TRANSCRIPT = 'HOST THE WHOLE TRANSCRIPT '.repeat(40);
+  const base = {
+    content: TRANSCRIPT, contentMode: 'raw-transcript', sourceLabel: 'u4 - metaxas.mov',
+    chapterSubjects: ['Metaxas rebutted'], chapterDetails: ['The chapter detail.'], digestChapters: [],
+    videoTitle: 'u4 - metaxas', promptSetName: 'youtube-telltale', entities: [], phrases: [], contentText: TRANSCRIPT,
+    contentSpeakerTagged: true, generated: {}, warn: () => {},
+  };
+  const withSummary = unit.describePrompt({ ...base, stretchSummary: SUMMARY });
+  has(withSummary, 'The video, summarized in order', 'the summary label');
+  has(withSummary, 'The host says Hindenburg was never chancellor.', 'its paragraphs');
+  hasNot(withSummary, 'The transcript of the video, in full', 'no transcript label');
+  hasNot(withSummary, 'THE WHOLE TRANSCRIPT', 'no transcript');
+  hasNot(withSummary, 'The transcript is tagged by speaker', 'no speaker-tag block over prose');
+  const without = unit.describePrompt({ ...base, stretchSummary: null });
+  has(without, 'The transcript of the video, in full', 'an item with no summary keeps the transcript');
+  has(without, 'The transcript is tagged by speaker', 'and its tag block');
 });
 
 check('the thumbnail words read the summary when there is one, the transcript otherwise', () => {

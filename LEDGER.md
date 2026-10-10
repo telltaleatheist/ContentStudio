@@ -1880,3 +1880,17 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - The show-prompt flow does not write a summary: it makes no model calls, so its titles prompt still shows the chapter list.
 
 [scripts/generate-metadata-cli.js]
+
+**292. The description reads the stretch summary too (Owen, 2026-10-10, after the u4 side-by-side: "yes, we can switch to the summary").**
+- **The test.** In scratch, the real DescriptionUnit on u4 with only its transcript slot carrying the 9B summary (claude -p Opus). The result was as good as the shipped transcript-fed one and a little more concrete: it brought in the 15–20% / 8% figures. The run also covered:
+  - the thumbnail words (top three gate titles), all claims properly marked, prompts ~3.6k tokens instead of 13–26k;
+  - the pinned comment, comparable.
+  - One loose line in the description mixed the healthy-nationalism point into the 1932 sermon.
+- **The change** (description-unit.ts). With a summary, the slot that held "The transcript of the video, in full" carries the summary under its own label (description.yml `summary_block`).
+  - No speaker-tag block or tagged addendum rides with it, because the summary is prose (`transcriptIsTagged`).
+  - An item with no summary (a text subject, an old report) is unchanged.
+  - The coverage block (the chapter list) stays beside it.
+- **Every field now reads the summary on an item that has one:** titles, description, thumbnail text, pinned comment, thumbnail words. The chapter pipeline reads the transcript, as does the code that grounds names and phrases (`contentText`).
+- **Checks.** stretch-summary-checks gains the description: the summary under its label, no transcript, no tag block; without a summary, the transcript and its tag block. check:pure, check:digest, check:reroll (21), check:crucible (29 keepers) and build:electron pass.
+
+[electron/services/metadata/description-unit.ts, ai-manager.service.ts; electron/assets/prompts/shared/pipeline/description.yml; tools/stretch-summary-checks.js]

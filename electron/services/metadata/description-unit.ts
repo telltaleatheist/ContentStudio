@@ -130,6 +130,7 @@ import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
 import type { ExpectedLoad, MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
+import { summaryParagraphs } from './stretch-summary';
 
 /**
  * Spec §1.1 / §5: YouTube's search snippet stops here.
@@ -656,9 +657,15 @@ export class DescriptionUnit implements MetadataUnit {
    * there are no tagged lines in this prompt however the video was transcribed.
    */
   private speakerTagsBlock(ctx: MetadataRunContext): string {
-    if (!ctx.contentSpeakerTagged) return '';
-    if (this.transcriptBlock(ctx).length === 0) return '';
+    if (!this.transcriptIsTagged(ctx)) return '';
     return promptAssets().pipeline(DESCRIPTION_FILE, 'speaker_tags_block');
+  }
+
+  /** Whether the prompt carries speaker-tagged transcript lines: a tagged transcript, rendered, and not a summary. */
+  private transcriptIsTagged(ctx: MetadataRunContext): boolean {
+    if (!ctx.contentSpeakerTagged) return false;
+    if ((ctx.stretchSummary ?? null) !== null) return false;
+    return this.transcriptBlock(ctx).length > 0;
   }
 
   /**
@@ -676,7 +683,7 @@ export class DescriptionUnit implements MetadataUnit {
   private descriptionRules(ctx: MetadataRunContext, channel: ChannelData): string {
     const assets = promptAssets();
     const section = assets.fieldSection(channel, 'description');
-    if (!ctx.contentSpeakerTagged || this.transcriptBlock(ctx).length === 0) return section;
+    if (!this.transcriptIsTagged(ctx)) return section;
 
     const addendum = assets.field(channel, 'description').taggedAddendum;
     if (!addendum || addendum.trim().length === 0) {
@@ -722,6 +729,13 @@ export class DescriptionUnit implements MetadataUnit {
    * description whose model believes it has quotes it does not have.
    */
   private transcriptBlock(ctx: MetadataRunContext): string {
+    // THE STRETCH SUMMARY (LEDGER #292): an item that has one is described from it, under its own
+    // label, never as "the transcript in full". It is prose, so no speaker-tag block or addendum
+    // rides with it (speakerTagsBlock, descriptionRules: `transcriptIsTagged`).
+    const summary = ctx.stretchSummary ?? null;
+    if (summary !== null) {
+      return promptAssets().pipeline(DESCRIPTION_FILE, 'summary_block').replace(/\{items\}/g, () => summaryParagraphs(summary));
+    }
     if (ctx.chapterSubjects.length === 0) return '';
     if (ctx.contentMode === 'chapter-digest') return '';
     const content = (ctx.content || '').trim();

@@ -232,7 +232,7 @@ export interface PromptSet {
   channel_tags?: string[];
 }
 
-/** The fields that read the stretch summary in place of the transcript (LEDGER #288). The description keeps the transcript. */
+/** The fields that read the stretch summary in place of the transcript (LEDGER #288). The description reads it too, through its own unit (description-unit.ts, #292). */
 export const SUMMARY_READING_FIELDS: readonly string[] = ['titles', 'thumbnail_text', 'pinned_comment'];
 
 export class AIManagerService {
