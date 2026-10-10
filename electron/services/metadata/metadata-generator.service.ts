@@ -79,11 +79,12 @@ import { directPassesRaw } from './ai-manager.service';
 import { renderChapterDigest } from './chapter-digest';
 import { COMPILATION_NO_STORY, ItemThumbnailRun, type ThumbnailJobDoors, type ThumbnailRunChoice } from '../thumbnails/pipeline';
 import { promptAssets } from './prompt-assets';
-import { ChapterPick, STORIES_PAST_SECONDS, chapterPickOf } from './chaptering/granularity';
+import { ChapterPick, STORIES_PAST_SECONDS, chapterPickOf, grainOfPick } from './chaptering/granularity';
+import type { Granularity } from './chaptering/types';
 import { srtSeconds } from './chaptering/units';
 
 /** The queue's pick as the whole-transcript engine's grain (LEDGER #213). */
-const WHOLE_TRANSCRIPT_GRAIN: Readonly<Record<ChapterPick, ChapterGrain>> = { chapters: 'detailed', stories: 'stories' };
+const WHOLE_TRANSCRIPT_GRAIN: Readonly<Record<Granularity, ChapterGrain>> = { chapters: 'detailed', stories: 'stories' };
 import { snapTransports, toChapterPipelineResult } from './snap-chapters';
 import * as log from 'electron-log';
 import * as fs from 'fs';
@@ -1761,11 +1762,19 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * The queue's pick (LEDGER #213), 'chapters' when absent, declared at this one site; a retired
+   * The queue's pick (LEDGER #213, #280), 'auto' when absent, declared at this one site; a retired
    * 'detailed' / 'broad' reads as 'chapters' with one logged line.
    */
+  /** An item's runtime in seconds, from its transcript's last caption (what the auto pick reads). */
+  private static runtimeOf(item: ContentItem): number {
+    if (!item.srtSegments || item.srtSegments.length === 0) {
+      throw new Error('the chapter pick needs a timestamped transcript to read the runtime from');
+    }
+    return srtSeconds(item.srtSegments[item.srtSegments.length - 1].end);
+  }
+
   private static resolveChapterPick(params: GenerationParams): ChapterPick {
-    const { pick, migratedFrom } = chapterPickOf(params.chapterGrain ?? 'chapters');
+    const { pick, migratedFrom } = chapterPickOf(params.chapterGrain ?? 'auto');
     if (migratedFrom !== null) {
       log.info(`[MetadataGenerator] the retired "${migratedFrom}" chapter pick reads as "chapters" (LEDGER #213)`);
     }
@@ -1882,15 +1891,16 @@ export class MetadataGeneratorService {
     const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue(), this.models(params));
     const picked = this.resolveChapterPick(params);
     // Owen, 2026-10-04: "we dont need one every few minutes unless its under 20 minutes ... maybe
-    // stories instead of chapters if its over 20 minutes". The chapters pick draws chapters on a
-    // video up to STORIES_PAST_SECONDS long and stories past it (the whole-subject changes, never
-    // fewer than three, so YouTube still shows them). A stories pick is stories at any length.
-    const runtime = srtSeconds(item.srtSegments[item.srtSegments.length - 1].end);
-    const pick: ChapterPick = picked === 'chapters' && runtime > STORIES_PAST_SECONDS ? 'stories' : picked;
+    // stories instead of chapters if its over 20 minutes". The AUTO pick (#280, the default) draws
+    // chapters on a video up to STORIES_PAST_SECONDS long and stories past it (the whole-subject
+    // changes, never fewer than three, so YouTube still shows them). A chapters or stories pick is
+    // that grain at any length: the operator set it, so it runs as set.
+    const runtime = this.runtimeOf(item);
+    const pick = grainOfPick(picked, runtime);
     const titleThinking = params.chapterTitleThinking ?? true;
     const label = item.source || `item_${itemIndex + 1}`;
-    if (pick !== picked && part !== 'needs' && part !== 'titles') {
-      log.info(`[MetadataGenerator] ${label} runs ${Math.round(runtime / 60)} min, past ${STORIES_PAST_SECONDS / 60}: chaptered at the stories grain (LEDGER #260)`);
+    if (picked === 'auto' && part !== 'needs' && part !== 'titles') {
+      log.info(`[MetadataGenerator] ${label} runs ${Math.round(runtime / 60)} min (auto pick: stories past ${STORIES_PAST_SECONDS / 60}): chaptered at the ${pick} grain (LEDGER #280)`);
     }
     if (part !== 'needs') log.info(
       `[MetadataGenerator] Chaptering ${label} on snap at the ${pick} grain` +
@@ -2060,7 +2070,7 @@ export class MetadataGeneratorService {
       // The queue-time pick (LEDGER #213) as this engine's own grains: `chapters` is the old
       // `detailed` (the single-video turns snap's chapters grain draws at switch cost 20),
       // `stories` is `stories`. This engine leaves in P10.
-      grain: WHOLE_TRANSCRIPT_GRAIN[this.resolveChapterPick(params)],
+      grain: WHOLE_TRANSCRIPT_GRAIN[grainOfPick(this.resolveChapterPick(params), MetadataGeneratorService.runtimeOf(item))],
       // The detail call's second required context input: what the video IS. A filename like
       // "2026-08-19 jesse watters mocks democrat candidates" tells it who is speaking and
       // why, which is what grounds the names it writes.

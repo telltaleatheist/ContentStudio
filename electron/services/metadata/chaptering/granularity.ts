@@ -79,20 +79,30 @@ export function isLongSection(units: number, seconds: number): boolean {
 }
 
 /**
- * The metadata pipeline's per-run pick (the inputs page's "Chapters detect" selector, LEDGER #213):
- * `chapters` for every single video, however long, and `stories` for a weekly podcast compilation.
- * Owen, 2026-09-25: "we'll generate stories for cases where i send a podcast episode through ... and
- * for everything else, we'll use chapters."
+ * The metadata pipeline's per-run pick (the inputs page's "Chapters detect" selector, LEDGER #213,
+ * #280): `auto` draws chapters on a video up to STORIES_PAST_SECONDS long and stories past it;
+ * `chapters` and `stories` are that grain at any length, exactly as picked. Owen, 2026-10-09: "lets
+ * also make it automatically pick chapters or stories based on how long the video is, but let the
+ * user set it to whatever they want."
  */
-export type ChapterPick = 'chapters' | 'stories';
+export type ChapterPick = 'auto' | 'chapters' | 'stories';
 
 /**
- * Past this runtime the `chapters` pick is drawn at the `stories` grain (Owen, 2026-10-04, LEDGER
- * #260): a long video needs its whole-subject changes, not a chapter every few minutes.
+ * Past this runtime the `auto` pick is drawn at the `stories` grain (Owen, 2026-10-04, LEDGER #260):
+ * a long video needs its whole-subject changes, not a chapter every few minutes.
  */
 export const STORIES_PAST_SECONDS = 20 * 60;
 
-export const CHAPTER_PICKS: readonly ChapterPick[] = ['chapters', 'stories'];
+export const CHAPTER_PICKS: readonly ChapterPick[] = ['auto', 'chapters', 'stories'];
+
+/** The grain a pick draws on a video `runtimeSeconds` long: `auto` by length, the others as picked. */
+export function grainOfPick(pick: ChapterPick, runtimeSeconds: number): Granularity {
+  if (pick !== 'auto') return pick;
+  if (!Number.isFinite(runtimeSeconds) || runtimeSeconds < 0) {
+    throw new Error(`the auto chapter pick needs the video's runtime; got ${runtimeSeconds}`);
+  }
+  return runtimeSeconds > STORIES_PAST_SECONDS ? 'stories' : 'chapters';
+}
 
 /**
  * A pick as stored or sent, read as #213's two values. The retired three-way selector's `detailed`
@@ -100,7 +110,7 @@ export const CHAPTER_PICKS: readonly ChapterPick[] = ['chapters', 'stories'];
  * logs the migration once (`migratedFrom`). Anything else is refused by name.
  */
 export function chapterPickOf(value: unknown): { pick: ChapterPick; migratedFrom: 'detailed' | 'broad' | null } {
-  if (value === 'chapters' || value === 'stories') return { pick: value, migratedFrom: null };
+  if (value === 'auto' || value === 'chapters' || value === 'stories') return { pick: value, migratedFrom: null };
   if (value === 'detailed' || value === 'broad') return { pick: 'chapters', migratedFrom: value };
   throw new Error(`unknown chapter pick ${JSON.stringify(value)} — expected ${CHAPTER_PICKS.join(' or ')}`);
 }

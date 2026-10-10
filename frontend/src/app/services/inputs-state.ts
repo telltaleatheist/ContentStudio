@@ -78,7 +78,7 @@ export class InputsStateService {
    * compilation, where the pieces are the separate stories. Persisted like the prompt set:
    * the operator's last pick carries to the next batch.
    */
-  chapterGrain = signal<ChapterPick>('chapters');
+  chapterGrain = signal<ChapterPick>('auto');
   /**
    * Pin the jobs queued from here "fast": they run on the fast server (Settings › Crucible
    * Servers) and only there (LEDGER #195: the pin is the only way work reaches the PC).

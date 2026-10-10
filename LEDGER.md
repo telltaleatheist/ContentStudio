@@ -1694,3 +1694,16 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - test-crucible-batch.js (8) and test-crucible-fan-out.js (6) pass, as do check:crucible (27 keepers), check:pure and reroll-checks (21). build:electron is clean. No live Crucible was contacted, and the app was not launched.
 
 [electron/crucible/batch.ts, pending-work.ts (new), lanes.ts, session.ts, context.ts; electron/main.ts; electron/services/metadata/reroll/gate.ts, reroll.service.ts; tools/test-crucible-gate-batch.js (new)]
+
+**280. The chapter pick is Auto by default: chapters up to 20 minutes, stories past it, by each video's own length; Chapters and Stories run exactly as picked (Owen, 2026-10-09: "lets also make it automatically pick chapters or stories based on how long the video is, but let the user set it to whatever they want. one less thing to think about").**
+- **Before.** #260 made the `chapters` pick switch silently to the stories grain past 20 minutes. So "Chapters" could not be forced on a long video, and the picker's label carried the rule.
+- **Now.** Three picks (`ChapterPick` = `auto` | `chapters` | `stories`, in granularity.ts and the renderer's chapter-pick.ts):
+  - **Auto** is the inputs page's default and the main process's default when a job carries no pick. `grainOfPick` resolves it per item from the transcript's last caption: up to `STORIES_PAST_SECONDS` (20 min, exactly 20 included) is chapters, past it is stories. Each item logs its runtime and the grain it got.
+  - **Chapters** and **Stories** are that grain at any length.
+  - The whole-transcript engine reads the same resolution.
+- **Picker labels.** "Auto (chapters, stories past 20 min)", "Chapters (any length)", "Stories (any length)".
+- **Stored values.** The inputs page and the queue keep their state in session storage, which an app restart clears. So no `chapters` value saved under #260's meaning survives into this build. Retired `detailed` and `broad` still read as `chapters`.
+- **The CLI.** `--grain` takes auto (now the default), chapters or stories.
+- **Checks.** chaptering-checks (57; new: Auto at 10 min, at exactly 20 min, at 20 min + 1 s, Chapters on a 3-hour video, Stories on 5 min, and a missing runtime refused). check:pure and check:crucible (27 keepers) pass, build:electron and the frontend tsc are clean. Not run live; Owen tests.
+
+[electron/services/metadata/chaptering/granularity.ts; electron/services/metadata/metadata-generator.service.ts; frontend/src/app/services/chapter-pick.ts, inputs-state.ts; frontend/src/app/components/inputs/inputs.html; scripts/generate-metadata-cli.js; tools/chaptering-checks.js]

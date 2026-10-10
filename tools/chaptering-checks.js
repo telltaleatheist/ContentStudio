@@ -476,14 +476,26 @@ check('two grains, two methods (LEDGER #208, #212): chapters is outline + assign
   assert.strictEqual(service.formatClock(3723), '1:02:03');
 });
 
-check('the queue pick (LEDGER #213): chapters | stories; a retired detailed / broad reads as chapters, named; anything else refused', () => {
-  assert.deepStrictEqual([...granularity.CHAPTER_PICKS], ['chapters', 'stories']);
+check('the queue pick (LEDGER #213, #280): auto | chapters | stories; a retired detailed / broad reads as chapters, named; anything else refused', () => {
+  assert.deepStrictEqual([...granularity.CHAPTER_PICKS], ['auto', 'chapters', 'stories']);
+  assert.deepStrictEqual(granularity.chapterPickOf('auto'), { pick: 'auto', migratedFrom: null });
   assert.deepStrictEqual(granularity.chapterPickOf('chapters'), { pick: 'chapters', migratedFrom: null });
   assert.deepStrictEqual(granularity.chapterPickOf('stories'), { pick: 'stories', migratedFrom: null });
   assert.deepStrictEqual(granularity.chapterPickOf('detailed'), { pick: 'chapters', migratedFrom: 'detailed' });
   assert.deepStrictEqual(granularity.chapterPickOf('broad'), { pick: 'chapters', migratedFrom: 'broad' });
   assert.throws(() => granularity.chapterPickOf('episodes'), /unknown chapter pick "episodes"/);
   assert.throws(() => granularity.chapterPickOf(undefined), /unknown chapter pick/);
+});
+
+check('the auto pick (LEDGER #280): chapters up to 20 min, stories past it; chapters and stories run as picked at any length', () => {
+  const limit = granularity.STORIES_PAST_SECONDS;
+  assert.strictEqual(limit, 20 * 60);
+  assert.strictEqual(granularity.grainOfPick('auto', 600), 'chapters');
+  assert.strictEqual(granularity.grainOfPick('auto', limit), 'chapters', 'exactly 20 minutes is still chapters');
+  assert.strictEqual(granularity.grainOfPick('auto', limit + 1), 'stories');
+  assert.strictEqual(granularity.grainOfPick('chapters', 3 * 3600), 'chapters', 'a chapters pick is never switched on a long video');
+  assert.strictEqual(granularity.grainOfPick('stories', 300), 'stories');
+  assert.throws(() => granularity.grainOfPick('auto', NaN), /needs the video's runtime/);
 });
 
 // ------------------------------------------------------------------- the service
