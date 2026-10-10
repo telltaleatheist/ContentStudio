@@ -106,7 +106,7 @@ check('the routing: a Summary row, the 9B by default, in its own group so it is 
   if (!row.options.includes('qwen38-27b') || !row.options.includes('claude-cli')) throw new Error('the 27B and claude -p are offered');
   // The cleanup (LEDGER #294): its own row, the 27B or claude -p, never planned as a field; the scrub reads it.
   const cleanup = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'cleanup');
-  eq([cleanup.options, cleanup.defaultOptionId, cleanup.group], [['qwen38-27b', 'claude-cli'], 'qwen38-27b', 'passes'], 'the cleanup row:');
+  eq([cleanup.options, cleanup.defaultOptionId, cleanup.group], [['claude-cli', 'qwen38-27b'], 'claude-cli', 'passes'], 'the cleanup row, claude -p by default:');
   if (routing.metadataRunTasks().some((t) => t.id === 'cleanup')) throw new Error('the cleanup row is planned as a field unit');
   eq(require(path.join(ROOT, 'services/metadata/scrub.js')).SCRUB_ROUTING_TASK, 'cleanup', 'the scrub reads the cleanup row:');
 });

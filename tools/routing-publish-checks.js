@@ -270,7 +270,10 @@ check('the shipped defaults are all local, and the big fields share one model', 
   eq(routing.describeRouting(resolved, null),
     'titles=qwen38-27b, description=qwen38-27b, chapters=qwen38-27b, tags=qwen35-9b, ' +
     'thumbnail_text=qwen38-27b, pinned_comment=qwen38-27b, transcription=qwen3-asr-0.6b, server=(the selected server)');
+  // The one declared exception (LEDGER #295, Owen: "lets make it default to claude -p"): the cleanup.
+  eq(resolved.cleanup, 'claude-cli', 'the cleanup defaults to claude -p:');
   for (const task of Object.keys(resolved)) {
+    if (task === 'cleanup') continue;
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
   }
@@ -1375,7 +1378,10 @@ check('the cloud ceiling is the raised one', () => {
  */
 check('an all-local routing earns the local ceiling whatever the Settings provider says', () => {
   const routed = routing.resolveMetadataRouting({});
+  // The run's ceiling reads the metadata rows only (metadata-generator transcriptCeiling), so the
+  // cleanup's claude -p default (#295) does not lift it.
   const allLocal = Object.entries(routed)
+    .filter(([task]) => routing.metadataRunTasks().some((t) => t.id === task))
     .every(([, optionId]) => routing.routingOptionDef(optionId).kind === 'local');
   eq(allLocal, true, 'the shipped defaults are the all-local roster');
   eq(aiManager.directPassesRaw({ chars: 62299, ceiling: allLocal ? 'local' : 'cloud' }), true,

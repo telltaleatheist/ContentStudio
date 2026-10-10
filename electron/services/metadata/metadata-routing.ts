@@ -504,8 +504,9 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'cleanup',
     label: 'Cleanup',
-    options: ['qwen38-27b', 'claude-cli'],
-    defaultOptionId: 'qwen38-27b',
+    options: ['claude-cli', 'qwen38-27b'],
+    // claude -p (Opus) by default (Owen, 2026-10-10: "lets make it default to claude -p").
+    defaultOptionId: 'claude-cli',
     modal: true,
     group: 'passes',
   },

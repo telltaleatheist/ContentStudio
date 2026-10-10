@@ -1451,6 +1451,16 @@ export class MetadataGeneratorService {
     params: GenerationParams
   ): { model: string; distill: (prompt: string, what: string) => Promise<string | null> } {
     const option = routingOption('titles', this.routing(params).titles, this.models(params));
+    // EVERY claude -p call that is not a title is Opus (Owen, 2026-10-10: "all claude -p should be
+    // opus, except titles, which is fable"; LEDGER #295). The lessons serve the titles but are not
+    // titles, so a titles row on claude -p (Fable, Sonnet) distills on claude -p Opus.
+    if (option.kind === 'cloud' && option.model.startsWith('claude-cli:') && option.model !== 'claude-cli:opus') {
+      log.info(`[MetadataGenerator] the channel lessons distill on claude -p Opus: the titles row is ${option.model}, and only titles take another claude -p model`);
+      return {
+        model: 'claude-cli:opus',
+        distill: (prompt, what) => aiManager.runPlainRequest(prompt, 'claude-cli:opus', what, { thinking: false }),
+      };
+    }
     // Thinking OFF on both kinds (plan 6.3's distiller row). With it on, the local 27B reasons
     // past the whole 2048-token budget and returns a truncated fragment (hit live on both
     // channels on 2026-08-30); the lesson list is exactly the plain line output the campaign

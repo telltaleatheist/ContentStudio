@@ -1926,3 +1926,15 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** stretch-summary-checks: the row's options, default and group; it is not a field unit; the scrub reads it. check:pure, check:reroll (21), check:crucible (29 keepers), check:digest, check:chaptering (57), build:electron and the frontend tsc pass.
 
 [electron/services/metadata/metadata-routing.ts, scrub.ts; frontend/src/app/components/model-routing-dialog/model-routing-dialog.ts, metadata-reports/metadata-reports.ts; frontend/src/app/services/electron.ts; tools/stretch-summary-checks.js]
+
+**295. Every claude -p call is Opus except titles (Fable); the cleanup defaults to claude -p (Owen, 2026-10-10: "lets make it default to claude -p. all claude -p should be opus, except titles, which is fable").**
+- **Cleanup row** (#294): offers `claude-cli` first, and defaults to it (claude -p Opus). The 27B is still offered.
+  - It is the one shipped default that is not local. The run's transcript ceiling reads the metadata rows only, so it does not lift it.
+  - The "defaults are all local" checks name it as the exception.
+- **The channel lessons** (the insights distillation, a call at the start of a run when the evidence moved) were sent on the titles row. On Owen's routing that meant Fable, the 6,993-char Fable call in #291's run.
+  - The lessons serve the titles but are not titles. So a titles row on claude -p other than Opus (Fable, Sonnet) now distills on claude -p Opus, and says so in the log.
+  - A local or API titles row is unchanged.
+- **Already so:** Owen's stored routing has every other claude -p row on `claude-cli` (Opus) and titles on `claude-cli-fable`. More Titles and the gate's title re-rolls are titles, so they stay on the titles row (Fable). The thumbnail words row is `claude-cli` (Opus).
+- **Checks.** check:pure (the cleanup default, the ceiling over the metadata rows) and check:reroll (21) pass.
+
+[electron/services/metadata/metadata-routing.ts, metadata-generator.service.ts; tools/routing-publish-checks.js, stretch-summary-checks.js]
