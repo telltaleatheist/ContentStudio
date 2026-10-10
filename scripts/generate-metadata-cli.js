@@ -125,6 +125,8 @@ Input / caching:
   --input <path>       REQUIRED. The video / audio / transcript the app would be given.
   --transcribe         Force a fresh Whisper run and overwrite the cached transcript.
                        Default: replay the cached ContentItem[] for this video if one exists.
+  --saved-transcript   With no cached transcript: reuse the app's own saved transcript of this
+                       video (the queue's "Use saved transcript" box) instead of transcribing.
   --chapters           Force a fresh chapter-pipeline run and overwrite the cached chapters.
                        With no field flag, the run STOPS after chapters (nothing is generated
                        and no report is written).
@@ -230,6 +232,7 @@ function parseArgs(argv) {
     else if (a === '--no-insights') args.noInsights = true;
     else if (a === '--recompute-insights') args.recomputeInsights = true;
     else if (a === '--transcribe') args.transcribe = true;
+    else if (a === '--saved-transcript') args.savedTranscript = true;
     else if (a === '--chapters') args.freshChapters = true;
     else if (a === '--show-prompts') args.showPrompts = true;
     else if (a === '--claude-cli') args.claudeCli = true;
@@ -596,6 +599,10 @@ async function main() {
   // `promptSetsDir` is the PARENT of the assets root — AIManagerService appends `prompts`,
   // exactly as it does against userData in the app.
   const promptSetsDir = path.dirname(effectiveAssets);
+  // Loaded NOW, before the input stage: the transcription reads its context wording from the
+  // prompt tree (#281, transcription.yml), and the AIManagerService that used to load it is made
+  // after the transcript. The same tree the manager loads below.
+  require(path.join(DIST, 'services', 'metadata', 'prompt-assets.js')).initPromptAssets(effectiveAssets);
   const installedRoot = path.join(USER_DATA, 'prompt_sets', 'prompts');
 
   const bar = '='.repeat(78);
@@ -708,7 +715,10 @@ async function main() {
     const inputHandler = new InputHandlerService(
       transcriptionService, outputDir, { jobName: path.basename(args.input), promptSet: channel, asrModel }, progressCallback, speakerTagger);
     const inputFailures = [];
-    contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map());
+    contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map(),
+      // --saved-transcript: the app's own saved transcript of this video, as the queue's "Use saved
+      // transcript" box reuses it (saved-transcript.service.ts), instead of transcribing again.
+      args.savedTranscript ? new Map([[args.input, true]]) : undefined);
     if (contentItems.length === 0) {
       fail(`No content could be processed: ${inputFailures.join('; ') || '(no reason given)'}`);
     }

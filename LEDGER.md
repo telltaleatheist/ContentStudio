@@ -1870,3 +1870,13 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:pure and build:electron pass.
 
 [electron/assets/prompts/channels/unfiltered.yml; tools/routing-publish-checks.js]
+
+**291. The metadata CLI loads the prompt tree before its input stage, and can reuse the app's saved transcript (found running Owen's 2026-10-10 end-to-end titles test on u4).**
+- Since #281 the transcription reads its context wording from the prompt tree (transcription.yml). The CLI only loaded the tree when it made its AIManagerService, after the transcript, so a video without a CLI cache failed with "The prompt assets have not been loaded". It now runs `initPromptAssets` on the same tree as soon as that tree is decided.
+- `--saved-transcript`: with no CLI cache, the input stage reuses the app's own saved transcript of the video, as the queue's "Use saved transcript" box does, instead of transcribing. It is read from `<output-dir>/.contentstudio/transcripts`, exactly where the app keeps it.
+- **The run it unblocked.** u4, unfiltered, `--titles`: the saved 0.6B transcript, then chapters (3, stories grain), then the 9B summary (11 paragraphs over the 3 sections, 112 s, untagged), then Fable titles from it (one call).
+  - The titles came back with no pipe tail and no `pN`. The prompt carried the summary block and #287's line.
+  - The gate's 2 decides on the 9B re-rolled nothing.
+- The show-prompt flow does not write a summary: it makes no model calls, so its titles prompt still shows the chapter list.
+
+[scripts/generate-metadata-cli.js]
