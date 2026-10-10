@@ -5,6 +5,7 @@ instructions: |-
 
   - Generate {titles_count} youtube titles.
   - Find the underlying argument behind this video and sell that.
+  - The person reading the title has not seen the video. They meet it cold, in a feed, between other videos, and nothing the video explains can help the title do its job. A title that only makes sense to someone who already watched is a caption for the video, not an invitation to it: each title carries enough of its own context that a stranger understands what they would be clicking into, and wants to.
   - Write them like you'd say them to a friend — blunt, spoken, a verdict.
   - Call people what the audience recognizes — their movement, their side, their role; a name alone only when the name itself is famous.
   - When the subject has a euphemism for what they're doing, put it in quotes.
@@ -23,6 +24,7 @@ self_check:
   - "Each title: 50-70 characters, hook inside the first 45"
   - "Each title all lowercase"
   - "Top 3: genuinely different angles on the argument"
+  - "Each title makes sense to a stranger who has not watched the video"
 
 overrides:
   shorts:

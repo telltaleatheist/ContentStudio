@@ -1800,3 +1800,16 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** New in routing-publish-checks: an audio source gets its own file on the first write; a chosen file is kept; a video source is not touched; a missing file is refused. check:pure and build:electron pass.
 
 [electron/services/publish/auto-config.ts, publish-ipc.ts; tools/routing-publish-checks.js]
+
+**287. Titles are written for someone who has not seen the video (Owen, 2026-10-10, reading the summary-fed titles for u4: "some of these titles assume the viewer knows who these characters are, or have context that was provided in the video… some of these are titled like they're talks, not youtube videos… i dont want to give specific, explicit instructions… what's the overarching principle here").**
+- His examples:
+  - "the german church didn't 'fail to stand'" and "metaxas needs a prophet so he invented one" only make sense after watching.
+  - "metaxas's nazi church history falls apart fast" carries its own context.
+  - A stronger version might say "maga writer" instead of the name, because the thumbnail shows the face.
+- **The principle, not a rule.** One line near the top of the default (YouTube) TITLES instructions (shared/fields/titles.yml): the reader meets the title cold, in a feed, and nothing the video explains can help it. A title that only makes sense once you've watched is a caption for the video, not an invitation to it. So each title carries enough of its own context that a stranger knows what they'd be clicking into, and wants to.
+  - The self-check gains: "Each title makes sense to a stranger who has not watched the video".
+  - No naming rule was added. The existing "call people what the audience recognizes" line stays as it was.
+- The shorts and spreaker variants are unchanged.
+- **Checks.** check:pure and check:reroll (21) pass. Not run on a model yet.
+
+[electron/assets/prompts/shared/fields/titles.yml]
