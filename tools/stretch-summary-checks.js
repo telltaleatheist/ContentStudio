@@ -101,9 +101,14 @@ check('the calls: one per stretch in order on the routed option, its model recor
 check('the routing: a Summary row, the 9B by default, in its own group so it is never planned as a field', () => {
   const row = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'summary');
   if (!row) throw new Error('no summary row');
-  eq([row.defaultOptionId, row.group, row.modal], ['qwen35-9b', 'summary', true], 'default, group, shown:');
+  eq([row.defaultOptionId, row.group, row.modal], ['qwen35-9b', 'passes', true], 'default, group, shown:');
   if (routing.metadataRunTasks().some((t) => t.id === 'summary')) throw new Error('the summary row is planned as a field unit');
   if (!row.options.includes('qwen38-27b') || !row.options.includes('claude-cli')) throw new Error('the 27B and claude -p are offered');
+  // The cleanup (LEDGER #294): its own row, the 27B or claude -p, never planned as a field; the scrub reads it.
+  const cleanup = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'cleanup');
+  eq([cleanup.options, cleanup.defaultOptionId, cleanup.group], [['qwen38-27b', 'claude-cli'], 'qwen38-27b', 'passes'], 'the cleanup row:');
+  if (routing.metadataRunTasks().some((t) => t.id === 'cleanup')) throw new Error('the cleanup row is planned as a field unit');
+  eq(require(path.join(ROOT, 'services/metadata/scrub.js')).SCRUB_ROUTING_TASK, 'cleanup', 'the scrub reads the cleanup row:');
 });
 
 const SUMMARY = { stretchSeconds: 300, model: 'qwen3.5-9b', speakerTagged: false, paragraphs: [{ start: 0, text: 'Metaxas claims the German church failed to stand.' }, { start: 489, text: 'The host says Hindenburg was never chancellor.' }] };

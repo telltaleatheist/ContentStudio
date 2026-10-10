@@ -1913,3 +1913,16 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** routing-publish-checks: lowercase Spreaker words, the 30-character rule, the possessive fold, and the common words. check:pure and check:reroll (21) pass.
 
 [electron/services/metadata/tags-hashtags.ts; tools/routing-publish-checks.js]
+
+**294. The cleanup (scrub) has its own routing row: the 27B or claude -p (Owen, 2026-10-10: "the cleanup stage should be run by either the 27b or by claude -p. we can add those two options to routing. the time isnt really a concern"; a BookForge-style triage first was weighed and declined, as not worth it at this much metadata).**
+- **Why.** The scrub borrowed the description row (#183). On the 2026-10-10 27B run (u4, fields on the 27B) it came along. Its three rewrites spent 1.3–5.5k thinking tokens each, forced a reload to 24,576 for their 16,384 budgets, and took 13 minutes to return all three unchanged.
+  - crucible-pc-1's probe saw no stall during them, and Owen used the Mac throughout with no lag. The 27B freeze is fixed by Crucible 1.0.131's prefill cap.
+- **The change.** A new **Cleanup** row (`cleanup`) offering only `qwen38-27b` and `claude-cli`, default the 27B, like every row's shipped default.
+  - `SCRUB_ROUTING_TASK` is `cleanup`, so the run's scrub, a reroll's scrub and the reports page's Scrub button all read it.
+  - Soften still reads the description row.
+  - Thinking stays on (plan 6.3), and so does the 16,384 budget.
+- The Summary and Cleanup rows share the routing group `passes` (was `summary`), under one heading in Model Routing. Neither is ever planned as a field unit.
+- **A stored routing with no `cleanup` entry runs the cleanup on the 27B** (the default). Owen's current config names none, so pick claude -p there to keep it off the GPU.
+- **Checks.** stretch-summary-checks: the row's options, default and group; it is not a field unit; the scrub reads it. check:pure, check:reroll (21), check:crucible (29 keepers), check:digest, check:chaptering (57), build:electron and the frontend tsc pass.
+
+[electron/services/metadata/metadata-routing.ts, scrub.ts; frontend/src/app/components/model-routing-dialog/model-routing-dialog.ts, metadata-reports/metadata-reports.ts; frontend/src/app/services/electron.ts; tools/stretch-summary-checks.js]

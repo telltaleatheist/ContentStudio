@@ -523,9 +523,8 @@ export class MetadataReports implements OnInit, OnDestroy {
   // ------------------------------------------------------- scrub narration
   //
   // The same picker, from the same payload and the same task, for the same reason — the
-  // authority is services/metadata/scrub.ts (SCRUB_ROUTING_TASK), which reads description
-  // because that task offers every rung the build ships and a scrub is a prose rewrite any of
-  // them can perform. Its own signal rather than a shared one with softening: the two buttons
+  // authority is services/metadata/scrub.ts (SCRUB_ROUTING_TASK), the Cleanup row since #294,
+  // which offers the 27B and claude -p. Its own signal rather than a shared one with softening: the two buttons
   // are two decisions, and an operator who scrubbed on Sonnet has not thereby said which model
   // should soften.
   readonly scrubOptions = signal<MetadataRoutingOption[]>([]);

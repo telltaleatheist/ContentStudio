@@ -108,15 +108,14 @@ import type { PromptTraceEntry } from './more-titles';
 export const SCRUB_PROMPT_FILE = 'scrub.yml';
 
 /**
- * The routing task whose model this pass borrows: DESCRIPTION.
+ * The routing task this pass runs on: its own CLEANUP row (LEDGER #294), the 27B or claude -p.
  *
- * No new routing task, because there is no new choice to make. The scrub rewrites description
- * prose and chapter titles that were just written by the description and chapter models; the
- * description task is the one that offers every rung this build ships, and a task of its own
- * would put a second dropdown in the routing modal whose only sensible answer is the one already
- * given next to it. `SOFTEN_ROUTING_TASK` reads description for the same reason.
+ * It borrowed DESCRIPTION until 2026-10-10, when the 27B test run showed the cost of that: with the
+ * fields on the 27B the scrub came too, and its three thinking-on rewrites took 13 minutes (and a
+ * reload to 24k) to return all three unchanged. Owen: "the cleanup stage should be run by either the
+ * 27b or by claude -p". `SOFTEN_ROUTING_TASK` still reads description.
  */
-export const SCRUB_ROUTING_TASK = 'description' as const;
+export const SCRUB_ROUTING_TASK = 'cleanup' as const;
 
 /**
  * Who asked for this run, which is the ONLY thing that differs between the two callers.

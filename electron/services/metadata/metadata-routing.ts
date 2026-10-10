@@ -46,6 +46,7 @@ export type MetadataRoutingTaskId =
   | 'pinned_comment'
   | 'thumbnail_words'
   | 'summary'
+  | 'cleanup'
   | 'transcription';
 
 /**
@@ -65,7 +66,7 @@ export type MetadataRoutingTaskId =
  * it, and its options are judged against the server's asr catalog rows. The editor's
  * transcription does not read it (it stays on the 1.7B).
  */
-export type MetadataRoutingGroup = 'metadata' | 'thumbnails' | 'summary' | 'transcription';
+export type MetadataRoutingGroup = 'metadata' | 'thumbnails' | 'passes' | 'transcription';
 
 /**
  * One row of the option TABLE: a MODEL, never a quant (Owen, 2026-09-29: "crucible's job is to
@@ -483,15 +484,30 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      * titles"): a paragraph per outline section, one per ~5 minutes of a long one, that titles,
      * thumbnail text, the pinned comment and the thumbnail words read in place of the transcript
      * (stretch-summary.ts). The 9B by default: each call is one ~1.2k-token stretch, and on u4 its
-     * paragraphs gave Fable titles as good as Opus's did. Its own group, so it is never planned as
-     * a field unit of its own.
+     * paragraphs gave Fable titles as good as Opus's did. In the passes group (with the cleanup), so
+     * it is never planned as a field unit of its own.
      */
     id: 'summary',
     label: 'Summary',
     options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen35-9b',
     modal: true,
-    group: 'summary',
+    group: 'passes',
+  },
+  {
+    /**
+     * THE CLEANUP (the scrub, LEDGER #183; its own row since #294, Owen 2026-10-10: "the cleanup
+     * stage should be run by either the 27b or by claude -p. we can add those two options to
+     * routing"). It used to borrow the description row; on the 2026-10-10 27B run it spent 13
+     * minutes thinking through three rewrites that came back unchanged, so it is chosen apart from
+     * the fields. Thinking stays on (plan 6.3); time is not the concern.
+     */
+    id: 'cleanup',
+    label: 'Cleanup',
+    options: ['qwen38-27b', 'claude-cli'],
+    defaultOptionId: 'qwen38-27b',
+    modal: true,
+    group: 'passes',
   },
   {
     /**
