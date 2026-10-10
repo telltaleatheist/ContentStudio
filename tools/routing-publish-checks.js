@@ -710,14 +710,16 @@ check('the titles prompt carries none of the nine defects it was rewritten to re
   }
 });
 
-check("unfiltered's pipe-tail title format replaces the shared length line, and only there", () => {
-  const unfiltered = assets.fieldSection(assets.channel('youtube-unfiltered'), 'titles');
-  if (!unfiltered.includes('| [subject] | p[N]')) throw new Error('the multi-part convention is gone');
-  if (unfiltered.includes('70 characters is the ceiling')) {
-    throw new Error('unfiltered kept a ceiling its own convention deliberately exceeds');
+// LEDGER #290 (Owen, 2026-10-10: "i dont want it to say pN at all. or give an appended name… just
+// give me titles"): no channel asks for a ` | subject | pN` tail; Owen appends one himself.
+check('every channel asks for plain titles: no appended subject or part number', () => {
+  for (const id of assets.channelIds()) {
+    const channel = assets.channel(id);
+    if (!channel.fields.includes('titles')) continue;
+    const titles = assets.fieldSection(channel, 'titles');
+    if (/\| *\[subject\]|p\[N\]|\bpN\b/.test(titles)) throw new Error(`channel "${id}" still asks for an appended tail`);
+    if (channel.titleFormat !== undefined) throw new Error(`channel "${id}" overrides the title format again: ${channel.titleFormat.slice(0, 80)}`);
   }
-  const telltale = assets.fieldSection(assets.channel('youtube-telltale'), 'titles');
-  if (telltale.includes('| [subject] |')) throw new Error("unfiltered's format leaked into a normal channel");
 });
 
 check('a channel that publishes no thumbnails says so by its field list', () => {

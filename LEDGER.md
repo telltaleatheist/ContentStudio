@@ -1860,3 +1860,13 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - check:crucible (29 keepers), check:pure, check:thumbnail, check:thumbnail-lab, check:reroll (21), check:chaptering (57), check:digest, build:electron and the frontend tsc pass. Not run live; the first live run with the 27B is Owen's, watched (crucible-pc-1, Crucible 1.0.131's freeze fix).
 
 [electron/crucible/transport.ts, chat-stream.ts; electron/services/metadata/ai-manager.service.ts, metadata-tasks.ts; electron/services/thumbnails/prompts.ts, words-writer.ts; tools/test-crucible-shared-prefix.js (new), test-crucible-fan-out.js, test-crucible-transport.js]
+
+**290. Titles are just titles: no appended subject, no part number (Owen, 2026-10-10: "i dont want it to say pN at all. or give an appended name. it should just give me titles. it wont get the appended names or the numbers correct… if they need appended names like "| Flashpoint " then ill append it to each title i pick").**
+- unfiltered.yml's `title_format` (the ` | [subject] | p[N]` multi-part convention, with `pN` left as a placeholder) is removed. The unfiltered titles take the shared default like every other channel: 50–70 characters, the hook inside the first 45. Standing alone is covered by #287.
+- Owen appends any series tail himself, to the titles he picks.
+- No code parsed the tail. Only the prompt and one check knew it.
+- The check is replaced. No channel's TITLES section may ask for an appended subject or a part number, and no channel overrides the title format.
+- One distilled channel lesson (analytics loop, not a prompt asset) still mentions "| topic | p3"-style suffixes "if a tag is required". Nothing requires one now; it is left to the next distillation.
+- **Checks.** check:pure and build:electron pass.
+
+[electron/assets/prompts/channels/unfiltered.yml; tools/routing-publish-checks.js]
