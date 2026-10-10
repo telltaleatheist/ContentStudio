@@ -1894,3 +1894,22 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** stretch-summary-checks gains the description: the summary under its label, no transcript, no tag block; without a summary, the transcript and its tag block. check:pure, check:digest, check:reroll (21), check:crucible (29 keepers) and build:electron pass.
 
 [electron/services/metadata/description-unit.ts, ai-manager.service.ts; electron/assets/prompts/shared/pipeline/description.yml; tools/stretch-summary-checks.js]
+
+**293. Tags, from the platforms' own rules and last night's real lists (Owen, 2026-10-10: "fix tags… everything we discussed"; a research pass on YouTube and Spreaker tag requirements).**
+- **The research** (sources in the session; official where stated).
+  - **YouTube:** 500 characters, commas counted, a tag with a space +2 (as quoted). This is the counting AIManagerService.tagBudgetCost already does.
+    - "tags play a minimal role in your video's discovery", useful mainly for misspellings (support.google.com/youtube/answer/146402, unchanged in 2025–26).
+    - There is no documented per-tag limit or character list. `invalidTags` names nothing.
+  - **Spreaker:** at most 20 (its own 400). Measured in live Spreaker feeds: tags are written into `itunes:keywords`, lowercased, cut at 30 characters, and sorted alphabetically.
+  - **Apple and Spotify:** Apple stopped documenting keywords around 2012. Spotify searches titles, descriptions and its own transcripts.
+- **Unfiltered DOES publish tags.** Its channel file lists them, and every 2026-10-10 unfiltered report has tags and hashtags. The "not published by this channel" line in #291's CLI run came from `--titles` narrowing the field list for that run.
+- **The changes** (tags-hashtags.ts):
+  - **A trailing possessive goes** (`cleanTag`): "eric metaxas's" becomes "eric metaxas", which the seen-set then folds into the name. One inside a phrase ("god's people") stays.
+  - `<` and `>` are stripped as a precaution: they are reported to trip `invalidTags`; this is not documented.
+  - **The channels' common words are not tags alone:** god, bible(s), jesus, christ, christians, churches, faith, scripture join the generic list.
+  - On u4, u5 and u6 this removed the possessive duplicates and the lone God/Bible/Bibles/Jesus.
+  - **Spreaker words are lowercased** (as Spreaker stores them), de-duplicated after lowercasing. A word over 30 characters is left out rather than cut into one nobody wrote (`SPREAKER_MAX_TAG_CHARS`).
+- **Next: ranking.** The YouTube list still runs in chapter order, so weak phrases ("stand against", bare book names) can take budget from better ones. That is the job for Crucible's Qwen embed and rerank (Owen is adding them). Rerank the grounded candidates against the summary, drop near-duplicates by embedding, keep the top names' misspellings, then fill to the budget. To be built once their request shape is known.
+- **Checks.** routing-publish-checks: lowercase Spreaker words, the 30-character rule, the possessive fold, and the common words. check:pure and check:reroll (21) pass.
+
+[electron/services/metadata/tags-hashtags.ts; tools/routing-publish-checks.js]

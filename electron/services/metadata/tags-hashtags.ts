@@ -353,6 +353,9 @@ export function assembleWordTags(inputs: TagInputs): TagAssembly {
     const key = word.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    // Spreaker cuts a tag at 30 characters (measured in its feeds, LEDGER #293); a word that long
+    // is not a tag anyone types, so it is left out rather than cut into one nobody wrote.
+    if (key.length > SPREAKER_MAX_TAG_CHARS) continue;
     if (!occursIn(inputs.contentText, word)) {
       notInContent.push(word);
       continue;
@@ -364,10 +367,14 @@ export function assembleWordTags(inputs: TagInputs): TagAssembly {
       dropped.push(word);
       continue;
     }
-    tags.push(word);
+    // Lowercase, as Spreaker stores them (its feeds lowercase every tag): what is sent is what shows.
+    tags.push(key);
   }
   return { tags, cost: joinedCost(tags), dropped, notInContent };
 }
+
+/** Spreaker's per-tag length, measured in its RSS feeds: longer tags are cut there (LEDGER #293). */
+export const SPREAKER_MAX_TAG_CHARS = 30;
 
 function joinedCost(tags: string[]): number {
   return tags.join(',').length;
@@ -381,7 +388,11 @@ function joinedCost(tags: string[]): number {
  * reported as a phrase the video never says — a real tag lost to its own cleaning step.
  */
 function cleanTag(value: string): string {
-  return value.replace(/[#"]/g, '').replace(/\s+/g, ' ').trim();
+  // A TRAILING possessive goes (LEDGER #293): "eric metaxas's" is the name "eric metaxas", which the
+  // seen-set then folds into the name it already has. One inside a phrase ("god's people") stays.
+  // `<` and `>` go too: YouTube's API refuses some tags as invalidTags without saying which
+  // characters, and these are the ones reported (a precaution, not a documented rule).
+  return value.replace(/[#"<>]/g, '').replace(/\s+/g, ' ').trim().replace(/['’]s$/i, '').trim();
 }
 
 /**
@@ -394,6 +405,9 @@ const GENERIC_SINGLE_WORDS = new Set([
   'news', 'politics', 'political', 'religion', 'religious', 'christian', 'church', 'video',
   'commentary', 'reaction', 'discussion', 'analysis', 'update', 'live', 'stream', 'podcast',
   'america', 'american', 'people', 'money', 'government', 'today', 'truth', 'story',
+  // The words every video on these channels shares (LEDGER #293, seen alone in the 2026-10-10
+  // unfiltered tags): a name in them still passes as part of a phrase ("god's people").
+  'god', 'bible', 'bibles', 'jesus', 'christ', 'christians', 'churches', 'faith', 'scripture',
 ]);
 
 function isGenericSingleWord(tag: string): boolean {

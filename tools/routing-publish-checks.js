@@ -1230,7 +1230,7 @@ check('a spreaker channel\'s tags are one word each, a name giving its distincti
     phrases: ['food buckets', 'silver solution'],
     contentText: content,
   });
-  eq(assembled.tags, ['televangelist', 'Bakker', 'Clinton', 'Lewinsky', 'Fox', 'Branson', 'buckets'],
+  eq(assembled.tags, ['televangelist', 'bakker', 'clinton', 'lewinsky', 'fox', 'branson', 'buckets'],
     'one word each, surnames not first names, ordinary words ("silver", "solution", "food") left out:');
   if (assembled.tags.some((t) => /\s/.test(t))) throw new Error('a tag with a space: ' + assembled.tags.join(','));
 
@@ -1242,8 +1242,20 @@ check('a spreaker channel\'s tags are one word each, a name giving its distincti
 
   // The run's switch: a spreaker channel gets this assembly, a youtube channel the phrase one.
   const inputs = { entities: ['Jim Bakker'], phrases: ['food buckets'], contentText: content, firstTitle: 't', videoTitle: 'v', brandTag: undefined, assembleTags: true, assembleHashtags: false };
-  eq(tagsHashtags.codeOwnedTagFields({ ...inputs, tagStyle: 'spreaker' }).tags, 'buckets,Bakker', 'spreaker:');
+  eq(tagsHashtags.codeOwnedTagFields({ ...inputs, tagStyle: 'spreaker' }).tags, 'buckets,bakker', 'spreaker, lowercased as Spreaker stores them:');
+  const long = tagsHashtags.assembleWordTags({ primaryPhrase: '', entities: ['Churchofjesuschristoflatterdaysaints'], phrases: [], contentText: 'then Churchofjesuschristoflatterdaysaints spoke' });
+  eq(long.tags, [], 'a word past Spreaker\'s 30 characters is left out, not cut:');
   eq(tagsHashtags.codeOwnedTagFields({ ...inputs, tagStyle: 'youtube' }).tags, 'food buckets,Jim Bakker', 'youtube:');
+});
+
+// LEDGER #293, from the 2026-10-10 unfiltered tags ("eric metaxas's" beside "Eric Metaxas"; God, Bible).
+check('a youtube tag loses a trailing possessive (and so its duplicate), and the channels\' common words are not tags alone', () => {
+  const content = "Eric Metaxas wrote it. Then Eric Metaxas's book said God and the Bible agree. God's people were there.";
+  const assembled = tagsHashtags.assembleTags({
+    primaryPhrase: "eric metaxas's", entities: ['Eric Metaxas', 'God', 'Bible'], phrases: ["god's people"], contentText: content,
+  });
+  eq(assembled.tags.filter((t) => entities.occursIn(content, t)), ['eric metaxas', "god's people"],
+    'the possessive name folds into the name; God and Bible alone are dropped; an inner possessive stays:');
 });
 
 check('a spreaker model-written tag list with a multi-word tag or more than 20 is refused, a youtube one is not', () => {
