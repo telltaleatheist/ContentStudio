@@ -1756,12 +1756,11 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
 
   // ------------------------------------------------------------------ Spreaker
   //
-  // The podcast half. An item marked `isPodcast` gets an audio file (proposed from the
-  // export's sibling, confirmed by the operator) and then one upload, which CREATES a
-  // public episode. The shape mirrors the thumbnail channels above deliberately: propose,
-  // inspect, set — because it is the same problem (a file on an external volume that this
-  // app must never pick on the operator's behalf) and a second idiom for it would be a
-  // second set of rules to keep in agreement.
+  // The podcast half. An item marked `isPodcast` gets an audio file and then one upload,
+  // which CREATES a public episode. An episode made FROM an audio file has that file as its
+  // audio already (auto-config.ts autoAudio, LEDGER #286); a video's sibling .mp3 is proposed
+  // here and confirmed by the operator. The shape mirrors the thumbnail channels above: propose,
+  // inspect, set.
 
   /**
    * Where this item's episode audio would be, by the naming convention. READ-ONLY: it
@@ -1772,7 +1771,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    *
    * Never applied automatically, for the same reason the thumbnail proposal is not: the
    * convention (`podcast 1.mp3` beside `podcast 1.mov`) is a good guess about the file
-   * and no guess at all about whether this item is that episode.
+   * and no guess at all about whether this item is that episode. The one case that is not a
+   * guess — the episode was made from this very audio file — is applied by auto-config.ts
+   * (LEDGER #286) and never reaches this offer.
    */
   ipcMain.handle('publish-propose-audio', async (_e, itemId: string) => {
     try {

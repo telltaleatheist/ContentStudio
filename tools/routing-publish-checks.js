@@ -16,6 +16,7 @@
  * No test framework, on purpose: this runs one build output and prints one line per check.
  */
 const path = require('path');
+const fs = require('fs');
 const Module = require('module');
 const STUB = path.join(__dirname, '_electron-stub.js');
 const orig = Module._resolveFilename;
@@ -1249,6 +1250,33 @@ check('a spreaker model-written tag list with a multi-word tag or more than 20 i
   if (!/more than 20/.test(tagsHashtags.unusableTagList(twentyOne, 'spreaker') || '')) throw new Error('21 spreaker tags passed');
   eq(tagsHashtags.unusableTagList('Bakker,televangelist,atheism', 'spreaker'), undefined, 'one-word spreaker tags are usable:');
   eq(tagsHashtags.unusableTagList('Bakker,food buckets', 'youtube'), undefined, 'a youtube phrase tag is usable:');
+});
+
+// LEDGER #286: an episode made from an audio file has that file as its audio, unasked.
+check('an episode made from an audio file gets that file as its episode audio; a video\'s sibling stays an offer', () => {
+  const autoConfig = require(path.join(ROOT, 'services/publish/auto-config.js'));
+  const publishTypes = require(path.join(ROOT, 'services/publish/publish-types.js'));
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cs-auto-audio-'));
+  try {
+    const mp3 = path.join(dir, 'podcast 2.mp3');
+    fs.writeFileSync(mp3, 'x');
+    const blank = publishTypes.emptyChosenMetadata ? publishTypes.emptyChosenMetadata('itm-mv1x1o7q-3bvvmyzt', 'job-1791604932042-v9z81ezlm') : null;
+    if (!blank) throw new Error('publish-types has no emptyChosenMetadata to build a record from');
+    const run = (record, sourcePath) => autoConfig.autoConfigure({ record, promptSet: null, sourcePath, channels: [] });
+
+    const born = run(blank, mp3);
+    eq(born.patch.isPodcast, true, 'an audio source is a podcast:');
+    eq(born.patch.spreakerAudioPath, mp3, 'and its audio is the file it was made from, on the same write:');
+
+    const chosen = path.join(dir, 'other.mp3');
+    eq(run({ ...blank, isPodcast: true, spreakerAudioPath: chosen }, mp3).patch.spreakerAudioPath, undefined, 'a chosen file is never replaced:');
+    eq(run({ ...blank, isPodcast: true }, path.join(dir, 'podcast 2.mov')).patch.spreakerAudioPath, undefined, 'a video source is only offered its sibling:');
+    const gone = run({ ...blank, isPodcast: true }, path.join(dir, 'gone.mp3'));
+    eq(gone.patch.spreakerAudioPath, undefined, 'a missing file is not chosen:');
+    if (!gone.refused.some((d) => d.field === 'spreakerAudioPath')) throw new Error('a missing source audio is not refused by name');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 check('every shipped channel declares its tag style, and only the podcast is spreaker', () => {

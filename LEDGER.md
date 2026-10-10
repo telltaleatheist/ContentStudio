@@ -1788,3 +1788,15 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** New in routing-publish-checks: the word assembly, the 20 cap, the style switch, the spreaker refusals, and every channel's declared style. The ordering-wording check reads per style. check:pure, check:reroll (21), check:chaptering (57), build:electron and the frontend tsc pass.
 
 [electron/services/metadata/tags-hashtags.ts, prompt-assets.ts, metadata-tasks.ts, ai-manager.service.ts, section-reroll.ts; electron/ipc/ipc-handlers.ts; electron/assets/prompts/channels/*.yml; electron/assets/prompts/shared/fields/tags.yml; tools/routing-publish-checks.js, scrub-reroll-checks.js]
+
+**286. An episode made from an audio file has that file as its episode audio, unasked (Owen, 2026-10-10: "it keeps asking me to link the audio for spreaker audio files. why would it do that? i dropped the audio file in when i processed it. it should have the audio file already").**
+- **The cause.** The app found the right file and only offered it. For an audio source, `deriveProposedAudioPaths` (audio-validate.ts, since fd4576f) returns the source itself. But `publish-propose-audio` is never applied automatically, and auto-config.ts filled `isPodcast`, the channel and the thumbnail, never `spreakerAudioPath`. So every podcast showed "Proposed — not applied" until he confirmed the very file he had dropped in. The rule was carried over from the thumbnail and video-sibling case, where the match is by name. No earlier LEDGER entry ruled on it.
+- **The change.** `autoAudio` in auto-config.ts runs on every record write, after the destination, so a record made a podcast on its first write gets its audio on that same write.
+  - It applies only when the record is a podcast, no audio is chosen, and the source is an audio-only extension that is on disk. Then `spreakerAudioPath` = the source, announced under "applied".
+  - A source gone from disk is "refused", by name.
+  - A chosen file is never replaced. A video source's sibling .mp3 stays an offer.
+  - Only existence is checked here, inside the synchronous write. The full validation (extension, size, audio stream) still runs each time the panel shows the audio and again before the upload.
+- **Known edge.** Clearing the audio on such an item leaves it unanswered, so the next write fills it again with the source. Choosing a different file is the way to change it.
+- **Checks.** New in routing-publish-checks: an audio source gets its own file on the first write; a chosen file is kept; a video source is not touched; a missing file is refused. check:pure and build:electron pass.
+
+[electron/services/publish/auto-config.ts, publish-ipc.ts; tools/routing-publish-checks.js]

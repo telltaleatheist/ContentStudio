@@ -8,6 +8,10 @@
  *                     routed through channels.json.
  *   thumbnailPath  <- the image he exported beside the video, found by the export
  *                     layout's own naming convention.
+ *   spreakerAudioPath <- the audio file the episode was MADE from (LEDGER #286): an audio
+ *                     source is the episode, so asking him to pick it again asked a
+ *                     question he had already answered by dropping it in. A video source's
+ *                     sibling .mp3 stays an offer: that one is a match by name, not a fact.
  *
  * Neither of these is a guess. Both are LOOKUPS IN A DECLARED TABLE — the channel
  * registry and the export layout — and that is the line this module is built along. A
@@ -80,7 +84,7 @@ export interface AutoConfigInput {
 
 /** One decision, in the operator's terms. `detail` is a whole sentence. */
 export interface AutoDecision {
-  field: 'channelId' | 'thumbnail' | 'isPodcast';
+  field: 'channelId' | 'thumbnail' | 'isPodcast' | 'spreakerAudioPath';
   detail: string;
 }
 
@@ -118,6 +122,11 @@ export function autoConfigure(input: AutoConfigInput): AutoConfigResult {
   const thumbnail = autoThumbnail(input);
   if (thumbnail.patch) patch = { ...patch, ...thumbnail.patch };
   pushInto(thumbnail.decision, thumbnail.bucket, applied, skipped, refused);
+
+  // After the destination: a record made a podcast on this same write gets its audio on it too.
+  const audio = autoAudio({ ...input, record: { ...input.record, ...patch } as ChosenMetadata });
+  if (audio.patch) patch = { ...patch, ...audio.patch };
+  pushInto(audio.decision, audio.bucket, applied, skipped, refused);
 
   return { patch, applied, skipped, refused };
 }
@@ -197,6 +206,52 @@ function autoDestination(input: AutoConfigInput): FieldOutcome {
       detail: `The source is a ${extension}, an audio file — so this is a podcast episode, ` +
         `and it is routed to Spreaker.`,
     },
+  };
+}
+
+/**
+ * The episode audio, when the episode was made FROM an audio file (LEDGER #286).
+ *
+ * The source path is the file the operator dropped into the queue, and for an audio source that
+ * file IS the episode: there is nothing to match and nothing to doubt. Only checked to exist here
+ * (this runs inside a synchronous write); the full validation — Spreaker's extensions, the size,
+ * an audio stream — runs every time the panel shows the audio (publish-inspect-audio) and again
+ * before the upload (spreaker-push.ts), each refusing by name.
+ *
+ * Fills only an UNANSWERED field: a file he chose is never replaced. A video source is not
+ * touched: its sibling .mp3 is a name match, and stays an offer (publish-propose-audio).
+ */
+function autoAudio(input: AutoConfigInput): FieldOutcome {
+  const { record, sourcePath } = input;
+  const field = 'spreakerAudioPath' as const;
+  if (!record.isPodcast) {
+    return { patch: null, bucket: 'skipped', decision: { field, detail: 'Not a podcast episode, so it has no episode audio.' } };
+  }
+  if (record.spreakerAudioPath !== null) {
+    return { patch: null, bucket: 'skipped', decision: { field, detail: 'The episode audio is already chosen.' } };
+  }
+  if (sourcePath === null) {
+    return { patch: null, bucket: 'skipped', decision: { field, detail: 'This item has no source file to take the episode audio from.' } };
+  }
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (!isAudioOnlyExtension(extension)) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: { field, detail: `The source is a ${extension || 'file with no extension'}, not an audio file, so its episode audio is offered, not chosen.` },
+    };
+  }
+  if (!fs.existsSync(sourcePath)) {
+    return {
+      patch: null,
+      bucket: 'refused',
+      decision: { field, detail: `The episode was made from ${sourcePath}, which is not on disk any more. Choose the episode audio.` },
+    };
+  }
+  return {
+    patch: { spreakerAudioPath: sourcePath },
+    bucket: 'applied',
+    decision: { field, detail: `The episode was made from ${path.basename(sourcePath)}, so that file is its audio.` },
   };
 }
 
