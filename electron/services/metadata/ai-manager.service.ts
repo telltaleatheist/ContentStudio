@@ -1156,6 +1156,11 @@ export class AIManagerService {
     return this.channel().tagStyle;
   }
 
+  /** The loaded channel's brand terms (its channel file's `brand_terms`), trimmed; empty when it declares none. */
+  brandTerms(): string[] {
+    return (this.currentChannel?.brandTerms || []).map((t) => t.trim()).filter((t) => t.length > 0);
+  }
+
   channelTags(): string[] {
     return (this.currentPromptSet?.channel_tags || []).map((t) => t.trim()).filter((t) => t.length > 0);
   }

@@ -1957,3 +1957,26 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** New tools/tag-ranking-checks.js, in check:pure: the fixed roles; the query (title plus summary); the summary's names joining the candidates; the drop below the bar; most-relevant-first order; nothing below the bar embedded; a duplicate folded with `sameAs`; nothing to rank means no calls; cosine. check:pure, check:reroll (21), check:crucible (29 keepers), check:thumbnail, check:digest, build:electron and the frontend tsc pass.
 
 [electron/crucible/transport.ts; electron/services/metadata/tag-ranking.ts (new), ai-manager.service.ts, metadata-tasks.ts; tools/tag-ranking-checks.js (new); package.json]
+
+**297. The tag judge is the 9B, at 0.7; the summary adds names only; the channel's own names are never candidates (the first live run of #296, Owen's u4/u5/u6 run, 2026-10-10 20:13–20:28).**
+- **The live run.**
+  - **The doors worked:** both 8B models loaded through the session (`load-model` at their manifest context), with no refusals. The reranks took 10–17 s for 60–72 candidates, the embeds 0.16–0.3 s.
+  - **The tags were worse than before:** at 0.5, u6 kept 3 of 60. "ridiculous nonsense" (0.73), "owen morgan dot com" (0.73) and fragments ("liburn boggs issued executive", 0.82) outranked Hitler (0.22), King Cyrus (0.10) and Missouri (0.27).
+  - crucible-pc-1 confirmed that load-model inside the session is the supported path.
+- **Measured** in scratch, on u4's 68 real candidates against hand-marked good and junk sets:
+  - The dedicated reranker under three instructions: good and junk inseparable (0.68 vs 0.64 at best).
+  - **qwen3.5-9b through the same rerank verb** (Crucible takes any decide model): good 0.87, junk 0.50, 12 of 14 good in the top 20, no junk. On u5 and u6: above 0.7, subjects; below 0.5, filler, numbers and web addresses.
+- **The changes** (tag-ranking.ts):
+  - `TAG_RERANK_MODEL = qwen3.5-9b`, the model the run already holds, so nothing is swapped in. `TAG_RERANK_INSTRUCTION` asks for a good search tag: names, works, doctrines and movements, or a phrase a viewer would type; not opinions, insults, numbers, fragments or web addresses. `TAG_MIN_RELEVANCE = 0.7`.
+  - The embedder still folds duplicates.
+  - **The summary contributes names, not phrases.** Its prose word runs were the fragments.
+  - **`exclude`:** the channel's tags and brand terms are never candidates. They are appended as the channel's tags, and #OwenMorgan was a hashtag on u5.
+  - **The list's first tag is the top-ranked candidate of either kind** (`primary` → `primaryPhrase`), not the top phrase. u4 had opened on "intact churches".
+- **The result on the same three videos** (previewed with the live 9B and embedder, not yet a full run):
+  - **u4:** German Church, Dietrich Bonhoeffer, Deutsche Christen, Lutheranism, Eric Metaxas, Hitler, Paul von Hindenburg, King Cyrus, Two Kingdoms doctrine, the Bonhoeffer biography …
+  - **u5:** Mormon, Carson Carpenter, Missouri, Jim Crow, Governor Liburn Boggs, Executive Order Forty Four, the Tuskegee syphilis experiment, the three-fifths compromise …
+  - **u6:** Bryce Crawford, Logan Paul, Leviticus, ceremonial laws …
+- **Still weak:** "be gay" (0.82) passes. The hashtags have their own builder, which gave #Christians and #BeGay on u6.
+- **Checks.** tag-ranking-checks: the roles and the bar, the summary adding names only, exclusion, the leading tag. check:pure, check:reroll (21), check:crucible (29 keepers) and build:electron pass.
+
+[electron/services/metadata/tag-ranking.ts, tags-hashtags.ts, metadata-tasks.ts, ai-manager.service.ts; tools/tag-ranking-checks.js]

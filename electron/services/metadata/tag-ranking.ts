@@ -3,7 +3,7 @@
  * what order — read off a reranker against the video's title and summary, with near-duplicates
  * collapsed by embedding. No model writes a tag: every candidate is still a name or phrase the
  * chapter list or the summary carries AND the transcript says (`occursIn`), exactly the pools
- * tags-hashtags.ts assembles from. This only orders and thins them.
+ * tags-hashtags.ts assembles from. This only orders and thins them. The summary adds NAMES only.
  *
  * WHY. The pools came out in chapter order, so a weak phrase from chapter 1 ("stand against", a bare
  * book name) took budget from a central name in chapter 3. nomic-embed-text used to rank them; it
@@ -18,19 +18,30 @@ import type { AIManagerService } from './ai-manager.service';
 import { summaryParagraphs, type StretchSummary } from './stretch-summary';
 import { chapterPools, ENTITY_POOL_SIZE, PHRASE_POOL_SIZE } from './tags-hashtags';
 
-/** The reranker (qwen3-reranker-8b, Crucible 1.0.133). */
-export const TAG_RERANK_MODEL = 'qwen3-reranker-8b';
+/**
+ * The judge: the 9B through Crucible's rerank verb, which takes any decide model (LEDGER #297).
+ *
+ * NOT the dedicated qwen3-reranker-8b, measured against it on u4's 68 real candidates (2026-10-10):
+ * a relevance reranker rewards whatever echoes the summary's wording, so "ridiculous nonsense" (0.73)
+ * and "com slash godspeople" (0.71) outranked Hitler (0.22) and King Cyrus (0.10), under every
+ * instruction tried. The 9B, asked whether each is a good search tag, put 12 of 14 hand-marked good
+ * tags in its top 20 and no junk (good 0.87 average, junk 0.50). It is also the model the run already
+ * holds for the summary and the gate, so nothing is swapped in for it.
+ */
+export const TAG_RERANK_MODEL = 'qwen3.5-9b';
 /** The embedder (qwen3-embedding-8b, Crucible 1.0.133). */
 export const TAG_EMBED_MODEL = 'qwen3-embedding-8b';
 
-/** Below this relevance a candidate is not a tag (P(yes) from the reranker). Set from the u4-u6 runs. */
-export const TAG_MIN_RELEVANCE = 0.5;
+/** Below this a candidate is not a tag (the 9B's P(yes)). Set from u4-u6 (#297): above 0.7 they are subjects; below 0.5, filler, numbers and web addresses. */
+export const TAG_MIN_RELEVANCE = 0.7;
 /** Two candidates this similar (cosine of unit vectors) name the same thing; the better-ranked one stays. */
 export const TAG_SAME_COSINE = 0.9;
 
 /** What relevant means to the reranker. */
 export const TAG_RERANK_INSTRUCTION =
-  "Given a YouTube video's title and summary, judge whether this search tag names a person, group, place, work, event or subject the video is substantially about";
+  'The Query describes a YouTube video. Judge whether the Document is a good search tag for it: the name of a person, ' +
+  'organization, place, book, event, doctrine or movement the video discusses, or a short topic phrase a viewer would ' +
+  'type to find it. Opinions, insults, numbers, filler fragments and web addresses are not tags.';
 
 export interface RankedCandidate {
   text: string;
@@ -45,6 +56,8 @@ export interface TagRanking {
   entities: string[];
   /** The phrases to assemble from, most relevant first. */
   phrases: string[];
+  /** The most relevant candidate of either kind: the list's first tag (assembleTags' primary phrase). */
+  primary: string | null;
   /** Every candidate, ranked, with its score; for the report. */
   ranked: RankedCandidate[];
   /** One line for the log and the report. */
@@ -64,6 +77,12 @@ export async function rankTagPools(input: {
   summary: StretchSummary;
   contentText: string;
   sourceLabel: string;
+  /**
+   * The channel's own names (brand terms, channel tags): never candidates. They are appended to the
+   * tags as the channel's tags, and a hashtag of the creator's own name (#OwenMorgan, u5 2026-10-10)
+   * is not a subject of the video (#297).
+   */
+  exclude: readonly string[];
 }): Promise<TagRanking> {
   const fromSummary = chapterPools({
     subjects: input.summary.paragraphs.map((p) => p.text),
@@ -74,18 +93,20 @@ export async function rankTagPools(input: {
   });
   const candidates: Array<{ text: string; kind: 'name' | 'phrase' }> = [];
   const seen = new Set<string>();
+  const own = new Set(input.exclude.map((t) => t.trim().toLowerCase()).filter(Boolean));
   const add = (text: string, kind: 'name' | 'phrase') => {
     const key = text.trim().toLowerCase();
-    if (key === '' || seen.has(key)) return;
+    if (key === '' || seen.has(key) || own.has(key)) return;
     seen.add(key);
     candidates.push({ text: text.trim(), kind });
   };
   for (const e of input.entities) add(e, 'name');
   for (const e of fromSummary.entities) add(e, 'name');
+  // Phrases from the chapter list only: the summary is prose, and its word runs were the fragments
+  // ("governor liburn boggs issued", "prompt carson") that took tag slots on 2026-10-10 (#297).
   for (const p of input.phrases) add(p, 'phrase');
-  for (const p of fromSummary.phrases) add(p, 'phrase');
   if (candidates.length === 0) {
-    return { entities: [], phrases: [], ranked: [], line: 'no grounded name or phrase to rank' };
+    return { entities: [], phrases: [], primary: null, ranked: [], line: 'no grounded name or phrase to rank' };
   }
 
   const query = `Title: ${input.title}\n\n${summaryParagraphs(input.summary)}`;
@@ -114,6 +135,7 @@ export async function rankTagPools(input: {
   ranked.sort((a, b) => b.score - a.score);
   const folded = ranked.filter((c) => c.sameAs !== undefined).length;
   return {
+    primary: order.length > 0 ? order[0].text : null,
     entities: order.filter((c) => c.kind === 'name').map((c) => c.text),
     phrases: order.filter((c) => c.kind === 'phrase').map((c) => c.text),
     ranked,

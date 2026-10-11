@@ -610,6 +610,8 @@ export interface CodeOwnedTagInputs {
   assembleTags: boolean;
   /** The channel's declared tag style (its channel file's `tag_style`). */
   tagStyle: TagStyle;
+  /** The list's first tag, when the tag ranking chose one (#297); else the first phrase, else the first name. */
+  primaryPhrase?: string;
   /** Whether this channel publishes hashtags. */
   assembleHashtags: boolean;
 }
@@ -633,7 +635,7 @@ export function codeOwnedTagFields(inputs: CodeOwnedTagInputs): CodeOwnedTagFiel
   const out: CodeOwnedTagFields = {};
   if (inputs.assembleTags) {
     const tagInputs: TagInputs = {
-      primaryPhrase: inputs.phrases[0] || inputs.entities[0] || '',
+      primaryPhrase: inputs.primaryPhrase || inputs.phrases[0] || inputs.entities[0] || '',
       entities: inputs.entities,
       phrases: inputs.phrases,
       contentText: inputs.contentText,

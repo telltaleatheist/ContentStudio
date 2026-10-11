@@ -193,6 +193,8 @@ export interface MetadataRunContext {
    * (ai-manager buildMetadataFieldPrompt).
    */
   stretchSummary: StretchSummary | null;
+  /** The tag ranking's first tag (LEDGER #297), set just before the tags are assembled; absent without one. */
+  primaryTag?: string;
   /** The video's title or filename. Context seeding for the description calls (spec §6.1 lever 2). */
   videoTitle: string;
   /** The loaded prompt set, which in this app IS the channel. */
@@ -1284,9 +1286,11 @@ export async function runMetadataTasks(
       summary: run.ctx.stretchSummary,
       contentText: stripSpeakerPrefixes(run.ctx.contentText),
       sourceLabel: run.ctx.sourceLabel,
+      exclude: [...aiManager.channelTags(), ...aiManager.brandTerms()],
     });
     run.ctx.entities = ranking.entities;
     run.ctx.phrases = ranking.phrases;
+    run.ctx.primaryTag = ranking.primary ?? undefined;
     merged._tag_ranking = { line: ranking.line, ranked: ranking.ranked };
     log.info(`[MetadataTasks] ${run.ctx.sourceLabel}: tag ranking: ${ranking.line}`);
   } else if (run.plan.assembleTags || run.plan.assembleHashtags) {
@@ -1534,6 +1538,7 @@ function assembleCodeOwnedFields(
     assembleTags: run.plan.assembleTags,
     assembleHashtags: run.plan.assembleHashtags,
     tagStyle: run.plan.tagStyle,
+    ...(ctx.primaryTag === undefined ? {} : { primaryPhrase: ctx.primaryTag }),
   });
 
   if (run.plan.assembleTags && built.tags !== undefined && built.tagAssembly !== undefined) {
