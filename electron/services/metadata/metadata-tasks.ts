@@ -99,6 +99,7 @@ import type { AIManagerService, MetadataResult } from './ai-manager.service';
 // from ai-manager.service, which imports this module.
 import type { FieldContentMode } from './chapter-digest';
 import type { StretchSummary } from './stretch-summary';
+import { rankTagPools } from './tag-ranking';
 
 /**
  * A metadata field a unit can be responsible for.
@@ -1270,6 +1271,27 @@ export async function runMetadataTasks(
   // Tags and hashtags, assembled from the pools with no model call at all (spec §4, §6.2,
   // §6.3). AFTER the units, because the hashtag rule dedupes against the title and the
   // titles unit is one of the ones that just ran.
+  // THE TAG RANKING (LEDGER #296): the pools, reranked against the title and summary and thinned of
+  // near-duplicates, before the code assembles tags and hashtags from them. On an item with a summary
+  // whose channel publishes either; one without keeps the chapter order (said in the log).
+  if ((run.plan.assembleTags || run.plan.assembleHashtags) && run.ctx.stretchSummary) {
+    const titles = Array.isArray(merged.titles) ? (merged.titles as unknown[]) : [];
+    const ranking = await rankTagPools({
+      aiManager,
+      entities: run.ctx.entities,
+      phrases: run.ctx.phrases,
+      title: typeof titles[0] === 'string' ? (titles[0] as string) : run.ctx.videoTitle,
+      summary: run.ctx.stretchSummary,
+      contentText: stripSpeakerPrefixes(run.ctx.contentText),
+      sourceLabel: run.ctx.sourceLabel,
+    });
+    run.ctx.entities = ranking.entities;
+    run.ctx.phrases = ranking.phrases;
+    merged._tag_ranking = { line: ranking.line, ranked: ranking.ranked };
+    log.info(`[MetadataTasks] ${run.ctx.sourceLabel}: tag ranking: ${ranking.line}`);
+  } else if (run.plan.assembleTags || run.plan.assembleHashtags) {
+    log.info(`[MetadataTasks] ${run.ctx.sourceLabel}: no summary, so the tags keep the chapter list's order (no ranking)`);
+  }
   assembleCodeOwnedFields(aiManager, run, merged);
 
   // Description links, the channel tag append and hashtag spacing are applied ONCE, to

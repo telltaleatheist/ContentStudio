@@ -15,7 +15,7 @@ import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import * as os from 'os';
 import * as log from 'electron-log';
-import { ANTHROPIC_MAX_TOKENS, crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
+import { ANTHROPIC_MAX_TOKENS, crucibleTransport, type EmbedAnswer, type PromptTraceRecord, type RerankAnswer } from '../../crucible/transport';
 import { isUpstreamModelId } from '../../crucible/acts';
 import { inOrder } from '../../crucible/fan-out';
 import type { JobSessions } from '../../crucible/session';
@@ -1109,6 +1109,29 @@ export class AIManagerService {
 
   hasInsightsBlock(): boolean {
     return Boolean(this.config.insightsBlock);
+  }
+
+  /**
+   * A rerank on the job's server (LEDGER #296): one query, many short documents, a relevance per
+   * document. Through the AI queue like every local call, in the job's sessions, on the trace.
+   */
+  async rerank(model: string, query: string, documents: readonly string[], instruction: string, what: string): Promise<RerankAnswer> {
+    const id = Math.random().toString(36).substring(7);
+    return queueAITask<RerankAnswer>(routeOfModelId(model), `rr-${id}`, `Rerank: ${model}`, () => crucibleTransport().rerank({
+      model, query, documents, instruction, what, trace: this.promptTrace,
+      ...(this.config.jobSessions === undefined ? {} : { job: this.config.jobSessions }),
+      ...(this.config.abortSignal === undefined ? {} : { signal: this.config.abortSignal }),
+    }));
+  }
+
+  /** Embeddings on the job's server (LEDGER #296), through the AI queue like every local call. */
+  async embed(model: string, inputs: readonly string[], inputType: 'query' | 'document', what: string): Promise<EmbedAnswer> {
+    const id = Math.random().toString(36).substring(7);
+    return queueAITask<EmbedAnswer>(routeOfModelId(model), `em-${id}`, `Embed: ${model}`, () => crucibleTransport().embed({
+      model, inputs, inputType, what, trace: this.promptTrace,
+      ...(this.config.jobSessions === undefined ? {} : { job: this.config.jobSessions }),
+      ...(this.config.abortSignal === undefined ? {} : { signal: this.config.abortSignal }),
+    }));
   }
 
   async runPlainRequest(prompt: string, model: string, what: string, shape: PlainCallShape): Promise<string | null> {

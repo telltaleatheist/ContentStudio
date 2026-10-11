@@ -1938,3 +1938,22 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** check:pure (the cleanup default, the ceiling over the metadata rows) and check:reroll (21) pass.
 
 [electron/services/metadata/metadata-routing.ts, metadata-generator.service.ts; tools/routing-publish-checks.js, stretch-summary-checks.js]
+
+**296. Tags are ranked: a reranker scores the grounded candidates against the title and summary, and an embedder folds near-duplicates (Owen, 2026-10-10: "the embed and rerank verbs are available on crucible now"; then "i dont think they should be routing choices… they cant really replace a chat model. its a different step").**
+- **Fixed roles, not routing rows** (tag-ranking.ts): `TAG_RERANK_MODEL = qwen3-reranker-8b`, `TAG_EMBED_MODEL = qwen3-embedding-8b`. They are named once, like the re-roll gate's scorer. A smaller reranker or embedder is a two-line change.
+- **The transport** (Crucible 1.0.133 `POST /v1/rerank`, `POST /v1/embed`, read from its server source):
+  - `CrucibleTransport.rerank` / `.embed` run through one `verbDoor`: the job's server and lane, its queue session (`job.serve` makes the model resident, so the session's record of what is loaded stays true), the trace, one re-ensure on `model_not_resident`, and the server's own refusals.
+  - At most 256 documents or inputs a request. A rerank answer without one score per document, or an embed without one vector per input, is refused by name.
+  - `AIManagerService.rerank` / `.embed` queue them as GPU calls in the job's sessions.
+- **The step** (metadata-tasks, just before the code assembles tags and hashtags), on an item with a stretch summary whose channel publishes either:
+  - The candidates are the chapter pools plus the summary's own names and phrases. Each is grounded in the transcript (`chapterPools` / `occursIn`) and de-duplicated case-insensitively.
+  - **Rerank:** one call, with the query "Title: <first title>" plus the summary paragraphs, under `TAG_RERANK_INSTRUCTION`. Below `TAG_MIN_RELEVANCE` (0.5) a candidate is dropped.
+  - **Embed:** the kept candidates as documents. A candidate within cosine 0.9 (`TAG_SAME_COSINE`) of a better-ranked one folds into it.
+  - The ranked names and phrases replace the pools, so `assembleTags` / `assembleWordTags` and the hashtags take them most-relevant first.
+  - The ranking is stored on the report (`_tag_ranking`: the line, every candidate with its score, and what it folded into) and logged.
+  - An item without a summary keeps the chapter order, said in the log.
+  - The reports page's chapter re-roll (`rederiveTagFields`) makes no model calls and keeps chapter order.
+- **Not run live yet.** The thresholds (0.5, 0.9) are first guesses, to be set from u4, u5 and u6. The models load inside the session as the chat models do; whether the reranker and embedder load cleanly that way is what the first live run shows.
+- **Checks.** New tools/tag-ranking-checks.js, in check:pure: the fixed roles; the query (title plus summary); the summary's names joining the candidates; the drop below the bar; most-relevant-first order; nothing below the bar embedded; a duplicate folded with `sameAs`; nothing to rank means no calls; cosine. check:pure, check:reroll (21), check:crucible (29 keepers), check:thumbnail, check:digest, build:electron and the frontend tsc pass.
+
+[electron/crucible/transport.ts; electron/services/metadata/tag-ranking.ts (new), ai-manager.service.ts, metadata-tasks.ts; tools/tag-ranking-checks.js (new); package.json]

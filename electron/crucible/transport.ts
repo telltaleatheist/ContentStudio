@@ -202,6 +202,58 @@ export interface ChatResult {
   sampling: Record<string, string> | null;
 }
 
+/**
+ * `POST /v1/rerank` (Crucible 1.0.133, LEDGER #296): how relevant each document is to one query,
+ * read off a dedicated reranker (qwen3-reranker-8b) or any decide model. Local only.
+ */
+export interface RerankRequest {
+  model: string;
+  query: string;
+  /** At most 256 (Crucible's MAX_DOCUMENTS); a document plus the query fits the served context. */
+  documents: readonly string[];
+  /** What "relevant" means here, in one sentence. */
+  instruction?: string;
+  job?: JobSessions;
+  signal?: AbortSignal;
+  what: string;
+  trace: PromptTraceRecord[] | null;
+}
+
+export interface RerankAnswer {
+  /** Each document's relevance (P(yes)), 0 to 1, in the request's order. */
+  scores: number[];
+  model: string;
+  instruction: string;
+  server: string;
+  ms: number;
+}
+
+/** `POST /v1/embed` (Crucible 1.0.133, LEDGER #296): texts to unit-length vectors. Local only. */
+export interface EmbedRequest {
+  model: string;
+  /** At most 256 (Crucible's MAX_EMBED_INPUTS). */
+  inputs: readonly string[];
+  inputType: 'query' | 'document';
+  instruction?: string;
+  dimensions?: number;
+  job?: JobSessions;
+  signal?: AbortSignal;
+  what: string;
+  trace: PromptTraceRecord[] | null;
+}
+
+export interface EmbedAnswer {
+  vectors: number[][];
+  model: string;
+  /** The vectors' identity: only vectors with the same fingerprint are comparable. */
+  fingerprint: string;
+  server: string;
+  ms: number;
+}
+
+/** The most documents (rerank) or inputs (embed) one Crucible request carries. */
+export const VERB_MAX_ITEMS = 256;
+
 export interface DecideRequest {
   model: string;
   state: unknown;
@@ -555,6 +607,120 @@ export class CrucibleTransport {
         },
         { act: 'decide', ...(signal === undefined ? {} : { signal }) },
       ));
+  }
+
+  /** `POST /v1/rerank` on the job's server, inside its queue session (LEDGER #296). */
+  async rerank(request: RerankRequest): Promise<RerankAnswer> {
+    if (request.documents.length === 0) throw new CrucibleCallError('refused', `${request.what} has no documents to rank.`);
+    if (request.documents.length > VERB_MAX_ITEMS) {
+      throw new CrucibleCallError('refused', `${request.what} has ${request.documents.length} documents; one rerank takes at most ${VERB_MAX_ITEMS}.`);
+    }
+    const body = {
+      model: request.model, query: request.query, documents: request.documents,
+      ...(request.instruction === undefined ? {} : { instruction: request.instruction }),
+    };
+    const chars = request.query.length + request.documents.reduce((n, d) => n + d.length, 0);
+    return this.verbDoor('rerank', '/v1/rerank', request, body, chars, `[rerank: ${request.documents.length} document(s)]`,
+      (json, server, ms) => {
+        const scores = (json as { scores?: unknown }).scores;
+        if (!Array.isArray(scores) || scores.length !== request.documents.length || scores.some((v) => typeof v !== 'number')) {
+          throw new CrucibleCallError('refused', `${request.what}: "${server}" answered a rerank without one score per document.`, server);
+        }
+        const j = json as { model?: { id?: string }; instruction?: string };
+        return { scores: scores as number[], model: j.model?.id ?? request.model, instruction: j.instruction ?? '', server, ms };
+      });
+  }
+
+  /** `POST /v1/embed` on the job's server, inside its queue session (LEDGER #296). */
+  async embed(request: EmbedRequest): Promise<EmbedAnswer> {
+    if (request.inputs.length === 0) throw new CrucibleCallError('refused', `${request.what} has nothing to embed.`);
+    if (request.inputs.length > VERB_MAX_ITEMS) {
+      throw new CrucibleCallError('refused', `${request.what} has ${request.inputs.length} inputs; one embed takes at most ${VERB_MAX_ITEMS}.`);
+    }
+    const body = {
+      model: request.model, inputs: request.inputs, input_type: request.inputType, encoding_format: 'float',
+      ...(request.instruction === undefined ? {} : { instruction: request.instruction }),
+      ...(request.dimensions === undefined ? {} : { dimensions: request.dimensions }),
+    };
+    const chars = request.inputs.reduce((n, d) => n + d.length, 0);
+    return this.verbDoor('embed', '/v1/embed', request, body, chars, `[embed: ${request.inputs.length} input(s), ${request.inputType}]`,
+      (json, server, ms) => {
+        const j = json as { embeddings?: unknown; model?: { id?: string; fingerprint?: string } };
+        const vectors = j.embeddings;
+        if (!Array.isArray(vectors) || vectors.length !== request.inputs.length || vectors.some((v) => !Array.isArray(v))) {
+          throw new CrucibleCallError('refused', `${request.what}: "${server}" answered an embed without one vector per input.`, server);
+        }
+        return { vectors: vectors as number[][], model: j.model?.id ?? request.model, fingerprint: j.model?.fingerprint ?? '', server, ms };
+      });
+  }
+
+  /**
+   * The door rerank and embed share: the job's server and lane, its queue session (the model made
+   * resident by the session, as a chat's is, so the session's own record of what is loaded stays
+   * true), the trace, the one re-ensure, the server's own refusals. Crucible's verbs load at the
+   * model's served context; the call states that as its need.
+   */
+  private async verbDoor<T>(
+    kind: 'rerank' | 'embed',
+    pathName: string,
+    request: { model: string; job?: JobSessions; signal?: AbortSignal; what: string; trace: PromptTraceRecord[] | null },
+    body: Record<string, unknown>,
+    chars: number,
+    traceLine: string,
+    read: (json: unknown, server: string, ms: number) => T,
+  ): Promise<T> {
+    const model = this.requireCrucibleModel(request.model, request.what);
+    if (isUpstreamModelId(model)) {
+      throw new CrucibleCallError('refused', `${request.what} named ${model}; ${kind} runs on a local model only.`);
+    }
+    const hooks = this.hooksOf();
+    const signal = anySignal(request.signal, hooks.signal);
+    this.throwIfAborted(signal, request.what);
+    const oneCall = request.job === undefined;
+    const job = request.job ?? this.job(request.what);
+    try {
+      const server = this.gpuServer(hooks, job, request.what);
+      const venue = await this.venue(server, 'generate');
+      job.server ??= server;
+      const traced: PromptTraceRecord = {
+        what: request.what, model, chars, at: new Date().toISOString(),
+        prompt: `${JSON.stringify(body)}\n\n${traceLine}`, server, maxTokens: 0, loadContext: null,
+      };
+      inOrder(() => request.trace?.push(traced));
+      const need = estimateTokens(chars);
+      let reensured = false;
+      for (;;) {
+        const { card, done } = await job.serve(server, model, { act: venue.act, need, signal, hooks });
+        try {
+          const started = Date.now();
+          const { response, url } = await this.host.factory.engineFetch(server, pathName, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            ...(signal === undefined ? {} : { signal }),
+            session: card.id,
+          });
+          if (!response.ok) throw await refusalOf(response, url);
+          const json = await response.json();
+          hooks.beat();
+          const answer = read(json, server, Date.now() - started);
+          log.info(`[crucible] ${request.what}: ${model} on "${server}" (${kind}) answered in ${Date.now() - started} ms`);
+          return answer;
+        } catch (err) {
+          if (!reensured && err instanceof CrucibleRefused && err.code === 'model_not_resident') {
+            reensured = true;
+            card.forget(model);
+            continue;
+          }
+          if (err instanceof CrucibleCallError) throw err;
+          throw this.refusal(err, server, model, request.what, signal);
+        } finally {
+          done();
+        }
+      }
+    } finally {
+      if (oneCall) await job.releaseAll();
+    }
   }
 
   /** decide's door, shared by both forms: the caller supplies only the call itself. */
