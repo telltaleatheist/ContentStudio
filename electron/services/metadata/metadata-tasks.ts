@@ -195,6 +195,8 @@ export interface MetadataRunContext {
   stretchSummary: StretchSummary | null;
   /** The tag ranking's first tag (LEDGER #297), set just before the tags are assembled; absent without one. */
   primaryTag?: string;
+  /** The tag ranking's kept candidates in order, the model's suggestions among them (#298); absent without a ranking. */
+  rankedTags?: Array<{ text: string; grounded: boolean }>;
   /** The video's title or filename. Context seeding for the description calls (spec §6.1 lever 2). */
   videoTitle: string;
   /** The loaded prompt set, which in this app IS the channel. */
@@ -907,12 +909,14 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
   /**
    * The tasks that get a routed call THIS RUN, in the order they run.
    *
-   * On a chaptered item that is the four packaging fields; on a chapterless one it is those
-   * four plus tags, because there is no chapter list for the tag pools to be measured against.
+   * The packaging fields plus TAGS, on every item since LEDGER #298 (Owen, 2026-10-10: "we could
+   * hand the whole transcript over to a model… and have it suggest tags"). On a chapterless item
+   * the model's list IS the tags, as before. On a chaptered one it is the model's SUGGESTIONS: they
+   * join the grounded pools as candidates, the tag ranking (tag-ranking.ts) judges them all, and the
+   * code assembles the published list from the ranked whole.
    */
-  const routedTasks: Array<{ task: MetadataRoutingTaskId; field: MetadataFieldId }> = hasChapters
-    ? FIELD_TASKS
-    : [...FIELD_TASKS, { task: 'tags' as MetadataRoutingTaskId, field: 'tags' as MetadataFieldId }];
+  const routedTasks: Array<{ task: MetadataRoutingTaskId; field: MetadataFieldId }> =
+    [...FIELD_TASKS, { task: 'tags' as MetadataRoutingTaskId, field: 'tags' as MetadataFieldId }];
 
   /** One entry per planned call, in FIELD order. Re-ordered by model just before it is returned. */
   const planned: Array<{ field: MetadataFieldId; option: MetadataRoutingOption }> = [];
@@ -994,7 +998,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     `[MetadataTasks] this item ${hasChapters ? 'HAS' : 'has NO'} chapters, so its tags are ` +
       (publishesTags
         ? hasChapters
-          ? 'assembled in code from the pools its chapter list yields and no model writes them'
+          ? `assembled in code from the ranked candidates: the pools its chapter list yields and the suggestions of the model the "Tags" routing selection names`
           : `written by the model the "Tags" routing selection names, because there is no chapter list for those pools to be measured against`
         : 'not published by this channel at all') +
       `; hashtags ${assemblesHashtags ? 'are' : 'are not'} derived in code`
@@ -1286,11 +1290,14 @@ export async function runMetadataTasks(
       summary: run.ctx.stretchSummary,
       contentText: stripSpeakerPrefixes(run.ctx.contentText),
       sourceLabel: run.ctx.sourceLabel,
+      // The Tags row model's list (#298), written from the whole transcript by the tags unit above.
+      suggested: typeof merged.tags === 'string' ? (merged.tags as string).split(',').map((t) => t.trim()).filter(Boolean) : [],
       exclude: [...aiManager.channelTags(), ...aiManager.brandTerms()],
     });
     run.ctx.entities = ranking.entities;
     run.ctx.phrases = ranking.phrases;
     run.ctx.primaryTag = ranking.primary ?? undefined;
+    run.ctx.rankedTags = ranking.ordered;
     merged._tag_ranking = { line: ranking.line, ranked: ranking.ranked };
     log.info(`[MetadataTasks] ${run.ctx.sourceLabel}: tag ranking: ${ranking.line}`);
   } else if (run.plan.assembleTags || run.plan.assembleHashtags) {
@@ -1539,6 +1546,7 @@ function assembleCodeOwnedFields(
     assembleHashtags: run.plan.assembleHashtags,
     tagStyle: run.plan.tagStyle,
     ...(ctx.primaryTag === undefined ? {} : { primaryPhrase: ctx.primaryTag }),
+    ...(ctx.rankedTags === undefined ? {} : { ranked: ctx.rankedTags }),
   });
 
   if (run.plan.assembleTags && built.tags !== undefined && built.tagAssembly !== undefined) {

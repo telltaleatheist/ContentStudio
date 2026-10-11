@@ -893,13 +893,32 @@ check('an item WITHOUT chapters plans the same routed units, not a legacy single
   eq(p.assembleHashtags, true, 'hashtags are still derived in code');
 });
 
-check('an item WITH chapters keeps its code-assembled tags', () => {
+// LEDGER #298: the Tags row's model writes SUGGESTIONS on a chaptered item too; the code still assembles.
+check('an item WITH chapters gets the Tags model\'s suggestions and still assembles its tags in code', () => {
   const p = plan('youtube-telltale', { hasChapters: true });
 
   const written = new Set();
   for (const unit of p.units) for (const f of unit.fields) written.add(f);
-  if (written.has('tags')) throw new Error('a model was planned for tags on a chaptered item');
-  eq(p.assembleTags, true, 'assembled from the pools instead');
+  if (!written.has('tags')) throw new Error('no model was planned to suggest tags on a chaptered item');
+  eq(p.assembleTags, true, 'the published list is still assembled in code, from the ranked candidates:');
+});
+
+check('ranked candidates are the order; a model suggestion skips the in-content test, a grounded one does not', () => {
+  const content = 'Bryce Crawford says it. Logan Paul asks him. Then Leviticus is read.';
+  const assembled = tagsHashtags.assembleTags({
+    primaryPhrase: 'ignored', entities: ['Bryce Crawford', 'Logan Paul'], phrases: [], contentText: content,
+    ranked: [
+      { text: 'christian influencer', grounded: false },
+      { text: 'Bryce Crawford', grounded: true },
+      { text: 'never said phrase', grounded: true },
+      { text: 'Leviticus', grounded: true },
+    ],
+  });
+  eq(assembled.tags.slice(0, 3), ['christian influencer', 'Bryce Crawford', 'Leviticus'], 'ranked order, the suggestion kept:');
+  if (!assembled.notInContent.includes('never said phrase')) throw new Error('a grounded candidate the transcript does not say was kept');
+  const words = tagsHashtags.assembleWordTags({ primaryPhrase: '', entities: ['Bryce Crawford'], phrases: [], contentText: content,
+    ranked: [{ text: 'repentance', grounded: false }, { text: 'Bryce Crawford', grounded: true }] });
+  eq(words.tags, ['repentance', 'crawford'], 'spreaker: the suggestion\'s word, then the name\'s distinctive word:');
 });
 
 /**

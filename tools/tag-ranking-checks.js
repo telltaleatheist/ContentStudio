@@ -56,7 +56,7 @@ check('candidates are reranked against the title and summary, dropped below the 
   );
   const out = await R.rankTagPools({
     aiManager: ai, entities: ['Romans', 'Eric Metaxas', 'Dietrich Bonhoeffer'], phrases: ['stand against', 'christian nationalism'],
-    title: 'metaxas rewrote bonhoeffer', summary: SUMMARY, contentText: CONTENT, sourceLabel: 'u4.mov', exclude: [],
+    title: 'metaxas rewrote bonhoeffer', summary: SUMMARY, contentText: CONTENT, sourceLabel: 'u4.mov', suggested: [], exclude: [],
   });
   const rr = ai.calls.find((c) => c.kind === 'rerank');
   if (!rr.query.startsWith('Title: metaxas rewrote bonhoeffer\n\n1. 0:00')) throw new Error('the query is not the title and the summary: ' + rr.query.slice(0, 80));
@@ -73,7 +73,7 @@ check('the summary adds names, never its prose word runs', async () => {
   const ai = fakeAi({}, {});
   await R.rankTagPools({ aiManager: ai, entities: [], phrases: [], title: 't',
     summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'Governor Liburn Boggs issued an extermination order against the Mormons in Missouri.' }] },
-    contentText: 'Governor Liburn Boggs issued an extermination order against the Mormons in Missouri.', sourceLabel: 'u5', exclude: [] });
+    contentText: 'Governor Liburn Boggs issued an extermination order against the Mormons in Missouri.', sourceLabel: 'u5', suggested: [], exclude: [] });
   const docs = ai.calls.find((c) => c.kind === 'rerank').documents;
   if (!docs.includes('Governor Liburn Boggs')) throw new Error('the summary\'s name did not join: ' + docs);
   if (docs.some((d) => /issued|extermination order/.test(d))) throw new Error('a summary word run joined: ' + docs);
@@ -82,9 +82,21 @@ check('the summary adds names, never its prose word runs', async () => {
 check('the channel\'s own names are never candidates, and the most relevant candidate leads', async () => {
   const ai = fakeAi({ 'Dietrich Bonhoeffer': 0.95, 'christian nationalism': 0.99 }, { 'Dietrich Bonhoeffer': [1, 0, 0], 'christian nationalism': [0, 1, 0] });
   const out = await R.rankTagPools({ aiManager: ai, entities: ['Owen Morgan', 'Dietrich Bonhoeffer'], phrases: ['christian nationalism'],
-    title: 't', summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'x' }] }, contentText: CONTENT + ' Owen Morgan.', sourceLabel: 'v', exclude: ['Owen Morgan', 'telltale'] });
+    title: 't', summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'x' }] }, contentText: CONTENT + ' Owen Morgan.', sourceLabel: 'v', suggested: [], exclude: ['Owen Morgan', 'telltale'] });
   if (ai.calls[0].documents.includes('Owen Morgan')) throw new Error('the creator\'s own name was a candidate');
   eq(out.primary, 'christian nationalism', 'the top candidate of either kind leads:');
+});
+
+check('the Tags model\'s suggestions are candidates beside the pools, marked ungrounded, judged the same way', async () => {
+  const ai = fakeAi({ 'christian influencer': 0.9, 'Bryce Crawford': 0.95, 'owen morgan': 0.99, 'pretty funny': 0.2 },
+    { 'christian influencer': [0, 1, 0], 'Bryce Crawford': [1, 0, 0] });
+  const out = await R.rankTagPools({ aiManager: ai, entities: ['Bryce Crawford'], phrases: [], title: 't',
+    summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'x' }] }, contentText: 'Bryce Crawford.', sourceLabel: 'u6',
+    suggested: ['christian influencer', '"pretty funny"', 'owen morgan'], exclude: ['Owen Morgan'] });
+  const docs = ai.calls[0].documents;
+  if (!docs.includes('christian influencer') || !docs.includes('pretty funny')) throw new Error('a suggestion was not a candidate: ' + docs);
+  if (docs.includes('owen morgan')) throw new Error('the channel\'s own name came in through the suggestions');
+  eq(out.ordered, [{ text: 'Bryce Crawford', grounded: true }, { text: 'christian influencer', grounded: false }], 'kept, in order, the suggestion ungrounded:');
 });
 
 check('a near-duplicate folds into the better-ranked one', async () => {
@@ -94,7 +106,7 @@ check('a near-duplicate folds into the better-ranked one', async () => {
   );
   const out = await R.rankTagPools({
     aiManager: ai, entities: [], phrases: ['christian nationalist', 'christian nationalism'],
-    title: 't', summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'nothing named' }] }, contentText: CONTENT, sourceLabel: 'v.mov', exclude: [],
+    title: 't', summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'nothing named' }] }, contentText: CONTENT, sourceLabel: 'v.mov', suggested: [], exclude: [],
   });
   eq(out.phrases, ['christian nationalism'], 'the better-ranked twin stays:');
   eq(out.ranked.find((c) => c.text === 'christian nationalist').sameAs, 'christian nationalism', 'and the other names it:');
@@ -102,7 +114,7 @@ check('a near-duplicate folds into the better-ranked one', async () => {
 
 check('nothing grounded: no calls, nothing to rank', async () => {
   const ai = fakeAi({}, {});
-  const out = await R.rankTagPools({ aiManager: ai, entities: [], phrases: [], title: 't', summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'x' }] }, contentText: 'x', sourceLabel: 'v', exclude: [] });
+  const out = await R.rankTagPools({ aiManager: ai, entities: [], phrases: [], title: 't', summary: { ...SUMMARY, paragraphs: [{ start: 0, text: 'x' }] }, contentText: 'x', sourceLabel: 'v', suggested: [], exclude: [] });
   eq([out.entities, out.phrases, ai.calls.length], [[], [], 0], 'empty:');
 });
 

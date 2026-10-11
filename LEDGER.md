@@ -1980,3 +1980,26 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** tag-ranking-checks: the roles and the bar, the summary adding names only, exclusion, the leading tag. check:pure, check:reroll (21), check:crucible (29 keepers) and build:electron pass.
 
 [electron/services/metadata/tag-ranking.ts, tags-hashtags.ts, metadata-tasks.ts, ai-manager.service.ts; tools/tag-ranking-checks.js]
+
+**298. The Tags model suggests tags from the whole transcript on every item; its suggestions are judged with the grounded pools (Owen, 2026-10-10: "go ahead and build it. tags arent important… but id like to get it right… we could hand the whole transcript over to a model (27b, or claude -p) and have it suggest tags for it").**
+- **What it reverses.** Since #205 a chaptered item's tags came only from words its chapter list and transcript share (`occursIn`), because a tag for something the video never mentions is a spam signal to YouTube. That kept tags literal: u6 had "moving cars" and "cheesing babies" but no "christian influencer". The guard is now the 9B judge (#297), asked whether each candidate is a good search tag for the video its title and summary describe.
+- **The change.**
+  - planMetadataUnits plans the **tags** unit on every item whose channel publishes tags, on the Tags routing row. It reads the whole transcript (tags is not a summary-reading field).
+    - On a chapterless item its list is the tags, as before.
+    - On a chaptered item it is SUGGESTIONS: `rankTagPools({ suggested })` puts them beside the pools as `kind: 'suggested'`, de-duplicated and stripped of quotes and #. The channel's own names are excluded, and they are judged the same way.
+  - `TagRanking.ordered` (the kept candidates, most relevant first, with `grounded`) becomes the assembly's order (`ranked`). In `assembleTags`, a suggestion skips the in-content test and the "said capitalized mid-sentence" one-word test. The stammer, profanity and contraction tests and the 500-character budget still apply, and grounded candidates keep every test.
+  - `assembleWordTags` (Spreaker) takes the same order. A suggestion's words skip the in-content test.
+  - The log line counts how many kept tags were suggestions.
+- **Previewed on u4, u5 and u6** (claude -p Opus for the suggestions, as Owen's Tags row is; the live 9B and embedder):
+  - The judge kept 5–7 suggestions per video.
+  - **u6:** "christian influencer debunked", "is being gay a choice", "are tattoos a sin leviticus", "bryce crawford cheesing cars", "brice crawford" (misspelling).
+  - **u5:** "lilburn boggs extermination order" (spelled right where the transcript has "Liburn"), "mormon extermination order 1838", "reparations debate", "outnumbered debate".
+  - **u4:** "german church under hitler", "eric metaxas letter to the american church", "christian nationalism".
+- **Cost:** one more call per item on the Tags row, reading the whole transcript: 50–83k chars, which on the 27B is a long prefill.
+- **Still open:** the hashtags have their own builder (#Christians, #BeGay on u6).
+- **Checks.**
+  - routing-publish-checks: a chaptered item plans the tags unit and still assembles; the ranked order; a suggestion skipping the in-content test while a grounded candidate does not; Spreaker's word order.
+  - tag-ranking-checks: suggestions as ungrounded candidates, own names excluded.
+  - check:pure, check:reroll (21), check:crucible (29 keepers), check:digest and build:electron pass.
+
+[electron/services/metadata/metadata-tasks.ts, tag-ranking.ts, tags-hashtags.ts; tools/routing-publish-checks.js, tag-ranking-checks.js]

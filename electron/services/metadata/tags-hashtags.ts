@@ -201,6 +201,12 @@ export interface TagInputs {
    * `contentTextOf(item)`, the final export's transcript (#283).
    */
   contentText: string;
+  /**
+   * The tag ranking's kept candidates, most relevant first (#298). When present they ARE the
+   * candidate order; a `grounded: false` one (the Tags model's suggestion) skips the in-content test,
+   * which the judge has stood in for.
+   */
+  ranked?: ReadonlyArray<{ text: string; grounded: boolean }>;
 }
 
 export interface TagAssembly {
@@ -238,6 +244,11 @@ export function assembleTags(inputs: TagInputs): TagAssembly {
     offered.push({ tag: cleaned, requiresContent });
   };
 
+  if (inputs.ranked !== undefined) {
+    for (const candidate of inputs.ranked) push(candidate.text, candidate.grounded);
+    for (const misspelling of misspellingsFor(inputs.entities)) push(misspelling, false);
+    return assembleOffered(offered, inputs.contentText);
+  }
   push(inputs.primaryPhrase);
   for (const entity of inputs.entities) push(entity);
   // Phrases earn a tag slot only when they are PHRASES, and only the first of them.
@@ -257,7 +268,12 @@ export function assembleTags(inputs: TagInputs): TagAssembly {
   // Misspellings are the one class that is deliberately absent from the content (§4, §6.2):
   // they catch the search, not the transcript.
   for (const misspelling of misspellingsFor(inputs.entities)) push(misspelling, false);
+  return assembleOffered(offered, inputs.contentText);
+}
 
+/** The filters and the budget over the offered candidates, in their order. */
+function assembleOffered(offered: Array<{ tag: string; requiresContent: boolean }>, contentText: string): TagAssembly {
+  const inputs = { contentText };
   const tags: string[] = [];
   const dropped: string[] = [];
   const notInContent: string[] = [];
@@ -267,7 +283,9 @@ export function assembleTags(inputs: TagInputs): TagAssembly {
     const key = candidate.tag.toLowerCase();
     if (seen.has(key)) continue;
     if (isGenericSingleWord(candidate.tag)) continue;
-    if (isNoiseCandidate(candidate.tag, inputs.contentText)) continue;
+    // A model's suggestion (#298) is not a word the video said, so the "said capitalized mid-sentence"
+    // test of a one-word name does not apply to it; the stammer, profanity and contraction tests do.
+    if (isNoiseCandidate(candidate.tag, candidate.requiresContent ? inputs.contentText : null)) continue;
     if (candidate.requiresContent && !occursIn(inputs.contentText, candidate.tag)) {
       notInContent.push(candidate.tag);
       continue;
@@ -316,7 +334,7 @@ export function assembleWordTags(inputs: TagInputs): TagAssembly {
   const casing = new Map<string, string>();
   for (const entity of inputs.entities) for (const w of wordsOf(entity)) if (!casing.has(w.toLowerCase())) casing.set(w.toLowerCase(), w);
 
-  const offered: Array<{ word: string; name: boolean }> = [];
+  const offered: Array<{ word: string; name: boolean; free?: boolean }> = [];
   // The words a name does NOT give ("Jim" of "Jim Bakker"): a phrase that carries the name
   // ("televangelist jim bakker") must not bring the first name in by the back door.
   const passedOver = new Set<string>();
@@ -334,29 +352,39 @@ export function assembleWordTags(inputs: TagInputs): TagAssembly {
     if (distinctive) offered.push({ word: distinctive, name: true });
   };
   // A phrase gives each of its words that is not ordinary.
-  const offerPhrase = (phrase: string) => {
-    for (const w of wordsOf(phrase)) if (!ordinary(w) && !passedOver.has(w.toLowerCase())) offered.push({ word: casing.get(w.toLowerCase()) ?? w.toLowerCase(), name: casing.has(w.toLowerCase()) });
+  const offerPhrase = (phrase: string, free = false) => {
+    for (const w of wordsOf(phrase)) if (!ordinary(w) && !passedOver.has(w.toLowerCase())) offered.push({ word: casing.get(w.toLowerCase()) ?? w.toLowerCase(), name: casing.has(w.toLowerCase()), free });
   };
   // Names are read first so `passedOver` is whole before any phrase is offered; the ORDER stays
   // primary phrase, names, phrases.
   for (const entity of inputs.entities) offerName(entity);
   const names = offered.splice(0);
-  offerPhrase(inputs.primaryPhrase);
-  offered.push(...names);
-  for (const phrase of inputs.phrases.slice(0, PHRASE_TAG_LIMIT)) offerPhrase(phrase);
+  if (inputs.ranked !== undefined) {
+    // The tag ranking's order (#298): each kept candidate in turn, a name as a name; the Tags
+    // model's suggestions are `free` of the in-content test, which the judge stood in for.
+    const nameKeys = new Set(inputs.entities.map((e) => e.toLowerCase()));
+    for (const c of inputs.ranked) {
+      if (c.grounded && nameKeys.has(c.text.toLowerCase())) offerName(c.text);
+      else offerPhrase(c.text, !c.grounded);
+    }
+  } else {
+    offerPhrase(inputs.primaryPhrase);
+    offered.push(...names);
+    for (const phrase of inputs.phrases.slice(0, PHRASE_TAG_LIMIT)) offerPhrase(phrase);
+  }
 
   const tags: string[] = [];
   const dropped: string[] = [];
   const notInContent: string[] = [];
   const seen = new Set<string>();
-  for (const { word, name } of offered) {
+  for (const { word, name, free } of offered) {
     const key = word.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     // Spreaker cuts a tag at 30 characters (measured in its feeds, LEDGER #293); a word that long
     // is not a tag anyone types, so it is left out rather than cut into one nobody wrote.
     if (key.length > SPREAKER_MAX_TAG_CHARS) continue;
-    if (!occursIn(inputs.contentText, word)) {
+    if (!free && !occursIn(inputs.contentText, word)) {
       notInContent.push(word);
       continue;
     }
@@ -434,14 +462,14 @@ function isGenericSingleWord(tag: string): boolean {
 const TAG_PROFANITY = /\b(fuck\w*|shit\w*|goddamn\w*|asshole\w*|bitch\w*|cunt\w*)\b/i;
 const VERB_CONTRACTION = /\w'(ve|re|ll|d|m)\b|n't\b/i;
 
-function isNoiseCandidate(tag: string, contentText: string): boolean {
+function isNoiseCandidate(tag: string, contentText: string | null): boolean {
   const words = tag.toLowerCase().split(/\s+/);
   for (let i = 1; i < words.length; i++) {
     if (words[i] === words[i - 1]) return true;
   }
   if (TAG_PROFANITY.test(tag)) return true;
   if (VERB_CONTRACTION.test(tag)) return true;
-  if (!tag.includes(' ') && !/^[0-9]/.test(tag)) {
+  if (contentText !== null && !tag.includes(' ') && !/^[0-9]/.test(tag)) {
     const midSentence = new RegExp(`[^.!?\\n]\\s+${tag.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`);
     if (!midSentence.test(contentText)) return true;
   }
@@ -608,6 +636,8 @@ export interface CodeOwnedTagInputs {
   brandTag: string | undefined;
   /** Whether this item's tags are assembled here (a chaptered item on a channel that publishes tags). */
   assembleTags: boolean;
+  /** The tag ranking's kept candidates in order (#298); absent: the pools' own order. */
+  ranked?: ReadonlyArray<{ text: string; grounded: boolean }>;
   /** The channel's declared tag style (its channel file's `tag_style`). */
   tagStyle: TagStyle;
   /** The list's first tag, when the tag ranking chose one (#297); else the first phrase, else the first name. */
@@ -639,6 +669,7 @@ export function codeOwnedTagFields(inputs: CodeOwnedTagInputs): CodeOwnedTagFiel
       entities: inputs.entities,
       phrases: inputs.phrases,
       contentText: inputs.contentText,
+      ...(inputs.ranked === undefined ? {} : { ranked: inputs.ranked }),
     };
     const assembled = inputs.tagStyle === 'spreaker' ? assembleWordTags(tagInputs) : assembleTags(tagInputs);
     out.tags = assembled.tags.join(',');

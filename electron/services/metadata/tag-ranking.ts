@@ -45,7 +45,8 @@ export const TAG_RERANK_INSTRUCTION =
 
 export interface RankedCandidate {
   text: string;
-  kind: 'name' | 'phrase';
+  /** `suggested`: written by the Tags row's model from the whole transcript (#298), not grounded word for word. */
+  kind: 'name' | 'phrase' | 'suggested';
   score: number;
   /** The better-ranked candidate this one duplicates, when it was folded into it. */
   sameAs?: string;
@@ -58,6 +59,8 @@ export interface TagRanking {
   phrases: string[];
   /** The most relevant candidate of either kind: the list's first tag (assembleTags' primary phrase). */
   primary: string | null;
+  /** Every kept candidate, most relevant first: what the tags are assembled from (#298). */
+  ordered: Array<{ text: string; grounded: boolean }>;
   /** Every candidate, ranked, with its score; for the report. */
   ranked: RankedCandidate[];
   /** One line for the log and the report. */
@@ -78,6 +81,12 @@ export async function rankTagPools(input: {
   contentText: string;
   sourceLabel: string;
   /**
+   * The Tags row model's tags for this item (#298), from the whole transcript: candidates beside
+   * the pools, judged the same way. Not grounded word for word — that is their point ("christian
+   * influencer" is said by no one) — so the judge's bar is the only check they pass.
+   */
+  suggested: readonly string[];
+  /**
    * The channel's own names (brand terms, channel tags): never candidates. They are appended to the
    * tags as the channel's tags, and a hashtag of the creator's own name (#OwenMorgan, u5 2026-10-10)
    * is not a subject of the video (#297).
@@ -91,10 +100,10 @@ export async function rankTagPools(input: {
     entityLimit: ENTITY_POOL_SIZE,
     phraseLimit: PHRASE_POOL_SIZE,
   });
-  const candidates: Array<{ text: string; kind: 'name' | 'phrase' }> = [];
+  const candidates: Array<{ text: string; kind: 'name' | 'phrase' | 'suggested' }> = [];
   const seen = new Set<string>();
   const own = new Set(input.exclude.map((t) => t.trim().toLowerCase()).filter(Boolean));
-  const add = (text: string, kind: 'name' | 'phrase') => {
+  const add = (text: string, kind: 'name' | 'phrase' | 'suggested') => {
     const key = text.trim().toLowerCase();
     if (key === '' || seen.has(key) || own.has(key)) return;
     seen.add(key);
@@ -105,8 +114,9 @@ export async function rankTagPools(input: {
   // Phrases from the chapter list only: the summary is prose, and its word runs were the fragments
   // ("governor liburn boggs issued", "prompt carson") that took tag slots on 2026-10-10 (#297).
   for (const p of input.phrases) add(p, 'phrase');
+  for (const t of input.suggested) add(t.replace(/["#]/g, ''), 'suggested');
   if (candidates.length === 0) {
-    return { entities: [], phrases: [], primary: null, ranked: [], line: 'no grounded name or phrase to rank' };
+    return { entities: [], phrases: [], primary: null, ordered: [], ranked: [], line: 'no grounded name or phrase to rank' };
   }
 
   const query = `Title: ${input.title}\n\n${summaryParagraphs(input.summary)}`;
@@ -136,12 +146,14 @@ export async function rankTagPools(input: {
   const folded = ranked.filter((c) => c.sameAs !== undefined).length;
   return {
     primary: order.length > 0 ? order[0].text : null,
+    ordered: order.map((c) => ({ text: c.text, grounded: c.kind !== 'suggested' })),
     entities: order.filter((c) => c.kind === 'name').map((c) => c.text),
     phrases: order.filter((c) => c.kind === 'phrase').map((c) => c.text),
     ranked,
     line:
       `${candidates.length} candidates ranked on ${reranked.model} (${reranked.ms} ms): ${order.length} kept at ` +
-      `relevance >= ${TAG_MIN_RELEVANCE}, ${scored.length - relevant.length} below it, ${folded} folded as duplicates`,
+      `relevance >= ${TAG_MIN_RELEVANCE} (${order.filter((c) => c.kind === 'suggested').length} of them the model's suggestions), ` +
+      `${scored.length - relevant.length} below it, ${folded} folded as duplicates`,
   };
 }
 
