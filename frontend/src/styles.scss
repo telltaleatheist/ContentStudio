@@ -76,3 +76,12 @@ body {
 .spacer {
   flex: 1 1 auto;
 }
+
+/* Error text is always selectable, so it can be copied rather than screenshotted. The editor
+   (and a few other views) turn selection off at their root, and every message inside them
+   inherited that. An explicit value beats the inherited one. */
+[class*="error"],
+[class*="-fail"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
