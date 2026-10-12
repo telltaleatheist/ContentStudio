@@ -126,7 +126,8 @@ const PROGRAM_TRACKS_NOT_EXTRACTED = new Set(['on-air mix', 'everything merged']
 
 /**
  * The WAVs of an OBS set of manifest version 2, keyed by audio type
- * (`{ mic1: '/…/2026-10-11 2 mic audio.wav' }`). Version 2 delivers no WAVs: they are the
+ * (`{ mic1: { wav: '/…/2026-10-11 mic audio.wav', program: '/…/2026-10-11 program.mkv', track: 2 } }`,
+ * `track` 1-based as OBS numbers them). Version 2 delivers no WAVs: they are the
  * lossless PCM tracks of `<session> program.mkv`, which the processing run extracts at its
  * start into these paths. They need not exist yet. Returns null for a set without a version-2
  * manifest.
@@ -134,7 +135,7 @@ const PROGRAM_TRACKS_NOT_EXTRACTED = new Set(['on-air mix', 'everything merged']
  * A WAV not on disk needs the program recording, so its absence is an error here rather than
  * at the end of a long wait; so is a track label this table does not know.
  */
-export function obsSetProgramAudio(masterVideoPath: string): { [audioType: string]: string } | null {
+export function obsSetProgramAudio(masterVideoPath: string): { [audioType: string]: { wav: string; program: string; track: number } } | null {
   const read = readObsManifest(masterVideoPath);
   if (!read || read.manifest.version !== 2) return null;
   const { manifest, manifestName, dir, session } = read;
@@ -148,18 +149,22 @@ export function obsSetProgramAudio(masterVideoPath: string): { [audioType: strin
     throw new Error(`${manifestName} lists "${program.file}" without its "tracks"`);
   }
 
-  const planned: { [audioType: string]: string } = {};
+  const programPath = path.join(dir, String(program.file));
+  const planned: { [audioType: string]: { wav: string; program: string; track: number } } = {};
   for (const track of program.tracks) {
     if (PROGRAM_TRACKS_NOT_EXTRACTED.has(track?.audio)) continue;
     const target = PROGRAM_TRACK_WAVS[track?.audio];
     if (!target) {
       throw new Error(`${manifestName}: program track ${track?.track} holds "${track?.audio}", which this build does not know how to name`);
     }
-    planned[target.audioType] = path.join(dir, `${session} ${target.wav}.wav`);
+    const trackNumber = Number(track?.track);
+    if (!Number.isInteger(trackNumber) || trackNumber < 1) {
+      throw new Error(`${manifestName}: program track "${track?.audio}" has no valid track number (${track?.track})`);
+    }
+    planned[target.audioType] = { wav: path.join(dir, `${session} ${target.wav}.wav`), program: programPath, track: trackNumber };
   }
 
-  const programPath = path.join(dir, String(program.file));
-  const unmade = Object.values(planned).filter(p => !fs.existsSync(p));
+  const unmade = Object.values(planned).filter(p => !fs.existsSync(p.wav));
   if (unmade.length > 0 && !fs.existsSync(programPath)) {
     throw new Error(`"${program.file}" is not in ${dir}. This OBS set's WAVs are taken from it, and ${unmade.length} of them are not made yet.`);
   }

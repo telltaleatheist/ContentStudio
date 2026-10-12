@@ -273,6 +273,8 @@ export class EditorHostAdapter implements EditorHost {
     success: boolean;
     audioFiles?: { [key: string]: string };
     videoFiles?: { [key: string]: string };
+    /** Sources detected but not in use (silent audio, a picture that never changes), with why. */
+    cleared?: { [key: string]: string };
     error?: string;
   }> {
     return this.electron.autoDetectAudio(masterVideoPath);

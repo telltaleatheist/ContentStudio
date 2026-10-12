@@ -279,7 +279,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       return;
     }
 
-    let result: { success: boolean; audioFiles?: { [key: string]: string }; videoFiles?: { [key: string]: string }; error?: string };
+    let result: { success: boolean; audioFiles?: { [key: string]: string }; videoFiles?: { [key: string]: string }; cleared?: { [key: string]: string }; error?: string };
     try {
       result = await this.host.autoDetectAudio(master);
     } catch (err: any) {
@@ -307,7 +307,10 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     // slot must never point at something its own dropdown cannot show.
     for (const path of assigned.values()) this.ensureCandidate(path);
 
-    this.slots = this.buildSlots(assigned);
+    // Sources the detector found but left out as unused keep an empty slot, so one it got wrong
+    // is a pick away.
+    const cleared = Object.entries(result.cleared || {});
+    this.slots = this.buildSlots(assigned, cleared.map(([type]) => type as MediaSourceType));
 
     // MASTER-ONLY PROJECT. The predicate is exact and deliberately narrow: the folder holds
     // NO assignable media at all beside the master (`candidates.length === 0`) AND the
@@ -337,6 +340,12 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
         `Pick the files by hand below.`;
     } else {
       this.detectNote = null;
+    }
+    if (cleared.length > 0) {
+      const lines = cleared.map(([type, reason]) =>
+        `${this.mediaSourceLabels[type as MediaSourceType] || type}: ${reason}`);
+      const note = `Left empty as unused (pick a file to use one anyway):\n${lines.join('\n')}`;
+      this.detectNote = this.detectNote ? `${this.detectNote}\n\n${note}` : note;
     }
     this.state = 'ready';
     this.cdr.detectChanges();
@@ -385,9 +394,10 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  private buildSlots(assigned: Map<MediaSourceType, string>): SourceSlot[] {
+  private buildSlots(assigned: Map<MediaSourceType, string>, cleared: MediaSourceType[] = []): SourceSlot[] {
     const types = new Set<MediaSourceType>(this.coreTypes);
     for (const type of assigned.keys()) types.add(type);
+    for (const type of cleared) types.add(type);
     return this.slotOrder
       .filter(type => types.has(type))
       .map(type => this.makeSlot(type, assigned.get(type) || ''));

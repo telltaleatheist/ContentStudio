@@ -29,6 +29,7 @@ import {
 } from './mute-words';
 import { createEditorWindow, getEditorWindow } from './editor-window';
 import { obsSetEmbeddedAudio, obsSetProgramAudio, sessionOfMaster, sessionVideoPatterns } from './session-sources';
+import { isDigitalSilence, largestPictureChange, mediaDurationSeconds, STATIC_DIFF_THRESHOLD } from './source-usage';
 import { getMainWindow } from '../../main';
 
 /**
@@ -1501,10 +1502,10 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
       // An OBS set of manifest version 2 delivers no WAVs: they are tracks of its program
       // recording, extracted when the run starts. The slots name the WAVs before they exist.
       const programAudio = obsSetProgramAudio(masterVideoPath);
-      for (const [audioType, filePath] of Object.entries(programAudio || {})) {
+      for (const [audioType, planned] of Object.entries(programAudio || {})) {
         if (detectedAudio[audioType]) continue;
-        detectedAudio[audioType] = filePath;
-        log.info(`Planned ${audioType} (from the OBS program recording): ${path.basename(filePath)}`);
+        detectedAudio[audioType] = planned.wav;
+        log.info(`Planned ${audioType} (from the OBS program recording, track ${planned.track}): ${path.basename(planned.wav)}`);
       }
 
       // An OBS set (LEDGER #275) carries some audio only inside a video recording: Mic 2 is in
@@ -1517,7 +1518,40 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
         log.info(`Detected ${audioType} (inside OBS recording): ${path.basename(filePath)}`);
       }
 
-      return { success: true, audioFiles: detectedAudio, videoFiles: detectedVideo };
+      // UNUSED SOURCES are left out (source-usage.ts): an audio source that is exact digital
+      // silence at every sampled point, a video whose picture never changes. An OBS set records
+      // every configured source whether or not anything is plugged in. `cleared` names each one
+      // with its reason, so the modal can say so and the slot can be filled again by hand.
+      const ffmpeg = binaryResolver().getFfmpegPath();
+      const ffprobe = binaryResolver().getFfprobePath();
+      const cleared: { [type: string]: string } = {};
+      const plannedByWav = new Map(Object.values(programAudio || {}).map(p => [p.wav, p]));
+      await Promise.all([
+        ...Object.entries(detectedAudio).map(async ([audioType, filePath]) => {
+          const planned = plannedByWav.get(filePath);
+          const file = planned && !fs.existsSync(filePath) ? planned.program : filePath;
+          const audioIndex = planned && file === planned.program ? planned.track - 1 : 0;
+          const duration = await mediaDurationSeconds(ffprobe, file);
+          if (await isDigitalSilence(ffmpeg, file, audioIndex, duration)) {
+            const where = file === filePath ? path.basename(file) : `${path.basename(file)} track ${audioIndex + 1}`;
+            cleared[audioType] = `${where} is digital silence throughout`;
+          }
+        }),
+        ...Object.entries(detectedVideo).map(async ([videoType, filePath]) => {
+          const duration = await mediaDurationSeconds(ffprobe, filePath);
+          const change = await largestPictureChange(ffmpeg, filePath, duration);
+          if (change < STATIC_DIFF_THRESHOLD) {
+            cleared[videoType] = `${path.basename(filePath)}'s picture never changes (an unused camera or capture)`;
+          }
+        }),
+      ]);
+      for (const [type, reason] of Object.entries(cleared)) {
+        log.info(`Leaving ${type} empty: ${reason}`);
+        delete detectedAudio[type];
+        delete detectedVideo[type];
+      }
+
+      return { success: true, audioFiles: detectedAudio, videoFiles: detectedVideo, cleared };
     } catch (error: any) {
       log.error('Error auto-detecting audio:', error);
       return { success: false, error: error.message };

@@ -2027,3 +2027,18 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - No live set has been processed; Owen tests.
 
 [editor-backend/core/obs_program_audio.py, cli/electron_workflow.py; electron/services/editor/session-sources.ts, editor-ipc.ts]
+
+**300. The setup modal leaves an unused source's slot empty: audio that is digital silence throughout, video whose picture never changes (Owen, 2026-10-11: "can we make it do that automatically? clearing slots that i dont need?", after the 2026-10-11 set came with an unplugged Cam 2, a silent Mic 2 and no game audio).**
+- **Why.** An OBS set records every configured source whether or not anything is plugged in. Processed, an unused source costs time and puts a silent track or the "No Signal" colour bars into the compounds. It also gives a low-confidence alignment warning.
+- **The tests** (`source-usage.ts`; `auto-detect-audio` runs them on every detected slot at once):
+  - **Audio:** exact zeros (s32) in all 24 one-second windows spaced evenly across the stream. It stops at the first window with signal, so a live track costs one read. A program-recording WAV that isn't made yet is tested on its track of the program recording.
+  - **Video:** 12 frames, grey at 240×135. Unused when the mean |difference| between every pair of consecutive frames is under 0.25, #276's threshold.
+- **What the modal does.** Detection returns `cleared` (type → reason). The modal adds an empty slot for each cleared type and lists each one with its reason, under "Left empty as unused (pick a file to use one anyway)".
+- **Measured on the 2026-10-11 set.**
+  - Program track 3 (Mic 2) and track 5 (game) are silent; tracks 2 and 4 are not.
+  - Picture change: cam 2 0.000, cam 31.4, screen capture 102.4, game capture 58.0.
+  - So Mic 2, Game audio and Cam 2 are left empty. Game capture video is kept, because its picture changes.
+  - Run one after another the checks took 14.6 s; in the modal they run together.
+- **Checks.** build:electron and the frontend tsc are clean. The modal has not been opened on it; Owen tests.
+
+[electron/services/editor/source-usage.ts, editor-ipc.ts, session-sources.ts; frontend/src/app/components/editor/project-setup-modal/*, editor-host.ts; frontend/src/app/services/editor-host.adapter.ts, electron.ts]
