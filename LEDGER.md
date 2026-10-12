@@ -2003,3 +2003,27 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
   - check:pure, check:reroll (21), check:crucible (29 keepers), check:digest and build:electron pass.
 
 [electron/services/metadata/metadata-tasks.ts, tag-ranking.ts, tags-hashtags.ts; tools/routing-publish-checks.js, tag-ranking-checks.js]
+
+**299. An OBS set of manifest version 2 has its WAVs extracted by ContentStudio from the program recording (Owen, 2026-10-11, on the 2026-10-11 set: "2026-10-11 2 sync.json is OBS-set manifest version 2; this build reads version 1 only"; "we're going to have to build in logic to create wav audio tracks… instead of relying on my little utility suite program"; then "you can build in the logic assuming itll be in every future folder").**
+- **What version 2 changes.** Utility Suite no longer writes `mic audio` / `screen audio` / `master audio`. It lists `<set> program.mkv`, the main OBS recording, with a `tracks` list: OBS's 1-based track number and what each holds (1 on-air mix, 2 Mic 1, 3 Mic 2, 4 Mac, 5 game, 6 everything merged), all lossless PCM. The version-1 WAVs were copies of those tracks.
+  - The separate MP4s carry one AAC track each (cam = Mic 1, cam 2 = Mic 2, screen capture = Mac, game capture = game, master = everything merged). Those are lossy, so they are not the source.
+- **The change.**
+  - Both readers accept versions 1 and 2 (`_is_obs_set`; `readObsManifest` in session-sources.ts).
+  - `auto-detect-audio` fills mic1, mic2, screen and game with `<set> mic audio.wav`, `mic 2 audio.wav`, `screen audio.wav` and `game audio.wav` before they exist (`obsSetProgramAudio`). A detected WAV still wins. "on-air mix" and "everything merged" fill no slot.
+  - The run's first step (`core/obs_program_audio.py`, before measure-only too) extracts every slot WAV that the plan names and that is not on disk. It does this in one read of the program recording, with the PCM stream-copied (`-rf64 auto` for streams past 4 GB). Each WAV is written as `.partial.wav` and renamed when done. Progress shows at 2%.
+  - The label→filename table exists in both files, and each one names the other.
+- **Errors, never a quiet skip.**
+  - A version-2 manifest with no program entry or several.
+  - A program entry with no tracks, or a track label the table doesn't know.
+  - A track that is missing or not PCM.
+  - A WAV still to make when the program recording is not in the folder. The setup modal reports this, so it doesn't wait for the run.
+- **Not used.** The program's `offset_frames` (−18 on 2026-10-11). Audio is still measured by GCC-PHAT.
+- **Checks.**
+  - py_compile and build:electron are clean.
+  - A fake set with a 6-track PCM mkv and the real v2 manifest: the planner named the four WAVs. Extraction wrote four pcm_s24le WAVs, tracks 2–5 in order, checked by tone. A second call made nothing.
+  - With the program removed, the planner passed while the WAVs existed and raised once one was deleted.
+  - The 2026-10-08 v1 set: the planner returns null and the embedded map is unchanged.
+  - The real 2026-10-11 set raises "program.mkv is not in …" until the file arrives. `_is_obs_set` is true on it.
+  - No live set has been processed; Owen tests.
+
+[editor-backend/core/obs_program_audio.py, cli/electron_workflow.py; electron/services/editor/session-sources.ts, editor-ipc.ts]

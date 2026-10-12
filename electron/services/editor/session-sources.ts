@@ -58,33 +58,44 @@ const OBS_ROLE_AUDIO: { [role: string]: string } = {
 };
 
 /**
- * The audio sources an OBS set carries only inside its video recordings, keyed by audio type
- * (`{ mic2: '/…/2026-10-08 cam 2.mp4' }`), from `<session> sync.json` beside the master: the
- * manifest Utility Suite writes, `"format": "obs-set"`, version 1, whose `files` list names each
- * present file's `role`. Returns null when there is no manifest (a vMix set).
- *
- * The caller fills a slot from this only when no WAV was detected for it, because the WAVs are
- * lossless and the recordings' audio is AAC.
- *
- * A manifest that cannot be read, is not an obs-set v1, or names a file that is not in the
- * folder is an error, never "no manifest": it would otherwise silently drop Mic 2.
+ * A set's `<session> sync.json`, the manifest Utility Suite writes (`"format": "obs-set"`,
+ * version 1 or 2), or null when there is none (a vMix set). Anything else at that name is an
+ * error, never "no manifest": it would otherwise silently drop Mic 2.
  */
-export function obsSetEmbeddedAudio(masterVideoPath: string): { [audioType: string]: string } | null {
+function readObsManifest(masterVideoPath: string): { manifest: any; manifestName: string; dir: string; session: string } | null {
   const { session } = sessionOfMaster(masterVideoPath);
   const dir = path.dirname(masterVideoPath);
   const manifestPath = path.join(dir, `${session} sync.json`);
   if (!fs.existsSync(manifestPath)) return null;
+  const manifestName = path.basename(manifestPath);
 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   if (manifest?.format !== 'obs-set') {
-    throw new Error(`${path.basename(manifestPath)} is not an OBS-set manifest (format is not "obs-set")`);
+    throw new Error(`${manifestName} is not an OBS-set manifest (format is not "obs-set")`);
   }
-  if (manifest.version !== 1) {
-    throw new Error(`${path.basename(manifestPath)} is OBS-set manifest version ${manifest.version}; this build reads version 1 only`);
+  if (manifest.version !== 1 && manifest.version !== 2) {
+    throw new Error(`${manifestName} is OBS-set manifest version ${manifest.version}; this build reads versions 1 and 2`);
   }
   if (!Array.isArray(manifest.files)) {
-    throw new Error(`${path.basename(manifestPath)} has no "files" list`);
+    throw new Error(`${manifestName} has no "files" list`);
   }
+  return { manifest, manifestName, dir, session };
+}
+
+/**
+ * The audio sources an OBS set carries only inside its video recordings, keyed by audio type
+ * (`{ mic2: '/…/2026-10-08 cam 2.mp4' }`), from the set's manifest, whose `files` list names
+ * each present file's `role`. Returns null when there is no manifest (a vMix set).
+ *
+ * The caller fills a slot from this only when no WAV was detected or planned for it, because
+ * the WAVs are lossless and the recordings' audio is AAC.
+ *
+ * A manifest that names a recording that is not in the folder is an error.
+ */
+export function obsSetEmbeddedAudio(masterVideoPath: string): { [audioType: string]: string } | null {
+  const read = readObsManifest(masterVideoPath);
+  if (!read) return null;
+  const { manifest, manifestName, dir } = read;
 
   const embedded: { [audioType: string]: string } = {};
   for (const entry of manifest.files) {
@@ -92,9 +103,65 @@ export function obsSetEmbeddedAudio(masterVideoPath: string): { [audioType: stri
     if (!audioType) continue;
     const filePath = path.join(dir, String(entry.file));
     if (!fs.existsSync(filePath)) {
-      throw new Error(`${path.basename(manifestPath)} lists "${entry.file}" (${entry.role}), which is not in ${dir}`);
+      throw new Error(`${manifestName} lists "${entry.file}" (${entry.role}), which is not in ${dir}`);
     }
     embedded[audioType] = filePath;
   }
   return embedded;
+}
+
+/**
+ * What a program-recording track holds (the manifest's "audio" label) -> the audio slot it fills
+ * and the WAV it becomes, named as the vMix-era files were. The run writes these files
+ * (editor-backend/core/obs_program_audio.py, PROGRAM_TRACK_WAVS); the two tables must agree.
+ * "on-air mix" and "everything merged" fill no slot: nothing takes a master mix as a source.
+ */
+const PROGRAM_TRACK_WAVS: { [label: string]: { audioType: string; wav: string } } = {
+  'Mic 1': { audioType: 'mic1', wav: 'mic audio' },
+  'Mic 2': { audioType: 'mic2', wav: 'mic 2 audio' },
+  'Mac': { audioType: 'screen', wav: 'screen audio' },
+  'game': { audioType: 'game', wav: 'game audio' },
+};
+const PROGRAM_TRACKS_NOT_EXTRACTED = new Set(['on-air mix', 'everything merged']);
+
+/**
+ * The WAVs of an OBS set of manifest version 2, keyed by audio type
+ * (`{ mic1: '/…/2026-10-11 2 mic audio.wav' }`). Version 2 delivers no WAVs: they are the
+ * lossless PCM tracks of `<session> program.mkv`, which the processing run extracts at its
+ * start into these paths. They need not exist yet. Returns null for a set without a version-2
+ * manifest.
+ *
+ * A WAV not on disk needs the program recording, so its absence is an error here rather than
+ * at the end of a long wait; so is a track label this table does not know.
+ */
+export function obsSetProgramAudio(masterVideoPath: string): { [audioType: string]: string } | null {
+  const read = readObsManifest(masterVideoPath);
+  if (!read || read.manifest.version !== 2) return null;
+  const { manifest, manifestName, dir, session } = read;
+
+  const programs = manifest.files.filter((e: any) => e?.role === 'program');
+  if (programs.length !== 1) {
+    throw new Error(`${manifestName} is version 2 but lists ${programs.length} program recordings, not one; the set's WAVs come from it`);
+  }
+  const program = programs[0];
+  if (!Array.isArray(program.tracks) || program.tracks.length === 0) {
+    throw new Error(`${manifestName} lists "${program.file}" without its "tracks"`);
+  }
+
+  const planned: { [audioType: string]: string } = {};
+  for (const track of program.tracks) {
+    if (PROGRAM_TRACKS_NOT_EXTRACTED.has(track?.audio)) continue;
+    const target = PROGRAM_TRACK_WAVS[track?.audio];
+    if (!target) {
+      throw new Error(`${manifestName}: program track ${track?.track} holds "${track?.audio}", which this build does not know how to name`);
+    }
+    planned[target.audioType] = path.join(dir, `${session} ${target.wav}.wav`);
+  }
+
+  const programPath = path.join(dir, String(program.file));
+  const unmade = Object.values(planned).filter(p => !fs.existsSync(p));
+  if (unmade.length > 0 && !fs.existsSync(programPath)) {
+    throw new Error(`"${program.file}" is not in ${dir}. This OBS set's WAVs are taken from it, and ${unmade.length} of them are not made yet.`);
+  }
+  return planned;
 }

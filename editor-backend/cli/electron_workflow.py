@@ -35,6 +35,7 @@ from core.editors.auto_editor import AutoEditor
 from core.editors.smart_cut_filter import SmartCutFilter
 from core.skip_logic import SkipDecisionEngine
 from core.naming import is_soundboard_filename
+from core.obs_program_audio import extract_program_audio
 import zipfile
 import select
 
@@ -211,7 +212,7 @@ def create_xml_zip(xml_files, output_dir, session_name):
 
 def _is_obs_set(master_video):
     """True when the session was recorded by OBS, told by its `<session> sync.json` beside the
-    master: the OBS-set manifest Utility Suite writes (`"format": "obs-set"`, version 1; the
+    master: the OBS-set manifest Utility Suite writes (`"format": "obs-set"`, version 1 or 2; the
     same file the setup modal reads to find the mic audio carried inside a camera file).
 
     It matters for one thing: the `vmix_sources` speed factor in drift_corrections.json was
@@ -231,10 +232,10 @@ def _is_obs_set(master_video):
         raise ValueError(
             f"{report.name} is not an OBS-set manifest (its format is not \"obs-set\"), so "
             f"this session cannot be told apart from a vMix one")
-    if data.get('version') != 1:
+    if data.get('version') not in (1, 2):
         raise ValueError(
             f"{report.name} is OBS-set manifest version {data.get('version')!r}; this build "
-            f"reads version 1 only")
+            f"reads versions 1 and 2")
     return True
 
 
@@ -964,6 +965,20 @@ def main():
         alignment_overrides = data.get('alignmentOverrides') or {}
         audio_overrides = _parse_overrides(alignment_overrides.get('audio'), 'audio')
         video_overrides = _parse_overrides(alignment_overrides.get('video'), 'video')
+
+        # OBS SET, MANIFEST VERSION 2: its WAVs are not delivered, they are tracks of the
+        # program recording. The setup modal filled the slots with the WAV paths; any of them
+        # not on disk yet is extracted here, before anything reads it (measure-only included).
+        wanted_audio = [p for p in audio_sources_input.values() if p]
+        made = extract_program_audio(
+            master_video, wanted_audio,
+            ffmpeg=_resolve_media_tool('ffmpeg', None),
+            ffprobe=_resolve_media_tool('ffprobe', None),
+            on_progress=lambda fraction: emit_progress(
+                2, 'Extracting the audio tracks from the program recording...',
+                sub_progress=round(fraction * 100, 1)))
+        for wav in made:
+            print(f"✓ Extracted {Path(wav).name}", file=sys.stderr)
 
         # MEASURE-ONLY MODE: measure each source's offset and emit one JSON result, then
         # exit without generating anything (used to pre-seed the manual-alignment UI).

@@ -28,7 +28,7 @@ import {
   readMuteCatalog, loadProjectMuteSettings, saveProjectMuteSettings, ensureProjectMuteSettings,
 } from './mute-words';
 import { createEditorWindow, getEditorWindow } from './editor-window';
-import { obsSetEmbeddedAudio, sessionOfMaster, sessionVideoPatterns } from './session-sources';
+import { obsSetEmbeddedAudio, obsSetProgramAudio, sessionOfMaster, sessionVideoPatterns } from './session-sources';
 import { getMainWindow } from '../../main';
 
 /**
@@ -1496,6 +1496,15 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
           detectedVideo[videoType] = candidates[0];
           log.info(`Detected ${videoType}: ${path.basename(candidates[0])}`);
         }
+      }
+
+      // An OBS set of manifest version 2 delivers no WAVs: they are tracks of its program
+      // recording, extracted when the run starts. The slots name the WAVs before they exist.
+      const programAudio = obsSetProgramAudio(masterVideoPath);
+      for (const [audioType, filePath] of Object.entries(programAudio || {})) {
+        if (detectedAudio[audioType]) continue;
+        detectedAudio[audioType] = filePath;
+        log.info(`Planned ${audioType} (from the OBS program recording): ${path.basename(filePath)}`);
       }
 
       // An OBS set (LEDGER #275) carries some audio only inside a video recording: Mic 2 is in
