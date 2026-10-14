@@ -33,6 +33,7 @@ from core.compound_generators.shorts_master_project_generator import ShortsMaste
 from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
 from core.editors.smart_cut_filter import SmartCutFilter
+from core.editors.pause_mix import is_game_audio, recut_without_game
 from core.skip_logic import SkipDecisionEngine
 from core.naming import is_soundboard_filename
 from core.obs_program_audio import extract_program_audio
@@ -1048,6 +1049,14 @@ def main():
         editor = AutoEditor(config, progress_callback=ffmpeg_progress_callback)
         editor.skip_check_callback = check_for_skip_signal
         altered_xml = editor.cut_silence(str(master_video), threshold or config.default_threshold)
+
+        # Step 1.2: the master carries the game audio merged in, and a game is almost never
+        # silent, so with game audio in the set the pauses come from every OTHER source.
+        # Stream recovery has no individual tracks (see the smart cut filter below).
+        if not use_downloaded_stream and any(p and is_game_audio(t) for t, p in audio_sources_input.items()):
+            set_stage(12, 'Finding pauses without the game audio...')
+            altered_xml = recut_without_game(editor, altered_xml, audio_sources_input,
+                                             threshold or config.default_threshold)
 
         # Step 1.5: Smart cut filter — preserve video-watching segments
         # Uses screen audio to detect when the video is playing. Cuts are only

@@ -258,7 +258,7 @@ class CamGenerator:
                     audio_type,
                     resources,
                     source_duration=audio_info['duration'],
-                    enabled=True,
+                    enabled=audio_type != 'game',  # game audio goes in muted; Owen turns it on in Final Cut
                     channels=audio_info['channels']
                 )
                 gap.append(audio_clip)

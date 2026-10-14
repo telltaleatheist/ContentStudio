@@ -2042,3 +2042,11 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** build:electron and the frontend tsc are clean. The modal has not been opened on it; Owen tests.
 
 [electron/services/editor/source-usage.ts, editor-ipc.ts, session-sources.ts; frontend/src/app/components/editor/project-setup-modal/*, editor-host.ts; frontend/src/app/services/editor-host.adapter.ts, electron.ts]
+
+**301. Game audio never decides where the pauses are, and it goes into every compound muted (Owen, 2026-10-14: "game audio should be muted by default in every project, and it shouldnt be used to determine where pauses should go", after the 2026-10-14 set came out with almost no cuts).**
+- **Why.** auto-editor finds pauses on the master recording, and an OBS master has every source merged into it, game included. A game is almost never silent: in a 20-minute stretch of the 2026-10-14 set, game audio was silent for 19% of the time at -55 dB. The mic was silent for 50% and screen audio for 65%. So the master had almost no pauses to cut.
+- **Pauses.** When the set has game audio (and is not stream recovery), the workflow mixes every other audio source into a 16 kHz mono WAV with no level normalising. It runs auto-editor on that mix at the master's threshold, then rewrites the master's kept segments from the result. Edges snap outward to the master's frames, and the result is clipped to the master's extent. The mix and its XML are deleted afterwards. The smart cut filter (screen audio) runs after this, as before. A set without game audio is untouched.
+- **Muted.** The audio loops in the cam, ssb, dc_ssb, shorts_ssb and shorts_cam generators write the game clip with enabled="0". The GS and DC-GS compounds already had it off. Owen turns it on in Final Cut where he wants it.
+- **Checks.** Synthetic 60 s set (mic on 5 s / off 5 s, constant game noise, silent screen): the master alone kept one 60 s segment, and without the game it kept 6 segments on the mic's bursts, every edge a multiple of 1001/30000 s. No test covers the generators. Owen re-processes the latest sets to see it.
+
+[editor-backend/core/editors/pause_mix.py, cli/electron_workflow.py, core/compound_generators/{cam,ssb,dc_ssb,shorts_ssb,shorts_cam}_generator.py]

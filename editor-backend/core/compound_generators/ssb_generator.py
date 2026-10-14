@@ -273,7 +273,7 @@ class SSBGenerator:
                         audio_info['duration'],
                         audio_type,  # Pass audio type for volume adjustment
                         resources,   # Pass resources
-                        enabled=True,
+                        enabled=audio_type != 'game',  # game audio goes in muted; Owen turns it on in Final Cut
                         channels=audio_info['channels']
                     )
                     gap.append(audio_clip)
