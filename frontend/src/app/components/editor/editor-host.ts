@@ -46,6 +46,11 @@ export interface ProjectScanResult {
   hasTranscript?: boolean;
   /** Populated for 'unrecognized' (and any scan that failed): the verbatim reason. */
   error?: string;
+  /**
+   * The folder on this Mac is gone and this scan is of its NAS copy, at this path (`folder`,
+   * `masterVideo` and `zipPath` point at the copy). Nothing local is left to sync or delete.
+   */
+  onArchive?: string;
 }
 
 /** The on-disk projects list. Only these three fields are persisted; scans are recomputed. */

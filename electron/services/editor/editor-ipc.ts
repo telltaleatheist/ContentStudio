@@ -396,6 +396,11 @@ function readProjectsRegistryFile(): ProjectRegistry {
   return parsed;
 }
 
+/** The archive root, defaulted to where this user's NAS actually keeps projects. */
+function configuredArchiveRoot(store: Store<any>): string {
+  return (store as any).get('archiveRoot') || DEFAULT_ARCHIVE_ROOT;
+}
+
 /** Atomic write: tmp + rename, so a crash mid-write can never corrupt the registry. */
 function writeProjectsRegistryFile(registry: ProjectRegistry): void {
   const dir = EditorPaths.configDir;
@@ -492,6 +497,12 @@ interface ProjectScanResult {
   zipPath?: string;
   hasTranscript?: boolean;
   error?: string;
+  /**
+   * Set when the folder on this Mac is gone and the scan is of its NAS copy, at this path:
+   * `folder`, `masterVideo` and `zipPath` then all point at the copy, and opening the project
+   * opens it from the NAS. There is no local folder to sync or delete.
+   */
+  onArchive?: string;
 }
 
 /**
@@ -515,7 +526,7 @@ export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
   setupMediaHandlers();
   setupEditorFileHandlers();
   setupProcessingHandlers(deps.voiceIsolation, runs);
-  setupProjectHandlers();
+  setupProjectHandlers(store);
   setupMuteWordsHandlers();
   setupEditorConfigHandlers();
   setupArchiveHandlers(store);
@@ -1704,7 +1715,7 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
  * reset or overwritten, because the file is the only record of where the user's projects
  * live and a silent reset would lose all of them.
  */
-function setupProjectHandlers(): void {
+function setupProjectHandlers(store: Store<any>): void {
   // The SAME config directory binary-resolver.ts exports as AUTOCUT_CONFIG_DIR, so the
   // registry sits beside drift_corrections.json and the other user config. The reader, the
   // writer and the path itself live at module scope because 'editor:delete-local-week' —
@@ -1769,16 +1780,39 @@ function setupProjectHandlers(): void {
     const stat = fs.statSync(folderPath, { throwIfNoEntry: false });
     if (!stat || !stat.isDirectory()) {
       const volume = volumeRootOf(folderPath);
-      const mounted = fs.existsSync(volume);
-      return {
-        folder: folderPath, realPath: null, exists: false,
-        state: mounted ? 'missing' : 'unreachable',
-        error: mounted
-          ? undefined
-          : `${volume} is not mounted — reconnect it and this project comes back.`
-      };
+      if (!fs.existsSync(volume)) {
+        return {
+          folder: folderPath, realPath: null, exists: false, state: 'unreachable',
+          error: `${volume} is not mounted — reconnect it and this project comes back.`
+        };
+      }
+      // The local folder is gone. Its NAS copy, where the archive keeps it, stands in for it
+      // (Owen, 2026-10-15: deleting old weeks on either machine must not break the editor).
+      // The registry keeps the LOCAL path, so a folder put back locally takes over again.
+      const copy = safeDestination(folderPath, 'day', configuredArchiveRoot(store));
+      if (copy === null || path.resolve(copy) === path.resolve(folderPath)) {
+        return { folder: folderPath, realPath: null, exists: false, state: 'missing' };
+      }
+      const archiveVolume = volumeRootOf(copy);
+      if (!fs.existsSync(archiveVolume)) {
+        return {
+          folder: folderPath, realPath: null, exists: false, state: 'unreachable',
+          error: `The folder on this Mac is gone, and its NAS copy (${copy}) cannot be checked because ` +
+            `${archiveVolume} is not mounted — connect the NAS and this project comes back.`
+        };
+      }
+      const copyStat = fs.statSync(copy, { throwIfNoEntry: false });
+      if (!copyStat || !copyStat.isDirectory()) {
+        return { folder: folderPath, realPath: null, exists: false, state: 'missing' };
+      }
+      return { ...scanProjectDir(copy), onArchive: copy };
     }
 
+    return scanProjectDir(folderPath);
+  });
+
+  /** Classify a folder that exists by what it holds (the master video, the zip, the edits). */
+  function scanProjectDir(folderPath: string): ProjectScanResult {
     const realPath = fs.realpathSync(folderPath);
     const entries = fs.readdirSync(folderPath, { withFileTypes: true });
     const fileNames = entries.filter(e => !e.isDirectory()).map(e => e.name);
@@ -1838,7 +1872,7 @@ function setupProjectHandlers(): void {
 
     base.state = hasEdits ? 'edited' : hasZip ? 'processed' : 'raw';
     return base;
-  });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2005,9 +2039,7 @@ function setupArchiveHandlers(store: Store<any>): void {
   );
   archiveSyncInstance = sync;
 
-  /** The archive root, defaulted to where this user's NAS actually keeps projects. */
-  const archiveRoot = (): string =>
-    (store as any).get('archiveRoot') || DEFAULT_ARCHIVE_ROOT;
+  const archiveRoot = (): string => configuredArchiveRoot(store);
 
   /** The share URL used only to remount a volume that has gone away. */
   const archiveMountUrl = (): string =>

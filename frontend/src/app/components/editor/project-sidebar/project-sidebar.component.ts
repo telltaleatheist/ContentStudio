@@ -243,6 +243,9 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     // the projects list arriving (above); this promise is what they wait on, so they can
     // never run before it is known whether the archive is even reachable.
     this.archiveReady = this.archive.init();
+    // The probe may have mounted the NAS just now. A row whose local folder is gone waited on
+    // that mount to reach its NAS copy ('offline'), so those rows look again once it is done.
+    void this.archiveReady.then(() => this.rescanOffline());
 
     // Which weeks the server holds. Waits on the probe above (inside), and yields nothing at
     // all when the archive is unreachable — no ghost rows is the honest answer there.
@@ -355,6 +358,12 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     }
   }
 
+  /** Re-scan every 'offline' row (its volume, or its NAS copy's, was not mounted). */
+  private async rescanOffline(): Promise<void> {
+    const offline = this.projects.filter(e => this.state(e) === 'unreachable');
+    for (const e of offline) await this.projectsService.rescan(e.path);
+  }
+
   /**
    * Re-read which weeks the archive server holds, and rebuild the list around the answer.
    *
@@ -449,6 +458,20 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     return s === 'raw' || s === 'processed' || s === 'edited';
   }
 
+  /**
+   * Opened from its NAS copy: the folder on this Mac is gone (deleted here, or by Syncthing
+   * after a delete on the PC). It opens and plays from the NAS, but there is nothing local to
+   * sync, so it is left out of every archive check and push.
+   */
+  onArchive(e: ProjectEntry): boolean {
+    return !!e.scan?.onArchive;
+  }
+
+  /** An actionable project whose folder is on this Mac: what archive checks and pushes act on. */
+  private isLocalDay(e: ProjectEntry): boolean {
+    return this.isActionable(e) && !this.onArchive(e);
+  }
+
   isActive(e: ProjectEntry): boolean {
     return !!this.activeZipPath && e.scan?.zipPath === this.activeZipPath;
   }
@@ -468,13 +491,18 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
              `Kept in the list — it comes back when the volume does.`;
     }
     if (s === 'unrecognized') return `${e.path}\n${e.scan?.error || 'No master video found in this folder.'}`;
+    if (e.scan?.onArchive) {
+      return `${e.path}\nThis folder is gone from this Mac — it opens from the NAS copy at ${e.scan.onArchive}.` +
+             (s === 'raw' ? `\nNot processed yet — click to process (on the NAS).` : '');
+    }
     if (s === 'raw') return `${e.path}\nNot processed yet — click to process.`;
     return e.scan?.zipPath || e.path;
   }
 
   /** The badge text; 'unreachable' is too long and says nothing a user cares about. */
   badge(e: ProjectEntry): string {
-    return this.state(e) === 'unreachable' ? 'offline' : this.state(e);
+    if (this.state(e) === 'unreachable') return 'offline';
+    return this.onArchive(e) ? `${this.state(e)} · NAS` : this.state(e);
   }
 
   // ── Archive sync ────────────────────────────────────────────────────────────
@@ -535,7 +563,7 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
   private daysArchived(week: string): boolean {
     const group = this.groups.find(g => g.path === week);
     if (!group) return false;
-    const days = group.entries.filter(e => this.isActionable(e));
+    const days = group.entries.filter(e => this.isLocalDay(e));
     return days.length > 0 && days.every(e => this.syncState(e.path) === 'done');
   }
 
@@ -611,7 +639,7 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     // because the mark itself only carries the good half.
     if (this.weekPartlyArchived(path)) {
       const group = this.groups.find(g => g.path === path);
-      const n = group ? group.entries.filter(e => this.isActionable(e)).length : 0;
+      const n = group ? group.entries.filter(e => this.isLocalDay(e)).length : 0;
       return `All ${n} day${n === 1 ? '' : 's'} are in the archive.\n` +
              `The week folder itself still has ${this.archive.extrasSummary(path)} to upload — ` +
              `the Final Cut library, complete/, thumbnails/, and any day folder not on this list.\n` +
@@ -718,7 +746,7 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
         // pending under a source directory that does not exist — and a green check on a
         // project that is not on this machine is the worst possible lie for a backup tool.
         const present = group.entries
-          .filter(e => this.isActionable(e))
+          .filter(e => this.isLocalDay(e))
           .map(e => e.path);
         if (present.length === 0) continue;
         // The CHECK still runs on a week that is being processed. It is `rsync -n` — it reads
@@ -907,7 +935,7 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
   private daysOf(path: string, kind: 'week' | 'day'): string[] {
     if (kind !== 'week') return [];
     const group = this.groups.find(g => g.path === path);
-    return group ? group.entries.filter(e => this.isActionable(e)).map(e => e.path) : [];
+    return group ? group.entries.filter(e => this.isLocalDay(e)).map(e => e.path) : [];
   }
 
   dismissArchiveError(): void {
@@ -1238,6 +1266,8 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
 
   /** Whether the open menu offers its archive item at all. */
   get menuCanSync(): boolean {
+    // A day opened from its NAS copy has no folder here to push.
+    if (this.contextMenu?.entry && this.onArchive(this.contextMenu.entry)) return false;
     return !!this.contextMenu && this.archiveSupported && !!this.contextMenu.path;
   }
 
