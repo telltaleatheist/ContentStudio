@@ -2066,3 +2066,13 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** electron and frontend tsc clean. Applied to the current registry: 2026-09-27 opens from the NAS as edited, 2026-09-30 from the NAS as raw (its zip and edits were lost), 10-11 and 10-14 stay local, and 10-01, 10-05, 10-07 and 10-08 are dropped (no copy anywhere). Not run in the app; Owen tests.
 
 [electron/services/editor/editor-ipc.ts; frontend/src/app/components/editor/editor-host.ts, project-sidebar/project-sidebar.component.{ts,html}]
+
+**304. The editor's list follows the disk: #303's NAS stand-in is removed, the list is re-read every 30 s and on focus, and a date-named NAS folder is a week (Owen, 2026-10-15: "content studio should reflect whats really there on disk"; NAS-only weeks stay "faded, as the logic should work now").**
+- **Why.** #303 misread "resilient if i delete them directly in either place". With a day folder gone from this Mac, it opened the NAS copy, so the week stayed in the list as an active local week (2026-09-27). Owen wants a week deleted here to leave the local list and show as a faded NAS week, as 2026-09-20 already did. Separately, 2026-10-04 did not appear at all, because the NAS listing counted only folders holding `files/`, and 10-04's day folders never reached the NAS (#303), so its NAS copy is just the Final Cut library and complete/. And the list was only read once, when the editor opened, so deletions while the app was open never showed.
+- **Now.**
+  - #303's scan and sidebar code is reverted: a missing local folder is 'missing' and dropped (with the notice), and the volume-unmounted case stays 'unreachable'.
+  - `isArchiveWeekDir`: a NAS folder is a week if it holds `files/` OR is named exactly as a date. Both the listing (`archive:list-remote-weeks`) and the delete rail (`archive:delete-remote-week`) use it, so a faded row's delete is never refused for the reason it was listed. `assets/` and `testlib.fcpbundle` still don't qualify. The NAS helper fcpx-rm-week checks names only.
+  - The sidebar runs `refreshFromDisk` (rescanAll, then the NAS weeks) every 30 s and on window focus. The archive comparison is still once per week (`autoCheckedWeeks`).
+- **Checks.** electron and frontend tsc clean. On today's NAS, the faded weeks will be 2026-07-19 (newly listed: a date-named folder with no files/), 2026-09-20, 2026-09-27 and 2026-10-04, plus the two non-date folders with files/ ("2026 FCPXTemplate", "the mysterious stranger"), which the old rule already listed. Not run in the app; Owen tests.
+
+[electron/services/editor/editor-ipc.ts, archive-sync.ts; frontend/src/app/components/editor/editor-host.ts, project-sidebar/project-sidebar.component.{ts,html}]

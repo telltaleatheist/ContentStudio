@@ -165,11 +165,8 @@
         <span class="pp-badge" *ngIf="!isBusy(e)" [attr.data-state]="state(e)">{{ badge(e) }}</span>
       </button>
 
-      <!-- A row opened from its NAS copy has no folder here to push: no sync button. -->
-      <ng-container *ngIf="!onArchive(e)">
-        <ng-container *ngTemplateOutlet="syncButton;
-          context: { path: g.path ? e.path : null, kind: 'day', label: e.name }"></ng-container>
-      </ng-container>
+      <ng-container *ngTemplateOutlet="syncButton;
+        context: { path: g.path ? e.path : null, kind: 'day', label: e.name }"></ng-container>
 
       <button class="pp-remove" (click)="onRemove($event, e)"
               title="Remove from list (nothing on disk is deleted)"

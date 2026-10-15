@@ -371,7 +371,7 @@ function findRsync(): string | null {
  * A week folder is named EXACTLY as a date (2026-08-16). Recognising that shape is what makes
  * the `files`-less recovery layout below safe to accept.
  */
-const WEEK_FOLDER_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const WEEK_FOLDER_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Where a local project folder lands under the archive root.

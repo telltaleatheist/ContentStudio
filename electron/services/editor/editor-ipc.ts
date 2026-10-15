@@ -20,7 +20,7 @@ import type { CrucibleVoiceIsolator, VoiceIsolationDeps } from '../../crucible/d
 import { EditorRunSessions, type RunSession } from '../../crucible/run-session';
 import type { SessionSource } from '../../crucible/session';
 import { ArchiveBusyError,
-  ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
+  ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL, WEEK_FOLDER_RE
 } from './archive-sync';
 import { readArchiveLedger, recordArchived, forgetArchivedUnder } from './archive-ledger';
 import { finalCutRefusal } from './final-cut-open';
@@ -396,9 +396,17 @@ function readProjectsRegistryFile(): ProjectRegistry {
   return parsed;
 }
 
-/** The archive root, defaulted to where this user's NAS actually keeps projects. */
-function configuredArchiveRoot(store: Store<any>): string {
-  return (store as any).get('archiveRoot') || DEFAULT_ARCHIVE_ROOT;
+/**
+ * Is this folder on the archive a WEEK? It holds a `files/` directory (what a week push puts
+ * there), or it is named exactly as a date (2026-10-04): a week whose day folders never reached
+ * the NAS still has its Final Cut library and complete/ there (Owen, 2026-10-15). Either rule
+ * keeps out `assets/` (the overlay artwork with no other copy), `testlib.fcpbundle` and loose
+ * documents.
+ */
+function isArchiveWeekDir(full: string): boolean {
+  if (WEEK_FOLDER_RE.test(path.basename(full))) return true;
+  const filesDir = fs.statSync(path.join(full, 'files'), { throwIfNoEntry: false });
+  return !!filesDir && filesDir.isDirectory();
 }
 
 /** Atomic write: tmp + rename, so a crash mid-write can never corrupt the registry. */
@@ -497,12 +505,6 @@ interface ProjectScanResult {
   zipPath?: string;
   hasTranscript?: boolean;
   error?: string;
-  /**
-   * Set when the folder on this Mac is gone and the scan is of its NAS copy, at this path:
-   * `folder`, `masterVideo` and `zipPath` then all point at the copy, and opening the project
-   * opens it from the NAS. There is no local folder to sync or delete.
-   */
-  onArchive?: string;
 }
 
 /**
@@ -526,7 +528,7 @@ export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
   setupMediaHandlers();
   setupEditorFileHandlers();
   setupProcessingHandlers(deps.voiceIsolation, runs);
-  setupProjectHandlers(store);
+  setupProjectHandlers();
   setupMuteWordsHandlers();
   setupEditorConfigHandlers();
   setupArchiveHandlers(store);
@@ -1715,7 +1717,7 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
  * reset or overwritten, because the file is the only record of where the user's projects
  * live and a silent reset would lose all of them.
  */
-function setupProjectHandlers(store: Store<any>): void {
+function setupProjectHandlers(): void {
   // The SAME config directory binary-resolver.ts exports as AUTOCUT_CONFIG_DIR, so the
   // registry sits beside drift_corrections.json and the other user config. The reader, the
   // writer and the path itself live at module scope because 'editor:delete-local-week' —
@@ -1780,39 +1782,16 @@ function setupProjectHandlers(store: Store<any>): void {
     const stat = fs.statSync(folderPath, { throwIfNoEntry: false });
     if (!stat || !stat.isDirectory()) {
       const volume = volumeRootOf(folderPath);
-      if (!fs.existsSync(volume)) {
-        return {
-          folder: folderPath, realPath: null, exists: false, state: 'unreachable',
-          error: `${volume} is not mounted — reconnect it and this project comes back.`
-        };
-      }
-      // The local folder is gone. Its NAS copy, where the archive keeps it, stands in for it
-      // (Owen, 2026-10-15: deleting old weeks on either machine must not break the editor).
-      // The registry keeps the LOCAL path, so a folder put back locally takes over again.
-      const copy = safeDestination(folderPath, 'day', configuredArchiveRoot(store));
-      if (copy === null || path.resolve(copy) === path.resolve(folderPath)) {
-        return { folder: folderPath, realPath: null, exists: false, state: 'missing' };
-      }
-      const archiveVolume = volumeRootOf(copy);
-      if (!fs.existsSync(archiveVolume)) {
-        return {
-          folder: folderPath, realPath: null, exists: false, state: 'unreachable',
-          error: `The folder on this Mac is gone, and its NAS copy (${copy}) cannot be checked because ` +
-            `${archiveVolume} is not mounted — connect the NAS and this project comes back.`
-        };
-      }
-      const copyStat = fs.statSync(copy, { throwIfNoEntry: false });
-      if (!copyStat || !copyStat.isDirectory()) {
-        return { folder: folderPath, realPath: null, exists: false, state: 'missing' };
-      }
-      return { ...scanProjectDir(copy), onArchive: copy };
+      const mounted = fs.existsSync(volume);
+      return {
+        folder: folderPath, realPath: null, exists: false,
+        state: mounted ? 'missing' : 'unreachable',
+        error: mounted
+          ? undefined
+          : `${volume} is not mounted — reconnect it and this project comes back.`
+      };
     }
 
-    return scanProjectDir(folderPath);
-  });
-
-  /** Classify a folder that exists by what it holds (the master video, the zip, the edits). */
-  function scanProjectDir(folderPath: string): ProjectScanResult {
     const realPath = fs.realpathSync(folderPath);
     const entries = fs.readdirSync(folderPath, { withFileTypes: true });
     const fileNames = entries.filter(e => !e.isDirectory()).map(e => e.name);
@@ -1872,7 +1851,7 @@ function setupProjectHandlers(store: Store<any>): void {
 
     base.state = hasEdits ? 'edited' : hasZip ? 'processed' : 'raw';
     return base;
-  }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2039,7 +2018,9 @@ function setupArchiveHandlers(store: Store<any>): void {
   );
   archiveSyncInstance = sync;
 
-  const archiveRoot = (): string => configuredArchiveRoot(store);
+  /** The archive root, defaulted to where this user's NAS actually keeps projects. */
+  const archiveRoot = (): string =>
+    (store as any).get('archiveRoot') || DEFAULT_ARCHIVE_ROOT;
 
   /** The share URL used only to remount a volume that has gone away. */
   const archiveMountUrl = (): string =>
@@ -2174,9 +2155,8 @@ function setupArchiveHandlers(store: Store<any>): void {
    * Week folders that exist on the archive server, so the sidebar can show the ones with no
    * local copy left as faded "ghost" rows.
    *
-   * A WEEK, not merely a directory: the entry must contain a `files/` directory, which is
-   * exactly what a week push puts there and the same rule `destinationFor` and the sidebar
-   * both use to decide what a week IS. This matters — the archive root on this machine also
+   * A WEEK, not merely a directory (`isArchiveWeekDir`): it contains a `files/` directory,
+   * which is what a week push puts there, or it is named as a date. This matters — the archive root on this machine also
    * holds `assets/` (the shared overlay artwork every Final Cut library symlinks into, and
    * which nothing backs up), a `testlib.fcpbundle`, and loose documents. Listing those as
    * weeks would put a delete button beside the one folder here that has no other copy.
@@ -2202,8 +2182,7 @@ function setupArchiveHandlers(store: Store<any>): void {
       if (NON_WEEK_ENTRIES.has(entry.name.toLowerCase())) continue;
 
       const full = path.join(root, entry.name);
-      const filesDir = fs.statSync(path.join(full, 'files'), { throwIfNoEntry: false });
-      if (!filesDir || !filesDir.isDirectory()) continue;
+      if (!isArchiveWeekDir(full)) continue;
 
       weeks.push({ name: entry.name, path: full });
     }
@@ -2225,7 +2204,7 @@ function setupArchiveHandlers(store: Store<any>): void {
    *   6. its REALPATH's parent is the archive root's REALPATH — symlinks resolved on both
    *      sides, so a link planted under the root cannot point the recursive delete elsewhere;
    *   7. its name is not a dot/system entry;
-   *   8. it contains a `files/` directory, i.e. it is a week this app archived rather than
+   *   8. it is a week (`isArchiveWeekDir`: a `files/` directory or a date name) rather than
    *      `assets/` or a stray folder;
    *   9. still no sync (re-checked immediately before the irreversible call).
    */
@@ -2293,10 +2272,10 @@ function setupArchiveHandlers(store: Store<any>): void {
         if (name.startsWith('.') || NON_WEEK_ENTRIES.has(name.toLowerCase())) {
           throw new Error(`${name} is a system or excluded entry on the archive, not a deletable week — refusing to delete it.`);
         }
-        const filesDir = fs.statSync(path.join(realTarget, 'files'), { throwIfNoEntry: false });
-        if (!filesDir || !filesDir.isDirectory()) {
+        if (!isArchiveWeekDir(realTarget)) {
           throw new Error(
-            `${realTarget} has no files/ directory, so it is not a week this app archived — refusing to delete it. ` +
+            `${realTarget} has no files/ directory and is not named as a date, so it is not a week this app ` +
+            `archived — refusing to delete it. ` +
             `Remove it by hand if that is really what you want.`
           );
         }
