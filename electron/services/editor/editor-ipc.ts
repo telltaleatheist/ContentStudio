@@ -139,28 +139,27 @@ export function stopArchiveSyncOnQuit(): void {
 }
 
 /**
- * One destructive deletion at a time, process-wide — the same single-job rule ArchiveSync
- * applies to rsync, for the same reason and then some.
- *
- * Held as the PATH being deleted rather than a boolean so the refusal can name what is
- * already running. It covers both deletions (a local week folder and a week on the archive
- * server) with ONE slot: they are the only two operations in this app that remove a user's
- * media, and two of them at once — in either combination — is a state nothing here is
- * written to reason about. Claimed synchronously the moment a request is accepted and
- * released in a `finally`, so the awaits inside a handler cannot let a second click through.
+ * Deletions QUEUE (Owen, 2026-10-15: "i should be able to delete or upload multiple things at
+ * once"): each one takes its turn in the ArchiveSync queue (`runExclusive`), behind any
+ * transfer and any earlier delete, so they never run at the same time, and a local delete's
+ * registry rewrite reads the file its predecessor wrote. What is refused is the SAME folder
+ * asked for twice while the first is still waiting or running.
  */
-let deletionInFlight: string | null = null;
+function deletionOf(target: string): string | null {
+  const wanted = comparablePath(target);
+  for (const d of deleteTargets.values()) {
+    if (comparablePath(d.target) === wanted) return d.target;
+  }
+  return null;
+}
 
 /**
  * What the in-flight deletions are aimed at, and which side of the transfer they remove.
  *
- * Needed because a deletion now WAITS: it takes its turn in the ArchiveSync queue instead of
- * refusing outright, so `deletionInFlight` can be set for as long as an in-flight transfer
- * lasts. Refusing every sync for that whole span — which a blanket check on
- * `deletionInFlight` does — would rebuild the same over-broad refusal on the other side of
- * the fence, just pointed the other way.
- *
- * So the refusal is path-scoped instead. `scope` says which path to compare against: a
+ * A deletion WAITS its turn in the ArchiveSync queue, and several can be waiting at once
+ * (`deletionOf`), so an entry here can stand for as long as the transfers ahead of it last.
+ * Refusing every sync for that whole span would be over-broad, so the refusal is
+ * path-scoped instead. `scope` says which path to compare against: a
  * 'local' delete conflicts with a sync whose SOURCE is inside it, a 'remote' delete with a
  * sync whose DESTINATION is. Comparing the wrong one is a guard that never fires.
  */
@@ -2213,8 +2212,8 @@ function setupArchiveHandlers(store: Store<any>): void {
     if (typeof target !== 'string' || !target.trim()) {
       throw new Error('archive:delete-remote-week requires a non-empty path');
     }
-    if (deletionInFlight) {
-      throw new Error(`A deletion is already running (${deletionInFlight}) — wait for it to finish. Nothing was deleted.`);
+    if (deletionOf(target)) {
+      throw new Error(`${path.basename(target)} is already being deleted, or waiting its turn to be.`);
     }
 
     const root = archiveRoot();
@@ -2239,7 +2238,6 @@ function setupArchiveHandlers(store: Store<any>): void {
       );
     }
 
-    deletionInFlight = target;
     // Stored RAW. The comparison folds both sides itself, and a folded path kept here would
     // be lossy for no gain — it is also what the refusal message names.
     deleteTargets.set(target, { target, scope: 'remote' });
@@ -2332,7 +2330,6 @@ function setupArchiveHandlers(store: Store<any>): void {
         return { deleted: realTarget, name };
       });
     } finally {
-      deletionInFlight = null;
       deleteTargets.delete(target);
     }
   });
@@ -2374,10 +2371,10 @@ function setupArchiveHandlers(store: Store<any>): void {
     if (typeof weekPath !== 'string' || !weekPath.trim()) {
       throw new Error('editor:delete-local-week requires a non-empty weekPath');
     }
-    if (deletionInFlight) {
-      throw new Error(`A deletion is already running (${deletionInFlight}) — wait for it to finish. Nothing was deleted.`);
-    }
     const weekResolved = path.resolve(weekPath.replace(/[\\/]+$/, ''));
+    if (deletionOf(weekResolved)) {
+      throw new Error(`${path.basename(weekResolved)} is already being deleted, or waiting its turn to be.`);
+    }
 
     // The semantic conflict, refused before anything is queued — same reasoning as the remote
     // delete, but comparing SOURCES: a local delete removes the folder a sync reads FROM.
@@ -2391,7 +2388,6 @@ function setupArchiveHandlers(store: Store<any>): void {
       );
     }
 
-    deletionInFlight = weekPath;
     deleteTargets.set(weekPath, { target: weekResolved, scope: 'local' });
     try {
       return await sync.runExclusive('delete-local', weekResolved, 'week', archiveRoot(), async ctx => {
@@ -2524,8 +2520,8 @@ function setupArchiveHandlers(store: Store<any>): void {
         log.warn(`[archive] deleting the LOCAL copy of ${name}: ${realWeek} (archived at ${check.destPath})`);
         broadcast('archive:delete-progress', { path: weekPath, name, phase: 'deleting' });
         // Async so tens of GB of local unlinks don't freeze every window. The sync-vs-delete
-        // race this opens is closed on the other side: archive:sync refuses to enqueue while
-        // deletionInFlight is set.
+        // race this opens is closed on the other side: archive:sync refuses to enqueue into a
+        // folder in deleteTargets.
         // A partial delete is not retried by this handler: what is left would not pass the
         // re-verification (its files differ from the archive's), and syncing it would push it over
         // the good copy. So the week leaves the projects list as well, and the leftovers are named
@@ -2580,7 +2576,6 @@ function setupArchiveHandlers(store: Store<any>): void {
         return { deleted: realWeek, destPath: check.destPath, removedProjects };
       });
     } finally {
-      deletionInFlight = null;
       deleteTargets.delete(weekPath);
     }
   });

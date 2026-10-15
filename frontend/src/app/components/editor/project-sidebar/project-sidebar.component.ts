@@ -33,6 +33,34 @@ export interface WeekGroup {
  */
 const WEEK_FOLDER_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** One week's delete confirmation, inline under the week it names. */
+export interface PendingDelete {
+  /** 'local' removes the folder on this Mac; 'remote' removes the one on the archive. */
+  scope: 'local' | 'remote';
+  /** The folder that will actually be removed. Also the key the template renders it under. */
+  target: string;
+  label: string;
+  /** Where the surviving copy lives. For 'remote' there is none, and this is the target. */
+  destPath: string;
+  /** How many rows leave the projects list with it. 'local' only. */
+  projectCount: number;
+  /** The delete is running: both buttons are disabled and the action button says so. */
+  busy: boolean;
+  /** The host's verbatim refusal, printed inside this row rather than on the shared line. */
+  error: string | null;
+  /**
+   * What it is doing right now, in the operator's words. Null until the host says.
+   *
+   * A delete takes its turn behind any transfer already running, then re-verifies the whole
+   * week against the archive — thousands of files over SMB, minutes of it — before a single
+   * byte is removed. A static "Deleting…" through all of that is indistinguishable from a
+   * hang, and this is the row that has to say otherwise.
+   */
+  progress: string | null;
+  /** The outcome, once there is one. The row stays open long enough to be read. */
+  done: string | null;
+}
+
 /** How often the list is read again from disk while the window is open. */
 const DISK_RESCAN_MS = 30_000;
 
@@ -141,32 +169,12 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
    * the week it names, spells out both paths, and prints the host's refusal in place if the
    * re-verification says no.
    */
-  pendingDelete: {
-    /** 'local' removes the folder on this Mac; 'remote' removes the one on the archive. */
-    scope: 'local' | 'remote';
-    /** The folder that will actually be removed. Also the key the template renders it under. */
-    target: string;
-    label: string;
-    /** Where the surviving copy lives. For 'remote' there is none, and this is the target. */
-    destPath: string;
-    /** How many rows leave the projects list with it. 'local' only. */
-    projectCount: number;
-    /** The delete is running: both buttons are disabled and the action button says so. */
-    busy: boolean;
-    /** The host's verbatim refusal, printed inside this row rather than on the shared line. */
-    error: string | null;
-    /**
-     * What it is doing right now, in the operator's words. Null until the host says.
-     *
-     * A delete takes its turn behind any transfer already running, then re-verifies the whole
-     * week against the archive — thousands of files over SMB, minutes of it — before a single
-     * byte is removed. A static "Deleting…" through all of that is indistinguishable from a
-     * hang, and this is the row that has to say otherwise.
-     */
-    progress: string | null;
-    /** The outcome, once there is one. The row stays open long enough to be read. */
-    done: string | null;
-  } | null = null;
+  /**
+   * The open confirmations, one per week, by the folder each removes (Owen, 2026-10-15: "i
+   * should be able to delete ... multiple things at once"). Confirmed ones wait their turn in
+   * the host's archive queue, behind any upload and any earlier delete.
+   */
+  pendingDeletes: Record<string, PendingDelete> = {};
 
   /** Resolves once the archive has been probed. Every check waits on it. */
   private archiveReady: Promise<void> | null = null;
@@ -239,8 +247,9 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     this.subs.push(this.archive.deleteProgress$.subscribe(p => {
       // Only for the row that asked. A broadcast from another window's delete must not
       // relabel a confirm row sitting here over a different week.
-      if (!p || !this.pendingDelete || p.path !== this.pendingDelete.target) return;
-      this.pendingDelete.progress = this.describeDeletePhase(p);
+      const pending = p ? this.pendingDeletes[p.path] : undefined;
+      if (!p || !pending || !pending.busy) return;
+      pending.progress = this.describeDeletePhase(p);
       this.cdr.markForCheck();
     }));
 
@@ -365,9 +374,10 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
 
     // A confirmation whose week has left the list has nothing left to confirm. Never while it
     // is running: that one is mid-flight and owns its own ending.
-    if (this.pendingDelete && !this.pendingDelete.busy &&
-        !this.groups.some(g => g.path === this.pendingDelete!.target)) {
-      this.pendingDelete = null;
+    for (const target of Object.keys(this.pendingDeletes)) {
+      if (!this.pendingDeletes[target].busy && !this.groups.some(g => g.path === target)) {
+        delete this.pendingDeletes[target];
+      }
     }
   }
 
@@ -1103,7 +1113,8 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
       this.cdr.markForCheck();
       return;
     }
-    this.pendingDelete = {
+    if (this.pendingDeletes[g.path!]?.busy) return;
+    this.pendingDeletes[g.path!] = {
       scope: 'local', target: g.path!, label: g.label, destPath,
       projectCount: g.entries.length, busy: false, error: null, progress: null, done: null
     };
@@ -1115,33 +1126,39 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     ev.preventDefault();
     this.closeContextMenu();
     if (!this.canDeleteRemote(g)) return;
-    this.pendingDelete = {
+    if (this.pendingDeletes[g.path!]?.busy) return;
+    this.pendingDeletes[g.path!] = {
       scope: 'remote', target: g.path!, label: g.label, destPath: g.path!,
       projectCount: 0, busy: false, error: null, progress: null, done: null
     };
     this.cdr.markForCheck();
   }
 
-  cancelDelete(): void {
-    if (this.pendingDelete?.busy) return;   // it is already running; there is nothing to undo
-    this.pendingDelete = null;
-    this.archive.clearDeleteProgress();
+  /** The open confirmation under week `path`, if any. */
+  deleteFor(path: string | null): PendingDelete | null {
+    return path ? this.pendingDeletes[path] ?? null : null;
+  }
+
+  /** A delete of this week is confirmed and queued or running: its ✕ stays disabled. */
+  deleteBusy(g: WeekGroup): boolean {
+    return !!g.path && !!this.pendingDeletes[g.path]?.busy;
+  }
+
+  cancelDelete(p: PendingDelete): void {
+    if (p.busy) return;   // it is queued or running; there is nothing to undo
+    delete this.pendingDeletes[p.target];
     this.cdr.markForCheck();
   }
 
   /** The first line of the confirmation: what is about to happen, in one sentence. */
-  confirmHeadline(): string {
-    const p = this.pendingDelete;
-    if (!p) return '';
+  confirmHeadline(p: PendingDelete): string {
     return p.scope === 'local'
       ? `Delete the local copy of “${p.label}”?`
       : `Delete “${p.label}” from the archive server?`;
   }
 
   /** The paths, spelled out. Both of them, always — this is the whole point of the row. */
-  confirmDetail(): string {
-    const p = this.pendingDelete;
-    if (!p) return '';
+  confirmDetail(p: PendingDelete): string {
     if (p.scope === 'local') {
       const n = p.projectCount;
       return `${p.target}\nis removed from this Mac.\n\n` +
@@ -1154,8 +1171,8 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
            `Nothing else has it, and this cannot be undone.`;
   }
 
-  confirmButtonLabel(): string {
-    return this.pendingDelete?.scope === 'local' ? 'Delete local copy' : 'Delete from archive';
+  confirmButtonLabel(p: PendingDelete): string {
+    return p.scope === 'local' ? 'Delete local copy' : 'Delete from archive';
   }
 
   /**
@@ -1164,16 +1181,14 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
    * decide what to do next — dismissing the row and printing it elsewhere would separate the
    * two.
    */
-  async confirmDelete(): Promise<void> {
-    const pending = this.pendingDelete;
-    if (!pending || pending.busy) return;
+  async confirmDelete(pending: PendingDelete): Promise<void> {
+    if (pending.busy) return;
     pending.busy = true;
     pending.error = null;
     pending.done = null;
     // The host has not spoken yet, and "waiting" is the honest first state: the delete may sit
     // behind a transfer that is already running before it does anything at all.
-    pending.progress = 'Waiting for the archive…';
-    this.archive.clearDeleteProgress();
+    pending.progress = 'Queued — waits for the uploads and deletes ahead of it…';
     this.cdr.markForCheck();
 
     try {
@@ -1202,7 +1217,6 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
       pending.progress = null;
       pending.error = err?.message || String(err);
     }
-    this.archive.clearDeleteProgress();
     this.cdr.markForCheck();
   }
 
@@ -1357,9 +1371,9 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
   @HostListener('document:keydown.escape')
   onEscape(): void {
     this.closeContextMenu();
-    // Escape also backs out of a delete confirmation — but not one already running, which
-    // has no undo to offer.
-    this.cancelDelete();
+    // Escape also backs out of the delete confirmations — but not ones queued or running,
+    // which have no undo to offer.
+    for (const p of Object.values(this.pendingDeletes)) this.cancelDelete(p);
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────────

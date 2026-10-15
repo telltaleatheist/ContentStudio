@@ -97,7 +97,7 @@
              says which it is, and when it is refused the reason is the useful part: bytes
              on this Mac that are not in the archive. -->
         <button class="pp-week-x" *ngIf="showsDeleteLocal(g)"
-                [disabled]="!canDeleteLocal(g) || !!deleteLocalBlockedReason(g)"
+                [disabled]="!canDeleteLocal(g) || !!deleteLocalBlockedReason(g) || deleteBusy(g)"
                 (click)="openDeleteLocal($event, g)"
                 [title]="deleteLocalBlockedReason(g) ?? deleteLocalTitle(g)"
                 [attr.aria-label]="'Delete the local copy of ' + g.label">✕</button>
@@ -105,6 +105,7 @@
         <!-- Delete the ARCHIVED copy. For a ghost that is the only copy there is, which is
              why this one is drawn in the same red and says so at every step. -->
         <button class="pp-week-x" *ngIf="canDeleteRemote(g)"
+                [disabled]="deleteBusy(g)"
                 (click)="openDeleteRemote($event, g)"
                 [title]="deleteRemoteTitle(g)"
                 [attr.aria-label]="'Delete ' + g.label + ' from the archive'">✕</button>
@@ -130,20 +131,20 @@
          confirm(): both paths are spelled out here and stay readable while the choice is
          made, and a refusal from the backend's re-verification prints in this same box rather
          than somewhere the user has to go looking for it. -->
-    <div class="pp-confirm" *ngIf="pendingDelete && pendingDelete.target === g.path"
-         [class.remote]="pendingDelete!.scope === 'remote'">
-      <div class="pp-confirm-head">{{ confirmHeadline() }}</div>
-      <div class="pp-confirm-detail">{{ confirmDetail() }}</div>
-      <div class="pp-confirm-error" *ngIf="pendingDelete!.error">{{ pendingDelete!.error }}</div>
-      <div class="pp-confirm-progress" *ngIf="pendingDelete!.progress">{{ pendingDelete!.progress }}</div>
-      <div class="pp-confirm-done" *ngIf="pendingDelete!.done">{{ pendingDelete!.done }}</div>
+    <div class="pp-confirm" *ngIf="deleteFor(g.path) as d"
+         [class.remote]="d.scope === 'remote'">
+      <div class="pp-confirm-head">{{ confirmHeadline(d) }}</div>
+      <div class="pp-confirm-detail">{{ confirmDetail(d) }}</div>
+      <div class="pp-confirm-error" *ngIf="d.error">{{ d.error }}</div>
+      <div class="pp-confirm-progress" *ngIf="d.progress">{{ d.progress }}</div>
+      <div class="pp-confirm-done" *ngIf="d.done">{{ d.done }}</div>
       <div class="pp-confirm-actions">
-        <button class="pp-confirm-cancel" [disabled]="pendingDelete!.busy"
-                (click)="cancelDelete()">{{ pendingDelete!.done ? 'Close' : 'Cancel' }}</button>
-        <button class="pp-confirm-go" *ngIf="!pendingDelete!.done"
-                [disabled]="pendingDelete!.busy"
-                (click)="confirmDelete()">
-          {{ pendingDelete!.busy ? 'Working…' : confirmButtonLabel() }}
+        <button class="pp-confirm-cancel" [disabled]="d.busy"
+                (click)="cancelDelete(d)">{{ d.done ? 'Close' : 'Cancel' }}</button>
+        <button class="pp-confirm-go" *ngIf="!d.done"
+                [disabled]="d.busy"
+                (click)="confirmDelete(d)">
+          {{ d.busy ? 'Working…' : confirmButtonLabel(d) }}
         </button>
       </div>
     </div>

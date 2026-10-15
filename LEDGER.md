@@ -2076,3 +2076,10 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** electron and frontend tsc clean. On today's NAS, the faded weeks will be 2026-07-19 (newly listed: a date-named folder with no files/), 2026-09-20, 2026-09-27 and 2026-10-04, plus the two non-date folders with files/ ("2026 FCPXTemplate", "the mysterious stranger"), which the old rule already listed. Not run in the app; Owen tests.
 
 [electron/services/editor/editor-ipc.ts, archive-sync.ts; frontend/src/app/components/editor/editor-host.ts, project-sidebar/project-sidebar.component.{ts,html}]
+
+**305. Several deletes at once: each week has its own confirmation, and confirmed deletes queue (Owen, 2026-10-15: "i should also be able to delete or upload multiple things at once. maybe we create a queue if we need to so i can click the X on multiple things").**
+- **Why.** Uploads already queued: a sync button on another week joins the ArchiveSync queue. Deletes did not. The sidebar had one `pendingDelete`, and the main process refused any second delete (`deletionInFlight`) even though both delete handlers already ran inside the queue (`runExclusive`).
+- **Now.** `deletionInFlight` is gone. A delete is refused only when the same folder is already being deleted or waiting (`deletionOf`, comparablePath). Deletes run one after another in the queue, behind uploads and earlier deletes, so a local delete's registry rewrite reads the file its predecessor wrote. The per-path refusal between syncs and deletes (`deleteTargets`) is unchanged. In the sidebar, `pendingDeletes` keeps one confirmation per week, each with its own progress (routed by path) and result. A queued delete reads "Queued — waits for the uploads and deletes ahead of it…", and that week's ✕ is disabled while it waits. Escape closes every confirmation that is not queued or running.
+- **Checks.** electron and frontend tsc clean, and the development ng build compiles the template. Not run in the app; Owen tests.
+
+[electron/services/editor/editor-ipc.ts; frontend/src/app/components/editor/project-sidebar/project-sidebar.component.{ts,html}]
