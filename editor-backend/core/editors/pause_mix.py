@@ -34,26 +34,48 @@ def _frame_duration(master_xml: str) -> Fraction:
     return Fraction(text[:-1])
 
 
-def _mix(sources: List[str], out_path: Path) -> None:
-    """The sources summed (no level normalising, as a mixer would) into one mono 16 kHz WAV."""
+def _offset_on_master(source: str, master_video: str) -> float:
+    """Where `source` sits on the master's timeline (master time = source time + tau), measured
+    by GCC-PHAT exactly as the sync step measures it (core/audio_sync.py): a low-confidence
+    measurement is used and said, as that step places it."""
+    from core.gcc_phat_align import measure_offset, CONFIDENCE_THRESHOLD, FRAME_SECONDS
+    align = measure_offset(source, master_video)
+    tau = align['tau_seconds']
+    windows_ok = [w for w in align['per_window'] if w['confidence'] >= CONFIDENCE_THRESHOLD]
+    trusted = (align['confidence'] >= CONFIDENCE_THRESHOLD
+               or (len(windows_ok) >= 2 and align['spread_seconds'] <= FRAME_SECONDS))
+    print(f"Pauses: {Path(source).name} sits at {tau:+.3f}s on the master "
+          f"(conf {align['confidence']:.2f}{'' if trusted else ', LOW: placed as the sync step places it'})",
+          file=sys.stderr)
+    return tau
+
+
+def _mix(sources: List[Tuple[str, float]], out_path: Path) -> None:
+    """The sources, each moved onto the master's timeline by its offset, summed (no level
+    normalising, as a mixer would) into one mono 16 kHz WAV whose time is master time."""
     cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y']
-    for s in sources:
+    for s, _ in sources:
         cmd += ['-i', s]
-    if len(sources) == 1:
-        cmd += ['-map', '0:a:0']
-    else:
-        inputs = ''.join(f'[{i}:a:0]' for i in range(len(sources)))
-        cmd += ['-filter_complex', f'{inputs}amix=inputs={len(sources)}:duration=longest:normalize=0[m]', '-map', '[m]']
-    cmd += ['-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(out_path)]
+    chains = []
+    for i, (_, tau) in enumerate(sources):
+        if tau >= 0:
+            chains.append(f'[{i}:a:0]adelay=delays={tau * 1000:.3f}:all=1[s{i}]')
+        else:
+            chains.append(f'[{i}:a:0]atrim=start={-tau:.6f},asetpts=PTS-STARTPTS[s{i}]')
+    inputs = ''.join(f'[s{i}]' for i in range(len(sources)))
+    graph = ';'.join(chains) + f';{inputs}amix=inputs={len(sources)}:duration=longest:normalize=0[m]'
+    cmd += ['-filter_complex', graph, '-map', '[m]', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(out_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Mixing the audio for pause detection failed: {result.stderr.strip()[-800:]}")
 
 
-def recut_without_game(editor, master_xml: str, audio_sources: Dict[str, str], threshold: str) -> str:
+def recut_without_game(editor, master_xml: str, master_video: str, audio_sources: Dict[str, str], threshold: str) -> str:
     """Rewrite `master_xml`'s kept segments from the pauses in every non-game audio source.
 
-    Segment edges are snapped outward to the master's frames, and clipped to the master's
+    Each source is first moved onto the master's timeline by its measured offset (an OBS
+    set's WAVs come out of program.mkv, which starts about a second before master.mp4), so
+    the pauses are in master time. Segment edges are snapped outward to the master's frames, and clipped to the master's
     own extent. Returns `master_xml` (rewritten in place).
     """
     others = sorted((t, p) for t, p in audio_sources.items() if p and not is_game_audio(t))
@@ -69,7 +91,7 @@ def recut_without_game(editor, master_xml: str, audio_sources: Dict[str, str], t
     mix_xml = master_path.with_name(f"{master_path.stem}_PAUSE_MIX.fcpxml")
     print(f"Pauses: finding them without the game audio, on {', '.join(t for t, _ in others)}", file=sys.stderr)
     try:
-        _mix([p for _, p in others], mix_path)
+        _mix([(p, _offset_on_master(p, master_video)) for _, p in others], mix_path)
         editor.cut_silence(str(mix_path), threshold, output_file=str(mix_xml))
         scf = SmartCutFilter()
         master_segments = scf.parse_kept_segments(master_xml)

@@ -1055,7 +1055,7 @@ def main():
         # Stream recovery has no individual tracks (see the smart cut filter below).
         if not use_downloaded_stream and any(p and is_game_audio(t) for t, p in audio_sources_input.items()):
             set_stage(12, 'Finding pauses without the game audio...')
-            altered_xml = recut_without_game(editor, altered_xml, audio_sources_input,
+            altered_xml = recut_without_game(editor, altered_xml, str(master_video), audio_sources_input,
                                              threshold or config.default_threshold)
 
         # Step 1.5: Smart cut filter — preserve video-watching segments

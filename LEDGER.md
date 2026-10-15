@@ -2050,3 +2050,10 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** Synthetic 60 s set (mic on 5 s / off 5 s, constant game noise, silent screen): the master alone kept one 60 s segment, and without the game it kept 6 segments on the mic's bursts, every edge a multiple of 1001/30000 s. No test covers the generators. Owen re-processes the latest sets to see it.
 
 [editor-backend/core/editors/pause_mix.py, cli/electron_workflow.py, core/compound_generators/{cam,ssb,dc_ssb,shorts_ssb,shorts_cam}_generator.py]
+
+**302. The game-free pause mix is moved onto the master's timeline before the pauses are found (Owen, 2026-10-14: "the cuts are all offset by at least a second").**
+- **Why.** #301 mixed the set's WAVs as if their time were master time. An OBS set's WAVs come out of program.mkv, which starts 34 frames (1.134 s) before master.mp4, as sync.json says (offset_ns -1134466644). Every cut on the 2026-10-14 set therefore landed 1.13 s late. The sync step only aligns the tracks after the cuts are made.
+- **Now.** Each non-game source is measured against the master with the sync step's own GCC-PHAT measure_offset and trust gate (a low-confidence one is used and said, as that step does), shifted by its offset (adelay, or atrim for a source that starts early), and then mixed. A digitally silent source can't be measured and raises, like the sync step; setup's #300 already empties such slots.
+- **Checks.** Real 2026-10-14 tracks: mic -1.134 s (conf 0.98) and screen -1.134 s (conf 0.96), matching sync.json. Synthetic 120 s set with the tracks 1.134 s early and constant game noise: 19 talk bursts gave 19 kept segments, each starting 0.21-0.26 s before the speech (auto-editor's margin plus frame snapping), where #301 had them 1.13 s late.
+
+[editor-backend/core/editors/pause_mix.py, cli/electron_workflow.py]
