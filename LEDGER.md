@@ -2091,3 +2091,10 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** program_audio_plan on the 10-15 manifest gives five WAVs on tracks 2–6. electron tsc clean. Not run in the app; Owen tests.
 
 [editor-backend/core/obs_program_audio.py; electron/services/editor/session-sources.ts]
+
+**307. The soundboard track sits with the mics and is always on, and it is left out of the pause mix (Owen, 2026-10-16: "it should be in with mic 1 and mic 2 ... it should always be enabled. sound only happens if i hit a button, so no muting policy necessary").**
+- **Already so.** Since #306, track 6 fills `soundEffects`. The cam compounds (cam, dc_cam, shorts_cam) take soundEffects alongside mic1–4, enabled, at −15 dB with no voice isolation. GS and DC GS keep every source off, mics included, as before. The advanced sync places the track by GCC-PHAT: on 10-15 it measured −1.0677 s with conf 0.99 in all three windows, the same as the mics. Its name has no `sb.`, so the vMix soundboard clock correction (1.0000158) is never applied to it.
+- **Changed.** `finds_pauses` in pause_mix.py now leaves out soundEffects as well as game. A button-triggered track has no pauses to give.
+- **Found.** On 10-15, track 6 has sound almost all the time (median about −23 dB, over −40 dB in 95 % or more of seconds), and over 900–1020 s it correlates 0.75 with track 5 (game) at lag 0 and the same level. So OBS was routing the game into the sound effects track too. Kept in the pause mix, it would have hidden the pauses exactly as the game did before #301. Kept on in the compound, the game plays under the cam at −15 dB. That second part is Owen's OBS routing to fix. The code keeps the track on, as he asked.
+
+[editor-backend/core/editors/pause_mix.py]

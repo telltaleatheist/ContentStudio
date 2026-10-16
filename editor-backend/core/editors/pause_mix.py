@@ -5,6 +5,10 @@ The master recording carries every source merged, game audio included, and a gam
 almost never silent: auto-editor on the master found next to no pauses on a set with a
 game capture. When the set has game audio, the pauses are found on a mix of every OTHER
 audio source instead, and the master's cut list is rewritten from it.
+
+The soundboard track (soundEffects) is left out of that mix too. It plays only when Owen
+presses a button, so it has no pauses of its own to give. On the 2026-10-15 OBS set it also
+carried the game: program track 6 correlated 0.75 with track 5, at the same level.
 """
 
 import math
@@ -20,6 +24,11 @@ from core.editors.smart_cut_filter import SmartCutFilter
 
 def is_game_audio(audio_type: str) -> bool:
     return audio_type.replace('Sb', '') == 'game'
+
+
+def finds_pauses(audio_type: str) -> bool:
+    """Whether a source goes into the pause mix: everything but the game and the soundboard."""
+    return audio_type.replace('Sb', '') not in ('game', 'soundEffects')
 
 
 def _frame_duration(master_xml: str) -> Fraction:
@@ -71,14 +80,15 @@ def _mix(sources: List[Tuple[str, float]], out_path: Path) -> None:
 
 
 def recut_without_game(editor, master_xml: str, master_video: str, audio_sources: Dict[str, str], threshold: str) -> str:
-    """Rewrite `master_xml`'s kept segments from the pauses in every non-game audio source.
+    """Rewrite `master_xml`'s kept segments from the pauses in every audio source that
+    `finds_pauses` (not the game, not the soundboard).
 
     Each source is first moved onto the master's timeline by its measured offset (an OBS
     set's WAVs come out of program.mkv, which starts about a second before master.mp4), so
     the pauses are in master time. Segment edges are snapped outward to the master's frames, and clipped to the master's
     own extent. Returns `master_xml` (rewritten in place).
     """
-    others = sorted((t, p) for t, p in audio_sources.items() if p and not is_game_audio(t))
+    others = sorted((t, p) for t, p in audio_sources.items() if p and finds_pauses(t))
     if not others:
         raise ValueError("The set has game audio and no other audio source, so there is nothing "
                          "to find pauses in without the game.")
