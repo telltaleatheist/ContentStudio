@@ -25,6 +25,7 @@ PROGRAM_TRACK_WAVS = {
     'Mic 2': 'mic 2 audio',
     'Mac': 'screen audio',
     'game': 'game audio',
+    'sound effects': 'sound effects audio',
 }
 NOT_EXTRACTED = {'on-air mix', 'everything merged'}
 

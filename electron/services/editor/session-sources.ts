@@ -121,6 +121,7 @@ const PROGRAM_TRACK_WAVS: { [label: string]: { audioType: string; wav: string } 
   'Mic 2': { audioType: 'mic2', wav: 'mic 2 audio' },
   'Mac': { audioType: 'screen', wav: 'screen audio' },
   'game': { audioType: 'game', wav: 'game audio' },
+  'sound effects': { audioType: 'soundEffects', wav: 'sound effects audio' },
 };
 const PROGRAM_TRACKS_NOT_EXTRACTED = new Set(['on-air mix', 'everything merged']);
 

@@ -2083,3 +2083,11 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** electron and frontend tsc clean, and the development ng build compiles the template. Not run in the app; Owen tests.
 
 [electron/services/editor/editor-ipc.ts; frontend/src/app/components/editor/project-sidebar/project-sidebar.component.{ts,html}]
+
+**306. An OBS set's sixth program track, "sound effects", becomes the Sound Effects source (Owen, 2026-10-16: the 2026-10-15 set refused with `program track 6 holds "sound effects", which this build does not know how to name`).**
+- **Why.** Utility Suite's version-2 manifest now lists program.mkv track 6 as "sound effects". Both label tables (obs_program_audio.py `PROGRAM_TRACK_WAVS`, session-sources.ts `PROGRAM_TRACK_WAVS`) refuse a label they don't know, which is intended so that a mic is never dropped silently.
+- **Now.** "sound effects" maps to the existing `soundEffects` slot and is extracted as `<set> sound effects audio.wav`. The vMix-era detection pattern already reads that name. The compounds treat it as they always treated soundEffects: on, with no voice isolation. It is not game audio, so it takes part in the pause mix (#301).
+- **Spliced set checked.** 10-15 was recorded in two presses of Record, which Utility Suite joined (`parts`, a 272 s gap). program.mkv measured against master.mp4 at 1560 s, 4760 s, 5360 s and 12060 s gives −1.067 s each time (conf 0.96–0.98). The join keeps the offset, so one tau per source (#302) holds for the whole set.
+- **Checks.** program_audio_plan on the 10-15 manifest gives five WAVs on tracks 2–6. electron tsc clean. Not run in the app; Owen tests.
+
+[editor-backend/core/obs_program_audio.py; electron/services/editor/session-sources.ts]
