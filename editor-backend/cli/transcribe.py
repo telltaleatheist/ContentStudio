@@ -127,7 +127,6 @@ LOOP_MAX_REGIONS = 12         # at most this many regions re-decoded per track
 # ---------------------------------------------------------------------------
 ASR_CACHE_SCHEMA = 1          # bump when an entry's shape or meaning changes
 FP_BLOCK_BYTES = 1 << 20      # fingerprint block: 1 MiB
-FP_SPREAD_BLOCKS = 64         # blocks spread evenly through the file, plus its first and last
 
 
 # ---------------------------------------------------------------------------
@@ -745,21 +744,15 @@ def _retry_loop_regions(raw, compact_wav, request_asr, temp_dir,
 # The ASR cache (LEDGER #311): fingerprint, key, read, write. Pure functions over files.
 # ---------------------------------------------------------------------------
 def _fingerprint_offsets(size):
-    """The byte offsets of the blocks fingerprint_audio hashes: the first block, the last
-    block, and FP_SPREAD_BLOCKS spread evenly between them. A file no bigger than all of
-    those together is hashed whole (every block)."""
-    if size <= FP_BLOCK_BYTES * (FP_SPREAD_BLOCKS + 2):
-        return list(range(0, size, FP_BLOCK_BYTES))
-    last = size - FP_BLOCK_BYTES
-    offsets = {0, last}
-    for k in range(1, FP_SPREAD_BLOCKS + 1):
-        offsets.add(k * last // (FP_SPREAD_BLOCKS + 1))
-    return sorted(offsets)
+    """The byte offsets of the blocks fingerprint_audio hashes: every block. The compact WAV
+    is speech only at 16 kHz mono (a few hundred MB for a long stream), so hashing it whole
+    takes a second or so and no change anywhere in it can slip past a sample."""
+    return list(range(0, size, FP_BLOCK_BYTES))
 
 
 def fingerprint_audio(wav_path):
     """A content fingerprint of a WAV: its size and format (channels, sample width, rate,
-    frame count) and a SHA-256 over the sampled blocks (_fingerprint_offsets), each block
+    frame count) and a SHA-256 over all of its blocks (_fingerprint_offsets), each block
     hashed with its offset. Never the mtime: a re-process writes identical bytes anew."""
     size = os.path.getsize(wav_path)
     with wave.open(wav_path, 'rb') as wf:

@@ -2200,6 +2200,8 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 
 [editor-backend/cli/transcribe.py; electron/services/editor/editor-asr.ts, python-service.ts, editor-ipc.ts; frontend/src/app/components/editor/editor.component.{ts,html}, model/editor-format.ts, transcript-pane/transcript-pane.component.{ts,html,scss}; tools/asr-cache-checks.py (new), asr-acceptance.js; package.json]
 
+- **Review (merge).** The compact WAV is hashed whole rather than sampled: it is speech only at 16 kHz mono, so this takes about a second and nothing in it can change unseen. The built `crucible-transcript.js` and `editor-asr.js`, the code that shapes the returned words, are hashed into `--asr-params-sha256`, so changing them is a miss and a stale entry is never reused.
+
 **312. The game and the soundboard are left out of the Dugan automixer (found on 10-15, 2026-10-17: Owen's Mic 1 came out "very quiet and spotty").**
 - **Why.** The automixer shares gain among the tracks it is given, in proportion to each track's level at that moment. On 10-15 it was given the merged "sound effects" track 6 (all of Mic 1, Mic 2, the Mac and the game, #306/#307), which always outweighed Mic 1. Speech on Mic 1 went from about −28 dB raw to about −51 dB processed, and over 20 dB was taken off 56 % of speech frames. The game track does the same thing on a smaller scale whenever the host talks over a game, for a track that goes into the compound muted (#301).
 - **Now.** Tracks for which `finds_pauses` is false (game, soundEffects, and their Sb forms) are not sent to the automixer. Their processed files pass through untouched. The voices (mics, screen/Mac, bluetooth) are mixed among themselves as before.

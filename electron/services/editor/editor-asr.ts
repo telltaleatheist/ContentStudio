@@ -22,6 +22,7 @@
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as path from 'path';
 
 import { EDITOR_ASR_MODEL, asrParams } from '../../crucible/asr';
 import type { SessionSource } from '../../crucible/session';
@@ -123,14 +124,19 @@ export async function serveEditorAsrRequest(
 /**
  * What every request of an editor run decodes with, as transcribe.py's ASR cache keys it
  * (LEDGER #311): the model, and the SHA-256 of the exact params `transcribeOnCrucible` sends
- * (asr.ts asrParams: language, vad_filter, word_timestamps and the context). Passed to
+ * (asr.ts asrParams: language, vad_filter, word_timestamps and the context), together with the
+ * built code that shapes the returned words. Passed to
  * transcribe.py as `--asr-model` / `--asr-params-sha256`; a change to either is a cache miss.
  */
 export function editorAsrDecodeIdentity(context: string): { readonly model: string; readonly paramsSha256: string } {
-  return {
-    model: EDITOR_ASR_MODEL,
-    paramsSha256: crypto.createHash('sha256').update(JSON.stringify(asrParams(context)), 'utf8').digest('hex'),
-  };
+  const h = crypto.createHash('sha256').update(JSON.stringify(asrParams(context)), 'utf8');
+  // The words file is also shaped here (punctuation, split-word joins: readCrucibleTranscript /
+  // transcriptTokens), so the code that shapes it is part of what a cached track depends on:
+  // the built modules themselves are hashed in, and any change to them is a miss.
+  for (const mod of [require.resolve('../transcription/crucible-transcript'), __filename]) {
+    h.update(`\n${path.basename(mod)}\n`, 'utf8').update(fs.readFileSync(mod));
+  }
+  return { model: EDITOR_ASR_MODEL, paramsSha256: h.digest('hex') };
 }
 
 /** The line that answers `request`: a response, or the error the run fails with. */

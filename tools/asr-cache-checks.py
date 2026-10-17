@@ -95,10 +95,9 @@ def offsets_small():
 def offsets_large():
     size = 500 * T.FP_BLOCK_BYTES + 12345
     offs = T._fingerprint_offsets(size)
-    eq(len(offs), T.FP_SPREAD_BLOCKS + 2, 'blocks:')
+    eq(len(offs), 501, 'every block, the short tail included:')
     eq(offs[0], 0, 'first block:')
-    eq(offs[-1], size - T.FP_BLOCK_BYTES, 'last block:')
-    eq(offs, sorted(set(offs)), 'sorted and distinct:')
+    eq(offs[-1], 500 * T.FP_BLOCK_BYTES, 'the tail block:')
     eq(offs, T._fingerprint_offsets(size), 'deterministic:')
 
 
@@ -133,7 +132,7 @@ def format_counts():
 
 
 check('small files are hashed whole', offsets_small)
-check('large files: first, last and 64 spread blocks, deterministic', offsets_large)
+check('large files: every block, deterministic', offsets_large)
 check('identical bytes with a new mtime fingerprint alike', same_bytes_new_mtime)
 check('one changed byte changes the fingerprint', changed_byte_misses)
 check('the format is part of the fingerprint', format_counts)
