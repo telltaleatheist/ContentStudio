@@ -2171,3 +2171,10 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Checks.** Frontend tsc is clean and the development ng build compiles the template. 15 checks on the group functions pass (esbuild bundle, kept in the session scratchpad). Not run in the app; Owen tests.
 
 [frontend/src/app/components/publish-calendar/calendar-states.ts, publish-calendar.{ts,html,scss}]
+
+**310. The soundboard is muted with the mic: a CAM compound with mic + sound effects audio is still a mic carrier (Owen, 2026-10-16, export of 10-15 refused: "compound 'r2': its audible audio mixes mic files [... mic audio_processed.wav] with non-mic files [... sound effects audio_processed.wav]").**
+- **Why.** Since #306/#307 the soundboard rides in the CAM compound beside the mics, as cam_generator always placed soundEffects. "Mute mic while screen audio speaks" disables the CAM compound's audio ref-clip on the spine, so the export refused rather than silence a non-mic file. Asked where it should live, Owen chose to keep it in CAM and let the mute take it too (the alternative was the SSB compound, never muted). A button pressed while a clip plays is muted with the mic.
+- **Now.** In `_mic_carrier_media`, soundboard files (transcript tracks of role 'other' whose file name says sound effect/sfx/soundboard, `_SOUNDBOARD_ROLE_KEYWORDS`) are allowed beside the mics. Any other non-mic file in a mic compound still refuses.
+- **Checks.** A synthetic set: CAM (mic + sound effects) classifies as a carrier, SSB (screen) does not, and mic + screen still refuses. Not run on the 10-15 export; Owen tests.
+
+[editor-backend/cli/editor_export.py]

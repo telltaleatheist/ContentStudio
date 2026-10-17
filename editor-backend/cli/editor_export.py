@@ -955,7 +955,7 @@ def _story_kepts(stories, global_cuts):
 #     sources in the GS compound with enabled=False throughout; ssb_generator.py:255-271
 #     enables screen/game/bluetooth in the SSB compound. That is what makes a compound
 #     classifiable by the set of files it can actually be HEARD through (see
-#     _mic_carrier_media): CAM carries mic only, SSB carries screen/game only, GS carries
+#     _mic_carrier_media): CAM carries mic only (plus the soundboard, muted with it), SSB carries screen/game only, GS carries
 #     nothing audible at all.
 #   * We used to split INSIDE the compound instead, on the theory that one edit there
 #     covers every window into it. It does — but each piece deep-copies the lane clip's
@@ -1030,6 +1030,10 @@ _SCREEN_ROLE_KEYWORDS = ('screen',)
 _MIC_ROLE_KEYWORDS = ('mic',)
 _NON_SPEECH_ROLE_KEYWORDS = ('soundeffect', 'sound effect', 'sfx', 'soundboard',
                              'game', 'bluetooth', 'desktop', 'music')
+# The soundboard rides in the CAM compound beside the mics (cam_generator), and Owen chose
+# (2026-10-16) that it is muted with the mic rather than moved out: a compound carrying mic
+# + soundboard audio is still a mic carrier. Any other non-mic file in it still refuses.
+_SOUNDBOARD_ROLE_KEYWORDS = ('soundeffect', 'sound effect', 'sfx', 'soundboard')
 
 
 def _mic_mute_track_roles(tracks, sidecar_label):
@@ -1263,8 +1267,9 @@ def _audible_audio_files(el, assets, media_index, cache, context, stack=()):
     return files
 
 
-def _mic_carrier_media(media_index, assets, mic_files, known_files, entry_name):
-    """The compound <media> ids whose audible audio is mic audio and NOTHING else.
+def _mic_carrier_media(media_index, assets, mic_files, soundboard_files, known_files, entry_name):
+    """The compound <media> ids whose audible audio is mic audio and NOTHING else but the
+    soundboard, which is muted along with the mic (Owen, 2026-10-16).
 
     Those are the only compounds whose timeline audio ref-clip can be disabled without
     collateral damage. Verdicts, in the order they are decided — each one refuses rather
@@ -1276,11 +1281,11 @@ def _mic_carrier_media(media_index, assets, mic_files, known_files, entry_name):
         sidecar means the sidecar is stale and the mute set was computed without it.
       * no mic file audible -> not a carrier, never touched. This is the SSB compound
         (screen / game / bluetooth) and anything else that is not a microphone.
-      * mic AND non-mic files audible -> RAISE. The edit disables the compound's audio
+      * mic AND non-mic files (the soundboard aside) audible -> RAISE. The edit disables the compound's audio
         ref-clip on the timeline, which would silence the non-mic files too: the edit the
         user asked for cannot be expressed here at all, and muting the screen along with
         the mic is exactly the silent wrong answer the doctrine forbids.
-      * mic files only -> mic carrier."""
+      * mic files only, or mic + soundboard -> mic carrier."""
     cache = {}
     carriers = set()
     for media_id in sorted(media_index):
@@ -1298,10 +1303,11 @@ def _mic_carrier_media(media_index, assets, mic_files, known_files, entry_name):
         mics = audible & mic_files
         if not mics:
             continue
-        if audible != mics:
+        others = audible - mics - soundboard_files
+        if others:
             raise ManifestError(
                 f"{context}: its audible audio mixes mic files {sorted(mics)} with non-mic "
-                f"files {sorted(audible - mics)}. Muting works by disabling this compound's "
+                f"files {sorted(others)}. Muting works by disabling this compound's "
                 "audio ref-clip on the timeline, which would silence the non-mic files too, "
                 "so the edit cannot be expressed. Export with 'Mute mic while screen audio "
                 "speaks' turned off.")
@@ -1455,6 +1461,8 @@ def apply_mic_mute(tree, entry_name, zip_path):
         track_of_file[f] = t['id']
     known_files = set(track_of_file)
     mic_files = {f for f, tid in track_of_file.items() if roles[tid] == 'mic'}
+    soundboard_files = {f for f, tid in track_of_file.items() if roles[tid] == 'other'
+                        and any(k in Path(f).name.lower() for k in _SOUNDBOARD_ROLE_KEYWORDS)}
 
     plan = _mic_mute_plan(sidecar, roles, frame_seconds, total_declared, sidecar_label)
     if not plan:
@@ -1469,7 +1477,8 @@ def apply_mic_mute(tree, entry_name, zip_path):
         raise ManifestError(f"{entry_name}: no <resources> element in master hybrid project")
     media_index = {el.get('id'): el for el in resources if el.tag == 'media' and el.get('id')}
     assets = {el.get('id'): el for el in resources if el.tag == 'asset' and el.get('id')}
-    mic_carriers = _mic_carrier_media(media_index, assets, mic_files, known_files, entry_name)
+    mic_carriers = _mic_carrier_media(media_index, assets, mic_files, soundboard_files,
+                                     known_files, entry_name)
 
     # The same policy apply_cuts applies to the same spines: assert frame alignment of every
     # computed value only when the source itself was frame-quantized. (Compound internals
