@@ -482,6 +482,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly TRACK_COLORS = ['#e8a33d', '#4a9eff', '#7bc98f', '#c98fd6', '#d67b7b', '#7bd6cf'];
   transcriptState: TranscriptState = 'none';
   private transcript: Transcript | null = null;
+  /**
+   * Whether the open project's `_transcript.json` was found on disk: true once a load returned
+   * one (even one that then failed to parse), false when the load found none, null when the load
+   * itself failed and nothing is known. The transcribe confirmation reads it (LEDGER #313).
+   */
+  private transcriptOnDisk: boolean | null = false;
+  /** The yes/no asked before a transcription the pane's buttons start (LEDGER #313). */
+  transcribeConfirmOpen = false;
   // All groups in timeline order (immutable per loaded transcript). visibleGroups is the
   // cut-aware, timecoded projection the template renders — recomputed whenever cuts change.
   private transcriptGroups: TranscriptGroup[] = [];
@@ -855,6 +863,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       void this.host.cancelTranscription({ jobId: this.transcribeJobId });
     }
     this.transcript = null;
+    this.transcriptOnDisk = false;
+    this.transcribeConfirmOpen = false;
     this.transcriptGroups = [];
     this.visibleGroups = [];
     this.transcriptTracks = [];
@@ -2386,6 +2396,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.errorMessage || !this.manifest) return;
     // Escape first dismisses an open File menu or export modal — even from a focused field —
     // so it never falls through to a selection clear underneath.
+    // The transcribe question holds the keyboard while it is open: Escape is No, and nothing else
+    // reaches the timeline underneath (Space would start playback behind a modal).
+    if (this.transcribeConfirmOpen) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        this.dismissTranscribeConfirm();
+      }
+      return;
+    }
     if (ev.key === 'Escape' && (this.menuOpen || this.exportChooserOpen || this.exportResultPath || this.exportError)) {
       ev.preventDefault();
       this.menuOpen = false;
@@ -5689,6 +5708,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       data = await this.host.loadTranscript({ zipPath });
     } catch (err: any) {
       if (generation !== this.bootstrapGeneration) return;
+      this.transcriptOnDisk = null;
       this.transcriptState = 'error';
       this.transcriptError = err?.message || String(err);
       this.cdr.detectChanges();
@@ -5702,6 +5722,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // ignored (Owen, 2026-09-28: "i didnt know it was running"). The job's completion reloads
     // the sidecar itself, so nothing is lost by standing aside.
     if (opts.initial && this.transcriptState === 'running') return;
+    this.transcriptOnDisk = !!data;
     if (!data) { this.transcriptState = 'none'; this.cdr.detectChanges(); return; }
     try {
       this.ingestTranscript(data as Transcript);
@@ -5909,6 +5930,37 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (g.originalStart >= cs - EPS && g.originalEnd <= ce + EPS) return true;
     }
     return false;
+  }
+
+  /**
+   * The pane's Transcribe / re-transcribe / Try again: ask first, then start (Owen, 2026-10-17,
+   * LEDGER #313: the re-transcribe button "asks first"). Nothing runs until he says yes. The
+   * automatic transcription after processing ("transcribe when processing finishes") was asked
+   * for in the setup modal and calls `startTranscription` directly.
+   */
+  requestTranscription(): void {
+    if (!this.currentZipPath) return;
+    this.transcribeConfirmOpen = true;
+  }
+
+  /**
+   * Whether the confirmation asks to REPLACE a transcript: the project has one on disk, or the
+   * load failed and it may. A failed re-transcribe keeps the old sidecar (transcribe.py writes
+   * only on success), so a Try again after one still replaces it.
+   */
+  get transcribeConfirmReplaces(): boolean {
+    return this.transcript !== null || this.transcriptOnDisk !== false;
+  }
+
+  /** Yes: close the question and start the run. */
+  confirmTranscription(): void {
+    this.transcribeConfirmOpen = false;
+    void this.startTranscription();
+  }
+
+  /** No (the button, the backdrop or Escape): nothing happens. */
+  dismissTranscribeConfirm(): void {
+    this.transcribeConfirmOpen = false;
   }
 
   /** Start (or restart) the transcription job for the current session. */

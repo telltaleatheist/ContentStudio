@@ -229,6 +229,43 @@
     (skipRunningRequested)="skipRunningActivity()"
     (cancelPendingRequested)="cancelPendingActivity($event)"></app-editor-activity-dock>
 
+  <!-- The transcribe question (LEDGER #313): the pane's buttons ask before anything runs. With a
+       transcript on disk it asks to REPLACE it; without one it confirms the transcription. The
+       copy says what #311's cache really does: unchanged tracks reuse their saved words. -->
+  <div class="modal-backdrop" *ngIf="transcribeConfirmOpen" (click)="dismissTranscribeConfirm()">
+    <div class="modal transcribe-confirm" (click)="$event.stopPropagation()"
+         role="dialog" aria-modal="true" aria-labelledby="transcribe-confirm-title">
+      <ng-container *ngIf="transcribeConfirmReplaces; else freshTranscribe">
+        <div class="modal-title" id="transcribe-confirm-title">Replace the existing transcript?</div>
+        <p class="transcribe-confirm-body">
+          This project already has a transcript. Transcribing again builds a new one from the
+          project's audio and replaces it.
+        </p>
+        <p class="transcribe-confirm-body">
+          A track whose audio is unchanged since it was last transcribed, with the same model and
+          context, reuses its saved words. Every other track is decoded again on Crucible, which
+          can take a long time for a long session.
+        </p>
+        <div class="modal-actions">
+          <button class="modal-btn" (click)="dismissTranscribeConfirm()">No</button>
+          <button class="modal-btn primary" (click)="confirmTranscription()">Yes, replace it</button>
+        </div>
+      </ng-container>
+      <ng-template #freshTranscribe>
+        <div class="modal-title" id="transcribe-confirm-title">Transcribe this project?</div>
+        <p class="transcribe-confirm-body">
+          Each source track (mic, screen) is transcribed on Crucible, which can take a long time
+          for a long session. A track whose audio is unchanged since it was last transcribed
+          reuses its saved words.
+        </p>
+        <div class="modal-actions">
+          <button class="modal-btn" (click)="dismissTranscribeConfirm()">No</button>
+          <button class="modal-btn primary" (click)="confirmTranscription()">Yes, transcribe</button>
+        </div>
+      </ng-template>
+    </div>
+  </div>
+
   <!-- Split modal: assign AI-detected chapters to stories (any non-contiguous subset). -->
   <div class="modal-backdrop" *ngIf="splitModalOpen" (click)="cancelSplit()">
     <div class="split-modal" (click)="$event.stopPropagation()">
@@ -509,7 +546,7 @@
         [activeGroupIdx]="activeGroupIdx"
         [selectedGroupStart]="selectedGroupStart"
         [selectedGroupEnd]="selectedGroupEnd"
-        (transcribeRequested)="startTranscription()"
+        (transcribeRequested)="requestTranscription()"
         (cancelRequested)="cancelTranscription()"
         (sourceFilterChanged)="setSourceFilter($event)"
         (searchChanged)="onSearchInput($event)"

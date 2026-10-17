@@ -10,7 +10,8 @@
  * rules into a component stylesheet, and never leave them in the parent hoping they will reach.
  *
  * Current consumers: the editor shell (its split modal's backdrop, until step 10 of the
- * decomposition moves that dialog into its own component) and app-editor-export-modals.
+ * decomposition moves that dialog into its own component, and the whole card of its transcribe
+ * question, LEDGER #313) and app-editor-export-modals.
  *
  * Export-specific children (.chooser-*, .modal-path, .modal-note, .modal-error) are NOT here —
  * they live in export-modals.component.scss, because only that dialog has them. Likewise the

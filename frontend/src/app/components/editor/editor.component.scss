@@ -981,6 +981,16 @@
   100% { margin-left: 100%; }
 }
 
+/* The transcribe question (LEDGER #313): the shared .modal card with two short paragraphs. */
+.transcribe-confirm .transcribe-confirm-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b4b4bc;
+  margin: 0 0 12px;
+
+  &:last-of-type { margin-bottom: 18px; }
+}
+
 /* Split modal — assign AI-detected chapters to stories (any non-contiguous subset). Lives inside
    the shared .modal-backdrop; its own card because the layout differs from the export modal. */
 .split-modal {
