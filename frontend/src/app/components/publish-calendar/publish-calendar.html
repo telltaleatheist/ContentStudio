@@ -115,6 +115,25 @@
     </div>
   </div>
 
+  <!-- The GROUP switcher: Owen Morgan's channels and Little Goose's, two boards rather than
+       one strip (Owen, 2026-10-16). Above the channel tabs because it decides which of
+       them exist. The number on each is that group's open work — dated chips plus tray
+       rows — so the board NOT on screen is still counted rather than silently absent. -->
+  <div class="group-tabs" role="tablist" aria-label="Channel group">
+    @for (group of channelGroups; track group.id) {
+      <button type="button" class="group-tab"
+              role="tab"
+              [class.on]="activeGroup() === group.id"
+              [class.little-goose]="group.id === 'little-goose'"
+              [attr.aria-selected]="activeGroup() === group.id"
+              (click)="setActiveGroup(group.id)">
+        <span class="group-tab-l">{{ group.label }}</span>
+        <span class="group-count"
+              [matTooltip]="groupOpenCounts()[group.id] + ' open item' + (groupOpenCounts()[group.id] === 1 ? '' : 's') + ' on this board — scheduled and unscheduled'">{{ groupOpenCounts()[group.id] }}</span>
+      </button>
+    }
+  </div>
+
   <!-- The tabs are also the colour key: the dot on each is that channel's hue, so the
        encoding is readable rather than remembered. -->
   <div class="chan-tabs" role="tablist" aria-label="Destination">
@@ -128,22 +147,38 @@
         <span class="chan-tab-l">{{ tab.name }}</span>
       </button>
     }
-    @if (channelTabs().length === 0) {
+    <!-- Two different empties. No channels AT ALL is the registry's problem; no channel
+         in THIS group is Little Goose not being connected yet, which is a step the
+         operator takes, so it is named as that step. The group stays selectable either
+         way: its tray is where an unrouted Little Goose song waits for that step. -->
+    @if (channels().length === 0) {
       <span class="empty-note">No channels available — the registry is empty or could not be read, so no chip can name its channel.</span>
+    } @else if (channelTabs().length === 0 && activeGroup() === 'little-goose') {
+      <span class="empty-note group-empty">
+        No Little Goose channel is connected yet. Connect it on the
+        <a routerLink="/analytics">Analytics</a> page and route the
+        <code>{{ littleGoosePromptSet }}</code> prompt set to it — until then nothing here
+        can be uploaded to it.
+      </span>
+    } @else if (channelTabs().length === 0) {
+      <span class="empty-note">Every registered channel is routed to Little Goose, so Owen Morgan's board has no channel tabs.</span>
     }
     <!-- Spreaker is not a channel and does not take a channel hue: it is a destination
          with one show behind it, so it gets the mic and its own end of the strip. Shown
          at zero exactly as an empty channel tab is — a lane that appeared only once
-         something was in it could never be the place you go to put something there. -->
-    <span class="tab-sep" aria-hidden="true"></span>
-    <button type="button" class="chan-tab podcast-tab"
-            role="tab"
-            [class.on]="activeTabId() === spreakerTab"
-            [attr.aria-selected]="activeTabId() === spreakerTab"
-            (click)="setActiveTab(spreakerTab)">
-      <mat-icon class="tab-glyph">mic</mat-icon>
-      <span class="chan-tab-l">{{ spreakerLabel }}</span>
-    </button>
+         something was in it could never be the place you go to put something there.
+         Owen Morgan's board only: the podcast is his show, and Little Goose has none. -->
+    @if (activeGroup() === 'owen-morgan') {
+      <span class="tab-sep" aria-hidden="true"></span>
+      <button type="button" class="chan-tab podcast-tab"
+              role="tab"
+              [class.on]="activeTabId() === spreakerTab"
+              [attr.aria-selected]="activeTabId() === spreakerTab"
+              (click)="setActiveTab(spreakerTab)">
+        <mat-icon class="tab-glyph">mic</mat-icon>
+        <span class="chan-tab-l">{{ spreakerLabel }}</span>
+      </button>
+    }
     @if (activeCadence(); as cadence) {
       <span class="cadence-note">{{ cadence.note }}</span>
     } @else if (activeChannel()) {

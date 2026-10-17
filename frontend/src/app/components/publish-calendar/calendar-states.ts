@@ -191,6 +191,88 @@ export function dimmedFor(
 }
 
 /**
+ * The calendar's two GROUPS: Owen Morgan's channels (the three YouTube channels and the
+ * podcast) and Little Goose Productions, the kids music channel.
+ *
+ * Separate boards rather than more tabs on one strip (Owen, 2026-10-16: "maybe it should
+ * be its own tab entirely. one for the owen morgan channels, one for the little goose
+ * channels"). A kids channel's release week has nothing to do with the commentary
+ * channels', and one strip of five tabs made every count, the tray and the bulk upload
+ * speak for both businesses at once.
+ */
+export type ChannelGroup = 'owen-morgan' | 'little-goose';
+
+/** The groups in switcher order, with the words the switcher prints. */
+export const CHANNEL_GROUPS: ReadonlyArray<{ id: ChannelGroup; label: string }> = [
+  { id: 'owen-morgan', label: 'Owen Morgan' },
+  { id: 'little-goose', label: 'Little Goose' },
+];
+
+/**
+ * The prompt set that makes a channel Little Goose's.
+ *
+ * Read off the ROUTING rather than off a new field on the channel record: channels.json
+ * already says which prompt sets publish to which channel (it is what
+ * resolveChannelForPromptSet reads), so the group is a fact the registry already holds. A
+ * second `group` field would be a second answer to the same question, free to disagree
+ * with the first.
+ */
+export const LITTLE_GOOSE_PROMPT_SET = 'youtube-littlegoose';
+
+/**
+ * Which group a registered channel belongs to.
+ *
+ * A channel routed the Little Goose prompt set is Little Goose's; every other channel is
+ * Owen Morgan's. That second half is the rule rather than a default: before Little Goose
+ * existed every channel on this install was Owen's, and a channel with no prompt sets
+ * routed at all is still one of his until something says otherwise.
+ *
+ * A record with no `promptSets` array is refused by name. The registry always writes one,
+ * so its absence is a malformed record, and filing it under either group would be a guess.
+ */
+export function channelGroupOf(channel: { channelId: string; promptSets: readonly string[] }): ChannelGroup {
+  if (!Array.isArray(channel.promptSets)) {
+    throw new Error(
+      `Channel ${channel.channelId} has no promptSets list in the registry, so the calendar ` +
+      `cannot tell which group it belongs to.`
+    );
+  }
+  return channel.promptSets.includes(LITTLE_GOOSE_PROMPT_SET) ? 'little-goose' : 'owen-morgan';
+}
+
+/**
+ * Which group a row — a chip, a tray row, a mirrored video — files under.
+ *
+ * In order, and each step is the stronger fact:
+ *   1. Spreaker is Owen Morgan's. The podcast is his show, whatever YouTube channel the
+ *      episode was routed via.
+ *   2. A registered channel decides. That is where the video will actually be uploaded,
+ *      so it outranks the prompt set it was generated with.
+ *   3. Otherwise the prompt set decides: unrouted, or routed to an id the registry does
+ *      not hold. This is what puts a Little Goose song with no channel yet in the Little
+ *      Goose tray — exactly the row that needs routing — rather than in Owen's.
+ *
+ * `promptSet` is null for a row that has none (a mirrored YouTube video, an item from
+ * before prompt sets were recorded), which is Owen Morgan's by the same rule as above.
+ */
+export function rowGroupOf(
+  row: { destination: Destination; channelId: string | null; promptSet: string | null },
+  channelGroups: ReadonlyMap<string, ChannelGroup>
+): ChannelGroup {
+  if (row.destination === 'spreaker') return 'owen-morgan';
+  if (row.channelId !== null) {
+    const group = channelGroups.get(row.channelId);
+    if (group !== undefined) return group;
+  }
+  return row.promptSet === LITTLE_GOOSE_PROMPT_SET ? 'little-goose' : 'owen-morgan';
+}
+
+/** A stored group value, checked: anything else in storage is not a group. */
+export function isChannelGroup(value: string | null): value is ChannelGroup {
+  return CHANNEL_GROUPS.some((group) => group.id === value);
+}
+
+/**
  * What is still missing before this item could be uploaded, in the order it reads.
  *
  * A THUMBNAIL COUNTS AS MISSING even though videos.insert does not require one: an upload

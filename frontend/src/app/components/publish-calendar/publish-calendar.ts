@@ -69,22 +69,28 @@ import { splitPublishAt } from '../../features/publish/publish-schedule';
 import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot } from '../../features/publish/publish-slots';
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
 import {
+  CHANNEL_GROUPS,
+  ChannelGroup,
   ChipState,
   Destination,
+  LITTLE_GOOSE_PROMPT_SET,
   Readiness,
+  channelGroupOf,
   channelTag,
   chipStateOf,
   dateKeyOf,
   destinationOf,
   dimmedFor,
   distance,
+  isChannelGroup,
   isSchedulable,
   missingFor,
   readinessOf,
+  rowGroupOf,
 } from './calendar-states';
 
 /**
- * Channel hues, assigned IN REGISTRY ORDER.
+ * Channel hues, assigned IN REGISTRY ORDER WITHIN EACH GROUP.
  *
  * Orange / teal / violet is the triad the design settled on: distinguishable from each
  * other and from the app's orange chrome, and safe under the common colour-vision
@@ -98,6 +104,17 @@ import {
  * readable rather than remembered.
  */
 const CHANNEL_HUES = ['#ff6b35', '#2dd4bf', '#a78bfa', '#f59e0b', '#38bdf8', '#f472b6'];
+
+/**
+ * Little Goose's hues: warm gold first, then its neighbours.
+ *
+ * Its own list rather than the next slot of CHANNEL_HUES, because the two groups are never
+ * on screen together and Little Goose should not inherit whatever colour happens to be
+ * fourth in Owen's triad. Gold, not teal (Owen dislikes teal): a kids music channel gets a
+ * warm, bright colour, and these stay clear of the app's orange chrome by sitting further
+ * toward yellow.
+ */
+const LITTLE_GOOSE_HUES = ['hsl(40, 90%, 55%)', 'hsl(48, 90%, 52%)', 'hsl(32, 90%, 58%)'];
 
 /**
  * The times of day this install releases into, as local wall clock, and which lane each
@@ -147,6 +164,20 @@ const WRITER_LEAD_MS = 15 * 60_000;
  */
 const CHANNEL_TAB_KEY = 'publish-calendar.channel-tab';
 
+/**
+ * Which tab was last in force, per group.
+ *
+ * One key per group so switching groups and back lands on the tab that was being read
+ * rather than on the group's first. Owen Morgan's keeps the old key, so the tab remembered
+ * before groups existed is still honoured.
+ */
+function channelTabKeyFor(group: ChannelGroup): string {
+  return group === 'owen-morgan' ? CHANNEL_TAB_KEY : `${CHANNEL_TAB_KEY}.${group}`;
+}
+
+/** Which group was last in force: `owen-morgan` or `little-goose`. */
+const CHANNEL_GROUP_KEY = 'publish-calendar.channel-group';
+
 /** What a slot cell or the before-today strip renders for one scheduled item. */
 export interface CalendarChip {
   itemId: string;
@@ -170,6 +201,8 @@ export interface CalendarChip {
   unknownChannel: boolean;
   /** Files under a tab other than the one in force: readable, but out of the way. */
   dimmed: boolean;
+  /** Which board it is on — see `rowGroupOf`. A chip of the other group is not drawn. */
+  group: ChannelGroup;
   isPodcast: boolean;
   /** A full A/B slate is picked and the video is not out yet. */
   abPending: boolean;
@@ -238,6 +271,8 @@ export interface TrayItem {
   unrouted: boolean;
   unknownChannel: boolean;
   dimmed: boolean;
+  /** Which board's tray it waits in — see `rowGroupOf`. */
+  group: ChannelGroup;
   isPodcast: boolean;
   abCount: number;
   hasThumbnail: boolean;
@@ -269,6 +304,8 @@ export interface MirrorChip {
   channelTag: string;
   hue: string;
   dimmed: boolean;
+  /** The group of the channel YouTube holds it on. */
+  group: ChannelGroup;
   /**
    * The local item that claims this same video, when one does but draws no chip of its
    * own. Present exactly when the record has a video id and NO local date — the report is
@@ -477,6 +514,20 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   readonly activeTabId = signal<string | null>(null);
 
+  /**
+   * Which group's board is on screen. Null only before the first load has settled it.
+   *
+   * ABOVE the tab strip, not beside it: a group decides which tabs exist at all, and every
+   * list on the page — the tray, the counts, the board, the bulk upload — speaks for this
+   * group and no other. See `rowGroupOf` for how a row is filed.
+   */
+  readonly activeGroup = signal<ChannelGroup | null>(null);
+
+  /** The switcher's buttons, in order. */
+  readonly channelGroups = CHANNEL_GROUPS;
+  /** Named in the empty Little Goose state, so the sentence and the routing agree. */
+  readonly littleGoosePromptSet = LITTLE_GOOSE_PROMPT_SET;
+
   /** The item currently under the cursor's drag, so cells can offer themselves. */
   readonly draggingItemId = signal<string | null>(null);
   /** Which drop target the drag is over: a slot's key, or `tray`. */
@@ -569,25 +620,63 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   // ---------------------------------------------------------------- derivations
 
-  /** Registry order decides the hue; the tabs print the key. */
+  /**
+   * Every registered channel with its group, tag and hue — the one place a channel's look
+   * is decided, read by the tabs and by every chip (`channelOf`).
+   *
+   * Registry order decides the hue WITHIN the channel's group: Owen's channels keep the
+   * hues they always had (they are registered first), and Little Goose's start at gold
+   * rather than at whatever slot of Owen's list comes next.
+   */
+  private readonly channelRoster = computed(() => {
+    const seen: Record<ChannelGroup, number> = { 'owen-morgan': 0, 'little-goose': 0 };
+    return this.channels().map((channel) => {
+      const group = channelGroupOf(channel);
+      const palette = group === 'little-goose' ? LITTLE_GOOSE_HUES : CHANNEL_HUES;
+      const index = seen[group]++;
+      return {
+        channelId: channel.channelId,
+        name: channel.name,
+        tag: channelTag(channel.name),
+        hue: palette[index % palette.length],
+        group,
+      };
+    });
+  });
+
+  /** Channel id → group, the lookup `rowGroupOf` takes. */
+  private readonly groupByChannel = computed(
+    () => new Map(this.channelRoster().map((channel) => [channel.channelId, channel.group]))
+  );
+
+  /** The active group's channels, in registry order. The tabs print the key. */
   readonly channelTabs = computed(() =>
-    this.channels().map((channel, index) => ({
-      channelId: channel.channelId,
-      name: channel.name,
-      tag: channelTag(channel.name),
-      hue: CHANNEL_HUES[index % CHANNEL_HUES.length],
-    }))
+    this.channelRoster().filter((channel) => channel.group === this.activeGroup())
   );
 
   /**
-   * Every tab id that currently exists, in strip order. The Spreaker one is ALWAYS last
-   * and always there — an empty destination is the same shape of fact as an empty channel,
-   * and a lane that appeared only once something was in it could never be dropped into.
+   * Every tab id that currently exists IN THE ACTIVE GROUP, in strip order. On Owen
+   * Morgan's board the Spreaker one is ALWAYS last and always there — an empty destination
+   * is the same shape of fact as an empty channel, and a lane that appeared only once
+   * something was in it could never be dropped into. Little Goose has no podcast, so its
+   * list is its channels alone and is EMPTY until one is connected and routed.
    */
   readonly tabIds = computed(() => [
     ...this.channelTabs().map((tab) => tab.channelId),
-    SPREAKER_DESTINATION,
+    ...(this.activeGroup() === 'owen-morgan' ? [SPREAKER_DESTINATION] : []),
   ]);
+
+  /**
+   * Open work per group — dated chips plus tray rows — for the count on each switcher
+   * button. The other group's board is not drawn, so this is what keeps its work from
+   * being a silent omission: a waiting Little Goose song is visible from Owen's board.
+   */
+  readonly groupOpenCounts = computed(() => {
+    const counts: Record<ChannelGroup, number> = { 'owen-morgan': 0, 'little-goose': 0 };
+    for (const chip of this.allScheduledChips()) counts[chip.group]++;
+    for (const item of this.allTray()) counts[item.group]++;
+    return counts;
+  });
 
   /**
    * The active tab as a channel, or null when it is not one.
@@ -686,8 +775,14 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return true;
   }
 
-  /** Every item that has a publish record and a date on it, as chips. */
-  private readonly scheduledChips = computed<CalendarChip[]>(() => {
+  /**
+   * Every item that has a publish record and a date on it, as chips — BOTH groups.
+   *
+   * Read directly only by what must not be narrowed to the board on screen: the switcher's
+   * counts and the leftover check after a run (a run is not a group's). Everything the
+   * page draws reads `scheduledChips`.
+   */
+  private readonly allScheduledChips = computed<CalendarChip[]>(() => {
     const now = this.now();
     const active = this.activeTabId();
     const mirror = this.mirrorByVideoId();
@@ -702,6 +797,16 @@ export class PublishCalendar implements OnInit, OnDestroy {
   });
 
   /**
+   * The active group's chips. THE ONE NARROWING POINT for the dated half of the page: the
+   * board, the before-today strip, every header count, the bulk upload and its confirm
+   * panel, the schedule push and the Spreaker run all read this, so they cannot disagree
+   * about which business they are describing.
+   */
+  private readonly scheduledChips = computed(() =>
+    this.allScheduledChips().filter((chip) => chip.group === this.activeGroup())
+  );
+
+  /**
    * The mirror, minus everything already drawn as a local chip.
    *
    * A video id claimed by any publish record is dropped here whether or not that record
@@ -709,7 +814,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * belongs. What survives is the genuinely external schedule — videos put on the
    * calendar in Studio that this app would otherwise draw an empty slot over.
    */
-  private readonly mirrorChips = computed<MirrorChip[]>(() => {
+  private readonly allMirrorChips = computed<MirrorChip[]>(() => {
     const swept = this.sweep();
     if (!swept) return [];
 
@@ -765,6 +870,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
           channelTag: channel.tag,
           hue: channel.hue,
           dimmed: channel.known && video.channelId !== active,
+          group: rowGroupOf(
+            { destination: 'youtube', channelId: video.channelId, promptSet: null },
+            this.groupByChannel()
+          ),
           itemId: itemByVideo.get(video.videoId) ?? null,
           pending: video.privacyStatus === 'private',
           privacyStatus: video.privacyStatus,
@@ -772,6 +881,11 @@ export class PublishCalendar implements OnInit, OnDestroy {
       })
       .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
   });
+
+  /** The active group's mirrored videos — what the board and its outside-window count draw. */
+  private readonly mirrorChips = computed(() =>
+    this.allMirrorChips().filter((chip) => chip.group === this.activeGroup())
+  );
 
   /**
    * Mirrored videos keyed by channel and exact local slot, for the collision check.
@@ -782,7 +896,9 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   private readonly mirrorBySlot = computed(() => {
     const map = new Map<string, MirrorChip>();
-    for (const chip of this.mirrorChips()) {
+    // Every group's: the key is already per channel, so narrowing here could change
+    // nothing but would make the check depend on which board happens to be open.
+    for (const chip of this.allMirrorChips()) {
       // Already-public videos keep their leftover publishAt, but a release that has
       // happened is not a booking: warning that an upload "lands at the same moment as a
       // video YouTube already has scheduled" would be false of it.
@@ -825,6 +941,17 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   readonly uploadable = computed(() =>
     this.scheduledChips().filter(
+      (chip) => chip.readiness === 'ready' && chip.destination === 'youtube'
+    )
+  );
+
+  /**
+   * The same, across both groups — for the leftover check after a run only. A run is not
+   * a group's: it may have been started on the other board, and a ready video it never
+   * saw is worth naming whichever board is open when it finishes.
+   */
+  private readonly allUploadable = computed(() =>
+    this.allScheduledChips().filter(
       (chip) => chip.readiness === 'ready' && chip.destination === 'youtube'
     )
   );
@@ -1402,7 +1529,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * A published record with no schedule is finished rather than pending, and is left out:
    * it is not waiting for anything.
    */
-  readonly tray = computed<TrayItem[]>(() => {
+  private readonly allTray = computed<TrayItem[]>(() => {
     const active = this.activeTabId();
     const linked = this.linkedByVideoId();
     return this.entries()
@@ -1430,6 +1557,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
           unrouted: !facts.isPodcast && facts.channelId === null,
           unknownChannel: !channel.known && facts.channelId !== null,
           dimmed: dimmedFor({ destination, channelId: facts.channelId }, channel.known, active),
+          group: rowGroupOf(
+            { destination, channelId: facts.channelId, promptSet: entry.promptSet },
+            this.groupByChannel()
+          ),
           isPodcast: facts.isPodcast,
           abCount: facts.abCount,
           hasThumbnail: facts.hasThumbnail,
@@ -1441,6 +1572,16 @@ export class PublishCalendar implements OnInit, OnDestroy {
       })
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   });
+
+  /**
+   * The active group's tray. The tray is the undated half of the page, so it narrows
+   * exactly as `scheduledChips` does — a Little Goose song with no date waits on Little
+   * Goose's board, never in the list Owen schedules his channels from. The Spreaker run's
+   * undated candidates come from here too, which is right: the podcast is Owen Morgan's.
+   */
+  readonly tray = computed(() =>
+    this.allTray().filter((item) => item.group === this.activeGroup())
+  );
 
   /**
    * Whether the tray would take what is being dragged.
@@ -1533,7 +1674,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   private warnLeftovers(): void {
     const inRun = this.runs.takeLeftoverCheck();
     if (!inRun) return;
-    const leftOver = this.uploadable().filter((c) => !inRun.has(c.itemId));
+    const leftOver = this.allUploadable().filter((c) => !inRun.has(c.itemId));
     if (leftOver.length === 0) return;
     this.notify.warning(
       `${leftOver.length} ready video${leftOver.length === 1 ? ' was' : 's were'} not in this run`,
@@ -1613,6 +1754,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       } else {
         this.channels.set(registry.channels);
       }
+      this.settleActiveGroup();
       this.settleActiveTab();
     } finally {
       this.loading.set(false);
@@ -1720,14 +1862,55 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * since been removed is still not honoured: the tab would show nothing and dim
    * everything, which reads as an empty board rather than as a stale preference.
    *
-   * The list is never empty — the Spreaker tab is always in it — so there is always a tab
-   * to be on, including on an install with no channels registered at all.
+   * Remembered PER GROUP (`channelTabKeyFor`), and judged against the active group's tabs
+   * only: a remembered Little Goose channel is not a tab on Owen Morgan's board, so it is
+   * not honoured there, and the group's first tab is.
+   *
+   * Owen Morgan's list is never empty — the Spreaker tab is always in it. Little Goose's
+   * IS empty until a channel is connected and routed `youtube-littlegoose`, and then no tab
+   * is in force (null): the strip says why, and the board has nothing to dim against.
    */
   private settleActiveTab(): void {
+    const group = this.activeGroup();
+    if (group === null) {
+      throw new Error('The calendar settled its tab before its group; the group decides which tabs exist.');
+    }
     const tabs = this.tabIds();
-    const remembered = localStorage.getItem(CHANNEL_TAB_KEY);
+    const remembered = this.readStored(channelTabKeyFor(group));
     const known = remembered !== null && tabs.includes(remembered);
-    this.activeTabId.set(known ? remembered : tabs[0]);
+    this.activeTabId.set(known ? remembered : tabs[0] ?? null);
+  }
+
+  /**
+   * Which group is on after the FIRST load: the remembered one, else Owen Morgan's (the
+   * first). Later reloads (every drop is followed by one) keep the group in force — the
+   * operator is on it now, and re-reading storage could only ever agree or be wrong.
+   *
+   * Only an EXISTING group is honoured. A stored value that is not one of the two is not
+   * a preference this build can read, and landing on the first group is what settling the
+   * tab already does with a removed channel.
+   */
+  private settleActiveGroup(): void {
+    if (this.activeGroup() !== null) return;
+    const remembered = this.readStored(CHANNEL_GROUP_KEY);
+    this.activeGroup.set(isChannelGroup(remembered) ? remembered : CHANNEL_GROUPS[0].id);
+  }
+
+  /**
+   * Switch groups: remember it, then put the group's own remembered tab in force.
+   *
+   * The open confirm panels are closed. Each holds a list taken from the board as it was,
+   * and a YouTube confirm listing the other group's videos under this group's board is
+   * the kind of mismatch the panel exists to prevent.
+   */
+  setActiveGroup(group: ChannelGroup): void {
+    if (this.activeGroup() === group) return;
+    this.activeGroup.set(group);
+    this.writeStored(CHANNEL_GROUP_KEY, group);
+    this.uploadConfirm.set(null);
+    this.spreakerConfirm.set(null);
+    this.settleActiveTab();
+    this.readSpreakerOnFirstVisit();
   }
 
   /**
@@ -1738,10 +1921,47 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * is asked again, the same as the YouTube mirror's.
    */
   setActiveTab(tabId: string): void {
+    const group = this.activeGroup();
+    if (group === null) {
+      throw new Error('A calendar tab was chosen before the calendar had settled which group is on.');
+    }
     this.activeTabId.set(tabId);
-    localStorage.setItem(CHANNEL_TAB_KEY, tabId);
-    if (tabId === SPREAKER_DESTINATION && this.spreakerSweep() === null && !this.spreakerSweeping()) {
+    this.writeStored(channelTabKeyFor(group), tabId);
+    this.readSpreakerOnFirstVisit();
+  }
+
+  /** The podcast tab is in force and Spreaker has never been read on this page: read it. */
+  private readSpreakerOnFirstVisit(): void {
+    if (
+      this.activeTabId() === SPREAKER_DESTINATION &&
+      this.spreakerSweep() === null &&
+      !this.spreakerSweeping()
+    ) {
       void this.refreshSpreakerSweep();
+    }
+  }
+
+  /**
+   * localStorage, read with its failure SAID. Storage can refuse (a locked-down profile, a
+   * corrupt store), and a remembered tab is a convenience, not data — so a refusal is
+   * reported to the notifications and the page carries on as if nothing were remembered,
+   * rather than taking the whole calendar down over which tab was last open.
+   */
+  private readStored(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch (err: any) {
+      this.report(`Could not read the remembered calendar view (${key}): ${err?.message || String(err)}`);
+      return null;
+    }
+  }
+
+  /** The write half of the same: refused writes are reported, never swallowed. */
+  private writeStored(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch (err: any) {
+      this.report(`Could not remember the calendar view (${key}): ${err?.message || String(err)}`);
     }
   }
 
@@ -2089,19 +2309,13 @@ export class PublishCalendar implements OnInit, OnDestroy {
     if (channelId === null) {
       return { name: 'no channel', tag: '—', hue: 'var(--ch-none)', known: false };
     }
-    const index = this.channels().findIndex((c) => c.channelId === channelId);
-    if (index === -1) {
+    const channel = this.channelRoster().find((c) => c.channelId === channelId);
+    if (channel === undefined) {
       // A stored id that is not in the registry. Named rather than coloured in as if it
       // were fine — the report panel warns about the same condition.
       return { name: `unknown channel ${channelId}`, tag: '?', hue: 'var(--ch-none)', known: false };
     }
-    const channel = this.channels()[index];
-    return {
-      name: channel.name,
-      tag: channelTag(channel.name),
-      hue: CHANNEL_HUES[index % CHANNEL_HUES.length],
-      known: true,
-    };
+    return { name: channel.name, tag: channel.tag, hue: channel.hue, known: true };
   }
 
   private toChip(
@@ -2147,6 +2361,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
       unrouted: !facts.isPodcast && facts.channelId === null,
       unknownChannel: !channel.known && facts.channelId !== null,
       dimmed: dimmedFor({ destination, channelId: facts.channelId }, channel.known, activeTab),
+      group: rowGroupOf(
+        { destination, channelId: facts.channelId, promptSet: entry.promptSet },
+        this.groupByChannel()
+      ),
       isPodcast: facts.isPodcast,
       abPending: facts.abCount === 3 && !published,
       abCount: facts.abCount,

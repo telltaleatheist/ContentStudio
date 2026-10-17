@@ -78,6 +78,84 @@
   }
 }
 
+/* --------------------------------------------------------------- group tabs */
+
+/* The group switcher: a level ABOVE the channel pills, so it is drawn as underlined tabs
+   rather than as more pills — two rows of identical pills would read as one choice. The
+   underline is the app's orange on Owen Morgan's board and Little Goose's gold on its
+   own (the same gold as the first entry of LITTLE_GOOSE_HUES), so which board is open
+   reads at a glance. */
+.group-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: -0.35rem;
+}
+
+.group-tab {
+  --group-accent: var(--primary-orange);
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 0.9rem / 1 var(--font-family);
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 14px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.13s ease, border-color 0.13s ease;
+
+  &.little-goose {
+    --group-accent: hsl(40, 90%, 55%);
+  }
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &.on {
+    color: var(--text-primary);
+    border-bottom-color: var(--group-accent);
+  }
+
+  .group-count {
+    font: 600 0.7rem / 1 var(--font-family);
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 3px 7px;
+  }
+
+  &.on .group-count {
+    color: var(--text-primary);
+    border-color: var(--group-accent);
+  }
+}
+
+/* Little Goose not connected yet: a step to take, so it reads as an instruction rather
+   than as the muted aside the other empty notes are. */
+.empty-note.group-empty {
+  color: var(--text-secondary);
+
+  a {
+    color: var(--primary-orange);
+  }
+
+  code {
+    font-size: 0.72rem;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+  }
+}
+
 /* ------------------------------------------------------------- channel tabs */
 
 .chan-tabs {
