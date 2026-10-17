@@ -85,3 +85,20 @@ export function deriveName(zipPath: string): string {
   if (base.endsWith(COMPOUNDS_SUFFIX)) return base.slice(0, -COMPOUNDS_SUFFIX.length);
   return base.replace(/\.zip$/i, '');
 }
+
+/**
+ * The one line saying what a finished transcription did per track (LEDGER #311): how many
+ * tracks transcribe.py reused from the session's ASR cache (their audio unchanged since a
+ * decode) and how many it decoded. A result without the counts says so instead of guessing.
+ */
+export function describeTranscribeResult(result: { tracksReused?: unknown; tracksDecoded?: unknown; tracksSilent?: unknown }): string {
+  const { tracksReused: reused, tracksDecoded: decoded, tracksSilent: silent } = result;
+  if (typeof reused !== 'number' || typeof decoded !== 'number' || typeof silent !== 'number') {
+    return 'The transcription did not report which tracks it reused (tracksReused / tracksDecoded / tracksSilent missing).';
+  }
+  const tracks = (k: number): string => `${k} track${k === 1 ? '' : 's'}`;
+  const tail = silent > 0 ? `; ${tracks(silent)} silent` : '';
+  if (decoded === 0 && reused > 0) return `${tracks(reused)} reused from the saved transcription, none decoded again${tail}.`;
+  if (reused === 0) return `${tracks(decoded)} decoded, none reused (no saved words for this audio)${tail}.`;
+  return `${tracks(reused)} reused from the saved transcription, ${tracks(decoded)} decoded (audio changed)${tail}.`;
+}

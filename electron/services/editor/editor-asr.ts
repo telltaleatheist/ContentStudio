@@ -20,9 +20,10 @@
  * app does (python-service.ts is the app's caller).
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 
-import { EDITOR_ASR_MODEL } from '../../crucible/asr';
+import { EDITOR_ASR_MODEL, asrParams } from '../../crucible/asr';
 import type { SessionSource } from '../../crucible/session';
 import { transcribeOnCrucible } from '../transcription/crucible-transcription';
 import { readCrucibleTranscript, transcriptTokens } from '../transcription/crucible-transcript';
@@ -117,6 +118,19 @@ export async function serveEditorAsrRequest(
   fs.writeFileSync(temp, JSON.stringify(doc), 'utf-8');
   fs.renameSync(temp, wordsPath);
   return { wordsPath, model: outcome.model, jobId: outcome.jobId, words: tokens.length, redecoded: transcript.redecoded, wallSeconds: outcome.wallSeconds };
+}
+
+/**
+ * What every request of an editor run decodes with, as transcribe.py's ASR cache keys it
+ * (LEDGER #311): the model, and the SHA-256 of the exact params `transcribeOnCrucible` sends
+ * (asr.ts asrParams: language, vad_filter, word_timestamps and the context). Passed to
+ * transcribe.py as `--asr-model` / `--asr-params-sha256`; a change to either is a cache miss.
+ */
+export function editorAsrDecodeIdentity(context: string): { readonly model: string; readonly paramsSha256: string } {
+  return {
+    model: EDITOR_ASR_MODEL,
+    paramsSha256: crypto.createHash('sha256').update(JSON.stringify(asrParams(context)), 'utf8').digest('hex'),
+  };
 }
 
 /** The line that answers `request`: a response, or the error the run fails with. */

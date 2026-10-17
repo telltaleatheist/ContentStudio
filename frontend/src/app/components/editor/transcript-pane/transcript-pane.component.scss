@@ -160,6 +160,12 @@
     border-bottom: 1px solid #0d0d0e;
   }
 
+  /* The last run's per-track account: reused from the ASR cache vs decoded (LEDGER #311). */
+  .tx-result-note {
+    font-size: 10.5px;
+    color: #8a8a90;
+  }
+
   /* Source filter chips (single-select). */
   .tx-filter {
     display: flex;

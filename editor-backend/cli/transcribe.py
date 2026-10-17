@@ -33,15 +33,31 @@
 # MIDPOINT (and still dropped if that midpoint lands in a cut). No alignment sidecar,
 # no offset/drift math — the fcpxml already encodes placement per cut.
 #
+# THE ASR CACHE (LEDGER #311, Owen 2026-10-17: "i have to transcribe again every single time
+# [I reprocess] ... it takes like an hour or more"). A re-process rebuilds the timeline, so the
+# sidecar (timeline coordinates) is thrown away (editor-ipc.ts editor:clear-session-state), but
+# the processed audio usually comes out byte-identical. So each track's decode is kept in
+# FILE-TIME seconds in `<session>_asr_cache/<key sha>.json` beside the zip, keyed by what the
+# decode depends on (asr_cache_key): a content fingerprint of the compact WAV that was sent
+# (size, wav format, SHA-256 over sampled blocks — never mtime, which a re-process renews), the
+# compact->file time map, the asr model and a digest of the params main sends with it (the
+# context included), the VAD constants, the loop-retry settings and --max-seconds. A matching
+# entry skips the decode; its words go down the SAME map/drop path fresh ones do. A missing
+# entry is a miss; an entry that is unreadable or whose key disagrees with its name fails the
+# run naming the file. Entries are written per track the moment its decode ends, so a cancel
+# keeps the finished tracks. Nothing here prunes the folder; deleting the week removes it.
+#
 # Invocation (ffmpeg injected by Electron and validated, loud error naming the missing
-# piece; stdin stays open for the asr answers):
+# piece; stdin stays open for the asr answers). --asr-model and --asr-params-sha256 are what
+# main will decode with (editor-asr.ts editorAsrDecodeIdentity), and both are cache key fields:
 #     python cli/transcribe.py --zip /abs/<name>_compounds.zip --ffmpeg /abs/ffmpeg \
-#         [--max-seconds N]
+#         --asr-model qwen3-asr-1.7b --asr-params-sha256 <hex> [--max-seconds N]
 #
 # Progress protocol on stdout (one JSON object per line, flushed; mirrors
 # cli/electron_workflow.py):
 #     {"type":"progress","progress":<0-100 int>,"message":"..."}
-#     {"type":"success","result":{"transcriptPath":"/abs/...","wordCount":N,"tracks":M}}
+#     {"type":"success","result":{"transcriptPath":"/abs/...","wordCount":N,"tracks":M,
+#                                 "tracksReused":R,"tracksDecoded":D,"tracksSilent":S}}
 #     {"type":"error","message":"..."}   (+ exit code 1)
 # All diagnostics go to stderr. The sidecar is written ATOMICALLY (tmp + os.replace)
 # only after ALL tracks finish, so a cancelled/failed run never leaves a partial file.
@@ -50,6 +66,7 @@
 # fallbacks. Every missing/ambiguous input raises with a message naming what was wrong.
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -98,6 +115,19 @@ PAD_SEC = 0.3                 # extend each span both sides (clamped to [0, dur]
 SEP_SEC = 0.3                 # silence separator between concatenated spans
 
 _FULL_SCALE = 32768.0         # 16-bit signed PCM full scale
+
+# Loop-region retry settings (_retry_loop_regions). Module-level because the retried words are
+# what the cache keeps, so they are cache key fields.
+LOOP_MIN_REPS = 10            # consecutive repeats of one phrase that count as a loop
+LOOP_PAD_SEC = 3.0            # each retried region is the run padded this much both sides
+LOOP_MAX_REGIONS = 12         # at most this many regions re-decoded per track
+
+# ---------------------------------------------------------------------------
+# The ASR cache (LEDGER #311, see the header).
+# ---------------------------------------------------------------------------
+ASR_CACHE_SCHEMA = 1          # bump when an entry's shape or meaning changes
+FP_BLOCK_BYTES = 1 << 20      # fingerprint block: 1 MiB
+FP_SPREAD_BLOCKS = 64         # blocks spread evenly through the file, plus its first and last
 
 
 # ---------------------------------------------------------------------------
@@ -522,37 +552,49 @@ def map_compact_time(time_map, tc):
     return span['file_start'] + (tc - span['concat_start'])
 
 
-def map_words(track, raw_words, time_map):
-    """Map gated words (times in COMPACT-wav coordinates) onto the timeline for one
-    track. Each word is first shifted compact->file through the span containing its
-    midpoint (drop if the midpoint fell in a silence separator), then file->timeline
-    via the existing leaf mapping (drop if the file midpoint fell in a cut). Sidecar
-    fileStart/fileEnd are the real source-file seconds. Returns dicts (unsorted)."""
-    segments = track['segments']
+def compact_to_file_words(raw_words, time_map):
+    """Shift gated words from COMPACT-wav coordinates to source-FILE seconds: each word
+    moves through the span containing its midpoint (start, end and midpoint through the
+    SAME span), and a word whose midpoint fell in a silence separator is dropped (it is no
+    file-time word at all). These file-time words are what the ASR cache keeps: nothing
+    here knows the timeline, so they survive a re-process. Returns
+    [{text, fileStart, fileEnd, prob?}] in input order."""
     out = []
     for w in raw_words:
         cs = w['file_start']            # compact-wav coordinates
         ce = w['file_end']
-        mid_c = (cs + ce) / 2.0
-        span = _find_span(time_map, mid_c)
+        span = _find_span(time_map, (cs + ce) / 2.0)
         if span is None:
             continue                    # midpoint fell in a silence separator -> gated out
-        # Shift start/end/midpoint through the SAME span as the midpoint.
         base = span['file_start'] - span['concat_start']
-        file_start_word = base + cs
-        file_end_word = base + ce
-        ft_mid = base + mid_c
-        seg = _segment_for_midpoint(segments, ft_mid)
+        word = {'text': w['text'], 'fileStart': base + cs, 'fileEnd': base + ce}
+        if 'prob' in w:
+            word['prob'] = w['prob']
+        out.append(word)
+    return out
+
+
+def map_file_words(track, file_words):
+    """Map file-time words (compact_to_file_words, fresh or from the cache) onto the
+    timeline for one track via the leaf mapping: the segment containing the word's file
+    midpoint places it, and a midpoint in a cut drops it. Sidecar fileStart/fileEnd are
+    the real source-file seconds. Returns dicts (unsorted)."""
+    segments = track['segments']
+    out = []
+    for w in file_words:
+        fs = w['fileStart']
+        fe = w['fileEnd']
+        seg = _segment_for_midpoint(segments, (fs + fe) / 2.0)
         if seg is None:
             continue                    # cut by auto-editor
         delta = seg['timeline_start'] - seg['source_start']
         word = {
             'track': track['id'],
             'text': w['text'],
-            'timelineStart': file_start_word + delta,
-            'timelineEnd': file_end_word + delta,
-            'fileStart': file_start_word,
-            'fileEnd': file_end_word,
+            'timelineStart': fs + delta,
+            'timelineEnd': fe + delta,
+            'fileStart': fs,
+            'fileEnd': fe,
             'group': seg['group'],
         }
         if 'prob' in w:
@@ -628,7 +670,8 @@ def _warn_repetition_loops(track_id, label, words, min_reps=10):
 
 
 def _retry_loop_regions(raw, compact_wav, request_asr, temp_dir,
-                        track_id, label, min_reps=10, pad_sec=3.0, max_regions=12):
+                        track_id, label, min_reps=LOOP_MIN_REPS, pad_sec=LOOP_PAD_SEC,
+                        max_regions=LOOP_MAX_REGIONS):
     """Loop recovery: when the raw ASR output contains repetition runs, re-decode JUST
     those regions as a FRESH job (the measured fix on whisper.cpp: the same audio decodes clean
     in isolation — loops need accumulated state) and splice the results back in. Crucible's
@@ -698,6 +741,159 @@ def _retry_loop_regions(raw, compact_wav, request_asr, temp_dir,
     return out
 
 
+# ---------------------------------------------------------------------------
+# The ASR cache (LEDGER #311): fingerprint, key, read, write. Pure functions over files.
+# ---------------------------------------------------------------------------
+def _fingerprint_offsets(size):
+    """The byte offsets of the blocks fingerprint_audio hashes: the first block, the last
+    block, and FP_SPREAD_BLOCKS spread evenly between them. A file no bigger than all of
+    those together is hashed whole (every block)."""
+    if size <= FP_BLOCK_BYTES * (FP_SPREAD_BLOCKS + 2):
+        return list(range(0, size, FP_BLOCK_BYTES))
+    last = size - FP_BLOCK_BYTES
+    offsets = {0, last}
+    for k in range(1, FP_SPREAD_BLOCKS + 1):
+        offsets.add(k * last // (FP_SPREAD_BLOCKS + 1))
+    return sorted(offsets)
+
+
+def fingerprint_audio(wav_path):
+    """A content fingerprint of a WAV: its size and format (channels, sample width, rate,
+    frame count) and a SHA-256 over the sampled blocks (_fingerprint_offsets), each block
+    hashed with its offset. Never the mtime: a re-process writes identical bytes anew."""
+    size = os.path.getsize(wav_path)
+    with wave.open(wav_path, 'rb') as wf:
+        channels, sampwidth, rate, frames = (
+            wf.getnchannels(), wf.getsampwidth(), wf.getframerate(), wf.getnframes())
+    offsets = _fingerprint_offsets(size)
+    h = hashlib.sha256()
+    with open(wav_path, 'rb') as fh:
+        for off in offsets:
+            fh.seek(off)
+            block = fh.read(FP_BLOCK_BYTES)
+            h.update(f"{off}:{len(block)}:".encode('ascii'))
+            h.update(block)
+    return {
+        'bytes': size,
+        'channels': channels,
+        'sampleWidth': sampwidth,
+        'sampleRate': rate,
+        'frames': frames,
+        'blockBytes': FP_BLOCK_BYTES,
+        'blocks': len(offsets),
+        'sampledSha256': h.hexdigest(),
+    }
+
+
+def time_map_sha256(time_map):
+    """SHA-256 of the compact->file time map. A key field because the cache keeps FILE
+    seconds: the same compact bytes cut from different places of the file (silence moved)
+    would otherwise reuse words at the wrong file times."""
+    rows = [[s['concat_start'], s['concat_end'], s['file_start']] for s in time_map]
+    return hashlib.sha256(json.dumps(rows).encode('ascii')).hexdigest()
+
+
+def asr_cache_key(fingerprint, time_map_digest, asr_model, asr_params_sha256, max_seconds):
+    """Everything one track's cached words depend on: the compact WAV sent (fingerprint),
+    where its spans sit in the file (time_map_digest), the model and the params main sends
+    with it (asr_params_sha256 covers language, vad_filter, word_timestamps and the context),
+    the VAD constants that cut the compact, the loop-retry settings whose re-decodes are in
+    the words, and --max-seconds."""
+    return {
+        'schema': ASR_CACHE_SCHEMA,
+        'audio': fingerprint,
+        'timeMapSha256': time_map_digest,
+        'asrModel': asr_model,
+        'asrParamsSha256': asr_params_sha256,
+        'vad': {
+            'binSec': BIN_SEC, 'activityRatio': ACTIVITY_RATIO,
+            'activityPercentile': ACTIVITY_PERCENTILE, 'silenceFloor': SILENCE_FLOOR,
+            'minSpanSec': MIN_SPAN_SEC, 'mergeGapSec': MERGE_GAP_SEC,
+            'padSec': PAD_SEC, 'sepSec': SEP_SEC,
+        },
+        'loopRetry': {
+            'minReps': LOOP_MIN_REPS, 'padSec': LOOP_PAD_SEC, 'maxRegions': LOOP_MAX_REGIONS,
+        },
+        'maxSeconds': max_seconds,
+    }
+
+
+def asr_cache_dir(zip_path, session):
+    """`<session>_asr_cache/` beside the zip (editor:clear-session-state leaves it alone)."""
+    return str(Path(zip_path).parent / f"{session}_asr_cache")
+
+
+def asr_cache_path(cache_dir, key):
+    """The entry for `key`: named by the SHA-256 of the key's canonical JSON."""
+    canonical = json.dumps(key, sort_keys=True, separators=(',', ':'))
+    return os.path.join(cache_dir, hashlib.sha256(canonical.encode('utf-8')).hexdigest() + '.json')
+
+
+def _is_number(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def read_asr_cache(path, key):
+    """The cached decode filed at `path` for `key`: (file_words, reported_model), or None
+    when there is no entry (a miss). An entry that is unreadable, not this schema, filed
+    under a key it does not carry, or holding a malformed word fails naming the file — a
+    damaged cache is never decoded around."""
+    if not os.path.exists(path):
+        return None
+
+    def bad(why):
+        raise TranscribeError(f"ASR cache entry {path} {why}; delete it to decode that track again")
+
+    try:
+        with open(path, 'r') as fh:
+            entry = json.load(fh)
+    except (OSError, ValueError) as e:
+        bad(f"cannot be read ({e})")
+    if not isinstance(entry, dict):
+        bad("is not a JSON object")
+    if entry.get('schema') != ASR_CACHE_SCHEMA:
+        bad(f"is schema {entry.get('schema')!r}, this build writes {ASR_CACHE_SCHEMA}")
+    if entry.get('key') != key:
+        bad("carries a key that differs from the one it is filed under")
+    model = entry.get('reportedModel')
+    if not isinstance(model, str) or model.rsplit(':', 1)[-1] != key['asrModel']:
+        bad(f"names model {model!r}, not {key['asrModel']}")
+    words = entry.get('words')
+    if not isinstance(words, list):
+        bad("has no 'words' list")
+    for i, w in enumerate(words):
+        if not isinstance(w, dict) or not isinstance(w.get('text'), str) or not w['text'] \
+                or not _is_number(w.get('fileStart')) or not _is_number(w.get('fileEnd')) \
+                or ('prob' in w and not _is_number(w['prob'])):
+            bad(f"words[{i}] is not a {{text, fileStart, fileEnd, prob?}} word: {w!r}")
+    return words, model
+
+
+def write_asr_cache(path, key, reported_model, file_words, track_label, source_file):
+    """File one track's decode at `path`, atomically (tmp in the same folder + os.replace),
+    so a crash or cancel mid-write never leaves a half entry for read_asr_cache to refuse.
+    `trackLabel` and `sourceFile` are for whoever opens the folder; the key decides reuse."""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    entry = {
+        'schema': ASR_CACHE_SCHEMA,
+        'key': key,
+        'reportedModel': reported_model,
+        'trackLabel': track_label,
+        'sourceFile': source_file,
+        'words': file_words,
+    }
+    fd, tmp = tempfile.mkstemp(prefix='.asr_cache_', suffix='.tmp', dir=d)
+    try:
+        with os.fdopen(fd, 'w') as fh:
+            json.dump(entry, fh)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 class AsrChannel:
     """The asr_request / asr_response exchange with the Electron main process (header).
 
@@ -759,14 +955,23 @@ class AsrChannel:
 # ---------------------------------------------------------------------------
 # Orchestration.
 # ---------------------------------------------------------------------------
-def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
+def transcribe(zip_path, ffmpeg, max_seconds, asr_model, asr_params_sha256, channel=None):
     global _temp_dir
 
     _validate_tool(ffmpeg, 'ffmpeg binary', need_exec=True)
+    if not isinstance(asr_model, str) or not asr_model:
+        raise TranscribeError("--asr-model was not provided (the model main decodes with)")
+    if not (isinstance(asr_params_sha256, str) and len(asr_params_sha256) == 64
+            and all(c in '0123456789abcdef' for c in asr_params_sha256)):
+        raise TranscribeError(
+            f"--asr-params-sha256 is not a lowercase SHA-256 hex digest: {asr_params_sha256!r}")
     asr = channel if channel is not None else AsrChannel()
 
     session, frame_seconds, tracks = discover_tracks(zip_path)
     n = len(tracks)
+    cache_dir = asr_cache_dir(zip_path, session)
+    track_models = []         # the model each non-silent track's words came from
+    reused = decoded = silent = 0
 
     # ETA is MEASURED, not guessed: ASR throughput is ~constant, so the remaining
     # time is (elapsed) * (work left / work done) using the real overall progress
@@ -806,6 +1011,7 @@ def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
                 if not spans:
                     print(f"[transcribe] track {track['id']} ({label}) is silent "
                           f"(0 active spans) -> 0 words", file=sys.stderr)
+                    silent += 1
                     continue
 
                 time_map = build_compact_wav(wav, spans, compact)
@@ -813,17 +1019,52 @@ def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
                                         and os.path.getsize(compact) > 0):
                     print(f"[transcribe] track {track['id']} ({label}) produced an "
                           f"empty compact wav -> 0 words", file=sys.stderr)
+                    silent += 1
                     continue
 
-                def on_progress(pct, _lo=extract_end, _w=band_w, _label=label, _i=i):
-                    overall = _lo + (pct / 100.0) * (0.90 * _w)
-                    emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
+                # The ASR cache (LEDGER #311): the compact WAV is exactly what would be sent,
+                # so its fingerprint (with the time map and the decode settings) decides.
+                key = asr_cache_key(fingerprint_audio(compact), time_map_sha256(time_map),
+                                    asr_model, asr_params_sha256, max_seconds)
+                entry_path = asr_cache_path(cache_dir, key)
+                cached = read_asr_cache(entry_path, key)
+                if cached is not None:
+                    file_words, model = cached
+                    reused += 1
+                    print(f"[transcribe] track {track['id']} ({label}): reused cached words "
+                          f"({len(file_words)} file-time words, {model}) from {entry_path}",
+                          file=sys.stderr)
+                    emit_progress(band_lo + band_w,
+                                  f"Reused saved words for {label} ({i + 1}/{n})")
+                else:
+                    print(f"[transcribe] track {track['id']} ({label}): decoding "
+                          f"(no cached words at {entry_path})", file=sys.stderr)
 
-                json_path = asr.request(compact, track['id'], None, on_progress)
-                raw = parse_words_file(json_path)
-                raw = _retry_loop_regions(raw, compact, asr.request, _temp_dir,
-                                          track['id'], label)
-                mapped = map_words(track, raw, time_map)
+                    def on_progress(pct, _lo=extract_end, _w=band_w, _label=label, _i=i):
+                        overall = _lo + (pct / 100.0) * (0.90 * _w)
+                        emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
+
+                    json_path = asr.request(compact, track['id'], None, on_progress)
+                    raw = parse_words_file(json_path)
+                    raw = _retry_loop_regions(raw, compact, asr.request, _temp_dir,
+                                              track['id'], label)
+                    model = asr.model
+                    if model.rsplit(':', 1)[-1] != asr_model:
+                        raise TranscribeError(
+                            f"main decoded track {track['id']} ({label}) with {model}, but this "
+                            f"run was started for {asr_model}; its words cannot be cached under "
+                            f"that model")
+                    file_words = compact_to_file_words(raw, time_map)
+                    # Filed the moment the decode ends, before any mapping, so a cancel later
+                    # in the run keeps this track and the words cut today are there tomorrow.
+                    write_asr_cache(entry_path, key, model, file_words, label, track['file'])
+                    decoded += 1
+                    print(f"[transcribe] track {track['id']} ({label}): cached "
+                          f"{len(file_words)} file-time words at {entry_path}", file=sys.stderr)
+                track_models.append(model)
+
+                # One path from here for fresh and cached words alike.
+                mapped = map_file_words(track, file_words)
                 if not mapped:
                     print(f"[transcribe] track {track['id']} ({label}) contributed 0 words",
                           file=sys.stderr)
@@ -838,12 +1079,14 @@ def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
         all_words.sort(key=lambda w: (track_order[w['track']], w['fileStart']))
 
         # (final 100% progress emitted after the atomic write below)
+        # The model main's asr answers named (`crucible:<server>:qwen3-asr-1.7b`), fresh or as
+        # each cache entry recorded it, or null when every track was silent. Tracks reused
+        # from a decode on another server are named together (" + "), never one for all.
+        distinct_models = sorted(set(track_models))
         sidecar = {
             'schemaVersion': 1,
             'session': session,
-            # The model main's asr answers named (`crucible:<server>:qwen3-asr-1.7b`), or
-            # null when every track was silent and nothing was asked.
-            'model': asr.model,
+            'model': ' + '.join(distinct_models) if distinct_models else None,
             'calibration': 'none',
             'frameSeconds': frame_seconds,
             'tracks': [{'id': t['id'], 'label': t['label'], 'file': t['file']}
@@ -853,9 +1096,12 @@ def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
 
         out_path = str(Path(zip_path).parent / f"{session}_transcript.json")
         _atomic_write_json(out_path, sidecar)
+        print(f"[transcribe] tracks: {reused} reused from the cache, {decoded} decoded, "
+              f"{silent} silent", file=sys.stderr)
         emit_progress(100, 'Transcription complete')
         _emit({'type': 'success', 'result': {
-            'transcriptPath': out_path, 'wordCount': len(all_words), 'tracks': n}})
+            'transcriptPath': out_path, 'wordCount': len(all_words), 'tracks': n,
+            'tracksReused': reused, 'tracksDecoded': decoded, 'tracksSilent': silent}})
         return 0
     finally:
         _cleanup_temp()
@@ -891,12 +1137,19 @@ def main(argv=None):
                         help='Optional: transcribe only the first N seconds of each '
                              'track (ffmpeg -t). For fast smoke tests; default is the '
                              'whole track.')
+    parser.add_argument('--asr-model', required=True,
+                        help='The asr model main decodes with (e.g. qwen3-asr-1.7b); an ASR '
+                             'cache key field')
+    parser.add_argument('--asr-params-sha256', required=True,
+                        help="SHA-256 of the asr params main sends with each request (its "
+                             "context included); an ASR cache key field")
     args = parser.parse_args(argv)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     try:
-        return transcribe(args.zip_path, args.ffmpeg, args.max_seconds)
+        return transcribe(args.zip_path, args.ffmpeg, args.max_seconds,
+                          args.asr_model, args.asr_params_sha256)
     except (TranscribeError, ManifestError) as e:
         _cleanup_temp()
         _emit({'type': 'error', 'message': str(e)})

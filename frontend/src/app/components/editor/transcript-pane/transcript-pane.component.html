@@ -3,6 +3,7 @@
   <button class="tx-transcribe-btn" (click)="transcribeRequested.emit()">Transcribe</button>
   <div class="tx-empty-note">
     Transcribes each source track (mic, screen) on Crucible — takes a while for long sessions.
+    A track whose audio is unchanged since it was last transcribed reuses its saved words.
   </div>
 </div>
 
@@ -48,6 +49,7 @@
       <span class="tx-results" *ngIf="searchQuery">{{ searchResultCount }} {{ searchResultCount === 1 ? 'result' : 'results' }}</span>
       <button class="tx-retranscribe" (click)="transcribeRequested.emit()">re-transcribe</button>
     </div>
+    <div class="tx-result-note" *ngIf="resultNote">{{ resultNote }}</div>
   </div>
   <div class="tx-groups" #txGroupsEl>
     <div class="tx-group" *ngFor="let g of groups; let i = index"

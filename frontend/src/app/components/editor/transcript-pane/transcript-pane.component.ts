@@ -36,6 +36,8 @@ export class TranscriptPaneComponent {
    * formatting rules.
    */
   @Input() etaLabel = '';
+  /** What the last run here did per track: reused from the ASR cache vs decoded (LEDGER #311). */
+  @Input() resultNote = '';
 
   @Input() tracks: { id: string; label: string }[] = [];
   @Input() sourceFilter = 'merged';

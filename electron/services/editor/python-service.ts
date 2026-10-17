@@ -5,7 +5,7 @@ import { EditorPaths } from './app-config';
 import { BinaryResolver } from './binary-resolver';
 import { DuganAutomixer, DuganTrack } from './dugan-automixer';
 import type { SessionSource } from '../../crucible/session';
-import { createAsrResponder } from './editor-asr';
+import { createAsrResponder, editorAsrDecodeIdentity } from './editor-asr';
 import {
   SEPARATION_RELEASE,
   SEPARATION_REQUEST,
@@ -930,10 +930,22 @@ export class PythonService {
       const env = this.getPythonEnv();
       const workingDir = EditorPaths.rootPath;
 
+      // What the decode depends on, for transcribe.py's ASR cache (LEDGER #311): the model and
+      // a digest of the params (context included) every request of this run is served with.
+      let identity: ReturnType<typeof editorAsrDecodeIdentity>;
+      try {
+        identity = editorAsrDecodeIdentity(asrContext);
+      } catch (err) {
+        log.error(`[${jobId}] The asr params could not be built before spawn:`, err);
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
       const args = [
         scriptPath,
         '--zip', zipPath,
         '--ffmpeg', ffmpeg,
+        '--asr-model', identity.model,
+        '--asr-params-sha256', identity.paramsSha256,
       ];
 
       log.info(`[${jobId}] Spawning transcribe.py:`, args);

@@ -27,7 +27,7 @@ import {
 } from './model/editor-math';
 import {
   pad2, formatRulerLabel, formatTimecode, fmtClock, pathToFileUrl,
-  cleanChapterLabel, prettyLabel, deriveName
+  cleanChapterLabel, prettyLabel, deriveName, describeTranscribeResult
 } from './model/editor-format';
 import {
   storyColor, storiesForDisplay, isStoryEmpty, regionFingerprint, storyChapterState,
@@ -497,6 +497,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   transcribeProgress = 0;                     // 0-100 int
   transcribeMessage = '';
   transcribeEtaSeconds: number | null = null; // measured time-remaining; null = still estimating
+  // What the last run of THIS session did per track (LEDGER #311): how many tracks came from
+  // the ASR cache and how many were decoded. Shown above the transcript; '' when none ran here.
+  transcribeResultNote = '';
   // Source filter + free-text search over the transcript. sourceFilter is a track id or
   // 'merged'; default (set on ingest) is the FIRST track (the mic). Both reset on re-init
   // and are pure recomputes over recomputeVisibleGroups.
@@ -865,6 +868,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcribeProgress = 0;
     this.transcribeMessage = '';
     this.transcribeEtaSeconds = null;
+    this.transcribeResultNote = '';
   }
 
   /** Validate and index the manifest. Fails loud on anything structurally wrong. */
@@ -5917,6 +5921,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcribeEtaSeconds = null;
     this.transcriptError = '';
     this.transcribeJobId = null;
+    this.transcribeResultNote = '';
     this.cdr.detectChanges();
     try {
       const res = await this.host.transcribeSession({ zipPath: this.currentZipPath });
@@ -5963,6 +5968,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!d || d.jobId !== this.transcribeJobId) return;
     this.transcribeJobId = null;
     if (d.exitCode === 0 && d.result) {
+      this.transcribeResultNote = describeTranscribeResult(d.result);
       // Reload from disk rather than trusting the IPC result payload.
       if (this.currentZipPath) void this.loadTranscriptForSession(this.currentZipPath, this.bootstrapGeneration);
     } else {

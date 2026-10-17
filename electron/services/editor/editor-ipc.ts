@@ -808,7 +808,10 @@ function setupEditorSessionHandlers(store: Store<any>, runs: EditorRunSessions):
    *
    * Deliberately NOT touched: the source recordings, the `_processed` audio (that is the work
    * a re-process may want to REUSE), and anything already exported — those are either inputs
-   * or deliverables the user has taken away, not state.
+   * or deliverables the user has taken away, not state. Nor `<session>_asr_cache/` (LEDGER
+   * #311): its words are in FILE seconds, keyed by the audio's content, so they stay right
+   * across a rebuilt timeline, and keeping them is what spares a re-process the hour-long
+   * decode (transcribe.py reuses a track only when its audio is unchanged).
    *
    * Returns the files it removed, so the caller can say what it did rather than claim it.
    */

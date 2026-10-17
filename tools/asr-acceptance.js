@@ -199,7 +199,9 @@ async function editorMode(a) {
     factsMod.editorTrackFacts({ session, editsPath: path.join(path.dirname(a.zip), `${session}_edits.json`), promptSet: a.channel || null }),
     factsMod.asrContextTemplate());
   fs.writeFileSync(path.join(out, 'context-editor.txt'), context);
-  const pyArgs = [path.join(REPO_ROOT, 'editor-backend', 'cli', 'transcribe.py'), '--zip', zip, '--ffmpeg', ffmpegPath()];
+  const identity = editorAsr.editorAsrDecodeIdentity(context);
+  const pyArgs = [path.join(REPO_ROOT, 'editor-backend', 'cli', 'transcribe.py'), '--zip', zip, '--ffmpeg', ffmpegPath(),
+    '--asr-model', identity.model, '--asr-params-sha256', identity.paramsSha256];
   if (a.maxSeconds) pyArgs.push('--max-seconds', a.maxSeconds);
   const t0 = Date.now();
   const requests = [];
