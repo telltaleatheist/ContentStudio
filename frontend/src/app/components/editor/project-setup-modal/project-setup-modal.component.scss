@@ -340,6 +340,35 @@
   .psm-mute-error { color: #e6a597; }
 }
 
+/* Transcript row on a project that has one (LEDGER #315): a two-way switch, not a checkbox. */
+.psm-toggle.psm-transcript {
+  cursor: default;
+  .psm-toggle-text { flex: 1 1 auto; min-width: 0; gap: 6px; }
+}
+
+.psm-switch {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid #3a3a40;
+  border-radius: 6px;
+  overflow: hidden;
+
+  button {
+    background: #222226;
+    border: none;
+    padding: 5px 12px;
+    font: inherit;
+    font-size: 12px;
+    color: #9a9aa2;
+    cursor: pointer;
+
+    & + button { border-left: 1px solid #3a3a40; }
+    &:hover:not(.on) { color: #ececef; }
+    &.on { background: rgba(232, 163, 61, 0.16); color: #e8a33d; font-weight: 600; }
+    &:focus-visible { outline: 1px solid #e8a33d; outline-offset: -1px; }
+  }
+}
+
 /* The one inline link in this modal: "install it" on the un-installed Denoise row. Styled as
    text, not as a button — it sits mid-sentence in the description it belongs to. */
 .psm-link {

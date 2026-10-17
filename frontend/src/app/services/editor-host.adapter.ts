@@ -99,7 +99,7 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.saveEditorEdits(payload);
   }
 
-  clearEditorSessionState(payload: { zipPath: string }): Promise<{ removed: string[] }> {
+  clearEditorSessionState(payload: { zipPath: string; transcript: 'remove' | 'kept' }): Promise<{ removed: string[] }> {
     return this.electron.clearEditorSessionState(payload);
   }
 

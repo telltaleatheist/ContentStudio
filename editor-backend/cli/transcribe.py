@@ -35,7 +35,8 @@
 #
 # THE ASR CACHE (LEDGER #311, Owen 2026-10-17: "i have to transcribe again every single time
 # [I reprocess] ... it takes like an hour or more"). A re-process rebuilds the timeline, so the
-# sidecar (timeline coordinates) is thrown away (editor-ipc.ts editor:clear-session-state), but
+# sidecar (timeline coordinates) is thrown away (editor-ipc.ts editor:clear-session-state; or,
+# under "Use existing transcript", kept and re-placed with no decode, cli/transcript_keep.py), but
 # the processed audio usually comes out byte-identical. So each track's decode is kept in
 # FILE-TIME seconds in `<session>_asr_cache/<key sha>.json` beside the zip, keyed by what the
 # decode depends on (asr_cache_key): a content fingerprint of the compact WAV that was sent

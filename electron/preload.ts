@@ -471,7 +471,7 @@ const api = {
   // Edit-state sidecar (<session>_edits.json beside the zip).
   loadEditorEdits: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:load-edits', payload),
   saveEditorEdits: (payload: { zipPath: string; edits: any }) => ipcRenderer.invoke('editor:save-edits', payload),
-  clearEditorSessionState: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:clear-session-state', payload),
+  clearEditorSessionState: (payload: { zipPath: string; transcript: 'remove' | 'kept' }) => ipcRenderer.invoke('editor:clear-session-state', payload),
 
   // Export. REJECTS with the backend's verbatim message — the editor shows it as-is.
   // `sequence` and `muteMicDuringScreen` ride on the payload object, which is forwarded

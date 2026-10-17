@@ -2,7 +2,7 @@ import {
   Component, OnInit, OnDestroy, AfterViewInit, ViewChild, ElementRef, HostListener, ChangeDetectorRef, Inject
 } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { EDITOR_HOST, EditorHost, ProcessingJob } from './editor-host';
+import { EDITOR_HOST, EditorHost, KeptTranscriptOutcome, ProcessingJob } from './editor-host';
 import {
   StreamMarksImportModalComponent, type StreamMarkImportSpan,
 } from './stream-marks-import-modal/stream-marks-import-modal.component';
@@ -619,6 +619,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * a new run simply overwrites it with its own answer.
    */
   private transcribeAfterProcessing = false;
+  /** The run whose kept-transcript outcome was last said (LEDGER #315), so it is said once. */
+  private keptTranscriptReportedFor: string | null = null;
   private jobSub?: Subscription;
 
   constructor(
@@ -5631,8 +5633,34 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     );
   }
 
+  /**
+   * "Use existing transcript" (LEDGER #315): a re-place main refused is said on the pane's
+   * inline line with its reason (the transcript stays set aside in `_kept_transcript/`), and so
+   * is kept time that has no words because the old cut list had removed it. A clean put-back
+   * says nothing; the transcript is simply there when the session opens.
+   */
+  private reportKeptTranscript(kept: KeptTranscriptOutcome): void {
+    if (kept.outcome === 'refused') {
+      this.projectSidebar?.showError(`The existing transcript was not put back: ${kept.message}`);
+      return;
+    }
+    const gaps = (kept.tracks || []).filter(t => t.uncoveredSeconds > 0);
+    if (gaps.length) {
+      this.projectSidebar?.showError(
+        `The existing transcript was put back, but ` +
+        gaps.map(t => `${t.label} has ${t.uncoveredSeconds.toFixed(1)} s on the timeline that was cut when it was transcribed`).join('; ') +
+        `, so there are no words there. Re-transcribe to fill it.`);
+    }
+  }
+
   /** Job → pane busy row. Only a job this window attributed to a project is shown there. */
   private onProcessingJob(job: ProcessingJob | null): void {
+    // Before the owner check: the modal's completion route may already have cleared it, and
+    // what became of a kept transcript must be said either way, once per run.
+    if (job?.keptTranscript && job.id !== this.keptTranscriptReportedFor) {
+      this.keptTranscriptReportedFor = job.id;
+      this.reportKeptTranscript(job.keptTranscript);
+    }
     const owner = this.processingEntryPath;
     if (!owner) return;
     if (job && job.status === 'running') {

@@ -188,7 +188,37 @@
                last thing to happen, and ticked by default: the run is long and unattended, and
                this is what makes it one click instead of two visits. The request is handed to
                the host the moment the run starts, so closing this modal does not cancel it. -->
-          <label class="psm-toggle">
+          <!-- A project that already has a transcript (LEDGER #315): a two-way switch instead of
+               the checkbox. Use existing keeps it and puts it back on the rebuilt timeline from
+               its words' file times, with no decoding; Re-transcribe is the old clear-and-
+               transcribe. -->
+          <div class="psm-toggle psm-transcript" *ngIf="offersTranscriptChoice">
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Transcript</span>
+              <span class="psm-switch" role="radiogroup" aria-label="Transcript">
+                <button type="button" role="radio" [attr.aria-checked]="transcriptChoice === 'keep'"
+                        [class.on]="transcriptChoice === 'keep'"
+                        (click)="transcriptChoice = 'keep'">Use existing transcript</button>
+                <button type="button" role="radio" [attr.aria-checked]="transcriptChoice === 'retranscribe'"
+                        [class.on]="transcriptChoice === 'retranscribe'"
+                        (click)="transcriptChoice = 'retranscribe'">Re-transcribe</button>
+              </span>
+              <span class="psm-toggle-desc" *ngIf="transcriptChoice === 'keep'">
+                The transcript is set aside, not deleted, and put back on the rebuilt timeline when
+                processing finishes: the same words, placed through the new cuts. Words that land in
+                a cut are left off. If a track's file is gone, or its timing was stretched rather
+                than shifted, nothing is put back and you are told which track; the transcript stays
+                set aside. If the run fails or is cancelled, it goes back as it was.
+                <ng-container *ngIf="hasKeptTranscript && !hasTranscript"> This project's transcript
+                  was set aside by a run that did not finish; this run puts it back.</ng-container>
+              </span>
+              <span class="psm-toggle-desc" *ngIf="transcriptChoice === 'retranscribe'">
+                The transcript is deleted and the session is transcribed again when processing
+                finishes. Tracks whose audio is unchanged reuse their saved words.
+              </span>
+            </span>
+          </div>
+          <label class="psm-toggle" *ngIf="!offersTranscriptChoice">
             <input type="checkbox" [(ngModel)]="transcribeAfter" name="transcribeAfter" />
             <span class="psm-toggle-text">
               <span class="psm-toggle-title">Transcribe when processing finishes</span>

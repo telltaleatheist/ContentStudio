@@ -503,8 +503,20 @@ interface ProjectScanResult {
   cleanName?: string;
   zipPath?: string;
   hasTranscript?: boolean;
+  /** A `<cleanName>_kept_transcript/` folder is there: a re-process set the transcript aside
+   *  and has not put it back yet (still running, refused, or the app quit mid-run; LEDGER #315). */
+  hasKeptTranscript?: boolean;
   error?: string;
 }
+
+/**
+ * What became of a transcript a re-process kept (LEDGER #315), sent with workflow-complete:
+ * re-placed onto the rebuilt session, put back after a failed or cancelled run, or not put back,
+ * with Python's message (the kept folder is then left whole).
+ */
+type KeptTranscriptOutcome =
+  | ({ outcome: 'replaced' | 'restored' } & Record<string, unknown>)
+  | { outcome: 'refused'; message: string };
 
 /**
  * What the editor's channels need from the host beyond the store: the story handlers'
@@ -813,19 +825,39 @@ function setupEditorSessionHandlers(store: Store<any>, runs: EditorRunSessions):
    * across a rebuilt timeline, and keeping them is what spares a re-process the hour-long
    * decode (transcribe.py reuses a track only when its audio is unchanged).
    *
+   * `transcript` says what the user chose for the transcript, and is required (LEDGER #315):
+   *   - 'remove' (Re-transcribe): the transcript goes as above, and so does a
+   *     `<session>_kept_transcript/` folder an earlier keep left, since a new transcript replaces
+   *     both.
+   *   - 'kept' (Use existing transcript): execute-workflow has already moved it into
+   *     `<session>_kept_transcript/`, which this never touches. A `_transcript.json` still in place
+   *     then is a contradiction, and this throws without removing anything.
+   *
    * Returns the files it removed, so the caller can say what it did rather than claim it.
    */
-  ipcMain.handle('editor:clear-session-state', async (_event, payload: { zipPath: string }) => {
+  ipcMain.handle('editor:clear-session-state', async (_event, payload: { zipPath: string; transcript: 'remove' | 'kept' }) => {
     const zipPath = payload?.zipPath;
     if (typeof zipPath !== 'string' || zipPath.trim() === '') {
       throw new Error('editor:clear-session-state requires a non-empty zipPath string');
+    }
+    const transcript = payload?.transcript;
+    if (transcript !== 'remove' && transcript !== 'kept') {
+      throw new Error(`editor:clear-session-state requires transcript 'remove' or 'kept', got ${JSON.stringify(transcript)}`);
     }
     const dir = path.dirname(zipPath);
     const stem = path.basename(zipPath, '.zip');
     const session = stem.endsWith('_compounds') ? stem.slice(0, -'_compounds'.length) : stem;
 
+    const transcriptPath = path.join(dir, `${session}_transcript.json`);
+    if (transcript === 'kept' && fs.existsSync(transcriptPath)) {
+      throw new Error(`${transcriptPath} is still in place although this run keeps the existing ` +
+        `transcript (it should have been set aside before the run started); nothing was removed`);
+    }
+    const names = transcript === 'remove'
+      ? [`${session}_edits.json`, `${session}_transcript.json`]
+      : [`${session}_edits.json`];
     const removed: string[] = [];
-    for (const name of [`${session}_edits.json`, `${session}_transcript.json`]) {
+    for (const name of names) {
       const p = path.join(dir, name);
       if (!fs.existsSync(p)) continue;
       // Never swallowed: a sidecar that cannot be removed would be silently reused by the
@@ -833,6 +865,14 @@ function setupEditorSessionHandlers(store: Store<any>, runs: EditorRunSessions):
       fs.unlinkSync(p);
       removed.push(name);
       log.info(`[clear-session-state] removed ${p}`);
+    }
+    if (transcript === 'remove') {
+      const keptDir = path.join(dir, `${session}_kept_transcript`);
+      if (fs.existsSync(keptDir)) {
+        fs.rmSync(keptDir, { recursive: true });
+        removed.push(`${session}_kept_transcript/`);
+        log.info(`[clear-session-state] removed ${keptDir} (Re-transcribe replaces it)`);
+      }
     }
     return { removed };
   });
@@ -1578,6 +1618,9 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
   // SIGUSR1 on the same child. Output goes to the WINDOW THAT INVOKED this (event.sender),
   // which is the editor, not the main window.
   ipcMain.handle('execute-workflow', async (event, options: any) => {
+    // Set once the transcript is kept and until the workflow is spawned: a failure in between
+    // must put it back, since no run will end to do it.
+    let keptBeforeSpawn: string | null = null;
     try {
       const jobId = `job_${Date.now()}`;
 
@@ -1600,10 +1643,49 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
       // the transcription that follows it, so the separator and then the ASR models load once.
       // `transcribeAfter` is the renderer's flag for that; it is not the workflow's, so Python
       // never sees it.
-      const { transcribeAfter, ...workflowInput } = options ?? {};
+      //
+      // USE EXISTING TRANSCRIPT (LEDGER #315): `keepTranscriptZip` names the session zip whose
+      // transcript this re-process keeps. It is set aside HERE, before Python is spawned, so the
+      // alignment and cut list it was made against are snapshotted before the run overwrites
+      // them; when the run ends it is re-placed onto the rebuilt session (success) or put back
+      // (failure, cancel), before the renderer hears the run is over. Also renderer-only.
+      const { transcribeAfter, keepTranscriptZip, ...workflowInput } = options ?? {};
       if (transcribeAfter !== undefined && typeof transcribeAfter !== 'boolean') {
         throw new Error(`execute-workflow: transcribeAfter must be a boolean when given, got ${JSON.stringify(transcribeAfter)}`);
       }
+      if (keepTranscriptZip !== undefined && (typeof keepTranscriptZip !== 'string' || keepTranscriptZip === '')) {
+        throw new Error(`execute-workflow: keepTranscriptZip must be a non-empty path when given, got ${JSON.stringify(keepTranscriptZip)}`);
+      }
+      if (keepTranscriptZip !== undefined && transcribeAfter === true) {
+        throw new Error('execute-workflow: a run cannot both keep the existing transcript and transcribe again');
+      }
+      if (keepTranscriptZip !== undefined) {
+        // A refusal here means nothing was moved and nothing started.
+        const kept = await pythonService().transcriptKeep('keep', keepTranscriptZip);
+        keptBeforeSpawn = keepTranscriptZip;
+        log.info(`[${jobId}] transcript kept for the re-process: ${JSON.stringify(kept)}`);
+      }
+      // The run's end, for the kept transcript: re-placed on success, put back otherwise. Never
+      // throws; the outcome (or the refusal, which leaves the kept folder whole) goes to the
+      // renderer with workflow-complete.
+      const settleKeptTranscript = async (code: number, result: any): Promise<KeptTranscriptOutcome | null> => {
+        if (keepTranscriptZip === undefined) return null;
+        try {
+          if (code === 0) {
+            if (typeof result?.zipPath !== 'string' || path.resolve(result.zipPath) !== path.resolve(keepTranscriptZip)) {
+              throw new Error(`the run produced ${JSON.stringify(result?.zipPath)}, not the session ` +
+                `${keepTranscriptZip} whose transcript was kept, so it was not put back. It is preserved ` +
+                `in the _kept_transcript folder beside that zip.`);
+            }
+            return { outcome: 'replaced', ...(await pythonService().transcriptKeep('replace', keepTranscriptZip)) };
+          }
+          return { outcome: 'restored', ...(await pythonService().transcriptKeep('restore', keepTranscriptZip)) };
+        } catch (err: any) {
+          const message = err?.message || String(err);
+          log.error(`[${jobId}] the kept transcript was not put back: ${message}`);
+          return { outcome: 'refused', message };
+        }
+      };
       const run = runs.startProcessing(jobId);
       let isolator: Promise<CrucibleVoiceIsolator> | null = null;
       const isolatorLog = (line: string): void => log.info(`[${jobId}] [voice isolation] ${line}`);
@@ -1655,14 +1737,20 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
           const handOff = code === 0 && transcribeAfter === true && zipPath !== null && !sender.isDestroyed();
           void runs.processingEnded(run, handOff ? zipPath : null,
             code === 0 ? 'the processing run finished and nothing transcribes it next' : 'the processing run failed or was cancelled');
-          if (sender.isDestroyed()) {
-            log.warn(`[${jobId}] Cannot send workflow-complete — WebContents destroyed`);
-            return;
-          }
-          log.info(`[${jobId}] Sending workflow-complete to renderer: exitCode=${code}`);
-          sender.send('workflow-complete', { jobId, exitCode: code, result });
+          // The kept transcript is settled first, even with the window gone, so the session the
+          // renderer opens already has it.
+          void settleKeptTranscript(code, result).then((keptTranscript) => {
+            if (sender.isDestroyed()) {
+              log.warn(`[${jobId}] Cannot send workflow-complete — WebContents destroyed`);
+              return;
+            }
+            log.info(`[${jobId}] Sending workflow-complete to renderer: exitCode=${code}`);
+            sender.send('workflow-complete', { jobId, exitCode: code, result, keptTranscript });
+          });
         }
       });
+      // Spawned: from here the run's own end settles the kept transcript.
+      keptBeforeSpawn = null;
 
       // The window that would start the transcription closed: nothing will adopt a parked run.
       if (!watchedSenders.has(sender)) {
@@ -1672,6 +1760,13 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps, runs: Edito
       return { success: true, jobId };
     } catch (error: any) {
       log.error('Error executing workflow:', error);
+      if (keptBeforeSpawn !== null) {
+        try {
+          await pythonService().transcriptKeep('restore', keptBeforeSpawn);
+        } catch (restoreErr: any) {
+          return { success: false, error: `${error.message}. The kept transcript could not be put back either: ${restoreErr?.message || String(restoreErr)}` };
+        }
+      }
       return { success: false, error: error.message };
     }
   });
@@ -1827,6 +1922,7 @@ function setupProjectHandlers(): void {
     const hasZip = fs.existsSync(zipPath);
     const hasEdits = fs.existsSync(editsPath);
     const hasTranscript = fs.existsSync(path.join(folderPath, `${cleanName}_transcript.json`));
+    const hasKeptTranscript = fs.existsSync(path.join(folderPath, `${cleanName}_kept_transcript`));
 
     const base: ProjectScanResult = {
       folder: folderPath,
@@ -1836,7 +1932,8 @@ function setupProjectHandlers(): void {
       masterVideo: path.join(folderPath, masterName),
       session,
       cleanName,
-      hasTranscript
+      hasTranscript,
+      hasKeptTranscript
     };
     if (hasZip) base.zipPath = zipPath;
 

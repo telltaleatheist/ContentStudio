@@ -174,6 +174,15 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
    */
   transcribeAfter = true;
   /**
+   * A project that already has a transcript gets a switch instead of that checkbox (LEDGER #315,
+   * Owen: "a switch that says 'use existing transcript' or 're-transcribe'"). 'keep' sets the
+   * transcript aside and main re-places it onto the rebuilt timeline when the run ends, with no
+   * decoding; 'retranscribe' clears it and transcribes after the run. Default: keep.
+   */
+  transcriptChoice: 'keep' | 'retranscribe' = 'keep';
+  /** Whether the run that started transcribes when it finishes: read by both completion routes. */
+  private runTranscribes = false;
+  /**
    * Mute words (LEDGER #226): the one-line summary of this project's choice, shown next to the
    * "Mute words…" button. The choice itself is saved per project by the Mute words modal; a
    * project with none takes the remembered one when the run starts (onProcess), so what this
@@ -505,6 +514,21 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     return !!this.entry?.scan?.hasTranscript;
   }
 
+  /** A re-process set the transcript aside and has not put it back (LEDGER #315). */
+  get hasKeptTranscript(): boolean {
+    return !!this.entry?.scan?.hasKeptTranscript;
+  }
+
+  /** The switch replaces the checkbox when there is a transcript a re-process could keep. */
+  get offersTranscriptChoice(): boolean {
+    return this.isReprocess && !!this.entry?.scan?.zipPath && (this.hasTranscript || this.hasKeptTranscript);
+  }
+
+  /** This run keeps the existing transcript. */
+  get keepsTranscript(): boolean {
+    return this.offersTranscriptChoice && this.transcriptChoice === 'keep';
+  }
+
   /** The audio slots feeding this run — the ones reuse has to account for. */
   private get assignedAudioSlots(): SourceSlot[] {
     return this.slots.filter(s => !s.isVideo && s.path);
@@ -548,7 +572,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   get clearsOnProcess(): string[] {
     const out: string[] = [];
     if (this.hasEdits) out.push('the cuts, blades and stories saved for this session');
-    if (this.hasTranscript) out.push('its transcript');
+    if (this.hasTranscript && !this.keepsTranscript) out.push('its transcript');
     return out;
   }
 
@@ -754,17 +778,27 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       // still awaiting it, and that first emission has to be recognised as ours.
       this.attached = true;
       this.ownedJobId = null;
+      // Use existing transcript: no transcription after the run, and main sets the transcript
+      // aside before Python starts (LEDGER #315). Re-transcribe always transcribes after.
+      const zipPath = this.entry?.scan?.zipPath;
+      const keep = this.keepsTranscript && !!zipPath;
+      this.runTranscribes = this.offersTranscriptChoice ? !keep : this.transcribeAfter;
       try {
         // `transcribeAfter` tells main to keep the run's Crucible queue session for the
-        // transcription that follows (LEDGER #264); main strips it before Python sees the options.
-        await this.host.startWorkflow({ ...options, transcribeAfter: this.transcribeAfter });
+        // transcription that follows (LEDGER #264); main strips it, and `keepTranscriptZip`,
+        // before Python sees the options.
+        await this.host.startWorkflow({
+          ...options,
+          transcribeAfter: this.runTranscribes,
+          ...(keep ? { keepTranscriptZip: zipPath } : {}),
+        });
       } catch (err: any) {
         this.attached = false;
         this.error = `Could not start processing: ${err?.message || String(err)}`;
         return;
       }
       this.state = 'running';
-      this.started.emit({ transcribe: this.transcribeAfter });
+      this.started.emit({ transcribe: this.runTranscribes });
 
       // A re-process starts over: the previous session's edits and transcript are written in
       // timeline coordinates, and this run rebuilds the timeline, so they cannot survive it.
@@ -774,10 +808,12 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       // the run needs twelve minutes before it replaces the zip, so there is no race in
       // waiting. A clear that fails cannot un-start the job: it is reported and the run
       // continues, because the alternative is a silent stale sidecar.
-      const zipPath = this.entry?.scan?.zipPath;
+      //
+      // A kept transcript is not this call's to touch: main moved it aside before the run, and
+      // 'kept' makes clear-session-state refuse rather than delete one still in place.
       if (this.isReprocess && zipPath) {
         try {
-          const { removed } = await this.host.clearEditorSessionState({ zipPath });
+          const { removed } = await this.host.clearEditorSessionState({ zipPath, transcript: keep ? 'kept' : 'remove' });
           this.clearedNote = removed.length ? `Cleared ${removed.join(' and ')}.` : null;
         } catch (err: any) {
           this.error = `Processing started, but the previous session's edits could not be ` +
@@ -818,7 +854,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       if (typeof zipPath === 'string' && zipPath) {
         this.state = 'done';
         this.error = null;
-        this.completed.emit({ zipPath, transcribe: this.transcribeAfter });
+        this.completed.emit({ zipPath, transcribe: this.runTranscribes });
       } else {
         // Exit code 0 but no session to open — a contradiction, said plainly.
         this.state = 'error';

@@ -879,6 +879,54 @@ export class PythonService {
   }
 
   /**
+   * One step of "Use existing transcript" across a re-process (cli/transcript_keep.py, LEDGER
+   * #315): `keep` sets the transcript aside before the run, `replace` re-places it onto the
+   * rebuilt session after a successful one, `restore` puts it back after a failed or cancelled
+   * one. Resolves with the step's result; REJECTS with Python's own message (which says where
+   * the kept transcript is) — never a guess.
+   */
+  transcriptKeep(action: 'keep' | 'replace' | 'restore', zipPath: string): Promise<any> {
+    const jobId = `transcript_keep_${action}_${Date.now()}`;
+    log.info(`Transcript keep: ${action} for ${zipPath} [${jobId}]`);
+    const pythonProcess = spawn(this.getPythonPath(),
+      [path.join(EditorPaths.cliPath, 'transcript_keep.py'), action, '--zip', zipPath],
+      { env: this.getPythonEnv(), cwd: EditorPaths.rootPath });
+    return new Promise((resolve, reject) => {
+      let stdout = '';
+      let stderrTail = '';
+      pythonProcess.stdout.on('data', (d) => { stdout += d.toString(); });
+      pythonProcess.stderr.on('data', (d) => {
+        const chunk = d.toString();
+        stderrTail = (stderrTail + chunk).slice(-2000);
+        log.info(`[${jobId}] stderr:`, chunk);
+      });
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      pythonProcess.on('close', (code) => {
+        const line = stdout.trim().split('\n').filter(Boolean).pop() || '';
+        let msg: any = null;
+        try { msg = JSON.parse(line); } catch { msg = null; }
+        if (code === 0 && msg?.type === 'keep_result') {
+          finish(() => resolve(msg.result));
+          return;
+        }
+        const tail = stderrTail.trim() ? `: ${stderrTail.trim()}` : '';
+        const reason = msg?.type === 'error' ? String(msg.message) : `transcript_keep.py ${action} exited with code ${code}${tail}`;
+        log.error(`[${jobId}] Transcript keep ${action} failed: ${reason}`);
+        finish(() => reject(new Error(reason)));
+      });
+      pythonProcess.on('error', (error) => {
+        log.error(`[${jobId}] Transcript keep process error:`, error);
+        finish(() => reject(error));
+      });
+    });
+  }
+
+  /**
    * Run cli/transcribe.py to transcribe a processed session's source audio tracks and
    * write a `<session>_transcript.json` sidecar next to the zip. Mirrors
    * executeWorkflow's line-buffered stdout protocol (progress/error/success), and

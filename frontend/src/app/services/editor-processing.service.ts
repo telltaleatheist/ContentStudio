@@ -20,7 +20,7 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { ElectronService } from './electron';
-import type { ProcessingJob } from '../components/editor/editor-host';
+import type { KeptTranscriptOutcome, ProcessingJob } from '../components/editor/editor-host';
 
 @Injectable({
   providedIn: 'root'
@@ -277,7 +277,7 @@ export class EditorProcessingService {
   /**
    * Handle workflow completion
    */
-  private handleWorkflowComplete(data: { jobId: string; exitCode: number; result?: any }): void {
+  private handleWorkflowComplete(data: { jobId: string; exitCode: number; result?: any; keptTranscript?: KeptTranscriptOutcome | null }): void {
     const currentJob = this.currentJob$.value;
 
     if (!currentJob || currentJob.id !== data.jobId) {
@@ -317,6 +317,8 @@ export class EditorProcessingService {
       // The success result (zipPath/clips/session) only reaches the renderer via the
       // completion callback, so capture it here onto the job's results field.
       results: data.exitCode === 0 && data.result !== undefined ? data.result : currentJob.results,
+      // Only a "Use existing transcript" run carries one (main settles it before this arrives).
+      ...(data.keptTranscript ? { keptTranscript: data.keptTranscript } : {}),
       endTime: new Date()
     };
 

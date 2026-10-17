@@ -44,6 +44,9 @@ export interface ProjectScanResult {
   cleanName?: string;
   zipPath?: string;
   hasTranscript?: boolean;
+  /** A `<cleanName>_kept_transcript/` folder is there: a re-process set the transcript aside and
+   *  has not put it back yet (still running, refused, or the app quit mid-run; LEDGER #315). */
+  hasKeptTranscript?: boolean;
   /** Populated for 'unrecognized' (and any scan that failed): the verbatim reason. */
   error?: string;
 }
@@ -72,7 +75,21 @@ export interface ProcessingJob {
   canSkipCurrent?: boolean;
   subProgress?: number;
   skipDecisions?: any;
+  /** What became of the transcript a "Use existing transcript" run kept (LEDGER #315): set when
+   *  the run ends, for that kind of run only. */
+  keptTranscript?: KeptTranscriptOutcome;
 }
+
+/** Main's report on a kept transcript (editor-ipc.ts execute-workflow). */
+export type KeptTranscriptOutcome =
+  | {
+      outcome: 'replaced' | 'restored';
+      wordCount?: number;
+      keptWordCount?: number;
+      identical?: boolean;
+      tracks?: Array<{ id: string; label: string; shiftSeconds: number; placed: number; droppedInCuts: number; uncoveredSeconds: number }>;
+    }
+  | { outcome: 'refused'; message: string };
 
 /** Whether the backup archive is reachable, and what is being pushed to it right now. */
 export interface ArchiveStatus {
@@ -404,7 +421,7 @@ export interface EditorHost {
    * survive the timeline being rebuilt. Resolves with the basenames actually removed (empty
    * when there was nothing to remove). Source media and `_processed` audio are untouched.
    */
-  clearEditorSessionState(payload: { zipPath: string }): Promise<{ removed: string[] }>;
+  clearEditorSessionState(payload: { zipPath: string; transcript: 'remove' | 'kept' }): Promise<{ removed: string[] }>;
 
   // ── Export ──────────────────────────────────────────────────────────────────
 

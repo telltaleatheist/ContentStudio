@@ -19,6 +19,8 @@ from typing import Optional, Tuple, Dict, Callable
 import tempfile
 import sys
 
+from .sync_offset import offset_filter
+
 # Auto-install dependencies if missing
 _DEPENDENCIES_AVAILABLE = False
 _DEPENDENCY_ERROR = None
@@ -690,15 +692,12 @@ class MediaSyncProcessor:
                         filters.append(f'atempo={remaining:.10f}')
                         break
 
-        # Apply offset (delay) if needed
-        if abs(offset_seconds) > 0.001:
-            # Use adelay for positive offset (delay audio)
-            delay_ms = int(offset_seconds * 1000)
-            if delay_ms > 0:
-                filters.append(f'adelay={delay_ms}|{delay_ms}')
-            else:
-                # For negative offset, we trim from the start
-                filters.append(f'atrim=start={abs(offset_seconds)}')
+        # Apply offset (delay) if needed: adelay for a positive offset, atrim from the start for
+        # a negative one. The decision lives in sync_offset.py, which cli/transcript_keep.py also
+        # reads to know how far a kept transcript's words moved (LEDGER #315). Last in the chain.
+        offset_af = offset_filter(offset_seconds)
+        if offset_af is not None:
+            filters.append(offset_af)
 
         # For soundboard files, convert to dual mono (same audio in both channels)
         if is_soundboard:

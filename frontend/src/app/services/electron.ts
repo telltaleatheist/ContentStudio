@@ -963,7 +963,7 @@ declare global {
       // Edit state (the _edits.json sidecar)
       loadEditorEdits: (payload: { zipPath: string }) => Promise<any | null>;
       saveEditorEdits: (payload: { zipPath: string; edits: any }) => Promise<{ path: string }>;
-      clearEditorSessionState: (payload: { zipPath: string }) => Promise<{ removed: string[] }>;
+      clearEditorSessionState: (payload: { zipPath: string; transcript: 'remove' | 'kept' }) => Promise<{ removed: string[] }>;
 
       // Export — REJECTS with the backend's verbatim message; never an envelope.
       exportEditorCuts: (payload: {
@@ -1072,7 +1072,7 @@ declare global {
       sendSkipSignal: () => Promise<void>;
       onWorkflowOutput: (callback: (data: { jobId: string; type: string; data: string }) => void) => void;
       onWorkflowComplete: (
-        callback: (data: { jobId: string; exitCode: number; result?: any; errorMessage?: string }) => void
+        callback: (data: { jobId: string; exitCode: number; result?: any; errorMessage?: string; keptTranscript?: any }) => void
       ) => void;
       removeWorkflowListeners: () => void;
 
@@ -2209,7 +2209,7 @@ export class ElectronService {
     return this.editorBridge.saveEditorEdits(payload);
   }
 
-  async clearEditorSessionState(payload: { zipPath: string }): Promise<{ removed: string[] }> {
+  async clearEditorSessionState(payload: { zipPath: string; transcript: 'remove' | 'kept' }): Promise<{ removed: string[] }> {
     return this.editorBridge.clearEditorSessionState(payload);
   }
 
@@ -2487,13 +2487,13 @@ export class ElectronService {
     return this.workflowOutput$.asObservable();
   }
 
-  getWorkflowComplete(): Observable<{ jobId: string; exitCode: number; result?: any }> {
+  getWorkflowComplete(): Observable<{ jobId: string; exitCode: number; result?: any; keptTranscript?: any }> {
     this.ensureWorkflowListeners();
     return this.workflowComplete$.asObservable();
   }
 
   private workflowOutput$ = new Subject<{ jobId: string; type: string; data: string }>();
-  private workflowComplete$ = new Subject<{ jobId: string; exitCode: number; result?: any }>();
+  private workflowComplete$ = new Subject<{ jobId: string; exitCode: number; result?: any; keptTranscript?: any }>();
   private workflowListenersAttached = false;
 
   private ensureWorkflowListeners(): void {

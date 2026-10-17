@@ -2233,3 +2233,32 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Cause.** The 10-14 re-run had Game Audio set to None. The game-free pause mix (pause_mix.recut_without_game) only ran when a game source was in the job, so the pauses were found on master.mp4, which carries the game merged in. The game sat at −28 to −34 dB from 5:44 to 7:01, above the −40 dB threshold, so nothing there was cut.
 - **Now.** The mix runs whenever the job has any source that `finds_pauses` (everything but the game and the soundboard); stream recovery still uses the master, having no tracks. The master's own pause list is used only for a set with no separate audio at all.
 - Not run live; Owen tests. [editor-backend/cli/electron_workflow.py; editor-backend/core/editors/pause_mix.py]
+
+**315. A re-process of a project that has a transcript asks "Use existing transcript" or "Re-transcribe", and Use existing keeps it and puts the same words back on the rebuilt timeline (Owen, 2026-10-17: "lets fix it so its a switch that says "use existing transcript" or "re-transcribe" for projects that already have a transcript. if it says use existing transcript, it doesnt delete it. it just puts it back exactly where it was when its done processing"; then, for a moved sync offset: shift the words through the alignment rather than refuse).**
+- **Cause.** Every re-process ran `editor:clear-session-state`, which deleted `<session>_transcript.json` with the edits. The 10-14 transcript took an hour; the #311 ASR cache spares the decode only while the audio is byte-identical.
+- **The switch.** In the processing setup modal, a re-process of a project with a transcript (or with one set aside, below) shows a Transcript row with a two-way switch, "Use existing transcript" | "Re-transcribe", default Use existing. Each side says what it does under it. A project without one keeps "Transcribe when processing finishes" as it was. The "discarding ..." warning no longer lists the transcript when it is kept. Re-transcribe is today's behaviour: cleared, transcribed after the run, the ASR cache still applies.
+- **Kept, not deleted** (cli/transcript_keep.py, run by main in execute-workflow). Before Python is spawned, `keep` moves the transcript into `<session>_kept_transcript/transcript.json` with copies of the alignment and the compounds zip it was made against, and keep.json (the zip's SHA-256). The folder is filled first and the transcript moved last. A start that fails before the spawn puts it back.
+  - **Success:** `replace`. No decoding. Each kept word keeps its file time, and `transcribe.map_file_words` places it through the new compound's segments, the same function fresh words go through. A word whose midpoint is now in a cut is left off and counted per track. Written atomically. If the result equals the kept file, the kept file itself goes back, byte-identical. Then the folder is removed. Kept file time that the OLD cut list had removed has no words; the seconds are counted per track and said on the pane's line ("Re-transcribe to fill it").
+  - **Failure or cancel:** `restore`. If the zip is unchanged, the kept file goes back untouched. A run that got as far as zipping (step failures) is re-placed onto its zip as on success.
+  - main settles this before sending workflow-complete, so the session the editor opens has the transcript.
+- **A moved sync offset shifts the words** (Owen's call, replacing a refusal). The processed WAV is the raw file plus a constant, the offset filter being last in the chain. The decision is now one function, core/sync_offset.py: `offset_filter` builds the filter apply_sync_to_audio uses, and `applied_offset_seconds` gives the seconds it adds (adelay in whole ms, truncated toward zero; atrim unrounded; nothing within 1 ms). A track's words move by applied(new) − applied(old), logged as "t0 mic audio_processed: offset moved 0.300s, words shifted".
+  - The alignment sidecar now records each audio source's `processedFile`, and `speedFactor` when the sync had one. A kept alignment from before this has no file names, so its sources are paired by type with the new record's (logged).
+  - A processed file that was reused is not moved.
+- **Refused, nothing put back, kept folder left whole, said on the pane's line with the track and "Choose Re-transcribe":** a kept track whose file is not in the rebuilt session, or a rebuilt track the transcript never had; a changed driftFactor or speedFactor (that stretches, not shifts); a speed factor ≠ 1 that the old record does not state; a track aligned in only one of the two runs; a sync method whose trim is not known; a word key a re-place would lose; and a kept folder alongside a current transcript. A folder left by a run that never finished (the app quit) is adopted by the next Use existing run. The project scan reports it as `hasKeptTranscript`.
+- **clear-session-state** (its only caller is the setup modal) now requires `transcript: 'remove' | 'kept'`. 'kept' removes only the edits, and throws without removing anything if a `_transcript.json` is still in place. 'remove' also removes a stale `_kept_transcript/`.
+- **Checks.** tools/transcript-keep-checks.py (new, `npm run check:transcript-keep`, 16, offline, discover_tracks stubbed). They cover:
+  - unchanged cuts give the identical sidecar and bytes;
+  - changed cuts give exactly a fresh map over the new cuts, with drops counted;
+  - newly kept seconds are counted;
+  - the shift's sign, proven against the filter text for ± offsets and the 1 ms deadband;
+  - an offset shift moves file and timeline time by +0.300 s, and words pushed into a cut drop;
+  - the legacy pairing by type, and reuse not moving a file;
+  - every refusal;
+  - a failed or cancelled run restoring the original byte-for-byte;
+  - a failed run with a new zip re-placing;
+  - a refusal keeping the folder, then being adopted;
+  - ambiguity, and keep with no transcript.
+  check:asr-cache (12) and check:pure pass; tsc electron + preload and the frontend build pass.
+- Not run live; Owen tests.
+
+[editor-backend/cli/transcript_keep.py (new), transcribe.py (comment), electron_workflow.py; editor-backend/core/sync_offset.py (new), audio_sync.py; electron/services/editor/editor-ipc.ts, python-service.ts; electron/preload.ts; frontend/src/app/components/editor/project-setup-modal/project-setup-modal.component.{ts,html,scss}, editor.component.ts, editor-host.ts; frontend/src/app/services/{editor-processing,editor-host.adapter,electron}.ts; tools/transcript-keep-checks.py (new); package.json]

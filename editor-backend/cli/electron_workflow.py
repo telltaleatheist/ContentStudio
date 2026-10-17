@@ -375,7 +375,14 @@ def _write_alignment_sidecar(output_dir, clean_name, master_video, processed_aud
             'offsetSeconds': sync_info['offset_seconds'],
             'driftFactor': drift,
             'method': method,
+            # The file the compounds reference for this source (after the automixer), so a
+            # kept transcript's track can be paired with its offset by file (LEDGER #315).
+            'processedFile': str(info['path']),
         }
+        # The unified soundboard path also retimes by a speed factor from the drift config,
+        # applied before the offset; recorded so a later run can tell it did not change.
+        if 'speed_factor' in sync_info:
+            entry['speedFactor'] = sync_info['speed_factor']
         if 'correlation_score' in sync_info:
             entry['confidence'] = sync_info['correlation_score']
         if 'alignment_trusted' in sync_info:
