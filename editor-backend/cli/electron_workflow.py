@@ -33,7 +33,7 @@ from core.compound_generators.shorts_master_project_generator import ShortsMaste
 from core.audio_processor import AudioProcessor
 from core.editors.auto_editor import AutoEditor
 from core.editors.smart_cut_filter import SmartCutFilter
-from core.editors.pause_mix import is_game_audio, recut_without_game
+from core.editors.pause_mix import finds_pauses, is_game_audio, recut_without_game
 from core.skip_logic import SkipDecisionEngine
 from core.naming import is_soundboard_filename
 from core.obs_program_audio import extract_program_audio
@@ -1718,6 +1718,12 @@ def main():
             dugan_tracks = []
             print(f"\nProcessed audio sources available for Dugan:", file=sys.stderr)
             for audio_type, audio_info in processed_audio.items():
+                # The game and the soundboard are not voices: the automixer shares gain among
+                # the tracks that speak, and a game playing under the host would take the
+                # host's share (LEDGER #312). They pass through untouched.
+                if audio_info and audio_info.get('path') and not finds_pauses(audio_type):
+                    print(f"  {audio_type}: {Path(audio_info['path']).name} [NOT AUTOMIXED: game/soundboard]", file=sys.stderr)
+                    continue
                 if audio_info and audio_info.get('path'):
                     is_sb = audio_info.get('sync_info', {}).get('is_soundboard', False)
                     sb_tag = " [SOUNDBOARD]" if is_sb else " [VMIX/REGULAR]"
