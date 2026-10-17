@@ -82,6 +82,7 @@ import {
   ResolvedMetadataRouting,
 } from './metadata-routing';
 import { DESCRIPTION_FIELDS, DescriptionUnit } from './description-unit';
+import { SongDescriptionUnit } from './song-description-unit';
 import {
   codeOwnedTagFields,
   unusableTagList,
@@ -1057,11 +1058,10 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       field: 'description',
       model: descriptionOption.model,
       local: descriptionOption.kind === 'local',
-      unit: new DescriptionUnit(
-        aiManager,
-        descriptionOption,
-        lifecycle
-      ),
+      // A song channel's description is the summary-from-lyrics call (LEDGER #308), on the same row.
+      unit: aiManager.loadedChannel().descriptionLyrics
+        ? new SongDescriptionUnit(aiManager, descriptionOption, lifecycle)
+        : new DescriptionUnit(aiManager, descriptionOption, lifecycle),
     });
   }
 

@@ -42,3 +42,16 @@ overrides:
       - Answer with the whole list on one line, a comma between every tag and no spaces inside a tag: "Bakker,televangelist,prophecy,atheism,skepticism"
     self_check:
       - "The tags value is one string with a comma between every tag, and every tag is one word with no space in it"
+
+  littlegoose:
+    instructions: |-
+      ## TAGS
+
+      - Write 8 to 12 tags, under 400 characters in total, each in lowercase.
+      - Start with the most specific two-to-four-word phrase for the song: the kind of song and who it is for, as a parent types it into search (a lullaby for small children is "lullaby for kids").
+      - Then the song's own themes, animals and places, the way a parent searches for them, then the broad category terms of children's music it belongs to.
+      - Accurate and boring beats clever — tags are a labelling job, not a hook.
+      - Every tag is something the song is: its kind, its audience, or what its lyrics are about.
+      - Answer with the whole list on one line, a comma between every tag: "bedtime song,lullaby for kids,woodland animals song,forest animals,songs for toddlers,kids songs"
+    self_check:
+      - "The tags value is one string with a comma between every tag — if any two tags are separated by a space alone, the comma goes back in"

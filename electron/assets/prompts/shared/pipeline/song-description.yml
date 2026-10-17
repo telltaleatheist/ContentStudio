@@ -1,0 +1,17 @@
+channel_block: |-
+  Channel: {name}
+  {focus}
+
+summary: |-
+  Write the description of a children's song for its YouTube page.
+
+  {channel}
+
+  Song: {song}
+
+  The song's lyrics, in full:
+  {lyrics}
+
+  {rules}
+
+  Write ONLY the summary paragraph those rules describe, as plain text: one paragraph of {minWords} to {maxWords} words, with no blank lines, no heading, no lyrics, no labels, no commentary and no quotation marks around it. The lyrics and the channel's closing line are added beneath it afterwards.

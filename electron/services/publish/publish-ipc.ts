@@ -562,10 +562,11 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   }
 
   if (!uploadApi || typeof uploadApi.insertVideo !== 'function'
-      || typeof uploadApi.setThumbnail !== 'function' || typeof uploadApi.getLatestCategoryId !== 'function') {
+      || typeof uploadApi.setThumbnail !== 'function' || typeof uploadApi.getLatestCategoryId !== 'function'
+      || typeof uploadApi.requireCaptionScope !== 'function' || typeof uploadApi.insertCaption !== 'function') {
     throw new Error(
-      'setupPublishIpc requires uploadApi with insertVideo, setThumbnail and getLatestCategoryId. ' +
-      'An upload without all three would half-create videos it cannot finish.'
+      'setupPublishIpc requires uploadApi with insertVideo, setThumbnail, getLatestCategoryId, ' +
+      'requireCaptionScope and insertCaption. An upload without all of them would half-create videos it cannot finish.'
     );
   }
   if (!pushApi || typeof pushApi.getVideoParts !== 'function' || typeof pushApi.updateVideo !== 'function'
@@ -1671,7 +1672,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   ipcMain.handle('publish-push-schedule', async (_e, itemId: string) => {
     try {
       const id = requireItemId(itemId, 'itemId');
-      const outcome = await pushScheduleToYouTube(id, { store, api: pushApi });
+      const outcome = await pushScheduleToYouTube(id, { store, api: pushApi, readGenerated });
       return ok(outcome);
     } catch (err: any) {
       return fail(err?.message || String(err));

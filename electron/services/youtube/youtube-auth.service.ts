@@ -38,11 +38,19 @@ import axios from 'axios';
 import { AnalyticsStoreService } from '../analytics/analytics-store.service';
 import { ChannelRegistryEntry } from '../analytics/analytics-types';
 
-// Both scopes are requested now: the youtube scope is for the upcoming publish
-// feature — requesting it here avoids a second consent for all three channels.
+/** The scope captions.insert needs (see YOUTUBE_SCOPES). */
+export const YOUTUBE_CAPTIONS_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
+
+// The youtube scope is for the publish feature — requesting it here avoids a second consent for
+// all three channels — and the analytics scope for the analytics collector.
 export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube',
   'https://www.googleapis.com/auth/yt-analytics.readonly',
+  // captions.insert (LEDGER #308: a song's lyrics go up as a caption track). The `youtube` scope
+  // above does not cover captions; force-ssl does. A channel connected before this was added keeps
+  // the token it was granted, without it: anything that writes captions checks the saved grant
+  // first (requireScope) and names the fix, reconnecting the channel, rather than failing at Google.
+  YOUTUBE_CAPTIONS_SCOPE,
 ];
 
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -528,6 +536,22 @@ export class YouTubeAuthService {
       this.writeBundles(bundles);
     });
     return accessToken;
+  }
+
+  /**
+   * Refuse, by name, when the channel's SAVED grant lacks `scope`. The grant is what Google returned
+   * when the channel was connected (or last refreshed), so a channel connected before a scope was
+   * added to YOUTUBE_SCOPES is told to reconnect, which asks for every scope again.
+   */
+  requireScope(channelId: string, scope: string, purpose: string): void {
+    const bundle = this.readBundles()[channelId];
+    if (!bundle) throw new YouTubeNotConnectedError(channelId);
+    if (!Array.isArray(bundle.scopes) || !bundle.scopes.includes(scope)) {
+      throw new YouTubeAuthError(
+        `Channel "${bundle.channelTitle}" (${channelId}) was connected without the permission ${purpose} needs ` +
+          `(${scope}). Reconnect the channel (Connect Channel again, same Google account) to grant it. Nothing was sent.`
+      );
+    }
   }
 
   // ==================== DISCONNECT ====================

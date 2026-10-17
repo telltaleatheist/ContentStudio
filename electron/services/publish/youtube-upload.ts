@@ -50,6 +50,7 @@ import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from '.
 import { fitThumbnailFile } from './thumbnail-validate';
 import { ChosenMetadata, UploadReceipt, youtubeDescriptionProblem } from './publish-types';
 import { firstLineOf, splitTags } from './youtube-push';
+import { LYRICS_CAPTION_TRACK, requireProfileRead, type ChannelPublishProfile } from './youtube-profile';
 
 /** The API surface an upload needs. Structural, like YouTubePushApi, and for the same
  *  reason: the whole flow must be exercisable against a fake in the offline harness. */
@@ -68,6 +69,19 @@ export interface YouTubeUploadApi {
     mime: 'image/png' | 'image/jpeg'
   ): Promise<unknown>;
   getLatestCategoryId(channelId: string): Promise<string | null>;
+  /**
+   * Refuses, by name, when the channel's saved authorization lacks the captions scope
+   * (youtube.force-ssl): checked BEFORE a `captions: lyrics` channel's upload starts, so a token
+   * from before the scope was asked for stops the upload rather than leaving a video without its
+   * lyrics. The fix it names is reconnecting the channel.
+   */
+  requireCaptionScope(channelId: string): void;
+  /** captions.insert: one caption track on a video, from SRT text. */
+  insertCaption(
+    channelId: string,
+    videoId: string,
+    track: { language: string; name: string; srt: string }
+  ): Promise<{ captionId: string }>;
 }
 
 export interface VideoInsertBody {
@@ -76,11 +90,17 @@ export interface VideoInsertBody {
     privacyStatus: 'private';
     publishAt?: string;
     /**
-     * Always false. All three channels are adult commentary; the browser flow declares
-     * the same thing on every upload, and leaving it unset would park the video behind
-     * a Studio question the operator answered years ago.
+     * False for Owen's channels: adult commentary; the browser flow declares the same thing on
+     * every upload, and leaving it unset would park the video behind a Studio question the
+     * operator answered years ago. A channel whose file declares an `upload:` block (Little
+     * Goose, LEDGER #308) sends its own declared value.
      */
     selfDeclaredMadeForKids: boolean;
+    /**
+     * YouTube's altered-or-synthetic-content disclosure. Sent ONLY when the channel's profile
+     * declares it; absent from the body otherwise, exactly as every upload before #308 was.
+     */
+    containsSyntheticMedia?: boolean;
   };
 }
 
@@ -94,6 +114,12 @@ export interface UploadPlanInput {
   resolved: { title: string | null; description: string; tags: string };
   file: { path: string; sizeBytes: number };
   categoryId: string | null;
+  /**
+   * The item's channel profile (LEDGER #308), or null: uploads exactly as before. With an `upload`
+   * block, its category, audience and disclosure are what the insert sends, and `categoryId`
+   * above is not read (the caller does not look one up).
+   */
+  profile: ChannelPublishProfile | null;
 }
 
 export interface UploadPlan {
@@ -103,7 +129,9 @@ export interface UploadPlan {
 
 /** Pure: everything checkable without a token or a disk, checked. */
 export function planVideoInsert(input: UploadPlanInput): UploadPlan {
-  const { record, resolved, file, categoryId } = input;
+  const { record, resolved, file, profile } = input;
+  const flags = profile?.upload ?? null;
+  const categoryId = flags !== null ? flags.categoryId : input.categoryId;
 
   if (record.videoId) {
     throw new Error(
@@ -148,7 +176,8 @@ export function planVideoInsert(input: UploadPlanInput): UploadPlan {
     status: {
       privacyStatus: 'private',
       ...(record.publishAt ? { publishAt: record.publishAt } : {}),
-      selfDeclaredMadeForKids: false,
+      selfDeclaredMadeForKids: flags !== null ? flags.madeForKids : false,
+      ...(flags !== null ? { containsSyntheticMedia: flags.containsSyntheticMedia } : {}),
     },
   };
   return { channelId: record.channelId, body };
@@ -225,8 +254,23 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     thumbnailSkipped = 'No thumbnail is attached to this item, so none was uploaded.';
   }
 
+  const profile = requireProfileRead(generated, itemId);
+  // CAPTIONS, checked before a byte goes up (LEDGER #308): the lyrics are on the item, and the
+  // channel's authorization can write captions. Either missing stops the upload here, by name.
+  const captionSrt = profile?.captions === 'lyrics' ? generated.lyricsSrt : null;
+  if (profile?.captions === 'lyrics') {
+    if (captionSrt === null) {
+      throw new Error(
+        `Item ${itemId} is on a channel that uploads its lyrics as captions (captions: lyrics), and its report ` +
+        `carries no lyrics. Regenerate the item from the video so its lyrics track is read.`
+      );
+    }
+    if (record.channelId) api.requireCaptionScope(record.channelId);
+  }
+
   const resolved = resolveChosenMetadata(record, generated);
-  const categoryId = await api.getLatestCategoryId(record.channelId!);
+  // The category: the channel profile's declared one, or the channel's latest upload's as before.
+  const categoryId = profile?.upload ? profile.upload.categoryId : await api.getLatestCategoryId(record.channelId!);
   const plan = planVideoInsert({
     record,
     // chosenTitles[0] IS the title — resolved.titles is NOT used here, because it falls
@@ -239,6 +283,7 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     },
     file: { path: sourcePath, sizeBytes },
     categoryId,
+    profile,
   });
 
   // ALREADY ON THE CHANNEL?
@@ -309,6 +354,22 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     await api.setThumbnail(plan.channelId, videoId, thumbnail.bytes, thumbnail.mime);
   }
 
+  // The lyrics as captions (LEDGER #308): YouTube ignores a video's embedded subtitle track, so the
+  // track the run read goes up as its own. The video exists and is linked by now, so a refusal says so.
+  let captions: UploadReceipt['captions'];
+  if (captionSrt !== null) {
+    try {
+      const { captionId } = await api.insertCaption(plan.channelId, videoId, { ...LYRICS_CAPTION_TRACK, srt: captionSrt });
+      captions = { id: captionId, ...LYRICS_CAPTION_TRACK, cues: (captionSrt.match(/-->/g) ?? []).length };
+    } catch (error) {
+      throw new Error(
+        `Video ${videoId} was uploaded and linked to item ${itemId}, but its lyrics captions could not be added: ` +
+        `${error instanceof Error ? error.message : String(error)} Add the "${LYRICS_CAPTION_TRACK.name}" track in Studio, ` +
+        `or delete the video and upload again.`
+      );
+    }
+  }
+
   const receipt: UploadReceipt = {
     videoId,
     channelId: plan.channelId,
@@ -323,6 +384,10 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     tags: { count: plan.body.snippet.tags.length },
     ...(plan.body.status.publishAt ? { publishAt: plan.body.status.publishAt } : {}),
     ...(thumbnail ? { thumbnail: thumbnail.path } : {}),
+    ...(plan.body.status.containsSyntheticMedia !== undefined
+      ? { audience: { madeForKids: plan.body.status.selfDeclaredMadeForKids, containsSyntheticMedia: plan.body.status.containsSyntheticMedia } }
+      : {}),
+    ...(captions ? { captions } : {}),
     skipped: { ...(thumbnailSkipped ? { thumbnail: thumbnailSkipped } : {}) },
     lockedPrivatePendingAudit: true,
   };
@@ -334,3 +399,4 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
 
   return { selection, receipt };
 }
+

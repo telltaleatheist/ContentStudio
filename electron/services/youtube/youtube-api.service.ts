@@ -39,7 +39,7 @@ import * as fs from 'fs';
 import * as https from 'https';
 import { Transform } from 'stream';
 import { Snapshot } from '../analytics/analytics-types';
-import { YouTubeAuthService } from './youtube-auth.service';
+import { YOUTUBE_CAPTIONS_SCOPE, YouTubeAuthService } from './youtube-auth.service';
 
 const DATA_API = 'https://www.googleapis.com/youtube/v3';
 // Media uploads (thumbnails.set) go to the /upload host, not the plain Data API host.
@@ -546,7 +546,7 @@ export class YouTubeApiService {
     filePath: string,
     body: {
       snippet: { title: string; description: string; tags: string[]; categoryId: string };
-      status: { privacyStatus: 'private'; publishAt?: string; selfDeclaredMadeForKids: boolean };
+      status: { privacyStatus: 'private'; publishAt?: string; selfDeclaredMadeForKids: boolean; containsSyntheticMedia?: boolean };
     },
     onProgress?: (sentBytes: number, totalBytes: number) => void,
     signal?: AbortSignal
@@ -602,6 +602,48 @@ export class YouTubeApiService {
     // 2026-08-25). The resumable session URL never redirects, so that machinery buys
     // nothing. streamFileToSession pipes disk -> socket and holds one chunk at a time.
     return streamFileToSession(location, filePath, mime, totalBytes, onProgress, signal);
+  }
+
+  /** Refuses by name when the channel's saved grant cannot write captions (youtube-auth.service.ts requireScope). */
+  requireCaptionScope(channelId: string): void {
+    this.auth.requireScope(channelId, YOUTUBE_CAPTIONS_SCOPE, 'uploading captions');
+  }
+
+  /**
+   * captions.insert: one caption track from SRT text, as a MULTIPART upload (the snippet as JSON,
+   * then the file). A song's SRT is a few kilobytes, so it goes through request() in one buffer;
+   * the axios large-body trap (insertVideo below) is about gigabyte bodies, not this.
+   */
+  async insertCaption(
+    channelId: string,
+    videoId: string,
+    track: { language: string; name: string; srt: string }
+  ): Promise<{ captionId: string }> {
+    this.requireCaptionScope(channelId);
+    if (!track.srt.includes('-->')) throw new YouTubeApiError(`The caption track for ${videoId} holds no cue, so nothing was sent.`);
+    const token = await this.auth.getAccessToken(channelId);
+    const boundary = `cs-caption-${Date.now().toString(36)}`;
+    const snippet = { snippet: { videoId, language: track.language, name: track.name, isDraft: false } };
+    const body = Buffer.from(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(snippet)}\r\n` +
+        `--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n${track.srt}\r\n--${boundary}--\r\n`,
+      'utf8'
+    );
+    const data = await this.request<any>({
+      method: 'POST',
+      url: `${UPLOAD_API}/captions`,
+      params: { part: 'snippet', uploadType: 'multipart' },
+      data: body,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+        'Content-Length': String(body.length),
+      },
+    });
+    if (typeof data?.id !== 'string' || !data.id) {
+      throw new YouTubeApiError(`captions.insert for ${videoId} returned no caption id, so the track cannot be confirmed.`);
+    }
+    return { captionId: data.id };
   }
 
   /** YouTube's words, verbatim, on a named step — insert bypasses request() for streaming. */

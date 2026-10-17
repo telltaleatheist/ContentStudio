@@ -208,6 +208,8 @@ export interface PushReceipt {
     publishAt?: string;
     /** Present only when a thumbnail was uploaded; the absolute path of the file sent. */
     thumbnail?: string;
+    /** Present only when the channel's profile declares an audience (LEDGER #308): what status carried. */
+    audience?: { madeForKids: boolean; containsSyntheticMedia: boolean; categoryId: string };
   };
   /**
    * The parts this push did NOT send, each with the reason. A part is absent from here
@@ -233,6 +235,10 @@ export interface UploadReceipt {
   publishAt?: string;
   /** Present exactly when a thumbnail was set after the insert. */
   thumbnail?: string;
+  /** The audience and disclosure sent, exactly when the channel's profile declares them (LEDGER #308). */
+  audience?: { madeForKids: boolean; containsSyntheticMedia: boolean };
+  /** Present exactly when a caption track was inserted after the upload (a `captions: lyrics` channel). */
+  captions?: { id: string; language: string; name: string; cues: number };
   skipped: { thumbnail?: string };
   /** The audit-gate fact: the video cannot go public until Google approves the audit. */
   lockedPrivatePendingAudit: true;

@@ -29,6 +29,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import * as log from 'electron-log';
 import { TAG_STYLES, type TagStyle } from './tags-hashtags';
+import type { ChannelUploadFlags } from '../publish/youtube-profile';
 
 /** The subdirectory of the prompt-sets directory that holds the whole tree. */
 export const PROMPTS_SUBDIR = 'prompts';
@@ -81,6 +82,36 @@ export interface ChannelData {
   promotedItems?: string[];
   channelTags?: string[];
   descriptionLinks: string;
+  /**
+   * THE SONG CHANNEL'S KEYS (LEDGER #308, Little Goose Productions). Each is OPTIONAL in the file
+   * and its absence is the behaviour every channel had before the key existed, stated here once:
+   * a channel file that predates them (or an installed copy with local edits, which the installer
+   * withholds) reads exactly as it always did. A key that is PRESENT with a value outside its list
+   * throws at load, naming the file.
+   *
+   * `title_source`: `generated` (absent: the titles field, picked by the operator) or `filename`
+   * (the song name in the source file's name; no titles call, and the title is chosen for him).
+   */
+  titleSource: 'generated' | 'filename';
+  /** `chapters`: true (absent: chapters for every timed transcript, as since 2026-08-22) or false (none, said on the item). */
+  chapters: boolean;
+  /**
+   * `transcript_source`: `asr` (absent: the routing's Transcription row) or `embedded_subtitles`
+   * (the video's own first subtitle track, label cues dropped; a video without one fails, never ASR).
+   */
+  transcriptSource: 'asr' | 'embedded_subtitles';
+  /**
+   * `description_lyrics`: false (absent) or true: the description is a short summary written from
+   * the lyrics, with the lyrics block assembled in code beneath it (song-lyrics.ts). Requires
+   * `transcript_source: embedded_subtitles`, which is where the lyrics come from.
+   */
+  descriptionLyrics: boolean;
+  /** `thumbnail_mode`: `ab_pairs` (absent: the three A/B pairs) or `still_title` (one still with the title). */
+  thumbnailMode: 'ab_pairs' | 'still_title';
+  /** `upload:` the status and category the upload and the push send, or null (absent): as before. */
+  upload: ChannelUploadFlags | null;
+  /** `captions`: null (absent) or `lyrics`: the timed lyrics go up as a caption track after an upload. */
+  captions: 'lyrics' | null;
   /** Where this channel was loaded from, for error messages. */
   sourcePath: string;
 }
@@ -319,8 +350,10 @@ export class PromptAssets {
           `Write tag_style: ${TAG_STYLES.join(' or tag_style: ')}.`
       );
     }
+    const song = this.readSongKeys(raw, id, filePath, fields as string[]);
     return {
       id,
+      ...song,
       thumbnails: raw.thumbnails === undefined ? null : raw.thumbnails,
       tagStyle: raw.tag_style as TagStyle,
       name: this.requireString(raw, filePath, 'name'),
@@ -336,6 +369,91 @@ export class PromptAssets {
       descriptionLinks: this.requireString(raw, filePath, 'description_links'),
       sourcePath: filePath,
     };
+  }
+
+  /**
+   * The song channel's keys (LEDGER #308; ChannelData says what each means and what its absence
+   * is). Every present value is checked against its list, and the keys that only make sense
+   * together are checked together: lyrics in the description, lyrics as captions and a still
+   * thumbnail each need the thing they are made from, and a filename title on a channel that
+   * still generates titles would be two answers to one question.
+   */
+  private readSongKeys(raw: any, id: string, filePath: string, fields: string[]): Pick<
+    ChannelData,
+    'titleSource' | 'chapters' | 'transcriptSource' | 'descriptionLyrics' | 'thumbnailMode' | 'upload' | 'captions'
+  > {
+    const oneOf = <T extends string>(key: string, allowed: readonly T[], absent: T): T => {
+      const value = raw[key];
+      if (value === undefined) return absent;
+      if (!allowed.includes(value)) {
+        throw new Error(
+          `Channel "${id}" (${filePath}) has a "${key}" of ${JSON.stringify(value)}. ` +
+            `Write ${allowed.map((a) => `${key}: ${a}`).join(' or ')}, or leave the key out for ${absent}.`
+        );
+      }
+      return value as T;
+    };
+    const flag = (key: string, absent: boolean): boolean => {
+      const value = raw[key];
+      if (value === undefined) return absent;
+      if (typeof value !== 'boolean') {
+        throw new Error(`Channel "${id}" (${filePath}) has a "${key}" key that is ${JSON.stringify(value)}. Write ${key}: true or ${key}: false.`);
+      }
+      return value;
+    };
+
+    const titleSource = oneOf('title_source', ['generated', 'filename'] as const, 'generated');
+    const transcriptSource = oneOf('transcript_source', ['asr', 'embedded_subtitles'] as const, 'asr');
+    const thumbnailMode = oneOf('thumbnail_mode', ['ab_pairs', 'still_title'] as const, 'ab_pairs');
+    const captionsRaw = raw.captions;
+    if (captionsRaw !== undefined && captionsRaw !== 'lyrics') {
+      throw new Error(`Channel "${id}" (${filePath}) has a "captions" of ${JSON.stringify(captionsRaw)}. Write captions: lyrics, or leave the key out for none.`);
+    }
+    const captions: 'lyrics' | null = captionsRaw === 'lyrics' ? 'lyrics' : null;
+    const chapters = flag('chapters', true);
+    const descriptionLyrics = flag('description_lyrics', false);
+
+    let upload: ChannelUploadFlags | null = null;
+    if (raw.upload !== undefined) {
+      const u = raw.upload;
+      const valid =
+        u && typeof u === 'object' &&
+        typeof u.made_for_kids === 'boolean' &&
+        typeof u.synthetic_media === 'boolean' &&
+        typeof u.category_id === 'string' && /^\d+$/.test(u.category_id);
+      if (!valid) {
+        throw new Error(
+          `Channel "${id}" (${filePath}) has an "upload" block that is not { made_for_kids: true|false, ` +
+            `synthetic_media: true|false, category_id: "<YouTube category number>" } (got: ${JSON.stringify(u)}). ` +
+            `Every key is required: a block that said only some of them would leave the rest to a default.`
+        );
+      }
+      upload = { madeForKids: u.made_for_kids, containsSyntheticMedia: u.synthetic_media, categoryId: u.category_id };
+    }
+
+    const lyricsNeed = (what: string) => {
+      if (transcriptSource !== 'embedded_subtitles') {
+        throw new Error(
+          `Channel "${id}" (${filePath}) asks for ${what}, which is made from the video's embedded lyrics, ` +
+            `but its transcript_source is ${transcriptSource}. Add transcript_source: embedded_subtitles.`
+        );
+      }
+    };
+    if (descriptionLyrics) lyricsNeed('description_lyrics: true');
+    if (captions === 'lyrics') lyricsNeed('captions: lyrics');
+    if (titleSource === 'filename' && fields.includes('titles')) {
+      throw new Error(
+        `Channel "${id}" (${filePath}) takes its titles from the file name (title_source: filename) and also ` +
+          `publishes the generated "titles" field. Take "titles" out of its fields list.`
+      );
+    }
+    if (thumbnailMode === 'still_title' && raw.thumbnails !== true) {
+      throw new Error(
+        `Channel "${id}" (${filePath}) has thumbnail_mode: still_title and thumbnails: ${JSON.stringify(raw.thumbnails)}. ` +
+          `A still thumbnail is a thumbnail: write thumbnails: true.`
+      );
+    }
+    return { titleSource, chapters, transcriptSource, descriptionLyrics, thumbnailMode, upload, captions };
   }
 
   channelIds(): string[] {

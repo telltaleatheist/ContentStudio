@@ -1174,7 +1174,31 @@ export class AIManagerService {
    * nothing is how a link comes back mangled. Empty when the set declares none.
    */
   descriptionLinks(): string {
-    return (this.currentPromptSet?.description_links || '').trim();
+    const links = (this.currentPromptSet?.description_links || '').trim();
+    // A SONG's lyrics block (LEDGER #308) sits between the summary and the links, assembled in code
+    // like them, so it is part of the block every pass holds back: the scrub and the re-roll gate
+    // never send a lyric to a model, and a lyric comes back exactly as the track has it.
+    return [this.itemLyricsBlock ?? '', links].filter((part) => part.length > 0).join('\n\n');
+  }
+
+  /**
+   * The code-assembled block of the ITEM being written: a song's lyrics (song-lyrics.ts
+   * `lyricsBlock`), or null for every item of every other channel. Set per item by the generator
+   * before the item's fields, and by the reports page's operator passes from the item's stored
+   * `_lyrics_block`, so `descriptionLinks()` is the exact tail the description carries.
+   */
+  private itemLyricsBlock: string | null = null;
+
+  setItemLyricsBlock(block: string | null): void {
+    if (block !== null && block.trim().length === 0) {
+      throw new Error('setItemLyricsBlock was handed an empty lyrics block; an item with no lyrics passes null');
+    }
+    this.itemLyricsBlock = block === null ? null : block.trim();
+  }
+
+  /** The loaded channel's file, read (its song keys: LEDGER #308). Throws when no prompt set is loaded. */
+  loadedChannel(): ChannelData {
+    return this.channel();
   }
 
   /**
@@ -1477,13 +1501,12 @@ export class AIManagerService {
     // Remove [TIMESTAMPS] placeholder if present
     metadata.description = metadata.description.replace(/\[TIMESTAMPS\]/g, '').trim();
 
-    // Get description links from current prompt set
-    if (this.currentPromptSet?.description_links) {
-      const descriptionLinks = this.currentPromptSet.description_links.trim();
-      if (descriptionLinks) {
-        console.log('[AIManager] Adding description links from prompt set');
-        metadata.description = metadata.description + '\n\n' + descriptionLinks;
-      }
+    // The description links from the current prompt set, under the item's lyrics block when it has
+    // one (descriptionLinks(): one answer for this append and for every pass that holds it back).
+    const descriptionLinks = this.descriptionLinks();
+    if (descriptionLinks) {
+      console.log(`[AIManager] Adding description links from prompt set${this.itemLyricsBlock !== null ? ', under the item\'s lyrics' : ''}`);
+      metadata.description = metadata.description + '\n\n' + descriptionLinks;
     }
 
     AIManagerService.spaceHashtags(metadata);

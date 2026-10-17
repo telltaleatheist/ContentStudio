@@ -2098,3 +2098,76 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - **Found.** On 10-15, track 6 has sound almost all the time (median about −23 dB, over −40 dB in 95 % or more of seconds), and over 900–1020 s it correlates 0.75 with track 5 (game) at lag 0 and the same level. So OBS was routing the game into the sound effects track too. Kept in the pause mix, it would have hidden the pauses exactly as the game did before #301. Kept on in the compound, the game plays under the cam at −15 dB. That second part is Owen's OBS routing to fix. The code keeps the track on, as he asked.
 
 [editor-backend/core/editors/pause_mix.py]
+
+**308. Little Goose Productions gets its own channel profile: the title from the file name, the lyrics from the video's own subtitle track, no chapters, a summary over the lyrics, a still with the title, and uploads made for kids with the AI disclosure, in Music, with the lyrics as captions (Owen, 2026-10-15, the profile agreed for the kids music channel UCXslUPdQ0IfR5nV7k4FLcqw: title = song name, chapters off, a kid-safe variant that never names him, description = what the song is about + full lyrics + channel line; and "we dont need to disclose it publicly, just disclose to youtube").**
+- **Why.** Every channel this app published to was adult commentary, and the pipeline said so in code: ASR transcripts, generated titles, chapters on every timed video, made-for-kids false, no disclosure, the category copied from the last upload. A Storyboard song is none of those. Its MP4 carries the timed lyrics as a mov_text track, so there is nothing to transcribe.
+- **The profile.** `channels/littlegoose.yml`, id `youtube-littlegoose`, fields description and tags. New channel keys, read and checked in prompt-assets.ts `readSongKeys`. A missing key is the behaviour every channel had before, so the other five files are unchanged and read exactly as before. A key with a value outside its list throws at load, naming the file. The keys:
+  - `title_source: filename`
+  - `chapters: false`
+  - `transcript_source: embedded_subtitles`
+  - `description_lyrics: true`
+  - `captions: lyrics`
+  - `thumbnail_mode: still_title`
+  - an `upload:` block with `made_for_kids`, `synthetic_media` and `category_id`
+  - Combinations that contradict each other are refused: lyrics or captions without the track, a filename title beside a generated `titles` field, a still with `thumbnails` not true, an upload block missing a key.
+- **Transcript.** song-lyrics.ts. ffmpeg `-map 0:s:0` to SRT, then the cues are parsed. Cues that are only a section label are dropped and recorded: Verse, Chorus, Pre-/Post-Chorus, Bridge, Intro, Outro, Refrain, Hook, numbered or bracketed. A video with no subtitle track fails by name and is never sent to ASR. The input handler branches on the run's channel, so the queue's transcription step reads the track instead. A saved-transcript request, including a parked job's resume, re-reads the track, which is logged.
+  - **Stanzas.** A line that ends a sentence ends a stanza, as does a gap of 2.5 s or more before the next line, or a dropped label. On the sample, timing alone could not do it: four of its stanza breaks have gaps of 0 to 1.6 s, the same as the gaps inside a stanza.
+  - **Sample.** "The Hollow Tree Inn - lyrics.mp4": 45 cues, the "Verse" cue at 29.86 s dropped, 44 lines in 11 quatrains, verbatim.
+- **Title.** The file name's stem with a trailing " - lyrics" (any case) removed (youtube-profile.ts `songTitleFromFilename`). There is no titles call. The item's `titles` is set to the song name after the scrub and the gate, and auto-config fills `chosenTitles` with it while the record has none.
+- **Chapters off.** resolveChapters returns `chaptersSkipped` naming the channel. The batch's chapters stage skips the item, and no stretch summary is written for a song.
+- **Description.** song-description-unit.ts replaces DescriptionUnit on that channel, on the same `description` row. It makes one plain call (prompt in shared/pipeline/song-description.yml) that writes only the 2–3 sentence summary, with rules from the `littlegoose` variant of fields/description.yml (the approved exemplar, `body_words` [25, 75]). A wrong length or sentence count is warned, never re-asked.
+  - **Assembled in code.** `🎵 Lyrics`, the stanzas, then the channel's `description_links` ("Subscribe to Little Goose Productions to sing with us!"). AIManagerService `setItemLyricsBlock` makes the lyrics part of the held-back tail (`descriptionLinks()`), so the scrub and the re-roll gate never send a lyric to a model.
+  - **Reports page.** The page's cleanup and description re-roll refuse a song item by name.
+- **Tags.** The `littlegoose` tags variant (kind of song and audience first, then themes and animals, then broad children's-music terms), plus `channel_tags: ["little goose productions"]`.
+- **Editorial.** The `littlegoose` variant in editorial-core.yml, in positive form (Law 4):
+  - simple warm words for parents, everything from the lyrics;
+  - the only maker named is Little Goose Productions; no person, other channel, website, book, shop or membership is named;
+  - nothing about how the song or video was made;
+  - nothing about when or how often songs come out.
+- **Thumbnail.** thumbnails/still-title.ts, drawn by ffmpeg rather than the A/B canvas page: no faces to avoid and no card editor, and it is testable without Electron.
+  - **Frame.** Taken at 40% of the way in, then 45, 35, 50, 30, 55, 25 and 60%. A black frame (mean under 20, or 97% of pixels under 24) is passed over, and if every candidate is black the still is refused by name.
+  - **Card.** 1280×720 with a 300 px bottom fade. The title is set in Arial Rounded MT Bold, fill rgb(255,140,26), cream outline, fitted with the font's own advance widths: one line from 104 down to 72 px, else two balanced lines from 92 down to 54 px, else refused.
+  - **Where it goes.** Written to `<report>/thumbnails/<job>-<n>/still.jpg` and checked by `validateThumbnailFile`.
+  - **The A/B pipeline** returns an "off" record for the channel. Auto-config attaches the still while no thumbnail decision exists, and a manual pick or clear stands.
+  - A failure is recorded as `_still_thumbnail` and a run warning, and the item is still saved.
+- **Publish.** The host reads the channel file into a `ChannelPublishProfile` (metadata/channel-profile.ts) and hands it to publish/ on `GeneratedFallback.publishProfile`. That field is required, and a reader that leaves it out is refused.
+  - **Upload.** `selfDeclaredMadeForKids` and `containsSyntheticMedia` from the profile, and `categoryId` "10" without looking up the latest upload.
+  - **Push.** Sends the profile's category and the WHOLE status with the audience on every push, scheduled or not. The schedule-only write carries the audience too.
+  - **Other channels.** No profile upload block, so the bodies are as before. The checks assert there is no disclosure key at all, and push sends no status without a schedule.
+- **Captions.** `captions.insert` multipart (small body, so `request()`; the axios trap is about gigabyte bodies), language "en", name "Lyrics", from the item's `_lyrics_srt`.
+  - **Scope.** `youtube.force-ssl` is added to `YOUTUBE_SCOPES`. Tokens already saved keep their old grant.
+  - **Checked before the upload.** `requireScope` reads the saved grant and refuses with "Reconnect the channel…", so a missing scope or missing lyrics stops the upload before a byte goes up.
+  - **After the upload.** A refusal from Google says the video is up and linked and that the track must be added in Studio.
+  - The receipt records the audience and the caption track.
+- **What Owen does.**
+  1. Analytics → Connect Channel, signing in with the Little Goose Google account. A test user may need adding if the OAuth app is in Testing. If Google refuses the new scope, add `youtube.force-ssl` to the consent screen's scopes.
+  2. On that channel's row, route the prompt set "Little Goose Productions" (`youtube-littlegoose`).
+  3. Reconnect Owen's three channels only if captions are ever wanted on them. Nothing else on them needs the new scope.
+  4. Queue a "- lyrics.mp4" with that prompt set.
+- **Checks.**
+  - littlegoose-checks.js (new, `npm run check:littlegoose`, 15): the keys, the other channels unchanged, contradictions refused, the editorial wording, the plan, the summary judge, labels, stanzas and SRT on the sample's cues, the title, the black-frame test and title layout, the upload, push and schedule bodies with and without a profile, the auto title and still, and the description tail.
+  - check:pure (routing-publish-checks updated for the new channel), thumbnail-pipeline-checks, reroll-checks (21), chaptering-checks (57) and check:crucible (29) pass. Electron and frontend tsc are clean.
+  - Run by hand on the sample: the track was read, and stills were drawn at one and two lines.
+  - Not run in the app, and no model, YouTube or Crucible call was made; Owen tests.
+
+[electron/assets/prompts/channels/littlegoose.yml (new); electron/assets/prompts/shared/editorial-core.yml, fields/description.yml, fields/tags.yml, pipeline/song-description.yml (new); electron/services/metadata/prompt-assets.ts, channel-profile.ts (new), song-lyrics.ts (new), song-description-unit.ts (new), input-handler.service.ts, metadata-generator.service.ts, metadata-tasks.ts, ai-manager.service.ts; electron/services/thumbnails/still-title.ts (new), pipeline.ts; electron/services/publish/youtube-profile.ts (new), youtube-upload.ts, youtube-push.ts, auto-config.ts, publish-store.service.ts, publish-types.ts, publish-ipc.ts; electron/services/youtube/youtube-auth.service.ts, youtube-api.service.ts; electron/ipc/ipc-handlers.ts; electron/main.ts; tools/littlegoose-checks.js (new), routing-publish-checks.js, thumbnail-pipeline-checks.js; package.json]
+
+**309. The calendar has two groups, Owen Morgan and Little Goose, each its own board (Owen, 2026-10-16: "maybe these should be kept separately from owen morgan though. maybe it should be its own tab entirely. one for the owen morgan channels, one for the little goose channels").**
+- **Why.** A kids channel's release week has nothing to do with the commentary channels'. On one strip of tabs every count, the tray and the bulk upload would speak for both at once.
+- **Now.** A group switcher, "Owen Morgan" / "Little Goose", sits above the channel tabs. The group comes from the routing already in channels.json, not a new field (calendar-states.ts `channelGroupOf`, `rowGroupOf`, `LITTLE_GOOSE_PROMPT_SET`):
+  - A channel routed `youtube-littlegoose` is Little Goose's, and every other channel is Owen Morgan's.
+  - The Spreaker tab and every podcast row are Owen Morgan's.
+  - An item with no channel, or an unknown one, takes its prompt set's group, so an unrouted song waits in the Little Goose tray.
+  - A channel record with no `promptSets` list is refused by name.
+- **Filtered by the active group.**
+  - Shown: the channel tabs and the board, the "Before today" strip, the subtitle counts and readiness line, the tray, and Spreaker candidates.
+  - Uploading and pushing: upload-all with its confirm-by-channel panel and excluded list, and schedule push.
+  - YouTube mirror: the divergence banner and beyond-horizon count, the mirror rows and the outside-window count.
+  - Left across both groups: the collision check, the leftover warning after a run, and the faults strip.
+  - Switching groups closes an open confirm panel.
+- **Remembered.** The group, and the last tab per group, are kept in localStorage inside try/catch, with a failure reported to the notifications. Owen Morgan keeps the old tab key, so his remembered tab survives.
+- **Empty group.** With no Little Goose channel connected yet, its tab still opens, says to connect the channel on the Analytics page and route `youtube-littlegoose`, and shows any unrouted song in its tray. Each group tab shows its open-item count.
+- **Hue.** Little Goose's channels take their own warm gold list, from hsl(40, 90%, 55%); Owen's channels keep theirs. Owen's existing CHANNEL_HUES include a teal (#2dd4bf, his second channel). It is left as it is, since his channel colours are his call.
+- **Checks.** Frontend tsc is clean and the development ng build compiles the template. 15 checks on the group functions pass (esbuild bundle, kept in the session scratchpad). Not run in the app; Owen tests.
+
+[frontend/src/app/components/publish-calendar/calendar-states.ts, publish-calendar.{ts,html,scss}]

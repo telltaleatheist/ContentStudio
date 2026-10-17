@@ -377,6 +377,11 @@ export class ItemThumbnailRun {
       return off(`The channel file for "${item.channel.name}" does not say whether it makes thumbnails (its "thumbnails" key is missing, ${item.channel.sourcePath}), so none were made.`);
     }
     if (item.channel.thumbnails === false) return off(`The channel "${item.channel.name}" makes no thumbnails.`);
+    // A still-with-title channel (LEDGER #308) makes no A/B pairs: its one still is drawn after the
+    // fields (still-title.ts, from the generator) and attached to the publish record automatically.
+    if (item.channel.thumbnailMode === 'still_title') {
+      return off(`The channel "${item.channel.name}" makes one still with the title (thumbnail_mode: still_title), not A/B pairs; it is drawn after the fields and attached automatically.`);
+    }
     const rec = offRecord('Thumbnails are being made.');
     rec.state = 'made';
     rec.folder = path.join(item.reportFolder, THUMBNAILS_FOLDER, `${item.jobId}-${item.itemIndex + 1}`);

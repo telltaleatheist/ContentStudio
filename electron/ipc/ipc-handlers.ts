@@ -106,6 +106,7 @@ import {
 } from '../services/metadata/metadata-routing';
 import { resolveRerollGateSettings } from '../services/metadata/reroll/settings';
 import { PROMPTS_SUBDIR, initPromptAssets, promptAssets, reloadPromptAssets } from '../services/metadata/prompt-assets';
+import { publishProfileForPromptSet } from '../services/metadata/channel-profile';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
 import { SpreakerApiService } from '../services/spreaker/spreaker-api.service';
@@ -2813,6 +2814,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
               `the set there is nothing to match, so nothing was sent.`,
           };
         }
+        // A SONG's description (LEDGER #308) carries its lyrics under the summary, verbatim from the
+        // video's track, and this button's link rule cannot hold them back: refused rather than send
+        // a lyric to a rewrite call.
+        if (typeof (item as { _lyrics_block?: unknown })._lyrics_block === 'string' && (only === undefined || only.includes('description'))) {
+          return {
+            success: false,
+            error: `This item is a song: its description carries the lyrics from the video's own track, and the cleanup does not run on it. Edit the summary by hand. Nothing was sent.`,
+          };
+        }
 
         scrubsInFlight.add(itemId);
         claimed = itemId;
@@ -2939,6 +2949,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         return {
           success: false,
           error: `Job ${jobId} does not record which channel it was made for, so its link block and tags cannot be put back the way the run made them. Nothing was sent.`,
+        };
+      }
+      // A song's description is a summary over its lyrics (LEDGER #308): re-rolled by regenerating the item, not here.
+      if (field === 'description' && typeof (item as { _lyrics_block?: unknown })._lyrics_block === 'string') {
+        return {
+          success: false,
+          error: `This item is a song: its description is a summary over the lyrics from the video's own track, and it is not re-rolled here. Regenerate the item, or edit the summary by hand. Nothing was sent.`,
         };
       }
 
@@ -3847,6 +3864,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         transcriptRef: item.content_provenance
           ? (item.content_provenance.transcript_ref ?? null)
           : undefined,
+        // The channel file's publish profile for the prompt set just read (LEDGER #308), and the two
+        // things a song item carries for it: its cleaned lyrics SRT and the still its run drew.
+        publishProfile: publishProfileForPromptSet(
+          typeof item._prompt_set === 'string' && item._prompt_set
+            ? item._prompt_set
+            : typeof job?.prompt_set === 'string' && job.prompt_set ? job.prompt_set : null
+        ),
+        lyricsSrt: typeof item._lyrics_srt === 'string' && item._lyrics_srt ? item._lyrics_srt : null,
+        stillThumbnailPath: item._still_thumbnail?.ok === true && typeof item._still_thumbnail.path === 'string'
+          ? item._still_thumbnail.path
+          : null,
       };
     } catch (error) {
       log.error(`[Publish] readGenerated failed for ${itemId}:`, error);
@@ -3935,6 +3963,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         mime: 'image/png' | 'image/jpeg'
       ) => analytics.youtubeApi.setThumbnail(channelId, videoId, image, mime),
       getLatestCategoryId: (channelId: string) => analytics.youtubeApi.getLatestCategoryId(channelId),
+      // A song's lyrics as captions (LEDGER #308): the grant checked before the upload, the insert after it.
+      requireCaptionScope: (channelId: string) => analytics.youtubeApi.requireCaptionScope(channelId),
+      insertCaption: (channelId: string, videoId: string, track: { language: string; name: string; srt: string }) =>
+        analytics.youtubeApi.insertCaption(channelId, videoId, track),
     },
     // The ONE Spreaker write, bound the same way the YouTube writes are: a narrow
     // function, not the client. A mistake here creates a public episode on a live

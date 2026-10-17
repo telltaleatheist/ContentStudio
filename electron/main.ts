@@ -12,6 +12,7 @@ import { YouTubeApiService } from './services/youtube/youtube-api.service';
 import { ApiCollectorService } from './services/youtube/api-collector.service';
 import { PublishStoreService } from './services/publish/publish-store.service';
 import { autoConfigure } from './services/publish/auto-config';
+import { publishProfileForPromptSet } from './services/metadata/channel-profile';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 import { createCrucibleContext, type CrucibleContext } from './crucible/context';
@@ -257,7 +258,9 @@ app.whenReady().then(async () => {
     // capturing the list is what makes connecting a channel take effect without a restart.
     const publishStore = new PublishStoreService(
       path.join(userDataPath, 'publish'),
-      (input) => autoConfigure({ ...input, channels: analyticsStore.listChannels() })
+      // The item's publish profile is read off its channel file here for the same reason: publish/
+      // never reads the prompt assets (LEDGER #308).
+      (input) => autoConfigure({ ...input, channels: analyticsStore.listChannels(), profile: publishProfileForPromptSet(input.promptSet) })
     );
 
     // Spreaker credentials (one account, one show). Constructed here rather than inside

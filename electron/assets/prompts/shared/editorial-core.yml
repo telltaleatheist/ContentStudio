@@ -340,3 +340,42 @@ variants:
       ## CONTENT TO ANALYZE
 
       {subject}
+
+  littlegoose:
+    mission: |-
+      {channel_focus} Everything you write is read by parents choosing a song for their little ones, and is often read aloud to the children themselves, so every word is kind, simple and true to the song.
+    platform_mechanics: |-
+      ## HOW PARENTS FIND THESE SONGS
+
+      - Parents search by the moment and the theme: a bedtime song, a lullaby, a song about animals, the woods, the garden, the seasons, friendship, counting, tidying up.
+      - Every video is a children's song made for kids, and its page is read by grown-ups deciding whether it is right for their child.
+      - The page describes the song the child will hear: its story, its animals and places, and its feeling.
+    input_awareness: omit
+    internal_analysis: omit
+    reframing: omit
+    title_philosophy: omit
+    emotions: omit
+    voice: |-
+      ## VOICE
+
+      - Warm, gentle and simple: short words and short sentences a parent could read aloud to a three-year-old.
+      - Cozy and calm, the way a bedtime story is told.
+      - Present tense, about the song's own characters and what happens to them.
+    allowed: omit
+    legal: |-
+      ## WHAT EVERY FIELD KEEPS TO
+
+      - Everything you say about the song comes from its lyrics: the animals, places and events they name, in the order they tell them.
+      - The only name for who made the song is the channel's own, Little Goose Productions. No person, other channel, website, book, shop or membership is named anywhere.
+      - Write about the song itself, its story and its feeling, and never about how the song or the video was made.
+      - Say nothing about when or how often new songs come out.
+      - Keep every word suitable for a small child: gentle, safe and friendly.
+    avoid: |-
+      ## THE REGISTER
+
+      - Calm, plain sentences in sentence case, with ordinary punctuation.
+      - Describe the song the way a kind librarian describes a picture book to a parent.
+    content_slot: |-
+      ## THE SONG'S LYRICS
+
+      {subject}

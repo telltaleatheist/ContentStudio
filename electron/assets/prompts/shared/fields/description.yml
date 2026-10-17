@@ -54,3 +54,16 @@ overrides:
       - Register: this note pitches the episode to someone deciding whether to press play, in the show's own confident voice. Write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display while the man who axed their statue got probation". These are full sentences with finite ACTIVE verbs, exactly like those examples: the names go in as possessives or objects, the subject of every clause is a person, claim or event from inside the episode — the page making the claim, the argument under examination, the evidence that undoes it — and that subject DOES something in every sentence.
     self_check: []
     body_words: [150, 250]
+
+  littlegoose:
+    instructions: |-
+      ## DESCRIPTION
+
+      - ONE short paragraph of two or three sentences that tells parents what the song is about: who is in it and what happens, in the order the lyrics tell it.
+      - Simple, warm words a parent could read aloud to a small child, in the present tense.
+      - Every animal, place and event you name comes from the lyrics.
+      - The last sentence is a short phrase saying what kind of song it is and who it is for, in the way of "A gentle bedtime song for little ones." or "A cheerful counting song for toddlers."
+      - The lyrics and the channel's closing line are added beneath the paragraph afterwards, so the paragraph is all prose about the song: it quotes no lyric lines and asks nobody to subscribe.
+      - A complete summary in exactly the right shape. It is from ANOTHER song and shows the form only; every animal and event in yours comes from these lyrics: "As the sun sets, the woodland animals gather in a quiet forest clearing: a rabbit, a field mouse, a skunk and her babies, a sleepy porcupine, flying squirrels, and one very slow turtle. Together they watch the first evening star come out before heading off to bed. A gentle bedtime song for little ones."
+    self_check: []
+    body_words: [25, 75]

@@ -91,6 +91,10 @@ import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 import { clockSeconds, summarizeStretches, summaryParagraphs } from './stretch-summary';
+import { lyricsBlock, lyricsSrt } from './song-lyrics';
+import { songTitleFromFilename } from '../publish/youtube-profile';
+import { renderStillTitleThumbnail } from '../thumbnails/still-title';
+import { THUMBNAILS_FOLDER } from '../thumbnails/pipeline-record';
 
 // ENTITY_POOL_SIZE and PHRASE_POOL_SIZE live in tags-hashtags.ts (LEDGER #223): the chapter
 // re-roll rebuilds the same pools from the same two numbers.
@@ -860,6 +864,11 @@ export class MetadataGeneratorService {
           }
           await this.ensureStretchSummary(item, aiManager, params, sourceLabel, (chapters || []).map((c) => clockSeconds(c.timestamp)), i, contentItems.length);
 
+          // A SONG's lyrics block (LEDGER #308): the code-assembled tail the summary sits above, set
+          // per item so finalizeMetadata appends it and the scrub and the gate hold it back. Every
+          // other item clears it, so nothing carries over from one item to the next.
+          aiManager.setItemLyricsBlock(this.lyricsBlockOf(item, params, sourceLabel));
+
           console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
           params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 60, undefined, i);
           const fieldContent = resolveFieldContent({
@@ -962,6 +971,11 @@ export class MetadataGeneratorService {
           });
           // The thumbnails' words and the save: the batch's `finish` stage, after every job's gate.
           if (gatePhases) await enterJobStage('finish');
+
+          // A SONG (LEDGER #308), after the scrub and the gate so neither judges what code wrote: the
+          // title from the file's name, the lyrics as the item records them for the report and the
+          // caption upload, and the still thumbnail.
+          await this.finishSong(item, metadata, params, jobInfo.txtFolder, jobInfo.jobId, i, sourceLabel, warnings);
 
           // WHAT THE FIELDS READ, and THE 16,384 ASSERTION (P4; plan 16 P4: "on the PC, every call
           // of a 60-minute video fits under 16,384 (a log assertion)"). Written onto the item so
@@ -1519,6 +1533,18 @@ export class MetadataGeneratorService {
     setJobStage('chapters');
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
 
+    // A channel whose file says `chapters: false` (a song channel, LEDGER #308) gets none, on every
+    // item: declared on the item so the report says why there are none.
+    if (params.promptSet && promptAssets().channel(params.promptSet).chapters === false) {
+      console.log(`[MetadataGenerator] ${sourceLabel}: the channel "${params.promptSet}" has chapters off (chapters: false), so none were made`);
+      return {
+        chaptersSkipped: {
+          outcome: 'skipped',
+          reason: `The channel "${promptAssets().channel(params.promptSet).name}" has chapters off (its channel file says chapters: false).`,
+        },
+      };
+    }
+
     if (!item.srtSegments || item.srtSegments.length === 0) {
       // Chapters are decided by the INPUT, not by an option: a timestamped transcript
       // (video, imported transcript) gets them, a text subject or plain transcript file
@@ -1699,6 +1725,12 @@ export class MetadataGeneratorService {
     itemCount: number,
   ): Promise<void> {
     if (item.stretchSummary !== undefined || !item.srtSegments || item.srtSegments.length === 0) return;
+    // A song (LEDGER #308) is read whole: its title is its file's name, its description is written
+    // from the lyrics, its thumbnail is a still, so nothing on that channel reads a summary.
+    if (item.lyrics !== undefined) {
+      log.info(`[MetadataGenerator] ${sourceLabel}: no summary is written for a song; nothing on its channel reads one`);
+      return;
+    }
     const option = routingOption('summary', this.routing(params).summary, this.models(params));
     const segments = item.srtSegments;
     const durationSec = typeof item.finalDurationSec === 'number' && item.finalDurationSec > 0
@@ -1742,7 +1774,9 @@ export class MetadataGeneratorService {
     const staged = new Map<number, StagedBoundaries>();
     const todo = contentItems
       .map((item, i) => ({ item, i, label: item.source || `item_${i + 1}` }))
-      .filter(({ item, label }) => engine === 'snap' && item.srtSegments && item.srtSegments.length > 0 && !params.preComputedChapters?.[label]);
+      .filter(({ item, label }) => engine === 'snap' && item.srtSegments && item.srtSegments.length > 0 && !params.preComputedChapters?.[label])
+      // A channel with chapters off has no boundaries to draw (resolveChapters says so on the item).
+      .filter(() => !params.promptSet || promptAssets().channel(params.promptSet).chapters);
 
     const scorerNeeds: StageNeed[] = [];
     for (const { item, i, label } of todo) {
@@ -2366,6 +2400,91 @@ export class MetadataGeneratorService {
       );
     }
     return { source_key: sourceKeyOf(item.source), source_path: item.source };
+  }
+
+  /**
+   * The lyrics block a song's description carries under its summary, or null for an item that is
+   * not a song. A channel that asks for lyrics in its description (`description_lyrics: true`)
+   * with an item that has none is a contradiction the input stage should have made impossible,
+   * and it throws rather than writing a description without them.
+   */
+  private static lyricsBlockOf(item: ContentItem, params: GenerationParams, sourceLabel: string): string | null {
+    const wants = !!params.promptSet && promptAssets().channel(params.promptSet).descriptionLyrics;
+    if (!wants) return null;
+    if (item.lyrics === undefined) {
+      throw new Error(
+        `${sourceLabel}: the channel "${params.promptSet}" puts the song's lyrics in the description, and this item ` +
+          `has none (it was not read from an embedded lyrics track).`
+      );
+    }
+    return lyricsBlock(item.lyrics);
+  }
+
+  /**
+   * What a song item gets after its fields (LEDGER #308), each part only where its channel asks:
+   *
+   *   title       `title_source: filename`: the song name is the item's one title (auto-config.ts
+   *               chooses it on the publish record).
+   *   lyrics      on every song: the block the description carries (`_lyrics_block`, which the
+   *               reports page's passes hold back), the cleaned SRT the caption upload sends
+   *               (`_lyrics_srt`) and the label cues that were dropped (`_lyrics_dropped`).
+   *   still       `thumbnail_mode: still_title`, on a run with thumbnails on: one still with the
+   *               title along the bottom (thumbnails/still-title.ts). A still that cannot be made
+   *               is recorded on the item and in the run's warnings, and the item is saved, as
+   *               every thumbnail failure is (thumbnails/pipeline.ts).
+   */
+  private static async finishSong(
+    item: ContentItem,
+    metadata: MetadataResult,
+    params: GenerationParams,
+    reportFolder: string,
+    jobId: string,
+    itemIndex: number,
+    sourceLabel: string,
+    warnings: string[],
+  ): Promise<void> {
+    if (!params.promptSet) return;
+    const channel = promptAssets().channel(params.promptSet);
+    const record = metadata as any;
+    if (channel.titleSource === 'filename') {
+      if (!item.source) throw new Error(`${sourceLabel}: the channel takes its titles from the file name, and this item has no file`);
+      record.titles = [songTitleFromFilename(item.source)];
+      log.info(`[MetadataGenerator] ${sourceLabel}: title from the file name (title_source: filename): "${record.titles[0]}"`);
+    }
+    if (item.lyrics !== undefined) {
+      record._lyrics_block = lyricsBlock(item.lyrics);
+      record._lyrics_srt = lyricsSrt(item.lyrics);
+      record._lyrics_dropped = item.lyrics.dropped.map((c) => ({ text: c.text, start_sec: c.start, end_sec: c.end }));
+    }
+    if (channel.thumbnailMode !== 'still_title') return;
+    if (params.thumbnails?.mode !== 'on') {
+      const why = params.thumbnails === undefined ? 'this run was started without the thumbnail setup' : params.thumbnails.reason;
+      record._still_thumbnail = { ok: false, reason: `No still was made: ${why}` };
+      log.info(`[MetadataGenerator] ${sourceLabel}: no still thumbnail: ${why}`);
+      return;
+    }
+    if (!item.source || item.contentType !== 'video') {
+      record._still_thumbnail = { ok: false, reason: 'No still was made: this item has no video to take one from.' };
+      return;
+    }
+    const title = Array.isArray(record.titles) && typeof record.titles[0] === 'string' ? record.titles[0] : this.getCleanTitle(item);
+    try {
+      const still = await renderStillTitleThumbnail({
+        ffmpeg: getRuntimePaths().ffmpeg,
+        ffprobe: getRuntimePaths().ffprobe,
+        video: item.source,
+        title,
+        outFile: path.join(reportFolder, THUMBNAILS_FOLDER, `${jobId}-${itemIndex + 1}`, 'still.jpg'),
+        ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+      });
+      record._still_thumbnail = { ok: true, path: still.path, frame_sec: still.frameSec, lines: still.lines };
+      log.info(`[MetadataGenerator] ${sourceLabel}: still thumbnail ${still.path} (frame at ${still.frameSec.toFixed(2)} s; ${still.lines.join(' ')})`);
+    } catch (error) {
+      if (this.isCancellation(params, error)) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      record._still_thumbnail = { ok: false, reason };
+      warnings.push(`${sourceLabel}: the still thumbnail could not be made: ${reason}`);
+    }
   }
 
   /**

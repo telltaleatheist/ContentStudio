@@ -36,6 +36,10 @@ import type { SavedTranscriptReuse } from './item-identity';
 import { loadSavedTranscript, saveTranscript } from './saved-transcript.service';
 import { storyVocabulary } from '../transcription/asr-vocabulary';
 import type { StretchSummary } from './stretch-summary';
+import { getRuntimePaths } from '../../lib/bridges';
+import { promptAssets } from './prompt-assets';
+import { lyricsSegments, lyricsText, readEmbeddedLyrics, type SongLyrics } from './song-lyrics';
+import { songTitleFromFilename } from '../publish/youtube-profile';
 
 /**
  * The SECOND transcript of a video input: the editor story the operator linked it to.
@@ -158,6 +162,12 @@ export interface ContentItem {
    * (nothing to tell apart, so nothing was labelled).
    */
   contentSpeakerTagged?: boolean;
+  /**
+   * A song's lyrics, read from the video's own subtitle track (song-lyrics.ts, LEDGER #308): set
+   * exactly when the run's channel declares `transcript_source: embedded_subtitles`, and absent on
+   * every other item. `content` and `srtSegments` are made from it on that path.
+   */
+  lyrics?: SongLyrics;
 }
 
 export class InputDetector {
@@ -431,6 +441,21 @@ export class InputHandlerService {
     const linked = transcriptRef
       ? await this.resolveContentSource(videoPath, transcriptRef)
       : undefined;
+
+    // A SONG CHANNEL (LEDGER #308): the transcript is the lyrics track embedded in the video, never
+    // ASR. Decided by the run's channel file, once per video, and said in the log.
+    if (this.readsEmbeddedLyrics()) {
+      // A saved-transcript request (the box, or a parked job resuming past transcription, which
+      // asks for every video's) is met by reading the track again: the track is this channel's
+      // saved transcript, it costs one ffmpeg read, and nothing is ever transcribed. Said, not silent.
+      if (useSavedTranscript) {
+        log.info(
+          `[InputHandler] ${path.basename(videoPath)}: a saved transcript was asked for; this channel's transcript is the ` +
+            `video's embedded lyrics track, so the track is read again (it is never transcribed)`
+        );
+      }
+      return this.processSong(videoPath, customNotes, itemIndex, transcriptRef, finalOnly, linked?.source);
+    }
     const transcript: VideoTranscript = useSavedTranscript
       ? this.reuseSavedTranscript(videoPath, itemIndex)
       : await this.transcribeAndSave(videoPath, itemIndex, customNotes, transcriptRef?.storyTitle ?? null, linked?.vocabulary ?? null);
@@ -473,6 +498,59 @@ export class InputHandlerService {
       finalDurationSec: transcript.durationSec,
       contentSource,
       savedTranscript: transcript.reuse,
+    };
+  }
+
+  /** Whether this run's channel takes its transcript from the video's embedded lyrics track. */
+  private readsEmbeddedLyrics(): boolean {
+    const promptSet = this.runFacts.promptSet;
+    if (promptSet === null) return false;
+    return promptAssets().channel(promptSet).transcriptSource === 'embedded_subtitles';
+  }
+
+  /**
+   * A song: its lyrics from the embedded subtitle track, label cues dropped (song-lyrics.ts), its
+   * title the song name in the file's name. The segments are the lyric cues, so everything after
+   * this reads the item as any timed video; `content` is the lyrics in stanzas. A video with no
+   * subtitle track throws here, naming the file and the fix.
+   */
+  private async processSong(
+    videoPath: string,
+    customNotes: string | undefined,
+    itemIndex: number | undefined,
+    transcriptRef: TranscriptRef | null | undefined,
+    finalOnly: FinalOnlyDeclaration | undefined,
+    contentSource: ContentSource | undefined
+  ): Promise<ContentItem> {
+    const filename = path.basename(videoPath);
+    this.progressCallback?.('preparing', `Reading the lyrics of ${filename}`, 0, filename, itemIndex !== undefined && itemIndex >= 0 ? itemIndex : undefined);
+    const lyrics = await readEmbeddedLyrics(getRuntimePaths().ffmpeg, videoPath);
+    log.info(
+      `[InputHandler] ${filename}: lyrics read from the embedded subtitle track (transcript_source: embedded_subtitles, ` +
+        `no transcription): ${lyrics.cues.length} line(s) in ${lyrics.stanzas.length} stanza(s)` +
+        (lyrics.dropped.length > 0
+          ? `; dropped ${lyrics.dropped.length} section label cue(s): ${lyrics.dropped.map((c) => `"${c.text}" at ${c.start.toFixed(2)} s`).join(', ')}`
+          : '')
+    );
+    let content = lyricsText(lyrics);
+    if (customNotes && customNotes.trim()) {
+      content += `\n\nAdditional context:\n${customNotes.trim()}`;
+    }
+    const segments = lyricsSegments(lyrics);
+    return {
+      content,
+      contentType: 'video',
+      source: videoPath,
+      processingNotes: customNotes?.trim(),
+      srtSegments: segments,
+      title: songTitleFromFilename(filename),
+      contentSpeakerTagged: false,
+      transcriptRef,
+      finalOnly,
+      // Nothing probed the file: the lyrics track is all that was read (null is "nothing measured one").
+      finalDurationSec: null,
+      contentSource,
+      lyrics,
     };
   }
 

@@ -1,0 +1,37 @@
+id: youtube-littlegoose
+name: "Little Goose Productions"
+
+editorial_variant: littlegoose
+field_variant: littlegoose
+
+channel_focus: |-
+  You write for Little Goose Productions, a YouTube channel of gentle, story-filled songs for young children and the parents who sing along with them.
+
+fields:
+  - description
+  - tags
+
+title_source: filename
+chapters: false
+transcript_source: embedded_subtitles
+description_lyrics: true
+captions: lyrics
+
+thumbnails: true
+thumbnail_mode: still_title
+
+upload:
+  made_for_kids: true
+  synthetic_media: true
+  category_id: "10"
+
+tag_style: youtube
+
+counts: {}
+
+brand_terms: ["little goose productions"]
+
+channel_tags: ["little goose productions"]
+
+description_links: |-
+  Subscribe to Little Goose Productions to sing with us!

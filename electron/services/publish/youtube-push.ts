@@ -57,6 +57,7 @@ import * as fs from 'fs';
 import type { VideoParts } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
 import { fitThumbnailFile } from './thumbnail-validate';
+import { requireProfileRead, type ChannelPublishProfile, type ChannelUploadFlags } from './youtube-profile';
 import {
   ChosenMetadata,
   MAX_TITLE_LENGTH,
@@ -153,8 +154,16 @@ export function planVideoUpdate(input: {
   record: ChosenMetadata;
   resolved: ResolvedMetadata;
   video: VideoParts;
+  /**
+   * The item's channel profile (LEDGER #308), or null: pushes exactly as before. With an `upload`
+   * block, the snippet carries its category and the status is sent on EVERY push, whole, with its
+   * audience and disclosure: a status write replaces the part, so a push that sent a schedule
+   * without them would reset a kids' song's made-for-kids answer.
+   */
+  profile: ChannelPublishProfile | null;
 }): VideoUpdatePlan {
   const { record, resolved, video } = input;
+  const flags = input.profile?.upload ?? null;
   const item = record.itemId;
 
   // ---- the link ----------------------------------------------------------------
@@ -242,7 +251,14 @@ export function planVideoUpdate(input: {
       `subject nobody chose. Nothing was sent.`
     );
   }
-  const snippet: Record<string, any> = { ...video.snippet, title, description, tags };
+  const snippet: Record<string, any> = {
+    ...video.snippet,
+    title,
+    description,
+    tags,
+    // A profile's category replaces the video's (LEDGER #308); every other channel keeps its own.
+    ...(flags !== null ? { categoryId: flags.categoryId } : {}),
+  };
 
   const parts: Array<'snippet' | 'status'> = ['snippet'];
   const body: VideoUpdatePlan['body'] = { id: videoId, snippet };
@@ -270,9 +286,18 @@ export function planVideoUpdate(input: {
     // status is submitted WHOLE for the same reason snippet is: privacyStatus and
     // publishAt replace their values, and selfDeclaredMadeForKids / license /
     // embeddable / publicStatsViewable ride through as they were read.
-    body.status = { ...video.status, privacyStatus: 'private', publishAt: record.publishAt };
+    body.status = { ...video.status, privacyStatus: 'private', publishAt: record.publishAt, ...audienceOf(flags) };
     parts.push('status');
     publishAt = record.publishAt;
+  } else if (flags !== null) {
+    // No schedule, and the channel declares its audience: status goes WHOLE, as read, with the
+    // audience and disclosure set, so they hold on every push (privacy and any schedule ride through).
+    body.status = { ...video.status, ...audienceOf(flags) };
+    parts.push('status');
+    const existing = video.status?.publishAt;
+    publishAtSkipped =
+      `This item has no schedule, so none was sent; status went only to carry the channel's audience` +
+      (existing ? `, and the video's own schedule of ${existing} still stands.` : '.');
   } else {
     // No schedule on the record means status is NOT SENT AT ALL — not sent as "whatever
     // it already was", which would still be a write, and not sent as public. A schedule
@@ -326,7 +351,8 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
   }
 
   const resolved = resolveChosenMetadata(record, generated);
-  const plan = planVideoUpdate({ record, resolved, video: await requireVideo(record, api) });
+  const profile = requireProfileRead(generated, itemId);
+  const plan = planVideoUpdate({ record, resolved, video: await requireVideo(record, api), profile });
 
   // The thumbnail is fitted and READ FIRST — before any write — so a file that has moved
   // or is no longer an image stops the push instead of half-completing it, and one that
@@ -361,6 +387,9 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
       tags: { count: plan.tags.length },
       ...(plan.publishAt ? { publishAt: plan.publishAt } : {}),
       ...(thumbnail ? { thumbnail: thumbnail.path } : {}),
+      ...(profile?.upload
+        ? { audience: { madeForKids: profile.upload.madeForKids, containsSyntheticMedia: profile.upload.containsSyntheticMedia, categoryId: profile.upload.categoryId } }
+        : {}),
     },
     skipped: {
       ...(plan.publishAtSkipped ? { publishAt: plan.publishAtSkipped } : {}),
@@ -448,6 +477,8 @@ export interface ScheduleUpdatePlan {
 export function planScheduleUpdate(input: {
   record: ChosenMetadata;
   video: VideoParts;
+  /** The item's channel profile (LEDGER #308), or null: as before. Its audience rides in the status. */
+  profile: ChannelPublishProfile | null;
 }): ScheduleUpdatePlan {
   const { record, video } = input;
   const item = record.itemId;
@@ -506,10 +537,16 @@ export function planScheduleUpdate(input: {
     channelId,
     body: {
       id: videoId,
-      status: { ...video.status, privacyStatus: 'private', publishAt: record.publishAt },
+      status: { ...video.status, privacyStatus: 'private', publishAt: record.publishAt, ...audienceOf(input.profile?.upload ?? null) },
     },
     publishAt: record.publishAt,
   };
+}
+
+/** The status fields a profile's `upload` block sets (LEDGER #308); nothing for a channel without one. */
+function audienceOf(flags: ChannelUploadFlags | null): Record<string, boolean> {
+  if (flags === null) return {};
+  return { selfDeclaredMadeForKids: flags.madeForKids, containsSyntheticMedia: flags.containsSyntheticMedia };
 }
 
 export interface SchedulePushOutcome {
@@ -525,9 +562,13 @@ export interface SchedulePushOutcome {
  */
 export async function pushScheduleToYouTube(
   itemId: string,
-  deps: { store: PublishStoreService; api: YouTubePushApi }
+  deps: { store: PublishStoreService; api: YouTubePushApi; readGenerated: (itemId: string) => GeneratedFallback | null }
 ): Promise<SchedulePushOutcome> {
   const { store, api } = deps;
+  // The item's profile, for its audience (LEDGER #308): a status write replaces the whole part.
+  const generated = deps.readGenerated(itemId);
+  if (!generated) throw new Error(`No generated metadata for item ${itemId}, so its channel's profile cannot be read. Nothing was sent.`);
+  const profile = requireProfileRead(generated, itemId);
 
   const record = store.get(itemId);
   if (!record) {
@@ -539,7 +580,7 @@ export async function pushScheduleToYouTube(
 
   const previousPublishAt =
     typeof video.status?.publishAt === 'string' ? video.status.publishAt : null;
-  const plan = planScheduleUpdate({ record, video });
+  const plan = planScheduleUpdate({ record, video, profile });
   await api.updateVideo(plan.channelId, ['status'], plan.body);
 
   return { videoId: plan.videoId, publishAt: plan.publishAt, previousPublishAt };

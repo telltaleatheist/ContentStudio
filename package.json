@@ -25,6 +25,7 @@
     "check:mutes": "node tools/word-mute-checks.js",
     "check:strays": "node tools/stray-filler-checks.js",
     "check:chaptering": "node tools/chaptering-checks.js",
+    "check:littlegoose": "node tools/littlegoose-checks.js",
     "check:reroll": "node tools/reroll-checks.js",
     "check:thumbnail": "node tools/thumbnail-checks.js && electron tools/thumbnail-fit-smoke.js",
     "check:thumbnail-lab": "node tools/thumbnail-lab-checks.js && node tools/thumbnail-pipeline-checks.js && electron tools/thumbnail-lab-render-smoke.js",

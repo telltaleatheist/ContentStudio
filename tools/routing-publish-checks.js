@@ -853,7 +853,7 @@ check('the grounding corpus is everything the model was actually given', () => {
 function stubManager(channelId, extraFields) {
   const channel = assets.channel(channelId);
   const sections = [...channel.fields, ...(extraFields || [])].map((f) => tasks.METADATA_FIELD_SECTIONS[f].section);
-  return { promptSetSectionKeys: () => new Set(sections), tagStyle: () => 'youtube' };
+  return { promptSetSectionKeys: () => new Set(sections), tagStyle: () => 'youtube', loadedChannel: () => channel };
 }
 
 function plan(channelId, options) {
@@ -1298,7 +1298,7 @@ check('an episode made from an audio file gets that file as its episode audio; a
     fs.writeFileSync(mp3, 'x');
     const blank = publishTypes.emptyChosenMetadata ? publishTypes.emptyChosenMetadata('itm-mv1x1o7q-3bvvmyzt', 'job-1791604932042-v9z81ezlm') : null;
     if (!blank) throw new Error('publish-types has no emptyChosenMetadata to build a record from');
-    const run = (record, sourcePath) => autoConfig.autoConfigure({ record, promptSet: null, sourcePath, channels: [] });
+    const run = (record, sourcePath) => autoConfig.autoConfigure({ record, promptSet: null, sourcePath, channels: [], profile: null, stillThumbnailPath: null });
 
     const born = run(blank, mp3);
     eq(born.patch.isPodcast, true, 'an audio source is a podcast:');
@@ -1318,7 +1318,7 @@ check('an episode made from an audio file gets that file as its episode audio; a
 check('every shipped channel declares its tag style, and only the podcast is spreaker', () => {
   const pa = assets;
   const styles = Object.fromEntries(pa.channelIds().map((id) => [id, pa.channel(id).tagStyle]));
-  eq(styles, { 'podcast-spreaker': 'spreaker', 'youtube-fireside': 'youtube', 'youtube-shorts': 'youtube', 'youtube-telltale': 'youtube', 'youtube-unfiltered': 'youtube' }, 'tag styles:');
+  eq(styles, { 'podcast-spreaker': 'spreaker', 'youtube-fireside': 'youtube', 'youtube-littlegoose': 'youtube', 'youtube-shorts': 'youtube', 'youtube-telltale': 'youtube', 'youtube-unfiltered': 'youtube' }, 'tag styles:');
 });
 
 check('a chapter list that shares nothing with the transcript is DECLARED, not filled from elsewhere', () => {

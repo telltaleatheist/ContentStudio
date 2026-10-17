@@ -38,6 +38,7 @@
  * overwrite it. It throws, naming the file.
  */
 
+import type { ChannelPublishProfile } from './youtube-profile';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AutoConfigResult } from './auto-config';
@@ -142,6 +143,17 @@ export interface GeneratedFallback {
    * seed from, which is not the same as "the run declared final-only".
    */
   transcriptRef?: TranscriptRef | null;
+  /**
+   * The publish profile of the item's prompt set (youtube-profile.ts, LEDGER #308), resolved by the
+   * host from the channel file, or null: no prompt set, or one no channel file defines (uploads and
+   * pushes exactly as before profiles existed). REQUIRED: the upload and the push read it, and a
+   * reader that left it out would upload a kids' song as adult commentary.
+   */
+  publishProfile: ChannelPublishProfile | null;
+  /** The item's cleaned lyrics as SRT (its `_lyrics_srt`), the caption track a `captions: lyrics` channel uploads; null for none. */
+  lyricsSrt: string | null;
+  /** The still a `still_title` channel's run drew (the item's `_still_thumbnail.path`), or null for none. */
+  stillThumbnailPath: string | null;
 }
 
 /**
@@ -165,6 +177,8 @@ export interface SelectionSeed {
    */
   promptSet?: string | null;
   sourcePath?: string | null;
+  /** The still a `still_title` channel's run drew (LEDGER #308), which the auto pass attaches. */
+  stillThumbnailPath?: string | null;
 }
 
 /**
@@ -180,6 +194,7 @@ export type AutoConfigure = (input: {
   record: ChosenMetadata;
   promptSet: string | null;
   sourcePath: string | null;
+  stillThumbnailPath: string | null;
 }) => AutoConfigResult;
 
 /**
@@ -512,6 +527,7 @@ export class PublishStoreService {
         record: merged,
         promptSet: seed.promptSet ?? null,
         sourcePath: seed.sourcePath ?? null,
+        stillThumbnailPath: seed.stillThumbnailPath ?? null,
       });
       // Every branch is announced, applied or not. An automatic decision nobody can find
       // afterwards is the thing this codebase refuses to ship: "why is this on Fireside?"

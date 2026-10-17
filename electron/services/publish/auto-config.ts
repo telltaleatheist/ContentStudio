@@ -12,6 +12,10 @@
  *                     source is the episode, so asking him to pick it again asked a
  *                     question he had already answered by dropping it in. A video source's
  *                     sibling .mp3 stays an offer: that one is a match by name, not a fact.
+ *   chosenTitles   <- on a channel whose file says `title_source: filename` (LEDGER #308), the
+ *                     song name in the source file's name; its one title, not a pick.
+ *   thumbnailPath  <- on a `thumbnail_mode: still_title` channel, the still the run drew,
+ *                     instead of the sibling export.
  *
  * Neither of these is a guess. Both are LOOKUPS IN A DECLARED TABLE — the channel
  * registry and the export layout — and that is the line this module is built along. A
@@ -61,7 +65,8 @@ import { isAudioOnlyExtension } from './audio-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { FieldPatch } from './field-validators';
 import { ChosenMetadata } from './publish-types';
-import { findUsableThumbnail } from './thumbnail-validate';
+import { findUsableThumbnail, validateThumbnailFile } from './thumbnail-validate';
+import { songTitleFromFilename, type ChannelPublishProfile } from './youtube-profile';
 
 /** What one automatic pass is asked to decide about. */
 export interface AutoConfigInput {
@@ -80,11 +85,19 @@ export interface AutoConfigInput {
   sourcePath: string | null;
   /** The channel registry, read fresh by the caller. */
   channels: RoutableChannel[];
+  /**
+   * The publish profile of the item's prompt set (LEDGER #308), resolved by the host from the
+   * channel file, or null: no prompt set, or one no channel file defines. Null configures exactly
+   * as before profiles existed: titles are picked by hand, the thumbnail is the sibling export.
+   */
+  profile: ChannelPublishProfile | null;
+  /** The still the run drew for a `still_title` channel (the item's `_still_thumbnail`), or null for none. */
+  stillThumbnailPath: string | null;
 }
 
 /** One decision, in the operator's terms. `detail` is a whole sentence. */
 export interface AutoDecision {
-  field: 'channelId' | 'thumbnail' | 'isPodcast' | 'spreakerAudioPath';
+  field: 'channelId' | 'thumbnail' | 'isPodcast' | 'spreakerAudioPath' | 'chosenTitles';
   detail: string;
 }
 
@@ -119,7 +132,11 @@ export function autoConfigure(input: AutoConfigInput): AutoConfigResult {
   if (channel.patch) patch = { ...patch, ...channel.patch };
   pushInto(channel.decision, channel.bucket, applied, skipped, refused);
 
-  const thumbnail = autoThumbnail(input);
+  const title = autoTitle(input);
+  if (title.patch) patch = { ...patch, ...title.patch };
+  pushInto(title.decision, title.bucket, applied, skipped, refused);
+
+  const thumbnail = input.profile?.thumbnailMode === 'still_title' ? autoStill(input) : autoThumbnail(input);
   if (thumbnail.patch) patch = { ...patch, ...thumbnail.patch };
   pushInto(thumbnail.decision, thumbnail.bucket, applied, skipped, refused);
 
@@ -356,6 +373,61 @@ function autoChannel(input: AutoConfigInput): FieldOutcome {
  * title. The record keeps `thumbnailSource: null`, so fixing the file and saving again
  * picks it up.
  */
+/**
+ * The title of a channel that takes it from the file name (`title_source: filename`, LEDGER #308):
+ * the song name, chosen as the item's one title. A song's title is not a pick: there is one, and it
+ * is what the file is called. Only an EMPTY choice is filled, so a title the operator edited or
+ * replaced stands; every other channel's titles stay his to pick.
+ */
+function autoTitle(input: AutoConfigInput): FieldOutcome {
+  const { record, sourcePath, profile } = input;
+  const skip = (detail: string): FieldOutcome => ({ patch: null, bucket: 'skipped', decision: { field: 'chosenTitles', detail } });
+  if (profile === null || profile.titleSource !== 'filename') {
+    return skip('The titles are picked by hand on this channel.');
+  }
+  if (record.chosenTitles.length > 0) return skip(`A title is already chosen ("${record.chosenTitles[0]}").`);
+  if (sourcePath === null) {
+    return { patch: null, bucket: 'refused', decision: { field: 'chosenTitles', detail: `The channel "${profile.promptSet}" takes its titles from the file name, and this item has no source file.` } };
+  }
+  const title = songTitleFromFilename(sourcePath);
+  return {
+    patch: { chosenTitles: [title] },
+    bucket: 'applied',
+    decision: { field: 'chosenTitles', detail: `chose "${title}", the song name in ${path.basename(sourcePath)} (the channel's title_source is filename).` },
+  };
+}
+
+/**
+ * The still the run drew (`thumbnail_mode: still_title`, LEDGER #308), attached automatically on
+ * the same rule as an exported thumbnail: only while nobody has decided, never over a manual pick
+ * or a deliberate clear. A still file that is gone or that YouTube would not take is refused, with
+ * the validator's words.
+ */
+function autoStill(input: AutoConfigInput): FieldOutcome {
+  const { record, stillThumbnailPath } = input;
+  if (record.thumbnailSource !== null) return autoThumbnail(input);
+  if (stillThumbnailPath === null) {
+    return { patch: null, bucket: 'skipped', decision: { field: 'thumbnail', detail: 'The run drew no still for this item (its report says why), so none was attached.' } };
+  }
+  if (!fs.existsSync(stillThumbnailPath)) {
+    return { patch: null, bucket: 'refused', decision: { field: 'thumbnail', detail: `The still the run drew is gone: ${stillThumbnailPath}.` } };
+  }
+  try {
+    const { meta, warnings } = validateThumbnailFile(stillThumbnailPath);
+    return {
+      patch: { thumbnailPath: stillThumbnailPath, thumbnailMeta: meta, thumbnailSource: 'auto' },
+      bucket: 'applied',
+      decision: {
+        field: 'thumbnail',
+        detail: `attached the still the run drew, ${stillThumbnailPath} (${meta.width}x${meta.height}, ${meta.bytes} bytes).` +
+          (warnings.length > 0 ? ` ${warnings.join(' ')}` : ''),
+      },
+    };
+  } catch (error) {
+    return { patch: null, bucket: 'refused', decision: { field: 'thumbnail', detail: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
 function autoThumbnail(input: AutoConfigInput): FieldOutcome {
   const { record, sourcePath } = input;
 
