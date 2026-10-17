@@ -490,14 +490,17 @@ export class Inputs implements OnInit, OnDestroy {
 
   // ==================== SAVED TRANSCRIPTS ====================
   //
-  // Every Whisper run writes its transcript to the output directory's transcript store,
-  // so a video that has been through the queue before can be run again without paying for
-  // Whisper twice. The row offers that as a checkbox — and offers it ONLY when the store
-  // holds a record whose video stamps still match the file on disk, so a box that appears
-  // is a box that will work. A re-rendered export answers "no record" and gets no box.
+  // Every transcription writes its transcript beside the video
+  // (`<dir>/.contentstudio/transcripts/<file>.json`, LEDGER #313), so a video that has been
+  // through the queue before is run again without paying for the transcription twice. A row
+  // whose video has a record whose stamps still match the file on disk shows a "Replace
+  // existing transcript" checkbox, UNTICKED: unticked reuses the record, ticked transcribes
+  // again and overwrites it (Owen, 2026-10-17: "if there's one present, the checkbox should
+  // change to 'replace existing transcript' instead"). A video with no record — or a
+  // re-rendered export, whose record no longer matches — has no box and is transcribed.
   //
-  // Unticked is the default and always means "transcribe it", which is what the pipeline
-  // did before this existed.
+  // This replaced #227's "Saved transcript" box, ticked = reuse and auto-ticked when a record
+  // was found; with reuse now the unticked default there is nothing to auto-tick.
 
   /** Answers keyed by item.path. Not persisted: it is a fact about disk, re-asked each session. */
   savedTranscripts = signal<Record<string, SavedTranscriptCheck>>({});
@@ -505,18 +508,19 @@ export class Inputs implements OnInit, OnDestroy {
   savedTranscriptProbing = signal<string[]>([]);
 
   /** A video with a usable record. Nothing else is ever offered the choice. */
-  canUseSavedTranscript(item: InputItem): boolean {
+  hasSavedTranscript(item: InputItem): boolean {
     return item.type === 'video' && this.savedTranscripts()[item.path]?.exists === true;
   }
 
-  /** Says WHICH transcript the box would reuse — a date and a model, not just "saved". */
+  /** Says WHICH transcript is there — a date and a model — and what each state of the box does. */
   savedTranscriptTooltip(item: InputItem): string {
     const check = this.savedTranscripts()[item.path];
     if (!check?.exists) return '';
     const when = check.savedAt ? new Date(check.savedAt).toLocaleString() : 'an earlier run';
-    return `Skip Whisper and reuse the transcript made ${when}` +
+    return `This video was transcribed ${when}` +
       (check.whisperModel ? ` by ${check.whisperModel}` : '') +
-      '. Untick to transcribe again and replace it.';
+      '. Unticked, the run reuses that transcript and skips transcription. ' +
+      'Tick to transcribe the video again and replace the saved transcript.';
   }
 
   /**
@@ -528,21 +532,14 @@ export class Inputs implements OnInit, OnDestroy {
    * the page, because the queue is what runs.
    *
    * A probe that cannot run is recorded as "no record" and logged, never as a record —
-   * offering a checkbox on the strength of a question that failed would put the operator
-   * one click away from a run that fails at the transcription stage.
+   * offering a reuse on the strength of a question that failed would put the operator one
+   * run away from a failure at the transcription stage.
    */
   private async probeSavedTranscripts(): Promise<void> {
     const byPath = new Map<string, InputItem>();
     for (const item of this.inputsState.inputItems()) byPath.set(item.path, item);
     for (const job of this.jobQueue.getPendingJobs()) {
       for (const item of job.inputs) if (!byPath.has(item.path)) byPath.set(item.path, item);
-    }
-
-    // An item added again after its transcript was already probed this session starts ticked too.
-    for (const item of byPath.values()) {
-      if (this.savedTranscripts()[item.path]?.exists === true && this.transcriptChoiceOf(item.path) === undefined) {
-        this.toggleUseSavedTranscript(item, true);
-      }
     }
 
     const pending = [...byPath.values()].filter(item =>
@@ -557,27 +554,53 @@ export class Inputs implements OnInit, OnDestroy {
       const check = await this.electron.hasSavedTranscript(item.path);
       this.savedTranscriptProbing.set(this.savedTranscriptProbing().filter(p => p !== item.path));
       this.savedTranscripts.set({ ...this.savedTranscripts(), [item.path]: check });
-      // A saved transcript starts TICKED (Owen, 2026-09-26: "it should start checked if there's
-      // a transcript for that video"). Only an item nobody has chosen for yet — an explicit
-      // untick stays unticked.
-      if (check.exists && this.transcriptChoiceOf(item.path) === undefined) {
-        this.toggleUseSavedTranscript(item, true);
-      }
       if (!check.exists && check.reason) {
-        console.log(`[Inputs] No saved transcript to reuse for ${item.displayName}: ${check.reason}`);
+        console.log(`[Inputs] No saved transcript for ${item.displayName}: ${check.reason}`);
       }
     }
   }
 
-  /** The operator's saved-transcript choice for this path, wherever it lives; undefined if never made. */
-  private transcriptChoiceOf(path: string): boolean | undefined {
-    const onPage = this.inputsState.inputItems().find(it => it.path === path);
-    if (onPage?.useSavedTranscript !== undefined) return onPage.useSavedTranscript;
-    for (const job of this.jobQueue.getPendingJobs()) {
-      const queued = job.inputs.find(it => it.path === path);
-      if (queued?.useSavedTranscript !== undefined) return queued.useSavedTranscript;
+  /**
+   * Which of a starting job's videos reuse their saved transcript (#313).
+   *
+   * Asked of main AGAIN for every video, not read from the page's answers: those are from
+   * when the row appeared, and a job queued behind another may start an hour later, after
+   * that one wrote records of its own. Then, per video:
+   *
+   *   box ticked                          transcribe (and overwrite the record)
+   *   a record now                        reuse it
+   *   no record now, but the row SHOWED   reuse anyway, so main fails the item naming the
+   *   one (and the box was left unticked) record and why (LEDGER #51): the operator chose to
+   *                                       reuse, and quietly transcribing instead would spend
+   *                                       the hour he declined and hide that the video changed
+   *   no record, none shown               transcribe, as every new video is
+   *
+   * The fresh answers replace the page's, so the rows show what the run did.
+   */
+  private async savedTranscriptReuses(job: QueuedJob): Promise<{ [path: string]: boolean }> {
+    const reuse: { [path: string]: boolean } = {};
+    for (const item of job.inputs) {
+      if (item.type !== 'video' || item.replaceSavedTranscript === true) continue;
+      const shown = this.savedTranscripts()[item.path]?.exists === true;
+      const check = await this.electron.hasSavedTranscript(item.path);
+      this.savedTranscripts.set({ ...this.savedTranscripts(), [item.path]: check });
+      if (check.exists || shown) reuse[item.path] = true;
+      if (!check.exists && shown) {
+        console.warn(`[Inputs] ${item.displayName} showed a saved transcript and no longer has a usable one (${check.reason}); the run fails it by name rather than transcribing`);
+      }
     }
-    return undefined;
+    return reuse;
+  }
+
+  /**
+   * Forget the page's answers for a finished job's videos and ask again: its run wrote (or
+   * replaced) their records, so a row showing them again offers the box at once.
+   */
+  private reprobeSavedTranscripts(job: QueuedJob): void {
+    const answers = { ...this.savedTranscripts() };
+    for (const item of job.inputs) delete answers[item.path];
+    this.savedTranscripts.set(answers);
+    void this.probeSavedTranscripts();
   }
 
   /**
@@ -586,12 +609,12 @@ export class Inputs implements OnInit, OnDestroy {
    * `addJob` snapshots the items, so without the second half a box ticked after queueing
    * would never reach the run — exactly the trap `setTranscriptChoice` below documents.
    */
-  toggleUseSavedTranscript(item: InputItem, useSaved: boolean): void {
+  toggleReplaceSavedTranscript(item: InputItem, replace: boolean): void {
     const items = this.inputsState.inputItems();
     const index = items.findIndex(it => it.path === item.path);
     if (index !== -1) {
       const updated = [...items];
-      updated[index] = { ...updated[index], useSavedTranscript: useSaved };
+      updated[index] = { ...updated[index], replaceSavedTranscript: replace };
       this.inputsState.inputItems.set(updated);
     }
 
@@ -599,7 +622,7 @@ export class Inputs implements OnInit, OnDestroy {
       if (!job.inputs.some(it => it.path === item.path)) continue;
       this.jobQueue.updateJob(job.id, {
         inputs: job.inputs.map(it =>
-          it.path === item.path ? { ...it, useSavedTranscript: useSaved } : it),
+          it.path === item.path ? { ...it, replaceSavedTranscript: replace } : it),
       });
     }
   }
@@ -1701,17 +1724,15 @@ export class Inputs implements OnInit, OnDestroy {
 
       console.log('Input transcripts being sent:', inputTranscripts);
 
-      // The rows whose "Use saved transcript" box is ticked. Only ticked rows travel:
-      // an absent key means transcribe, which is what every other input does and what
-      // this input did before the box existed. The main process refuses any value other
-      // than `true`, and a ticked box whose record has since gone missing FAILS that item
-      // rather than quietly re-transcribing.
-      const useSavedTranscripts: { [path: string]: boolean } = this.resumeTranscripts(nextJob);
-      nextJob.inputs.forEach(item => {
-        if (item.type === 'video' && item.useSavedTranscript) {
-          useSavedTranscripts[item.path] = true;
-        }
-      });
+      // The videos that reuse their saved transcript: a resumed job's, and every row with a
+      // record whose "Replace existing transcript" box is unticked (#313,
+      // `savedTranscriptReuses`). Only reuses travel: an absent key means transcribe. The main
+      // process refuses any value other than `true`, and a reuse whose record has since gone
+      // missing FAILS that item rather than quietly re-transcribing.
+      const reuseSavedTranscripts: { [path: string]: boolean } = {
+        ...(await this.savedTranscriptReuses(nextJob)),
+        ...this.resumeTranscripts(nextJob),
+      };
 
       const result = await this.electron.generateMetadata({
         inputs,
@@ -1721,7 +1742,7 @@ export class Inputs implements OnInit, OnDestroy {
         jobId: nextJob.id,
         jobName: nextJob.name,
         inputTranscripts,
-        useSavedTranscripts,
+        reuseSavedTranscripts,
         showPrompt: opts.showPrompt,
         fast: nextJob.fast,
         resumeFrom: nextJob.resumeFrom
@@ -1853,6 +1874,8 @@ export class Inputs implements OnInit, OnDestroy {
       // Tear down the progress listener on every path so a failed
       // job's listener can't rewrite its progress from later jobs' events
       if (unsubscribe) unsubscribe();
+      // Its run may have written or replaced its videos' saved transcripts: ask again.
+      this.reprobeSavedTranscripts(nextJob);
       // After job completes (success or failure), process next job in queue —
       // but only when this run owns the queue (single-job button runs must not).
       if (opts.advanceQueue) this.processNextJob();

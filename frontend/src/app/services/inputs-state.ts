@@ -12,15 +12,19 @@ export interface InputItem {
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
   splitEpisode?: boolean; // For transcript imports: mark for split-into-segments before generating
   /**
-   * For video items: run this input from the transcript a previous run saved, instead of
-   * transcribing it again.
+   * For video items with a saved transcript beside them: transcribe again and overwrite the
+   * record, instead of reusing it (LEDGER #313, the row's "Replace existing transcript" box).
    *
-   * Default false, and only ever offered for a video the store already holds a matching
-   * record for — the checkbox does not exist otherwise. Set on the item (not in a
-   * component signal) so it is captured into the queued job with the rest of the item and
+   * Absent or false is the default, and means REUSE the record when there is one; a video
+   * with no record has no box and is transcribed whatever this says. Set on the item (not in
+   * a component signal) so it is captured into the queued job with the rest of the item and
    * survives the sessionStorage round-trip, exactly like `transcriptChoice`.
+   *
+   * It replaced `useSavedTranscript`, which meant the opposite ("Use saved transcript" ticked
+   * = reuse). An item stored under the old key is read through `migrateSavedTranscriptChoice`
+   * below, never as if the key were this one.
    */
-  useSavedTranscript?: boolean;
+  replaceSavedTranscript?: boolean;
   textContent?: string; // For text-subject items: the actual text content
   /**
    * The operator's Phase-2 decision: which editor story transcript this video came from,
@@ -53,6 +57,29 @@ export interface GenerationState {
 }
 
 const STORAGE_KEY = 'contentstudio-inputs';
+
+/**
+ * An item as this renderer stored it, with the pre-#313 saved-transcript choice turned into
+ * this build's. `useSavedTranscript: true` (the old box ticked: reuse) is `replaceSavedTranscript`
+ * absent, and `false` (the operator unticked it: transcribe) is `replaceSavedTranscript: true`;
+ * absent stays absent. Each conversion is said once in the console. A value this code never wrote
+ * is refused by name, and an item carrying both keys is too: which one he meant is not stated.
+ */
+export function migrateSavedTranscriptChoice<T extends InputItem>(item: T, where: string): T {
+  const legacy = (item as any).useSavedTranscript;
+  if (legacy === undefined) return item;
+  if ('replaceSavedTranscript' in item) {
+    throw new Error(`${where}: ${item.displayName} carries both useSavedTranscript and replaceSavedTranscript; which one was meant is not stated`);
+  }
+  if (legacy !== true && legacy !== false) {
+    throw new Error(`${where}: ${item.displayName} has useSavedTranscript ${JSON.stringify(legacy)} (expected true or false)`);
+  }
+  const { useSavedTranscript: _old, ...rest } = item as any;
+  console.info(
+    `[SavedTranscript] ${where}: ${item.displayName} was stored with "Use saved transcript" ${legacy ? 'ticked' : 'unticked'}; ` +
+    `it now ${legacy ? 'reuses its saved transcript' : 'has "Replace existing transcript" ticked'} (LEDGER #313)`);
+  return (legacy ? rest : { ...rest, replaceSavedTranscript: true }) as T;
+}
 
 @Injectable({
   providedIn: 'root'
@@ -120,7 +147,9 @@ export class InputsStateService {
       const stored = sessionStorage.getItem(STORAGE_KEY);
       if (stored) {
         const state = JSON.parse(stored);
-        if (state.inputItems) this.inputItems.set(state.inputItems);
+        if (state.inputItems) {
+          this.inputItems.set((state.inputItems as InputItem[]).map(item => migrateSavedTranscriptChoice(item, 'the inputs page')));
+        }
         if (state.compilationMode !== undefined) this.compilationMode.set(state.compilationMode);
         if (state.masterPromptSet) this.masterPromptSet.set(state.masterPromptSet);
         if (state.chapterGrain !== undefined) this.chapterGrain.set(migrateChapterPick(state.chapterGrain, 'the inputs page'));

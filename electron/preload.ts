@@ -74,8 +74,8 @@ const api = {
 
   // Metadata generation
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),
-  // Does this video already have a reusable saved Whisper transcript? Drives the
-  // "Use saved transcript" checkbox, which only exists for videos that answer yes.
+  // Does this video already have a reusable saved transcript beside it? Drives the
+  // "Replace existing transcript" checkbox, which only exists for videos that answer yes.
   hasSavedTranscript: (videoPath: string) => ipcRenderer.invoke('has-saved-transcript', videoPath),
   cancelJob: (jobId: string) => ipcRenderer.invoke('cancel-job', jobId),
   // The metadata jobs main is running now, so a reloaded window can show them running again.

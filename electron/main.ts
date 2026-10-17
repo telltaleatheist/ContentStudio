@@ -26,6 +26,8 @@ import { getSharedDir } from './services/editor/shared-paths';
 import { StreamMarksService } from './services/stream-marks/stream-marks.service';
 import { setupStreamMarksIpc } from './services/stream-marks/stream-marks-ipc';
 import { setupThumbnailsIpc } from './services/thumbnails/thumbnails-ipc';
+import { startSavedTranscriptMigration } from './services/metadata/saved-transcript-migration';
+import { defaultOutputDirectory, resolveOutputDirectory } from './services/metadata/saved-transcript.service';
 
 /**
  * ContentStudio - Main Electron Process
@@ -355,6 +357,19 @@ app.whenReady().then(async () => {
     // test tab is retired). Its model calls go through the same Crucible context as everything
     // else (lanes, transport, routing).
     setupThumbnailsIpc(store, crucible, userDataPath);
+
+    // Saved transcripts live beside their videos since LEDGER #313; the old store under the output
+    // directory is emptied into those sidecars here, ONCE (the store records when), every move
+    // logged and every record it cannot move left in place with the reason. Started before the
+    // window so the inputs page's first probe waits for it (`savedTranscriptMigrationSettled`)
+    // rather than racing it. The default directory is looked in too: a record saved before the
+    // setting was changed is there.
+    void startSavedTranscriptMigration(
+      [resolveOutputDirectory((store as any).get('outputDirectory')), defaultOutputDirectory()],
+      {
+        ranAt: () => (store as any).get('savedTranscriptMigratedAt') as string | undefined,
+        markRan: (at: string) => (store as any).set('savedTranscriptMigratedAt', at),
+      });
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

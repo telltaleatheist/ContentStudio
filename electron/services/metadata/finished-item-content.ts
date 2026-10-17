@@ -6,7 +6,7 @@
  * `occursIn`). A report does not store that text, so it is read again from where the run read
  * it, by the same builders, on the branch the report records in `content_provenance`:
  *
- *   final-export-whisper     the saved transcript of the video (saved-transcript.service.ts),
+ *   final-export-whisper     the saved transcript beside the video (saved-transcript.service.ts),
  *                            which every run writes; its stamp check refuses a video that has
  *                            been re-rendered since, by name.
  *   editor-story-transcript  the linked editor story, checked by `resolveRef` exactly as a run
@@ -34,7 +34,7 @@ export interface FinishedItemContent {
   note: string;
 }
 
-export function contentTextOfFinishedItem(item: any, outputDir: string): FinishedItemContent {
+export function contentTextOfFinishedItem(item: any): FinishedItemContent {
   const note =
     'Notes typed on the queue row are not kept on the report, so tags that came only from those notes are not rebuilt.';
   const provenance = item?.content_provenance;
@@ -58,7 +58,7 @@ export function contentTextOfFinishedItem(item: any, outputDir: string): Finishe
       throw new Error('the report does not record which video it was made from.');
     }
     // The same stamp check a reuse runs: a video re-rendered since is refused, with the reason.
-    const lookup = inspectSavedTranscript(outputDir, source);
+    const lookup = inspectSavedTranscript(source);
     if (!lookup.exists) {
       throw new Error(`the video's saved transcript cannot be used: ${lookup.reason} (${lookup.recordPath}).`);
     }

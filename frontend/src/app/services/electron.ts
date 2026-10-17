@@ -98,8 +98,8 @@ import type {
  * Two-valued on purpose. `exists: true` means a record was found AND the video on disk
  * still matches the size and mtime it was transcribed from; anything else — no record, an
  * unreadable one, a video that has been re-rendered since — is `exists: false` with the
- * reason, because none of those is a transcript this run may reuse. The checkbox appears
- * only for the first case, so a box that is offered is a box that will work.
+ * reason, because none of those is a transcript this run may reuse. The "Replace existing
+ * transcript" box appears only for the first case, and only then does a run reuse (#313).
  */
 export interface SavedTranscriptCheck {
   exists: boolean;
@@ -1381,12 +1381,13 @@ export class ElectronService {
      */
     inputTranscripts?: { [path: string]: TranscriptLink };
     /**
-     * The inputs whose "Use saved transcript" box is ticked, keyed by `item.path` and
-     * always `true`. Only ticked rows appear: an absent key means transcribe it, which is
-     * the default for every video and the only state a video with no saved record can be
-     * in. The main process rejects any other value rather than interpret it.
+     * The inputs that reuse their saved transcript, keyed by `item.path` and always `true`
+     * (#313: a record beside the video and "Replace existing transcript" unticked, or a
+     * resumed job). An absent key means transcribe it — a video with no record, or a ticked
+     * box. The main process rejects any other value rather than interpret it, and refuses
+     * the pre-#313 `useSavedTranscripts` key by name.
      */
-    useSavedTranscripts?: { [path: string]: boolean };
+    reuseSavedTranscripts?: { [path: string]: boolean };
     showPrompt?: boolean;
     /** Required: whether the row is pinned "fast" (to the fast server; LEDGER #195). */
     fast: boolean;

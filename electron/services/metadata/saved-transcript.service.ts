@@ -1,16 +1,28 @@
 /**
- * Saved transcripts — the Whisper output of a video, kept on disk so a second run over
- * the same file does not pay for it twice.
+ * Saved transcripts — the transcription of a video, kept on disk so a second run over the
+ * same file does not pay for it twice.
  *
  * Until now a transcript existed only for the length of one run: the pipeline transcribed
  * into a temp dir, parsed the SRT into memory and deleted the dir (whisper.service.ts).
- * Re-queueing the same 90-minute export therefore meant another 90 minutes of Whisper for
- * a result that could not differ, because the input file had not changed.
+ * Re-queueing the same 90-minute export therefore meant another 90 minutes of transcription
+ * for a result that could not differ, because the input file had not changed.
  *
- * So every Whisper run now writes its segments beside the job reports, and a video that
- * has a record gets a checkbox on its queue row offering to reuse it. Reuse is the
- * OPERATOR'S CHOICE and never a default: an unticked row transcribes exactly as before
- * and overwrites the record with the new result.
+ * WHERE: BESIDE THE VIDEO (Owen, 2026-10-17, LEDGER #313: "the transcript should be saved
+ * per-project"; asked where, "Beside the video file"). The record of `<dir>/<name.ext>` is
+ * `<dir>/.contentstudio/transcripts/<name.ext>.json` — `savedTranscriptPathFor`, the one
+ * definition. It used to be one global store under the output directory, filed by
+ * `sourceKeyOf`; that store is no longer written or read here. Its records are moved
+ * beside their videos at app start by saved-transcript-migration.ts, each move logged and
+ * every record it cannot move left where it is with the reason. Beside the video, the record
+ * travels with the week's folder, needs no output directory to find, and a `.mov` and a
+ * `.mp3` of one episode (one source key) each get their own. A video directory that cannot
+ * be written fails the save naming the path; there is no second location.
+ *
+ * Every transcription writes its record, and a video that has one gets a "Replace existing
+ * transcript" checkbox on its queue row, UNTICKED: unticked reuses the record and skips
+ * transcription, ticked transcribes again and overwrites it (#313; this reverses #48's
+ * "reuse is never a default", at Owen's word). A video with no record has no box and is
+ * transcribed as always.
  *
  * WHAT MAKES THIS SAFE IS THE STALENESS STAMP. A transcript is only the transcript of the
  * bytes it was taken from, and a re-render under the same filename is a different video
@@ -18,8 +30,8 @@
  * read re-stats the file and compares. A record that disagrees is not "close enough" —
  * silently applying it would generate a whole set of metadata for a video nobody
  * transcribed, which is the worst failure this app has. So the reader REFUSES it: the UI
- * treats it as no record at all (the checkbox simply does not appear), and a ticked flag
- * that reaches the pipeline anyway fails that item by name. Nothing anywhere quietly
+ * treats it as no record at all (the checkbox simply does not appear), and a reuse that
+ * reaches the pipeline anyway fails that item by name. Nothing anywhere quietly
  * re-transcribes to paper over it.
  */
 
@@ -78,9 +90,17 @@ export interface SavedTranscriptSpeakerTagging {
 
 export interface SavedTranscriptRecord {
   schema_version: number;
-  /** `sourceKeyOf(source_path)` — the cross-run join key, and this file's name. */
+  /**
+   * `sourceKeyOf(source_path)` at save time — the cross-run join key a reuse reports. No longer
+   * the record's file name (the sidecar is named by the video's file name), and not compared on
+   * read: the key is the whole path, and a week's folder moved with its sidecars changes it.
+   */
   source_key: string;
-  /** The path the transcript was taken from, for the operator to read in an error. */
+  /**
+   * The path the transcript was taken from, for the operator to read in an error. Its FILE NAME
+   * must be the video's: the sidecar is filed by it, so a mismatch is a record copied or renamed
+   * into place by hand.
+   */
   source_path: string;
   video: SavedTranscriptVideoStamp;
   /**
@@ -119,9 +139,10 @@ export type SavedTranscriptLookup =
  *
  * THE one definition. It used to live only inside MetadataGeneratorService, which was
  * fine while the generator was the only thing that needed it; the moment a second caller
- * (the "does this video have a saved transcript?" check the UI makes) has to resolve the
- * SAME directory, a second copy is a bug waiting for someone to change one of them — the
- * checkbox would offer a record the pipeline then looks for somewhere else.
+ * has to resolve the SAME directory, a second copy is a bug waiting for someone to change
+ * one of them. It lives here because the saved transcripts used to be filed under it; since
+ * #313 they sit beside their videos, and only the one-time move of the old store
+ * (saved-transcript-migration.ts) still looks under the output directory for them.
  */
 export function defaultOutputDirectory(): string {
   return path.join(os.homedir(), 'Documents', 'ContentStudio Output');
@@ -134,16 +155,51 @@ export function resolveOutputDirectory(outputPath?: string | null): string {
     : defaultOutputDirectory();
 }
 
-/** Sibling of `.contentstudio/metadata`, for the same reason: it belongs to the output dir. */
-export function savedTranscriptDir(outputDir: string): string {
-  if (typeof outputDir !== 'string' || !outputDir.trim()) {
-    throw new Error('savedTranscriptDir requires an output directory');
+/**
+ * The sidecar of `<dir>/<name.ext>`: `<dir>/.contentstudio/transcripts/<name.ext>.json` (#313).
+ *
+ * THE one definition, read by the pipeline, the inputs page's probe, the metadata CLI and the
+ * reports' readers alike. The file name keeps the video's extension, so the `.mov` and the
+ * `.mp3` of one episode in one folder are two records, never one record each would condemn as
+ * stale. A dot directory, so the folder listings that read a week (`complete/`) skip it as they
+ * skip `.DS_Store`.
+ *
+ * ABSOLUTE PATHS ONLY: a relative one would put the record wherever the process happened to
+ * be started from, and the next reader would look somewhere else.
+ */
+export function savedTranscriptPathFor(videoPath: string): string {
+  if (typeof videoPath !== 'string' || !path.isAbsolute(videoPath)) {
+    throw new Error(`A saved transcript is filed beside its video, which needs an absolute video path; got ${JSON.stringify(videoPath)}`);
   }
-  return path.join(outputDir, '.contentstudio', 'transcripts');
+  return path.join(path.dirname(videoPath), '.contentstudio', 'transcripts', `${path.basename(videoPath)}.json`);
 }
 
-export function savedTranscriptPathFor(outputDir: string, videoPath: string): string {
-  return path.join(savedTranscriptDir(outputDir), `${sourceKeyOf(videoPath)}.json`);
+/**
+ * Can this video's sidecar be written? Asked BEFORE transcribing, because the save comes after
+ * an hour of transcription and a read-only folder (a network mount, a locked archive) would
+ * otherwise throw that hour away at the last step. Throws naming the folder; there is no other
+ * place the record could go (#313).
+ *
+ * The nearest existing ancestor is what is checked: `.contentstudio/transcripts` is created on
+ * the first save, so before then the video's own folder is what must be writable.
+ */
+export function assertSavedTranscriptWritable(videoPath: string): void {
+  let dir = path.dirname(savedTranscriptPathFor(videoPath));
+  while (!fs.existsSync(dir)) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `The transcript of ${path.basename(videoPath)} is saved beside it, in ` +
+      `${path.dirname(savedTranscriptPathFor(videoPath))}, and ${dir} cannot be written (${reason}). ` +
+      `Nothing was transcribed. Make that folder writable, or move the video somewhere that is.`
+    );
+  }
 }
 
 /** The video's identity right now. Throws if it cannot be read — the caller has no video. */
@@ -162,11 +218,11 @@ function describeStamp(stamp: SavedTranscriptVideoStamp): string {
  * most recent word on it.
  *
  * Throws on any failure. A save that quietly did not happen would leave the operator with
- * a checkbox that never appears and no idea why, so an unwritable output directory is a
- * fault to see now rather than a mystery later.
+ * a checkbox that never appears and no idea why, so an unwritable video folder is a fault
+ * to see now rather than a mystery later — and the pipeline asks
+ * `assertSavedTranscriptWritable` before it transcribes, so that is seen before the hour.
  */
 export function saveTranscript(args: {
-  outputDir: string;
   videoPath: string;
   segments: SRTSegment[];
   durationSec: number | null;
@@ -176,7 +232,7 @@ export function saveTranscript(args: {
   /** What the speaker tagger did to these segments; null when the run was in the untagged mode. */
   speakerTagging: SavedTranscriptSpeakerTagging | null;
 }): SavedTranscriptReuse {
-  const { outputDir, videoPath, segments, durationSec, whisperModel, words, speakerTagging } = args;
+  const { videoPath, segments, durationSec, whisperModel, words, speakerTagging } = args;
 
   if (!Array.isArray(segments) || segments.length === 0) {
     throw new Error(
@@ -191,7 +247,7 @@ export function saveTranscript(args: {
     );
   }
 
-  const recordPath = savedTranscriptPathFor(outputDir, videoPath);
+  const recordPath = savedTranscriptPathFor(videoPath);
   const record: SavedTranscriptRecord = {
     schema_version: SAVED_TRANSCRIPT_SCHEMA_VERSION,
     source_key: sourceKeyOf(videoPath),
@@ -243,8 +299,8 @@ export function saveTranscript(args: {
  * answer to it. The pipeline asks the same question through `loadSavedTranscript` below,
  * which turns the same reason into a per-item failure.
  */
-export function inspectSavedTranscript(outputDir: string, videoPath: string): SavedTranscriptLookup {
-  const recordPath = savedTranscriptPathFor(outputDir, videoPath);
+export function inspectSavedTranscript(videoPath: string): SavedTranscriptLookup {
+  const recordPath = savedTranscriptPathFor(videoPath);
 
   if (!fs.existsSync(recordPath)) {
     return { exists: false, reason: 'no saved transcript has been written for this video', recordPath };
@@ -294,14 +350,15 @@ export function inspectSavedTranscript(outputDir: string, videoPath: string): Sa
     }
   }
 
-  // The filename is the source key, so a mismatch means the file was renamed or hand-moved
-  // into place. Say so rather than generate from a transcript of a different video.
-  const expectedKey = sourceKeyOf(videoPath);
-  if (record.source_key !== expectedKey) {
+  // The sidecar is filed by the video's file name, so a record that names another file was
+  // renamed or copied into place by hand. Say so rather than generate from a transcript of a
+  // different video. The folder is NOT compared: a week moved whole (to the NAS, say) carries
+  // its sidecars with it, and the stamp below is what says the bytes are the same.
+  if (typeof record.source_path !== 'string' || path.basename(record.source_path) !== path.basename(videoPath)) {
     return {
       exists: false,
-      reason: `the saved transcript is filed under "${record.source_key}" but this video's key ` +
-        `is "${expectedKey}"`,
+      reason: `the saved transcript beside this video was taken from ${JSON.stringify(record.source_path)}, ` +
+        `not from a file named "${path.basename(videoPath)}"`,
       recordPath,
     };
   }
@@ -331,22 +388,23 @@ export function inspectSavedTranscript(outputDir: string, videoPath: string): Sa
 }
 
 /**
- * The pipeline's read. The operator TICKED the box, so there is no second-best outcome
- * here: either the record is usable or this item fails saying which file and why.
+ * The read of a caller that needs the record: the pipeline reusing it (the row's "Replace
+ * existing transcript" box was left unticked), or a report's reader. There is no
+ * second-best outcome here: either the record is usable or this throws saying which file
+ * and why, and the caller adds what its operator can do about it.
  *
  * Re-transcribing instead would be the fallback this codebase does not allow — the run
  * would silently cost an hour the operator explicitly declined, and (worse) it would hide
  * the fact that the video he is generating for is not the video he transcribed.
  */
-export function loadSavedTranscript(outputDir: string, videoPath: string): {
+export function loadSavedTranscript(videoPath: string): {
   record: SavedTranscriptRecord;
   reuse: SavedTranscriptReuse;
 } {
-  const lookup = inspectSavedTranscript(outputDir, videoPath);
+  const lookup = inspectSavedTranscript(videoPath);
   if (!lookup.exists) {
     throw new Error(
-      `"Use saved transcript" is ticked for ${path.basename(videoPath)} but the saved transcript ` +
-      `cannot be used: ${lookup.reason} (${lookup.recordPath}). Untick the box to transcribe it again.`
+      `The saved transcript of ${path.basename(videoPath)} cannot be used: ${lookup.reason} (${lookup.recordPath}).`
     );
   }
 

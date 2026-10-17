@@ -222,21 +222,21 @@
                 }
 
                 <!--
-                  Use saved transcript (videos this app has already transcribed).
-                  Rendered only when the store holds a record whose video stamps still
-                  match the file on disk, so ticking it can never mean "transcribe it
-                  after all": unticked transcribes and replaces the record, ticked reuses
-                  it, and a record that has gone missing by run time fails the item.
+                  Replace existing transcript (LEDGER #313). Rendered only when a saved
+                  transcript sits beside the video and its stamps still match the file on
+                  disk. UNTICKED by default: unticked reuses that transcript and skips
+                  transcription, ticked transcribes again and overwrites it. No record, no
+                  box: the video is transcribed as always.
                 -->
-                @if (canUseSavedTranscript(item)) {
+                @if (hasSavedTranscript(item)) {
                   <mat-checkbox
                     class="saved-transcript-toggle"
                     color="primary"
-                    [checked]="!!item.useSavedTranscript"
-                    (change)="toggleUseSavedTranscript(item, $event.checked)"
+                    [checked]="!!item.replaceSavedTranscript"
+                    (change)="toggleReplaceSavedTranscript(item, $event.checked)"
                     [matTooltip]="savedTranscriptTooltip(item)"
                     matTooltipShowDelay="350">
-                    Saved transcript
+                    Replace existing transcript
                   </mat-checkbox>
                 }
 

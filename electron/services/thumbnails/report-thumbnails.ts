@@ -910,7 +910,7 @@ export class ReportThumbnails {
     const channel = promptAssets().channel(promptSet);
     const terms = (channel.brandTerms ?? []).map((t) => t.trim()).filter((t) => t.length > 0);
     if (terms.length === 0) throw new Error(`The prompt set "${channel.name}" declares no brand_terms, so nothing says who its creator is.`);
-    const { record } = loadSavedTranscript(loc.outputDir, sourcePath);
+    const { record } = loadSavedTranscript(sourcePath);
     return { transcript: transcriptLines(record.segments), channel, creator: terms.join(', '), segments: record.segments };
   }
 

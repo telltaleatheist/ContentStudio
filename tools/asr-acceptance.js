@@ -170,8 +170,9 @@ async function pipelineMode(a) {
   const wall = (Date.now() - t0) / 1000;
   if (items.length === 0) throw new Error(`the item failed: ${failures.join('; ')}`);
   const item = items[0];
-  const sidecarDir = path.join(out, '.contentstudio', 'transcripts');
-  const sidecar = fs.readdirSync(sidecarDir).map((f) => path.join(sidecarDir, f))[0];
+  // The saved transcript sits beside the video since LEDGER #313, not under the output directory.
+  const { savedTranscriptPathFor } = require(path.join(DIST, 'services/metadata/saved-transcript.service.js'));
+  const sidecar = savedTranscriptPathFor(path.resolve(a.input));
   const record = JSON.parse(fs.readFileSync(sidecar, 'utf8'));
   const text = item.srtSegments.map((s) => s.text).join('\n');
   fs.writeFileSync(path.join(out, 'captions.txt'), item.srtSegments.map((s) => `${s.start}  ${s.speaker ? `[${s.speaker}] ` : ''}${s.text}`).join('\n'));

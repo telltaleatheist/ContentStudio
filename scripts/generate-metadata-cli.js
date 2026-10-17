@@ -126,7 +126,9 @@ Input / caching:
   --transcribe         Force a fresh Whisper run and overwrite the cached transcript.
                        Default: replay the cached ContentItem[] for this video if one exists.
   --saved-transcript   With no cached transcript: reuse the app's own saved transcript of this
-                       video (the queue's "Use saved transcript" box) instead of transcribing.
+                       video, read beside it at <video dir>/.contentstudio/transcripts/<file>.json
+                       (what the queue reuses while "Replace existing transcript" is unticked),
+                       instead of transcribing. A missing or stale record fails by name.
   --chapters           Force a fresh chapter-pipeline run and overwrite the cached chapters.
                        With no field flag, the run STOPS after chapters (nothing is generated
                        and no report is written).
@@ -716,8 +718,9 @@ async function main() {
       transcriptionService, outputDir, { jobName: path.basename(args.input), promptSet: channel, asrModel }, progressCallback, speakerTagger);
     const inputFailures = [];
     contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map(),
-      // --saved-transcript: the app's own saved transcript of this video, as the queue's "Use saved
-      // transcript" box reuses it (saved-transcript.service.ts), instead of transcribing again.
+      // --saved-transcript: the app's own saved transcript of this video, read from its sidecar beside
+      // the video exactly as the queue reuses it (saved-transcript.service.ts, #313), instead of
+      // transcribing again.
       args.savedTranscript ? new Map([[args.input, true]]) : undefined);
     if (contentItems.length === 0) {
       fail(`No content could be processed: ${inputFailures.join('; ') || '(no reason given)'}`);

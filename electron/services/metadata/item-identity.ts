@@ -81,9 +81,9 @@ export function mintItemId(now: number = Date.now()): string {
  * episode sitting in one folder still share a key — the same recording in two formats is
  * one item, which is exactly what the podcast and Patreon halves of a week need.
  *
- * SEPARATORS BECOME SPACES because this value is also a FILENAME: saved transcripts are
- * filed under it (saved-transcript.service.ts). A key containing slashes would name a
- * directory that does not exist.
+ * SEPARATORS BECOME SPACES because this value was also a FILENAME: saved transcripts were
+ * filed under it until #313 moved them beside their videos (saved-transcript.service.ts). A key
+ * containing slashes would have named a directory that does not exist.
  *
  * This is NOT the same normalization video-matcher applies, and it no longer claims to
  * be: the matcher compares against YouTube titles, and YouTube only ever knew the
@@ -154,9 +154,9 @@ export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
  *                             transcript, anything with no final export behind it.
  */
 /**
- * Set on an item whose words and timings were NOT produced by this run: the operator
- * ticked "Use saved transcript" on the queue row and the pipeline read a stored Whisper
- * record instead of running Whisper (saved-transcript.service.ts).
+ * Set on an item whose words and timings were NOT produced by this run: the video had a
+ * saved transcript, its queue row's "Replace existing transcript" was left unticked, and the
+ * pipeline read the stored record instead of transcribing (saved-transcript.service.ts).
  *
  * Recorded because the report otherwise reads exactly like a fresh transcription, and the
  * two are not the same claim: this one says the words were taken on `saved_at`, by
@@ -164,7 +164,7 @@ export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
  * who wants to know why a re-run produced byte-identical chapters has the answer here.
  */
 export interface SavedTranscriptReuse {
-  /** `sourceKeyOf(video)` — the record's name, and the cross-run join key. */
+  /** `sourceKeyOf(video)` — the cross-run join key (the record itself is filed beside the video, #313). */
   source_key: string;
   /** ISO. When the transcript was written, i.e. when Whisper actually ran. */
   saved_at: string;

@@ -648,7 +648,7 @@ async function windowOver(world, { record: given = null, noStory = false, subjec
   const video = w.exportOf(noStory ? 'u9 - unrelated' : 'f2 - the rapture');
   fs.writeFileSync(video, 'a video');
   const segments = captions(noStory ? words(77, 400) : STORY_TEXT[2]);
-  if (!subject) saveTranscript({ outputDir: root, videoPath: video, segments, durationSec: 200, whisperModel: 'keeper', words: null, speakerTagging: null });
+  if (!subject) saveTranscript({ videoPath: video, segments, durationSec: 200, whisperModel: 'keeper', words: null, speakerTagging: null });
   const rec = given ?? await inJob(async (sessions, controller) => {
     const run = itemRun(sessions, controller, { reportFolder: job.txtFolder, ...(noStory ? { name: 'u9 - unrelated', story: 1 } : {}) });
     if (noStory) {

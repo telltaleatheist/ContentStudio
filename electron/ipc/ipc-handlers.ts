@@ -91,6 +91,7 @@ import {
   inspectSavedTranscript,
   resolveOutputDirectory,
 } from '../services/metadata/saved-transcript.service';
+import { savedTranscriptMigrationSettled } from '../services/metadata/saved-transcript-migration';
 import { composeChapterBlock, composeDescription, composeDescriptionSections, composeTags } from '../services/metadata/description-composer';
 import {
   buildRoutingView,
@@ -712,8 +713,8 @@ async function runPipeline(job: PipelineJob): Promise<any> {
 
     const transcriptionService = new TranscriptionService();
     // The same directory the generator will write this job's report into, resolved the
-    // same way — the saved transcripts sit beside it, and the "does this video have one?"
-    // check the UI makes has to look in the directory the run will actually use.
+    // same way: the transcription context reads the channel's earlier reports from it. (The
+    // saved transcripts no longer live under it; each sits beside its video, #313.)
     const outputDir = resolveOutputDirectory(job.metadataParams.outputPath);
 
     // THIS is where speaker tagging actually happens for the ordinary route: the pipeline
@@ -781,24 +782,25 @@ async function runPipeline(job: PipelineJob): Promise<any> {
           `that was never offered a link.`);
       }
     }
-    // Which inputs the operator asked to run from their SAVED transcript rather than
-    // transcribing again. Only ticked boxes travel: an absent key means "transcribe",
-    // which is the default for every video and the state of every video the store has
-    // never seen. A key with anything other than `true` under it is a renderer bug — say
-    // so here rather than let a truthy string decide an hour of Whisper.
-    const useSavedTranscriptMap = new Map<string, boolean>();
-    for (const [inputPath, flag] of Object.entries(job.metadataParams.useSavedTranscripts || {})) {
+    // Which inputs run from their SAVED transcript rather than being transcribed again: the
+    // renderer's decision per video (#313) — a record was there and its row's "Replace existing
+    // transcript" box was left unticked, or a parked job resumes past transcription. Only reuses
+    // travel: an absent key means "transcribe", the state of every video with no record and of
+    // every row whose box is ticked. A key with anything other than `true` under it is a renderer
+    // bug — say so here rather than let a truthy string decide an hour of transcription.
+    const reuseSavedTranscriptMap = new Map<string, boolean>();
+    for (const [inputPath, flag] of Object.entries(job.metadataParams.reuseSavedTranscripts || {})) {
       if (flag !== true) {
         throw new Error(
-          `useSavedTranscripts["${inputPath}"] is ${JSON.stringify(flag)}. The map carries only ` +
-          `the inputs whose "Use saved transcript" box is ticked, each with the value true; ` +
-          `omit the key for an input that should be transcribed.`);
+          `reuseSavedTranscripts["${inputPath}"] is ${JSON.stringify(flag)}. The map carries only ` +
+          `the inputs that reuse their saved transcript, each with the value true; omit the key ` +
+          `for an input that should be transcribed.`);
       }
-      useSavedTranscriptMap.set(inputPath, true);
+      reuseSavedTranscriptMap.set(inputPath, true);
     }
 
     const contentItems = await inputHandler.processMultipleInputs(
-      normalizedInputs, customNotesMap, inputFailures, transcriptLinkMap, useSavedTranscriptMap);
+      normalizedInputs, customNotesMap, inputFailures, transcriptLinkMap, reuseSavedTranscriptMap);
     // In a stage-major batch (crucible/batch.ts) the next job may transcribe now: what this one does
     // before its chapters (the thumbnails' frame sampling) is CPU. Nothing for a single job.
     finishJobStage();
@@ -1499,6 +1501,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     if (!params || typeof params.jobId !== 'string' || !params.jobId.trim()) {
       throw new Error('generate-metadata requires a non-empty jobId');
     }
+    // The pre-#313 key. Refused by name rather than read: its rows meant "the Use saved transcript
+    // box is ticked", and this build's rows carry "Replace existing transcript", the other way
+    // round. Only a renderer older than this main process could send it.
+    if ('useSavedTranscripts' in params) {
+      throw new Error(
+        'generate-metadata was sent useSavedTranscripts, the pre-#313 saved-transcript map; this build ' +
+        'reads reuseSavedTranscripts. Reload the window so the renderer matches this build.');
+    }
     // Whether the row is pinned fast, and where it resumes (plan section 13.2).
     const { fast, resumeFrom } = laneParams(params, 'transcribe');
     try {
@@ -1561,13 +1571,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // `contentSource`, and a declared link it cannot honor fails that item rather
         // than quietly running final-only (§3.4 rule 4).
         inputTranscripts: params.inputTranscripts || {},
-        // Which inputs run from their SAVED Whisper transcript instead of being
-        // transcribed again, keyed by the input's absolute path and only ever `true`.
-        // Absent is the default and the ordinary case: an unticked row, or a video the
-        // transcript store has never seen. Validated where it is consumed, in
-        // runTranscription — a ticked box whose record has gone missing FAILS that item
+        // Which inputs run from their SAVED transcript instead of being transcribed again,
+        // keyed by the input's absolute path and only ever `true` (#313: a video with a
+        // record whose "Replace existing transcript" box is unticked). Absent means
+        // transcribe: a video with no record, or a ticked box. Validated where it is
+        // consumed, in runPipeline — a reuse whose record has gone missing FAILS that item
         // rather than quietly costing the operator the hour he declined.
-        useSavedTranscripts: params.useSavedTranscripts || {},
+        reuseSavedTranscripts: params.reuseSavedTranscripts || {},
         // The operator's voice enrollment, read from the settings AT JOB TIME and carried on
         // the job. Present means every caption this run transcribes is scored against it and
         // tagged HOST / CLIP / UNSURE; absent or blank is the untagged mode, announced once in
@@ -1818,25 +1828,24 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   /**
    * Does this video have a saved transcript that is still a transcript OF it?
    *
-   * The question the Inputs list asks about every video row, so it can offer the "Use
-   * saved transcript" checkbox — and only offer it when ticking it would work. A record
-   * whose video has been re-rendered since is reported as `exists: false` WITH the
-   * reason: the checkbox stays hidden (there is nothing safe to reuse) and the reason is
-   * logged rather than swallowed, because "I transcribed that yesterday, where is the
-   * box?" needs an answer.
+   * The question the Inputs list asks about every video row, so it can offer the "Replace
+   * existing transcript" checkbox — and only when there is a record a run would reuse. A
+   * record whose video has been re-rendered since is reported as `exists: false` WITH the
+   * reason: the checkbox stays hidden (there is nothing safe to reuse, so the video is
+   * transcribed) and the reason is logged rather than swallowed, because "I transcribed
+   * that yesterday, where is the box?" needs an answer.
    *
-   * The output directory is resolved exactly as a run resolves it, from the same setting.
-   * If the two ever disagreed the checkbox would offer a record the pipeline then looks
-   * for somewhere else — which is why `resolveOutputDirectory` is one function.
+   * The record is read beside the video (#313), where the run reads it, after the one move of
+   * the old output-directory store has settled (saved-transcript-migration.ts) so a record in
+   * mid-move is not reported as missing.
    */
   ipcMain.handle('has-saved-transcript', async (_event, videoPath: string) => {
     if (typeof videoPath !== 'string' || !videoPath.trim()) {
       throw new Error('has-saved-transcript requires a video path');
     }
 
-    const settings = (store as any).store;
-    const outputDir = resolveOutputDirectory(settings.outputDirectory);
-    const lookup = inspectSavedTranscript(outputDir, videoPath);
+    await savedTranscriptMigrationSettled();
+    const lookup = inspectSavedTranscript(videoPath);
 
     if (!lookup.exists) {
       log.info(`[IPC] No reusable saved transcript for ${videoPath}: ${lookup.reason}`);
@@ -3032,7 +3041,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // THE TAGS AND HASHTAGS, rebuilt from the new chapter list exactly as the run built them.
         if (field === 'chapters') {
           try {
-            const content = contentTextOfFinishedItem(working, resolveOutputDirectory(settings.outputDirectory));
+            const content = contentTextOfFinishedItem(working);
             const built = rederiveTagFields(
               working,
               content.text,

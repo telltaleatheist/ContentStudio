@@ -203,14 +203,15 @@ export interface GenerationParams {
    */
   preComputedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
   /**
-   * The inputs that run from their SAVED Whisper transcript instead of being transcribed
-   * again, keyed by absolute path and only ever `true` (saved-transcript.service.ts).
+   * The inputs that run from their SAVED transcript instead of being transcribed again,
+   * keyed by absolute path and only ever `true` (saved-transcript.service.ts; #313: a video
+   * with a record whose "Replace existing transcript" box is unticked).
    *
    * CONSUMED BY THE INPUT STAGE, like `inputTranscripts`: the input handler reads the
-   * record, or fails that item naming the file. An absent key is the default — transcribe
-   * it — and there is no third state, because reuse is something the operator ticks.
+   * record, or fails that item naming the file. An absent key means transcribe it — a video
+   * with no record, or one whose box is ticked.
    */
-  useSavedTranscripts?: { [key: string]: boolean };
+  reuseSavedTranscripts?: { [key: string]: boolean };
   /**
    * The operator's voice-enrollment recording (`speakerEnrollmentAudio`), read from the settings
    * by the IPC layer and threaded in as a value.
@@ -500,11 +501,11 @@ export class MetadataGeneratorService {
         log.info(`[MetadataGenerator] Using ${contentItems.length} pre-transcribed content items`);
       } else {
         const customNotesMap = new Map(Object.entries(params.inputNotes || {}));
-        const useSavedTranscriptMap = new Map(
-          Object.entries(params.useSavedTranscripts || {}).filter(([, flag]) => flag === true));
+        const reuseSavedTranscriptMap = new Map(
+          Object.entries(params.reuseSavedTranscripts || {}).filter(([, flag]) => flag === true));
         log.info('[MetadataGenerator] Processing inputs...');
         contentItems = await inputHandler.processMultipleInputs(
-          normalizedInputs, customNotesMap, inputFailures, undefined, useSavedTranscriptMap);
+          normalizedInputs, customNotesMap, inputFailures, undefined, reuseSavedTranscriptMap);
       }
 
       this.throwIfCancelled(params, 'after input processing');

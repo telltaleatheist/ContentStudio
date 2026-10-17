@@ -33,7 +33,8 @@ import { resolveRef, probeDrift, isTranscriptRefLink } from './editor-transcript
 import type { FinalOnlyDeclaration, TranscriptLink } from './editor-transcript-link';
 import type { TranscriptRef } from '../publish/publish-types';
 import type { SavedTranscriptReuse } from './item-identity';
-import { loadSavedTranscript, saveTranscript } from './saved-transcript.service';
+import { assertSavedTranscriptWritable, loadSavedTranscript, saveTranscript } from './saved-transcript.service';
+import { savedTranscriptMigrationSettled } from './saved-transcript-migration';
 import { storyVocabulary } from '../transcription/asr-vocabulary';
 import type { StretchSummary } from './stretch-summary';
 import { getRuntimePaths } from '../../lib/bridges';
@@ -67,10 +68,10 @@ export interface ContentSource {
  * The segments for one video input, in the one shape the rest of the pipeline sees —
  * however this run came by them.
  *
- * There are two ways: Whisper ran, or the operator ticked "Use saved transcript" and a
- * stored record was read (saved-transcript.service.ts). They meet HERE, at the top of
- * `processVideo`, and every line after that point is shared. That is deliberate: a reused
- * transcript built by its own construction path would be a second definition of what a
+ * There are two ways: the video was transcribed, or it had a saved record and the operator
+ * left "Replace existing transcript" unticked, so the record was read
+ * (saved-transcript.service.ts). They meet HERE, at the top of `processVideo`, and every
+ * line after that point is shared. That is deliberate: a reused transcript built by its own construction path would be a second definition of what a
  * video item is, and the two would drift apart the first time either was touched.
  */
 interface VideoTranscript {
@@ -303,14 +304,13 @@ export class InputDetector {
 export class InputHandlerService {
   private transcriptionService: TranscriptionService;
   /**
-   * The run's output directory — where `.contentstudio/transcripts/` lives.
+   * The run's output directory — where the job reports live, which the transcription's asr
+   * context reads for earlier reports of the channel (asr-facts.ts).
    *
    * REQUIRED, and second in the list so it cannot be forgotten behind an optional
-   * callback. Every video this handler transcribes writes its segments there, so a
-   * handler that did not know the directory would be a handler whose transcriptions are
-   * silently unrepeatable. Callers resolve it exactly as the generator resolves the
-   * report directory (`resolveOutputDirectory`), so the checkbox in the UI and the
-   * pipeline are always talking about the same store.
+   * callback. Callers resolve it exactly as the generator resolves the report directory
+   * (`resolveOutputDirectory`). It is no longer where saved transcripts live: since #313 each
+   * sits beside its video (saved-transcript.service.ts `savedTranscriptPathFor`).
    */
   private outputDir: string;
   /**
@@ -341,7 +341,7 @@ export class InputHandlerService {
     speakerTagger?: SpeakerTagger
   ) {
     if (typeof outputDir !== 'string' || !outputDir.trim()) {
-      throw new Error('InputHandlerService requires the run output directory (saved transcripts live under it)');
+      throw new Error('InputHandlerService requires the run output directory (the transcription context reads its reports)');
     }
     if (!runFacts || typeof runFacts !== 'object' || !('jobName' in runFacts) || !('promptSet' in runFacts)) {
       throw new Error('InputHandlerService requires the run facts { jobName, promptSet, asrModel } (null where the run has none) for the transcription context');
@@ -363,7 +363,7 @@ export class InputHandlerService {
     customNotes?: string,
     itemIndex?: number,
     link?: TranscriptLink,
-    useSavedTranscript?: boolean
+    reuseSavedTranscript?: boolean
   ): Promise<ContentItem> {
     console.log(`[InputHandler] Processing input: ${input}`);
 
@@ -380,7 +380,7 @@ export class InputHandlerService {
     if (inputType === 'subject') {
       return this.processSubject(input, customNotes);
     } else if (inputType === 'video') {
-      return await this.processVideo(input, customNotes, itemIndex, link, useSavedTranscript);
+      return await this.processVideo(input, customNotes, itemIndex, link, reuseSavedTranscript);
     } else if (inputType === 'transcript_file') {
       return this.processTranscriptFile(input, customNotes);
     } else if (inputType === 'directory') {
@@ -419,7 +419,7 @@ export class InputHandlerService {
     customNotes?: string,
     itemIndex?: number,
     link?: TranscriptLink,
-    useSavedTranscript?: boolean
+    reuseSavedTranscript?: boolean
   ): Promise<ContentItem> {
     // Split the one wire value into the two things the item records: the ref that gets
     // honored, and — when there is none — the declaration that says why not. An absent
@@ -430,7 +430,7 @@ export class InputHandlerService {
       link && !isTranscriptRefLink(link) ? link : undefined;
     log.info(`[InputHandler] Processing video: ${videoPath}`);
 
-    // THE ONLY BRANCH. The operator either asked for the saved transcript or he did not,
+    // THE ONLY BRANCH. The run either reuses the saved transcript or it does not,
     // and past this line nothing knows which — the item is built once, from `transcript`,
     // so a reused transcript cannot generate a differently-shaped item than a fresh one.
     //
@@ -445,10 +445,11 @@ export class InputHandlerService {
     // A SONG CHANNEL (LEDGER #308): the transcript is the lyrics track embedded in the video, never
     // ASR. Decided by the run's channel file, once per video, and said in the log.
     if (this.readsEmbeddedLyrics()) {
-      // A saved-transcript request (the box, or a parked job resuming past transcription, which
-      // asks for every video's) is met by reading the track again: the track is this channel's
-      // saved transcript, it costs one ffmpeg read, and nothing is ever transcribed. Said, not silent.
-      if (useSavedTranscript) {
+      // A saved-transcript reuse (a row with a record and "Replace existing transcript" unticked,
+      // or a parked job resuming past transcription, which asks for every video's) is met by
+      // reading the track again: the track is this channel's saved transcript, it costs one
+      // ffmpeg read, and nothing is ever transcribed. Said, not silent.
+      if (reuseSavedTranscript) {
         log.info(
           `[InputHandler] ${path.basename(videoPath)}: a saved transcript was asked for; this channel's transcript is the ` +
             `video's embedded lyrics track, so the track is read again (it is never transcribed)`
@@ -456,7 +457,10 @@ export class InputHandlerService {
       }
       return this.processSong(videoPath, customNotes, itemIndex, transcriptRef, finalOnly, linked?.source);
     }
-    const transcript: VideoTranscript = useSavedTranscript
+    // A record still being moved out of the old store (saved-transcript-migration.ts) is waited
+    // for, so the reuse reads it beside the video and a fresh run never races the move.
+    await savedTranscriptMigrationSettled();
+    const transcript: VideoTranscript = reuseSavedTranscript
       ? this.reuseSavedTranscript(videoPath, itemIndex)
       : await this.transcribeAndSave(videoPath, itemIndex, customNotes, transcriptRef?.storyTitle ?? null, linked?.vocabulary ?? null);
 
@@ -564,7 +568,9 @@ export class InputHandlerService {
    * transcribed an hour of video and could not record the fact would leave the operator
    * with a checkbox that never appears and nothing to explain why, so it fails here
    * instead — outside the catch below, so a store that cannot be written is not reported
-   * as a transcription that failed.
+   * as a transcription that failed. The record sits beside the video (#313), so the
+   * video's folder is checked for writing FIRST: a read-only folder fails the item before
+   * the hour of transcription, not after it.
    */
   private async transcribeAndSave(
     videoPath: string,
@@ -573,6 +579,7 @@ export class InputHandlerService {
     storyTitle: string | null,
     storyVocabulary: string[] | null
   ): Promise<VideoTranscript> {
+    assertSavedTranscriptWritable(videoPath);
     let result: Awaited<ReturnType<TranscriptionService['transcribeVideo']>>;
     try {
       // Send 'preparing' event before transcription starts. The item index is
@@ -619,7 +626,6 @@ export class InputHandlerService {
     }
 
     saveTranscript({
-      outputDir: this.outputDir,
       videoPath,
       segments: result.segments,
       durationSec: result.durationSec,
@@ -645,7 +651,8 @@ export class InputHandlerService {
   }
 
   /**
-   * Read the saved record instead of running Whisper, because the operator ticked the box.
+   * Read the saved record instead of transcribing, because the video has one and the operator
+   * left its row's "Replace existing transcript" box unticked.
    *
    * There is no recovery path in here and there must not be one. A record that is missing,
    * unreadable or no longer a record OF this video throws (see loadSavedTranscript), and
@@ -666,11 +673,22 @@ export class InputHandlerService {
       this.progressCallback('preparing', `Reading saved transcript for ${filename}`, 0, filename, index);
     }
 
-    const { record, reuse } = loadSavedTranscript(this.outputDir, videoPath);
+    let loaded: ReturnType<typeof loadSavedTranscript>;
+    try {
+      loaded = loadSavedTranscript(videoPath);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${reason} This run was to reuse it (its queue row's "Replace existing transcript" was ` +
+        `unticked, or the job resumed past transcription), so nothing was transcribed. Tick ` +
+        `"Replace existing transcript" on the row to transcribe it again.`
+      );
+    }
+    const { record, reuse } = loaded;
 
     // SPEAKER TAGS COME FROM THE RECORD, and cannot be added to it here — the audio the tagger
     // would need was deleted at the end of the run that wrote it, and re-extracting it would
-    // mean re-reading the whole video, which is the cost the operator ticked the box to decline.
+    // mean re-reading the whole video, which is the cost reusing the record is there to avoid.
     //
     // So the two ways this can disagree are two different things, and they are treated
     // differently. Tagging ON over an untagged record is a REQUEST THAT CANNOT BE MET: the
@@ -680,11 +698,12 @@ export class InputHandlerService {
     // better than the run promised; it is logged so the report and the log agree about why.
     if (this.speakerTagger && !record.speaker_tagging) {
       throw new Error(
-        `"Use saved transcript" is ticked for ${filename}, but that transcript was saved before a ` +
-        `voice enrollment was configured, so its captions carry no speaker attribution. Speaker ` +
-        `tagging is on for this run and cannot be applied to a stored transcript — the audio it ` +
-        `scores is only available while the video is being transcribed. Untick the box to ` +
-        `transcribe and tag it, or clear the enrollment in Settings to run untagged.`
+        `${filename} reuses its saved transcript ("Replace existing transcript" unticked), but that ` +
+        `transcript was saved before a voice enrollment was configured, so its captions carry no ` +
+        `speaker attribution. Speaker tagging is on for this run and cannot be applied to a stored ` +
+        `transcript — the audio it scores is only available while the video is being transcribed. ` +
+        `Tick "Replace existing transcript" to transcribe and tag it, or clear the enrollment in ` +
+        `Settings to run untagged.`
       );
     }
     if (this.speakerTagger && record.speaker_tagging &&
@@ -906,7 +925,7 @@ export class InputHandlerService {
     customNotesMap?: Map<string, string>,
     failures?: string[],
     transcriptLinkMap?: Map<string, TranscriptLink>,
-    useSavedTranscriptMap?: Map<string, boolean>
+    reuseSavedTranscriptMap?: Map<string, boolean>
   ): Promise<ContentItem[]> {
     console.log(`[InputHandler] Processing ${inputs.length} inputs (max 5 concurrent transcriptions)`);
 
@@ -930,10 +949,11 @@ export class InputHandlerService {
           // with its reason attached, which is not the same as no entry at all (never
           // offered a link). Collapsing them would erase the declaration.
           const link = transcriptLinkMap?.get(input);
-          // Absent means "transcribe it", which is the default and the only default. The
-          // map only ever carries the videos whose box the operator ticked.
-          const useSaved = useSavedTranscriptMap?.get(input) === true;
-          return await this.processInput(input, customNotes, index, link, useSaved);
+          // Absent means "transcribe it". The map carries only the videos the renderer decided
+          // reuse their saved record: one was there and "Replace existing transcript" was not
+          // ticked (#313), or a parked job resumes past transcription.
+          const reuseSaved = reuseSavedTranscriptMap?.get(input) === true;
+          return await this.processInput(input, customNotes, index, link, reuseSaved);
         }
       } catch (error) {
         console.error(`[InputHandler] Failed to process input ${input}:`, error);

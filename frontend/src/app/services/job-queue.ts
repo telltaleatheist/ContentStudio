@@ -1,6 +1,6 @@
 import { Injectable, signal, effect, inject } from '@angular/core';
 import { CrucibleService } from './crucible';
-import { InputItem } from './inputs-state';
+import { InputItem, migrateSavedTranscriptChoice } from './inputs-state';
 import { ChapterPick, migrateChapterPick } from './chapter-pick';
 import type { ResumeStage } from '../features/crucible/crucible.types';
 
@@ -124,6 +124,9 @@ export class JobQueueService {
         // Convert date strings back to Date objects and reset processing jobs to pending
         const restoredJobs = jobs.map(job => ({
           ...job,
+          // A row saved before #313 carries the old "Use saved transcript" choice, the other way
+          // round from this build's "Replace existing transcript": converted, never read as-is.
+          inputs: job.inputs.map(item => migrateSavedTranscriptChoice(item, `queued job "${job.name}"`)),
           createdAt: new Date(job.createdAt),
           completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
           // Reset interrupted 'processing' jobs to pending. Also reset 'held' jobs:
