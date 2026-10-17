@@ -1051,9 +1051,10 @@ def main():
         altered_xml = editor.cut_silence(str(master_video), threshold or config.default_threshold)
 
         # Step 1.2: the master carries the game audio merged in, and a game is almost never
-        # silent, so with game audio in the set the pauses come from every OTHER source.
+        # silent, so whenever the set has its own audio sources the pauses come from those,
+        # never from the master, whether or not game audio was chosen (Owen, 2026-10-17).
         # Stream recovery has no individual tracks (see the smart cut filter below).
-        if not use_downloaded_stream and any(p and is_game_audio(t) for t, p in audio_sources_input.items()):
+        if not use_downloaded_stream and any(p and finds_pauses(t) for t, p in audio_sources_input.items()):
             set_stage(12, 'Finding pauses without the game audio...')
             altered_xml = recut_without_game(editor, altered_xml, str(master_video), audio_sources_input,
                                              threshold or config.default_threshold)

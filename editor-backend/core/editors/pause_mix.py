@@ -3,8 +3,10 @@
 
 The master recording carries every source merged, game audio included, and a game is
 almost never silent: auto-editor on the master found next to no pauses on a set with a
-game capture. When the set has game audio, the pauses are found on a mix of every OTHER
-audio source instead, and the master's cut list is rewritten from it.
+game capture. Whenever the set has its own audio sources, the pauses are found on a mix of
+every source but the game instead, and the master's cut list is rewritten from it. That holds
+when Game Audio is set to None too (Owen, 2026-10-17: the 10-14 re-run without it kept the
+game in through the master, and 5:44-7:01 lost no pauses).
 
 The soundboard track (soundEffects) is left out of that mix too. It plays only when Owen
 presses a button, so it has no pauses of its own to give. On the 2026-10-15 OBS set it also
@@ -90,8 +92,8 @@ def recut_without_game(editor, master_xml: str, master_video: str, audio_sources
     """
     others = sorted((t, p) for t, p in audio_sources.items() if p and finds_pauses(t))
     if not others:
-        raise ValueError("The set has game audio and no other audio source, so there is nothing "
-                         "to find pauses in without the game.")
+        raise ValueError("The set has no audio source but the game and the soundboard, so there is "
+                         "nothing to find pauses in without the game.")
     for t, p in others:
         if not Path(p).exists():
             raise FileNotFoundError(f"{t} audio not found for pause detection: {p}")
