@@ -2262,3 +2262,38 @@ Pools sizes moved to tags-hashtags.ts. Checked by `tools/scrub-reroll-checks.js`
 - Not run live; Owen tests.
 
 [editor-backend/cli/transcript_keep.py (new), transcribe.py (comment), electron_workflow.py; editor-backend/core/sync_offset.py (new), audio_sync.py; electron/services/editor/editor-ipc.ts, python-service.ts; electron/preload.ts; frontend/src/app/components/editor/project-setup-modal/project-setup-modal.component.{ts,html,scss}, editor.component.ts, editor-host.ts; frontend/src/app/services/{editor-processing,editor-host.adapter,electron}.ts; tools/transcript-keep-checks.py (new); package.json]
+
+**316. A metadata set can publish an updated video: a re-render chosen on the Reports Video row uploads instead of the report's own file, and the chapters are left out while it is set (Owen, 2026-10-18: "i want to be able to update the linked video. the metadata generated for these videos shouldnt tangibly change if i insert these ads in different places. i just rendered an updated version of f1 - kent christmas with the ads inserted. i want to be able to update the video for a metadata set so it uploads that to youtube instead"; then "we can exclude chapters if we update the video").**
+- **Cause.** The upload sent the report's `source_path` and nothing else, so a re-render with ads inserted could only go up by regenerating the metadata, or by a browser upload the record knew nothing about.
+- **Where it lives.** The publish record (`<userData>/publish/selections/items/<itemId>.json`) gains `updatedVideo: { path, bytes, mtimeMs, durationSec, setAt, replacesPath } | null`. It is never absent; old records read as null. The job JSON's `source_path` / `source_key` are not touched. They stay the item's identity, so the saved transcript, thumbnails, re-rolls, calendar and primary-set joins still use the original.
+- **What uses it.**
+  - The YouTube upload sends the updated file. The report's own file is not needed then.
+  - The duplicate check matches by the updated file's name and its ffprobe length, read when it was chosen. This fills the null duration that used to downgrade a name match. `resolveChosenMetadata` serves that name and length, so Find on YouTube and the extension's draft match go by them too.
+  - The upload receipt records the updated path and size.
+  - Spreaker: auto-config only ever picks an episode's audio when the source is itself an audio file, and an updated video is always a video. So the episode-audio offer (publish-propose-audio) now looks beside the updated video, and the episode upload refuses an audio file that belongs to the original (the source itself, or a sibling export of it).
+- **Chapters excluded.** `composePublishedText` composes no chapter block while `updatedVideo` is set, whatever `chaptersInDescription` says. The reports page shows the description without them, and the push, upload, Spreaker and extension fill all read that one composition. `chapterEdits` / `chapterDrops` stay stored and unused, so clearing brings the chapters back exactly. The Chapters switch shows unticked and inert, with the reason as its hint.
+- **The descriptionOverride question.** Since 2026-08-25 an override replaces only the prose section; the chapters are their own section. So an override never carries the generated chapter block. But it is free text, and nothing stops chapter lines being typed into it, so that cannot be ruled out. While an updated video is set, an override with lines that start with a timestamp (`0:00`, `4:58 - …`, `1:02:03 …`) refuses the upload, the push and the Spreaker upload. The message names up to three of the lines and says "Take the chapter lines out of the edited description (or Revert it), or use the original video". Nothing is stripped. A time in the middle of a sentence does not count.
+- **Refusals, by name.**
+  - Setting one on an item that has a videoId: "Item … is already on YouTube as video …, and YouTube cannot replace an uploaded video's file. Mark it unpublished first, then upload the new render."
+  - At set time: a non-video extension, the report's own file, a missing or empty file, a length ffprobe cannot read, and a report with no source path.
+  - At upload time: the file gone ("…updated video is not on disk…"), or its size/mtime no longer what was chosen ("…has changed since it was chosen … It was rendered again, so its length may have changed: choose it again with Update video…."). The Video row and the Link tick show the same problem before the button is pressed.
+  - Clearing is always allowed, including on a linked item.
+- **UI (Reports, Video row).**
+  - "Update video…" opens a video-file picker; the picker stores nothing.
+  - Once set, the row shows the updated file's name, "updated video · replaces <original name>", "Chapters are left out while an updated video is set.", Show in Folder for it, "Update video…" to choose again, and "Use original video".
+  - Refusals show in the row's banner, as link/unlink errors do.
+  - The IPC channels are `publish-choose-updated-video` and `publish-set-updated-video` (a path, or null to clear), and `publish-video-source` now carries `updated`.
+- **Checks.** tools/updated-video-checks.js (new, in `npm run check:pure`, 8, offline: a real store in a temp folder and a fake YouTube). They cover:
+  - set → restart → clear;
+  - the description losing its chapter block while set and getting it back exactly;
+  - the upload sending the updated path and size with the original absent;
+  - the duplicate check refusing the same name and length, and passing a different length;
+  - changed and missing files refusing;
+  - the videoId refusal, and clear-on-linked;
+  - the override-with-chapter-lines refusal, and an override without them going;
+  - the audio follow.
+
+  check:pure (155 PASS), check:littlegoose and check:p4 pass. tsc electron + preload and the frontend build pass.
+- Not run live; Owen tests.
+
+[electron/services/publish/updated-video.ts (new), publish-types.ts, publish-store.service.ts, youtube-upload.ts, youtube-push.ts, spreaker-push.ts, publish-ipc.ts; electron/services/metadata/description-composer.ts; electron/preload.ts; frontend/src/app/features/publish/{publish.types,publish-state,video-link}.ts; frontend/src/app/services/electron.ts; frontend/src/app/components/metadata-reports/metadata-reports.{ts,html}; tools/updated-video-checks.js (new); package.json]

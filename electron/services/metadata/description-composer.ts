@@ -192,6 +192,7 @@ export function composeDescription(item: ComposableItem, options: { includeChapt
           chapterEdits: {},
           chapterDrops: [],
           chaptersInDescription: false,
+          updatedVideo: null,
         }
   );
 }

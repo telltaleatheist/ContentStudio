@@ -296,6 +296,11 @@ const api = {
   publishLinkVideo: (itemId: string, videoId: string, channelId: string) =>
     ipcRenderer.invoke('publish-link-video', itemId, videoId, channelId),
   publishUnlinkVideo: (itemId: string) => ipcRenderer.invoke('publish-unlink-video', itemId),
+  // The updated video (LEDGER #316): a re-render published instead of the report's video. The
+  // picker stores nothing; set takes a path, or null to go back to the original.
+  publishChooseUpdatedVideo: () => ipcRenderer.invoke('publish-choose-updated-video'),
+  publishSetUpdatedVideo: (itemId: string, absPath: string | null) =>
+    ipcRenderer.invoke('publish-set-updated-video', itemId, absPath),
   // Downscaled in the MAIN process (nativeImage) so the preview never needs a file://
   // read from the renderer — webSecurity stays on. `absPath` names a file that is NOT
   // the stored one, which is how a proposal is previewed before it is confirmed; omit it

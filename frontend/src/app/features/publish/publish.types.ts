@@ -552,6 +552,21 @@ export interface ChosenMetadata {
   status: PublishStatus;
   updatedAt: string;
   filledAt: string | null;
+  /**
+   * The re-render published instead of the report's video, or null (LEDGER #316). While set,
+   * the description carries no chapters. Mirror of UpdatedVideo in publish-types.ts.
+   */
+  updatedVideo: UpdatedVideo | null;
+}
+
+/** Mirror of UpdatedVideo in electron/services/publish/publish-types.ts. */
+export interface UpdatedVideo {
+  path: string;
+  bytes: number;
+  mtimeMs: number;
+  durationSec: number;
+  setAt: string;
+  replacesPath: string;
 }
 
 /** One publishable chapter, addressable by its full generated line. */
@@ -599,6 +614,20 @@ export interface VideoSource {
   problem: string | null;
   /** The file is not on disk right now (drive unplugged). */
   notice: string | null;
+  /** The re-render chosen to publish instead (LEDGER #316), measured when the row was read. */
+  updated: UpdatedVideoView | null;
+}
+
+/** Mirror of UpdatedVideoView in electron/services/publish/updated-video.ts. */
+export interface UpdatedVideoView {
+  path: string;
+  fileName: string;
+  replacesPath: string;
+  replacesFileName: string;
+  setAt: string;
+  onDisk: boolean;
+  /** Missing, or changed since it was chosen: the upload refuses with this. */
+  problem: string | null;
 }
 
 /** One recent upload on the channel. Mirror of DraftCandidate in publish-types.ts. */

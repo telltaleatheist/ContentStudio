@@ -1715,6 +1715,20 @@ export class MetadataReports implements OnInit, OnDestroy {
     return result ? uploadRows(result) : [];
   });
 
+  /** Show the updated video (LEDGER #316) in Finder. */
+  async showUpdatedVideoInFolder(): Promise<void> {
+    const updated = this.publish.videoSource()?.updated;
+    if (!updated) return;
+    try {
+      await this.electron.showInFolder(updated.path);
+    } catch (error) {
+      this.notificationService.error(
+        'Could not show the video',
+        `Finder could not show ${updated.path}: ${(error as Error).message}`,
+      );
+    }
+  }
+
   async showSourceInFolder(): Promise<void> {
     const source = this.publish.videoSource();
     if (!source?.path) return;
@@ -3893,6 +3907,9 @@ export class MetadataReports implements OnInit, OnDestroy {
   }
 
   chaptersToggleHint(): string {
+    if (this.publish.updatedVideo()) {
+      return 'Chapters are left out while an updated video is set: they were timed against the original. Use the original video to bring them back.';
+    }
     return 'Include the chapter list between the description and the links in what gets copied and pushed.';
   }
 

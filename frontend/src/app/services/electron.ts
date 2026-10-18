@@ -875,6 +875,8 @@ declare global {
         channelId: string
       ) => Promise<PublishResult<ChosenMetadata>>;
       publishUnlinkVideo: (itemId: string) => Promise<PublishResult<ChosenMetadata>>;
+      publishChooseUpdatedVideo: () => Promise<PublishResult<string | null>>;
+      publishSetUpdatedVideo: (itemId: string, absPath: string | null) => Promise<PublishResult<ChosenMetadata>>;
       publishReadThumbnail: (
         itemId: string,
         maxPx: number,
@@ -1756,6 +1758,18 @@ export class ElectronService {
   async publishVideoSource(itemId: string): Promise<PublishResult<VideoSource>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishVideoSource(itemId);
+  }
+
+  /** The native picker for an updated video (LEDGER #316). null when cancelled; stores nothing. */
+  async publishChooseUpdatedVideo(): Promise<PublishResult<string | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishChooseUpdatedVideo();
+  }
+
+  /** Set the re-render this item publishes instead of its report's video, or null to clear it. */
+  async publishSetUpdatedVideo(itemId: string, absPath: string | null): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetUpdatedVideo(itemId, absPath);
   }
 
   /** The channel's recent uploads with a proposed match. Links nothing. */

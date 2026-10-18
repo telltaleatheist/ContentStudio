@@ -678,8 +678,14 @@ export function resolveChosenMetadata(
     tags: chosen.tagsOverride ?? generated.tags ?? '',
     // Stored value wins (it was captured at selection time); otherwise fall back to
     // whatever the host can still determine from the job.
-    sourceFilename: chosen.sourceFilename ?? generated.sourceFilename ?? null,
-    sourceDurationSec: chosen.sourceDurationSec ?? generated.sourceDurationSec ?? null,
+    // An updated video (LEDGER #316) is the file that goes out, so its name and its probed
+    // length are what a YouTube upload of it is matched by — the duplicate check and Find.
+    sourceFilename: chosen.updatedVideo
+      ? path.basename(chosen.updatedVideo.path)
+      : chosen.sourceFilename ?? generated.sourceFilename ?? null,
+    sourceDurationSec: chosen.updatedVideo
+      ? chosen.updatedVideo.durationSec
+      : chosen.sourceDurationSec ?? generated.sourceDurationSec ?? null,
     status: chosen.status,
     // WHETHER, not where. The extension is the consumer and cannot open a file on
     // Callisto; it asks the app for the bytes when this is true.

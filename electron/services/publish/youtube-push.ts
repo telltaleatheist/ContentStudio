@@ -58,6 +58,7 @@ import type { VideoParts } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
 import { fitThumbnailFile } from './thumbnail-validate';
 import { requireProfileRead, type ChannelPublishProfile, type ChannelUploadFlags } from './youtube-profile';
+import { updatedVideoDescriptionProblem } from './updated-video';
 import {
   ChosenMetadata,
   MAX_TITLE_LENGTH,
@@ -230,6 +231,12 @@ export function planVideoUpdate(input: {
   const descriptionProblem = youtubeDescriptionProblem(description);
   if (descriptionProblem) {
     throw new Error(`Nothing was pushed to video ${videoId}. ${descriptionProblem}`);
+  }
+  // LEDGER #316: with an updated video set, chapter lines typed into an edited description are
+  // the original video's times. Refused by name, never stripped.
+  const chapterProblem = updatedVideoDescriptionProblem(record);
+  if (chapterProblem) {
+    throw new Error(`Nothing was pushed to video ${videoId}. ${chapterProblem}`);
   }
   const currentTags: string[] = Array.isArray(video.snippet.tags) ? video.snippet.tags : [];
   if (tags.length === 0 && currentTags.length > 0) {

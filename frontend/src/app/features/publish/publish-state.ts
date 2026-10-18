@@ -367,6 +367,8 @@ export class PublishState {
 
   /** The video this item is linked to, or null when nothing is linked yet. */
   readonly videoId = computed(() => this._selection()?.videoId ?? null);
+  /** The re-render published instead of the report's video (LEDGER #316); chapters are left out while set. */
+  readonly updatedVideo = computed(() => this._selection()?.updatedVideo ?? null);
 
   /** ISO of the last push to that video, or null for never. */
   readonly pushedAt = computed(() => this._selection()?.pushedAt ?? null);
@@ -986,6 +988,51 @@ export class PublishState {
         return;
       }
       this._selection.set(res.data);
+      await this.refreshResolved();
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /**
+   * Choose a re-render to publish instead of the report's video (LEDGER #316). The picker
+   * stores nothing; main checks the file (and refuses on an item already on YouTube), probes
+   * its length and writes it. A refusal is shown in the Video row in main's own words.
+   */
+  async chooseUpdatedVideo(): Promise<void> {
+    const t = this.target('update the video');
+    if (!t) return;
+    const picked = await this.electron.publishChooseUpdatedVideo();
+    if (!picked.success) {
+      this._videoError.set(`The file picker could not be opened: ${picked.error ?? 'no reason was given.'}`);
+      return;
+    }
+    if (!picked.data) return;
+    await this.writeUpdatedVideo(t, picked.data);
+  }
+
+  /** Go back to the report's own video. Always allowed; the chapters come back. */
+  async useOriginalVideo(): Promise<void> {
+    const t = this.target('use the original video');
+    if (!t) return;
+    await this.writeUpdatedVideo(t, null);
+  }
+
+  private async writeUpdatedVideo(itemId: string, absPath: string | null): Promise<void> {
+    this._saving.set(true);
+    this._videoError.set(null);
+    try {
+      const res = await this.electron.publishSetUpdatedVideo(itemId, absPath);
+      if (this._itemId() !== itemId) return;
+      if (!res.success || !res.data) {
+        this._videoError.set(
+          `${absPath === null ? 'The original video was not restored' : 'The video was not updated'}: ` +
+          `${res.error ?? 'no reason was given.'}`
+        );
+        return;
+      }
+      this._selection.set(res.data);
+      await this.refreshVideoSource(itemId);
       await this.refreshResolved();
     } finally {
       this._saving.set(false);

@@ -801,6 +801,42 @@
                           <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ source.notice }}</span></div>
                         }
                       }
+
+                      <!-- UPDATED VIDEO (LEDGER #316): a re-render published in place of the file
+                           above. The report keeps its identity; only the upload changes, and
+                           the chapters are left out. Refused by main on an item already on
+                           YouTube, with the reason shown below. -->
+                      @if (source.updated; as updated) {
+                        <div class="thumb">
+                          <div class="thumb-facts">
+                            <span class="thumb-fn" [title]="updated.path">{{ updated.fileName }}</span>
+                            <span class="thumb-dim">updated video · replaces {{ updated.replacesFileName }}</span>
+                          </div>
+                        </div>
+                        <p class="why">Chapters are left out while an updated video is set.</p>
+                        <div class="fld">
+                          <button class="ghost"
+                                  [disabled]="!updated.onDisk"
+                                  [title]="updated.onDisk ? updated.path : 'Not on disk right now'"
+                                  (click)="showUpdatedVideoInFolder()">Show in Folder</button>
+                          <button class="ghost"
+                                  [disabled]="publish.saving()"
+                                  (click)="publish.chooseUpdatedVideo()">Update video…</button>
+                          <button class="ghost"
+                                  [disabled]="publish.saving()"
+                                  (click)="publish.useOriginalVideo()">Use original video</button>
+                        </div>
+                        @if (updated.problem) {
+                          <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ updated.problem }}</span></div>
+                        }
+                      } @else if (!source.problem) {
+                        <div class="fld">
+                          <button class="ghost"
+                                  [disabled]="publish.saving()"
+                                  [title]="publish.videoId() ? 'Already on YouTube, and YouTube cannot replace the file of an uploaded video' : 'Choose a re-render to upload instead of this file'"
+                                  (click)="publish.chooseUpdatedVideo()">Update video…</button>
+                        </div>
+                      }
                     }
 
                     @if (publish.videoId(); as videoId) {
@@ -1286,8 +1322,8 @@
               @if (hasChapters() && publish.hasResolved()) {
                 <label class="chk" [title]="chaptersToggleHint()">
                   <input type="checkbox"
-                         [checked]="publish.chaptersInDescription()"
-                         [disabled]="publish.saving()"
+                         [checked]="publish.chaptersInDescription() && !publish.updatedVideo()"
+                         [disabled]="publish.saving() || !!publish.updatedVideo()"
                          (change)="setChaptersInDescription($any($event.target).checked)">
                   <span>Chapters</span>
                   <span class="chk-sub num">{{ metadata()!.chapters!.length }}</span>

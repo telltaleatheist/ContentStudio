@@ -148,6 +148,7 @@ import {
 import { AudioProbe, MAX_EPISODE_BYTES, validateAudioFile } from './audio-validate';
 import { GeneratedFallback, PublishStoreService, resolveChosenMetadata } from './publish-store.service';
 import { firstLineOf, splitTags } from './youtube-push';
+import { updatedVideoAudioProblem, updatedVideoDescriptionProblem } from './updated-video';
 
 /**
  * The show an upload targets, and the assertion that this app can authenticate as its
@@ -320,6 +321,14 @@ export function planEpisode(input: {
       `on Spreaker (or press "Forget episode" on this item's metadata page) if you mean to ` +
       `upload it again.`
     );
+  }
+
+  // ---- an updated video (LEDGER #316) -------------------------------------------
+  // The episode follows the re-render: audio chosen for the original is the old cut, and
+  // chapter lines typed into an edited description are the original's times.
+  const followProblem = updatedVideoAudioProblem(record) ?? updatedVideoDescriptionProblem(record);
+  if (followProblem) {
+    throw new Error(`Item ${item} was not uploaded to Spreaker. ${followProblem}`);
   }
 
   // ---- the show ----------------------------------------------------------------

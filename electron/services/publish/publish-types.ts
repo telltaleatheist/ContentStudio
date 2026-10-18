@@ -221,6 +221,33 @@ export interface PushReceipt {
   };
 }
 
+/**
+ * A re-render chosen to publish in place of the video the report was made from (LEDGER #316;
+ * Owen, 2026-10-18: "i want to be able to update the video for a metadata set so it uploads that
+ * to youtube instead"). Ads inserted in different places do not change what the metadata says,
+ * so the metadata set stays and only the file it publishes changes.
+ *
+ * The report's own source_path / source_key are NOT rewritten: they are the item's identity, and
+ * the saved transcript, the thumbnails, the re-rolls, the calendar and the primary-set join all
+ * key off them. This record says which file goes out instead. See updated-video.ts.
+ *
+ * bytes and mtimeMs are what the file measured when it was chosen, and the upload refuses when
+ * they no longer match: a file rendered again since may have a different length, and the length
+ * below is what the duplicate check compares.
+ */
+export interface UpdatedVideo {
+  /** Absolute path of the re-render. */
+  path: string;
+  bytes: number;
+  mtimeMs: number;
+  /** ffprobe's length of the re-render, read when it was chosen. */
+  durationSec: number;
+  /** ISO. When it was chosen. */
+  setAt: string;
+  /** The report's source_path when it was chosen: the file this one replaces. */
+  replacesPath: string;
+}
+
 /** What one API upload (videos.insert) created. Written by youtube-upload.ts only. */
 export interface UploadReceipt {
   videoId: string;
@@ -427,6 +454,8 @@ export interface ChosenMetadata {
    * A STRICT BOOLEAN, NEVER ABSENT — same contract as `isPodcast`, written explicitly by
    * emptyChosenMetadata and filled in by upgradeStoredMetadata.
    *
+   * An updatedVideo (LEDGER #316) overrides it: while one is set, no chapter block is composed.
+   *
    * It governs the COMPOSED description only. `descriptionOverride` is the operator's own
    * literal text and wins over composition entirely — chapters, hashtags, link block and
    * all — so on an overridden item this flag changes nothing, and the reports page says so
@@ -612,6 +641,16 @@ export interface ChosenMetadata {
    * kept here so nothing about what was once sent is lost. Absent on records never unmarked.
    */
   retiredUploads?: RetiredUpload[];
+
+  /**
+   * The re-render this item publishes instead of its report's own video, or null for the
+   * report's video (LEDGER #316). While it is set the composed description carries NO chapter
+   * block, whatever chaptersInDescription says: the chapters were timed against the original,
+   * and inserting ads moves them. chapterEdits / chapterDrops stay stored and unused, so
+   * clearing it brings the chapters back exactly. Refused on an item already linked to a video.
+   * Strictly present, never absent (upgradeStoredMetadata fills null).
+   */
+  updatedVideo: UpdatedVideo | null;
 }
 
 /** One upload an item was taken off by "Mark as unpublished". */
@@ -854,7 +893,7 @@ export interface DescriptionSections {
 /** The section edits a record carries, structurally a subset of ChosenMetadata. */
 export type DescriptionSectionEdits = Pick<
   ChosenMetadata,
-  'descriptionOverride' | 'linksOverride' | 'chapterEdits' | 'chapterDrops' | 'chaptersInDescription'
+  'descriptionOverride' | 'linksOverride' | 'chapterEdits' | 'chapterDrops' | 'chaptersInDescription' | 'updatedVideo'
 >;
 
 /**
@@ -874,8 +913,10 @@ export function composePublishedText(
 ): string {
   const body = edits?.descriptionOverride ?? sections.body;
 
+  // An updated video (LEDGER #316) leaves the chapters out: they were timed against the video
+  // the report was made from, and the re-render's ads move them. The edits stay on the record.
   let chapterBlock = '';
-  if (edits === null || edits.chaptersInDescription) {
+  if (edits === null || (edits.chaptersInDescription && edits.updatedVideo === null)) {
     const drops = new Set(edits?.chapterDrops ?? []);
     const renames = edits?.chapterEdits ?? {};
     chapterBlock = sections.chapters
@@ -947,6 +988,7 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     videoId: null,
     sourceFilename: null,
     sourceDurationSec: null,
+    updatedVideo: null,
     status: 'selecting',
     updatedAt: new Date().toISOString(),
     filledAt: null,
@@ -1019,6 +1061,8 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('pushedAt' in stored)) upgraded.pushedAt = null;
   if (!('pushReceipt' in stored)) upgraded.pushReceipt = null;
   if (!('uploadReceipt' in stored)) upgraded.uploadReceipt = null;
+  // LEDGER #316. A record written before the field cannot have chosen a re-render.
+  if (!('updatedVideo' in stored)) upgraded.updatedVideo = null;
 
   return upgraded;
 }

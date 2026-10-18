@@ -32,7 +32,13 @@ import {
 import { matchDraft, toFillCandidates } from './video-matcher';
 import { describeVideoSource, durationNote, matchFileName } from './video-source';
 import { YouTubePushApi, pushItemToYouTube, pushScheduleToYouTube } from './youtube-push';
-import { YouTubeUploadApi, uploadItemToYouTube } from './youtube-upload';
+import { YouTubeUploadApi, statOnDisk, uploadItemToYouTube } from './youtube-upload';
+import {
+  UPDATED_VIDEO_EXTENSIONS,
+  audioProposalSource,
+  chooseUpdatedVideo,
+  describeUpdatedVideo,
+} from './updated-video';
 import {
   SpreakerTarget,
   SpreakerUploadApi,
@@ -1539,7 +1545,65 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const generated = requireGenerated(id);
       const source = describeVideoSource(generated, (p) => fs.existsSync(p));
       if (source.problem) log.error(`[Publish] ${id}: ${source.problem}`);
-      return ok(source);
+      // The re-render chosen to publish instead (LEDGER #316), measured now: a problem here is
+      // exactly what the upload will refuse with.
+      const updated = describeUpdatedVideo(id, store.get(id)?.updatedVideo ?? null, statOnDisk);
+      if (updated?.problem) log.warn(`[Publish] ${id}: ${updated.problem}`);
+      return ok({ ...source, updated });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Choose a re-render with the native picker (LEDGER #316). Stores NOTHING: the path goes to
+   * publish-set-updated-video, the one door it is checked and written through. Cancel is null.
+   */
+  ipcMain.handle('publish-choose-updated-video', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Choose the updated video',
+        filters: [{ name: 'Videos', extensions: UPDATED_VIDEO_EXTENSIONS.map((e) => e.slice(1)) }],
+        properties: ['openFile'],
+      });
+      if (result.canceled || result.filePaths.length === 0) return ok(null);
+      return ok(result.filePaths[0]);
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Set (a path) or clear (null) the re-render this item publishes instead of its report's
+   * video (LEDGER #316). Setting is refused on an item already linked to a YouTube video —
+   * YouTube cannot replace an uploaded file — and probes the file's length, which the upload's
+   * duplicate check compares. Clearing is always allowed, and brings the chapters back.
+   */
+  ipcMain.handle('publish-set-updated-video', async (_e, itemId: string, absPath: string | null) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+      if (absPath === null) {
+        const before = store.get(id)?.updatedVideo ?? null;
+        const cleared = await store.update(id, generated, { updatedVideo: null });
+        if (before) log.info(`[Publish] ${id}: updated video ${before.path} cleared; the report's own video publishes`);
+        return ok(cleared);
+      }
+      const updatedVideo = await chooseUpdatedVideo({
+        itemId: id,
+        record: store.get(id),
+        originalPath: generated.sourcePath ?? null,
+        filePath: requireString(absPath, 'absPath'),
+        stat: statOnDisk,
+        probeDurationSec: async (file) => (await probeAudio(file)).durationSec,
+        now: new Date(),
+      });
+      const selection = await store.update(id, generated, { updatedVideo });
+      log.info(
+        `[Publish] ${id}: updated video set to ${updatedVideo.path} (${updatedVideo.bytes} bytes, ` +
+        `${updatedVideo.durationSec.toFixed(2)}s), replacing ${updatedVideo.replacesPath}; chapters left out`
+      );
+      return ok(selection);
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -1781,7 +1845,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const id = requireItemId(itemId, 'itemId');
       const generated = requireGenerated(id);
 
-      for (const candidate of deriveProposedAudioPaths(generated.sourcePath ?? null)) {
+      // Beside the updated video when one is set (LEDGER #316): that is the cut going out.
+      const from = audioProposalSource(store.get(id), generated.sourcePath ?? null);
+      for (const candidate of deriveProposedAudioPaths(from)) {
         if (!fs.existsSync(candidate)) continue;
         const { meta, warnings } = await validateAudioFile(candidate, probeAudio);
         return ok({ path: candidate, meta, warnings });

@@ -29,6 +29,8 @@
  *     editorial decision.
  *   - a thumbnail path that no longer validates — checked BEFORE the upload starts,
  *     so a bad file stops the run instead of surfacing after a gigabyte went up.
+ *   - an updated video (LEDGER #316) that is gone or has changed since it was chosen, and an
+ *     edited description that still carries chapter lines while one is set.
  *
  * ── Structure ────────────────────────────────────────────────────────────────────────
  *
@@ -51,6 +53,14 @@ import { fitThumbnailFile } from './thumbnail-validate';
 import { ChosenMetadata, UploadReceipt, youtubeDescriptionProblem } from './publish-types';
 import { firstLineOf, splitTags } from './youtube-push';
 import { LYRICS_CAPTION_TRACK, requireProfileRead, type ChannelPublishProfile } from './youtube-profile';
+import { requireUpdatedVideoFile, updatedVideoDescriptionProblem, type StatFn } from './updated-video';
+
+/** The file at a path as it is now, or null when nothing is there. */
+export const statOnDisk: StatFn = (p) => {
+  if (!fs.existsSync(p)) return null;
+  const st = fs.statSync(p);
+  return { bytes: st.size, mtimeMs: st.mtimeMs, isFile: st.isFile() };
+};
 
 /** The API surface an upload needs. Structural, like YouTubePushApi, and for the same
  *  reason: the whole flow must be exercisable against a fake in the offline harness. */
@@ -155,6 +165,10 @@ export function planVideoInsert(input: UploadPlanInput): UploadPlan {
   if (descriptionProblem) {
     throw new Error(`Item ${record.itemId} was not uploaded. ${descriptionProblem}`);
   }
+  const chapterProblem = updatedVideoDescriptionProblem(record);
+  if (chapterProblem) {
+    throw new Error(`Item ${record.itemId} was not uploaded. ${chapterProblem}`);
+  }
   if (file.sizeBytes <= 0) {
     throw new Error(`Item ${record.itemId}'s source file "${file.path}" is empty (0 bytes).`);
   }
@@ -200,22 +214,8 @@ export interface UploadDeps {
   now?: () => Date;
 }
 
-export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Promise<UploadOutcome> {
-  const { store, readGenerated, api, onProgress, signal } = deps;
-  const now = deps.now ?? (() => new Date());
-
-  const generated = readGenerated(itemId);
-  if (!generated) {
-    throw new Error(`No generated metadata for item ${itemId} — there is nothing to upload.`);
-  }
-  const record = store.get(itemId);
-  if (!record) {
-    throw new Error(
-      `Nothing has been saved for item ${itemId}, so it has no chosen title and no ` +
-      `channel. There is nothing to upload.`
-    );
-  }
-
+/** The report's own source file, checked to be there. */
+function requireReportSourceFile(itemId: string, generated: GeneratedFallback): { path: string; sizeBytes: number } {
   const sourcePath = generated.sourcePath ?? null;
   if (!sourcePath) {
     // Two causes, two messages. A record that DECLARES a null source was generated from a
@@ -240,7 +240,33 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
       `mount it; if the file moved, upload in the browser and link it in the Video row instead.`
     );
   }
-  const sizeBytes = fs.statSync(sourcePath).size;
+  return { path: sourcePath, sizeBytes: fs.statSync(sourcePath).size };
+}
+
+export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Promise<UploadOutcome> {
+  const { store, readGenerated, api, onProgress, signal } = deps;
+  const now = deps.now ?? (() => new Date());
+
+  const generated = readGenerated(itemId);
+  if (!generated) {
+    throw new Error(`No generated metadata for item ${itemId} — there is nothing to upload.`);
+  }
+  const record = store.get(itemId);
+  if (!record) {
+    throw new Error(
+      `Nothing has been saved for item ${itemId}, so it has no chosen title and no ` +
+      `channel. There is nothing to upload.`
+    );
+  }
+
+  // AN UPDATED VIDEO (LEDGER #316) goes out instead of the report's own file, checked against
+  // what it measured when it was chosen: a file rendered again since may be a different length.
+  // The report's file is then not needed at all.
+  const file = record.updatedVideo
+    ? requireUpdatedVideoFile(itemId, record.updatedVideo, statOnDisk)
+    : requireReportSourceFile(itemId, generated);
+  const sourcePath = file.path;
+  const sizeBytes = file.sizeBytes;
 
   // Thumbnail fitted and read BEFORE the upload — a file that is not an image stops the
   // run now, not after the gigabyte; one outside YouTube's bounds gets its fitted copy

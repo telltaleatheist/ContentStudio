@@ -34,6 +34,22 @@ export function youtubeLinkTick(videoId: string | null, source: VideoSource | nu
   if (source?.problem) {
     return { state: 'warn', value: 'video file lost', hint: source.problem };
   }
+  // An updated video (LEDGER #316) that is gone or was rendered again since it was chosen is
+  // what the upload will refuse with; say it on the tick rather than at the button.
+  if (!videoId && source?.updated?.problem) {
+    return {
+      state: 'warn',
+      value: source.updated.onDisk ? 'updated video changed' : 'updated video missing',
+      hint: source.updated.problem,
+    };
+  }
+  if (!videoId && source?.updated) {
+    return {
+      state: 'unset',
+      value: 'updated video, not on YouTube yet',
+      hint: `${source.updated.fileName} uploads in place of ${source.updated.replacesFileName}, without chapters.`,
+    };
+  }
   if (videoId) {
     return {
       state: 'set',
