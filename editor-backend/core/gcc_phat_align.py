@@ -382,6 +382,118 @@ def _require_signal(samples: "np.ndarray", path: str, start: float, dur: float,
 
 
 # ============================================================================
+# Window placement: analysis windows go where the SOURCE has sound
+# ============================================================================
+# Sample rate for the placement envelope. Only per-second RMS is kept, so this
+# needs to be high enough that a sound effect's energy survives the resample,
+# not high enough to correlate; it matches the default analysis rate. Measured
+# on a 3 h 02 min 48 kHz/24-bit WAV (3.1 GB): 8.3 s; on a 13 GB camera MP4's
+# AAC track: 10.9 s.
+ENVELOPE_FS = 8000
+
+
+def _source_envelope(ffmpeg: str, path: str, start: float,
+                     dur: float) -> "np.ndarray":
+    """Per-second RMS of ``path`` over ``[start, start + dur)``.
+
+    One streamed ffmpeg decode (mono f32le at :data:`ENVELOPE_FS`), reduced to
+    one RMS value per second as it arrives, so a multi-hour file never sits in
+    memory. Index ``i`` covers ``[start + i, start + i + 1)``; a trailing
+    partial second is kept as its own entry.
+    """
+    cmd = [
+        ffmpeg, "-v", "error", "-nostdin",
+        "-ss", f"{start:.6f}",
+        "-t", f"{dur:.6f}",
+        "-i", str(path),
+        "-map", "a:0",
+        "-vn",
+        "-ac", "1",
+        "-ar", str(ENVELOPE_FS),
+        "-f", "f32le",
+        "pipe:1",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    per_second = []
+    chunk_bytes = ENVELOPE_FS * 4 * 60          # one minute per read
+    carry = np.zeros(0, dtype=np.float64)
+    while True:
+        buf = proc.stdout.read(chunk_bytes)
+        if not buf:
+            break
+        x = np.concatenate([carry, np.frombuffer(buf, dtype=np.float32)
+                            .astype(np.float64)])
+        whole = (x.size // ENVELOPE_FS) * ENVELOPE_FS
+        if whole:
+            per_second.append(np.sqrt(np.mean(
+                x[:whole].reshape(-1, ENVELOPE_FS) ** 2, axis=1)))
+        carry = x[whole:]
+    stderr = proc.stderr.read()
+    if proc.wait() != 0:
+        raise RuntimeError(
+            f"ffmpeg failed to decode the energy envelope "
+            f"(start={start:.3f}s dur={dur:.3f}s) of {path!r}: "
+            f"{stderr.decode('utf-8', 'replace')}")
+    if carry.size:
+        per_second.append(np.array([np.sqrt(np.mean(carry ** 2))]))
+    if not per_second:
+        raise RuntimeError(
+            f"ffmpeg returned no audio for the energy envelope "
+            f"(start={start:.3f}s dur={dur:.3f}s) of {path!r}")
+    return np.concatenate(per_second)
+
+
+def _require_signal_anywhere(envelope: "np.ndarray", path: str, start: float,
+                             dur: float) -> None:
+    """Raise :class:`SilentAudioError` if the whole span carries no signal."""
+    rms = float(np.sqrt(np.mean(envelope ** 2)))
+    if rms < SILENCE_RMS_FLOOR:
+        raise SilentAudioError(
+            f"Source audio is silent: {path!r} has no signal anywhere in "
+            f"[{start:.3f}s, {start + dur:.3f}s] (RMS {rms:.3e}, floor "
+            f"{SILENCE_RMS_FLOOR:.0e}) -- the whole file, not just one window. "
+            f"There is nothing to correlate, so this file's offset cannot be "
+            f"measured from audio.")
+
+
+def _place_windows(envelope: "np.ndarray", env_start: float,
+                   anchors: List[float], wlen: float,
+                   axis_lo: float, axis_hi: float) -> List[float]:
+    """Choose window starts where the source carries sound.
+
+    ``anchors`` are the nominal starts (one per window, ascending, already
+    inside ``[axis_lo, axis_hi]``). The start axis is split between them at the
+    midpoints, so each window keeps its own stretch of the file and the set
+    still spans the recording (drift and spread stay meaningful). Within its
+    stretch each window takes the start whose ``wlen`` seconds hold the most
+    seconds with signal (per-second RMS at or above
+    :data:`SILENCE_RMS_FLOOR`); ties go to the start nearest the anchor, so a
+    track with sound throughout keeps exactly its anchored windows. A stretch
+    with no sound at all leaves its window on the anchor, where the per-window
+    silence check reports it.
+    """
+    active = (envelope >= SILENCE_RMS_FLOOR).astype(np.int64)
+    csum = np.concatenate([[0], np.cumsum(active)])
+    n = active.size
+    span = int(np.ceil(wlen))
+
+    def coverage(s: float) -> int:
+        i = int(np.floor(s - env_start + 1e-9))
+        i = min(max(i, 0), n)
+        return int(csum[min(n, i + span)] - csum[i])
+
+    starts = []
+    for k, anchor in enumerate(anchors):
+        lo = axis_lo if k == 0 else (anchors[k - 1] + anchor) / 2.0
+        hi = axis_hi if k == len(anchors) - 1 else (anchor + anchors[k + 1]) / 2.0
+        candidates = [anchor] + [float(s) for s in
+                                 np.arange(np.ceil(lo), np.floor(hi) + 1.0)]
+        best = max(candidates, key=lambda s: (coverage(s), -abs(s - anchor)))
+        starts.append(best)
+    return starts
+
+
+# ============================================================================
 # High-level: measure the signed offset of a source within a reference
 # ============================================================================
 def measure_offset(
@@ -411,11 +523,18 @@ def measure_offset(
         Restrict the per-window search to ``|tau| <= max_tau_seconds``.
         Default 5.0.
     windows : list[tuple[float, float]] or None, optional
-        Explicit ``(start_seconds, duration_seconds)`` analysis windows. If None
-        (default), three windows are placed at 10%, 50% and 85% of the reference
-        duration, each ``min(150 s, 30% of the reference duration)`` long. Window
-        starts are clamped so each full-length window fits inside the shorter of
-        the two files (positions move; window length is never shrunk).
+        Explicit ``(start_seconds, duration_seconds)`` analysis windows, used
+        verbatim (starts are only clamped to fit). If None (default), three
+        windows of ``min(150 s, 30% of the reference duration)`` are placed
+        where the SOURCE has sound: one per stretch of the file around the
+        anchors 10%, 50% and 85% of the reference duration (stretches split at
+        the midpoints between anchors), each at the start in its stretch whose
+        window holds the most seconds with signal, ties to the anchor. A track
+        with sound throughout therefore keeps the anchored windows; a sparse
+        one (sound effects with digital zero between) gets windows over its
+        sounds. The source's per-second energy comes from one streamed decode
+        (seconds, even for a 3 h file). Windows never run past the end of
+        either file, and window length is never shrunk.
 
     Returns
     -------
@@ -436,6 +555,9 @@ def measure_offset(
 
     Raises
     ------
+    SilentAudioError
+        If the source has no signal anywhere it overlaps the reference (named
+        as the whole file), or every analysis window is silent.
     RuntimeError
         If either file is too short to hold even one full analysis window
         (names the offending file and its duration -- never silently shrinks to
@@ -450,8 +572,13 @@ def measure_offset(
     src_dur = float(processor.get_duration_seconds(str(source_path)))
     effective_dur = min(ref_dur, src_dur)
 
-    # Build the default window plan from the reference duration.
-    if windows is None:
+    # Build the default window plan: anchored at 10/50/85 % of the reference,
+    # then moved within each window's stretch to where the SOURCE has sound.
+    # Fixed positions alone fail on a sparse track (sound effects played now
+    # and then, digital zero between): on Owen's 2026-10-18 set all three
+    # landed in gaps and the track read as silent (LEDGER #317).
+    default_plan = windows is None
+    if default_plan:
         wlen = min(150.0, 0.30 * ref_dur)
         windows = [(frac * ref_dur, wlen) for frac in (0.10, 0.50, 0.85)]
 
@@ -478,6 +605,15 @@ def measure_offset(
         # Clamp the start so the full-length window fits in the shorter file.
         start = min(max(0.0, float(start)), effective_dur - wdur)
         planned.append((start, wdur))
+
+    if default_plan:
+        # The clamped 10/50/85 % starts are the anchors; each window then moves
+        # within its stretch to where the source has sound.
+        envelope = _source_envelope(ffmpeg, source_path, 0.0, effective_dur)
+        _require_signal_anywhere(envelope, str(source_path), 0.0, effective_dur)
+        starts = _place_windows(envelope, 0.0, [st for st, _ in planned], wlen,
+                                0.0, effective_dur - wlen)
+        planned = [(st, wlen) for st in starts]
 
     per_window = []
     silent_windows = []
@@ -588,8 +724,12 @@ def locate_source(
         almost nothing to correlate. Default 30 s.
     fs, window_seconds, probe_fractions
         Analysis rate, window length, and where in the SOURCE (as fractions of
-        its duration) to place the probe windows. Fractions are of the source,
-        not the reference, because the source is the shorter file here.
+        its duration) to anchor the probe windows. Fractions are of the source,
+        not the reference, because the source is the shorter file here. The
+        windows are placed as in :func:`measure_offset`: the span from the
+        first anchor to the last is split between the anchors at their
+        midpoints, and each window takes the start in its stretch holding the
+        most seconds with signal, ties to its anchor.
 
     Returns
     -------
@@ -605,7 +745,8 @@ def locate_source(
     Raises
     ------
     SilentAudioError
-        If any probe window of the source (or reference) is digital silence.
+        If the probed span of the source has no signal at all, or any probe
+        window of the source (or reference) is digital silence.
     RuntimeError
         If the search radius leaves too little overlap, or a window cannot be
         placed inside both files.
@@ -614,6 +755,8 @@ def locate_source(
 
     if window_seconds <= 0:
         raise RuntimeError(f"Invalid window_seconds {window_seconds!r}")
+    if not probe_fractions:
+        raise RuntimeError("locate_source requires at least one probe fraction")
     if search_radius_seconds <= 0:
         raise RuntimeError(
             f"Invalid search_radius_seconds {search_radius_seconds!r}")
@@ -639,12 +782,20 @@ def locate_source(
             f"{source_path} is only {src_dur:.3f}s long. Refusing to shrink to a "
             f"degenerate window.")
 
-    # Place each probe window inside the SOURCE, then require its matching
-    # reference window (shifted by expected_start, widened by the search radius)
-    # to fit inside the reference.
+    # Anchor each probe window inside the SOURCE at its fraction, move it within
+    # its stretch of the probed span to where the source has sound (as in
+    # measure_offset), then require its matching reference window (shifted by
+    # expected_start, widened by the search radius) to fit inside the reference.
+    anchors = sorted(min(max(0.0, frac * src_dur), src_dur - window_seconds)
+                     for frac in probe_fractions)
+    span_lo, span_hi = anchors[0], anchors[-1]
+    envelope = _source_envelope(ffmpeg, source_path, span_lo,
+                                span_hi + window_seconds - span_lo)
+    _require_signal_anywhere(envelope, str(source_path), span_lo,
+                             span_hi + window_seconds - span_lo)
     planned: List[float] = []
-    for frac in probe_fractions:
-        s = min(max(0.0, frac * src_dur), src_dur - window_seconds)
+    for s in _place_windows(envelope, span_lo, anchors, window_seconds,
+                            span_lo, span_hi):
         ref_lo = expected_start + s - search_radius_seconds
         ref_hi = expected_start + s + window_seconds + search_radius_seconds
         if ref_lo < 0.0 or ref_hi > ref_dur:
