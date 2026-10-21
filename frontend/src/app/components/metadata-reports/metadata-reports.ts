@@ -236,6 +236,25 @@ interface ReadinessTick {
   hint: string;
 }
 
+/**
+ * One row of the titles list: a generated title or a tested-pattern title.
+ *
+ * The list is ONE sequence — the ten (and any "10 more") first, then the tested-pattern titles —
+ * so the keyboard, the editor and the slate's "show this row" all address a row by its place in
+ * it. What a row DOES (pick, edit, copy) is keyed by its text, exactly as before, so a pattern
+ * title is picked into the A/B slots and edited with the pencil like any other.
+ */
+interface TitleRow {
+  /** The generated text: the titleEdits key and what getTitleText resolves. */
+  title: string;
+  /** Place in the whole list (0-based), for the keyboard, the editor and data-title-row. */
+  row: number;
+  /** The pattern this title follows, on a tested-pattern row; null on one of the generated titles. */
+  pattern: { name: string; how: string } | null;
+  /** True on the first tested-pattern row, where the group's heading goes. */
+  firstPattern: boolean;
+}
+
 /** One A/B slot: a VIEW of publish.chosenTitles(), never a second store. */
 interface SlateSlot {
   /** 0-based slot. Slot 0 is variant 1 — the video's title and YouTube's fallback. */
@@ -425,6 +444,13 @@ interface ParsedMetadata {
    * and "Put back" swaps it in.
    */
   reroll_history?: Partial<Record<RerollSectionField, Array<{ at: string; kind: string; model: string | null; notes: string[] }>>>;
+  /**
+   * The TESTED-PATTERN TITLES (electron/services/metadata/pattern-titles.ts): one title in each of
+   * the channel's distilled patterns, beside the ten and never in `titles`. Shown as their own group
+   * under the ten, and picked and edited like any title (both are keyed by text). Absent on items
+   * from before them and on runs that write none.
+   */
+  pattern_titles?: Array<{ pattern: string; how: string; title: string }>;
   reroll_gate?: {
     mode: 'on' | 'off';
     scorer: string;
@@ -1767,13 +1793,32 @@ export class MetadataReports implements OnInit, OnDestroy {
    */
   readonly slate = computed<SlateSlot[]>(() => {
     const chosen = this.publish.chosenTitles();
-    const rows = this.metadata()?.titles ?? [];
+    const rows = this.titleRows();
     return this.SLATE_SLOTS.map((index) => {
       const title = chosen[index] ?? null;
       if (title === null) return { index, title: null, chars: 0, rowIndex: null };
-      const rowIndex = rows.findIndex((row) => this.getTitleText(row) === title);
+      const rowIndex = rows.findIndex((row) => this.getTitleText(row.title) === title);
       return { index, title, chars: title.length, rowIndex: rowIndex === -1 ? null : rowIndex };
     });
+  });
+
+  /**
+   * Every title row, in list order: the generated titles, then the tested-pattern titles with the
+   * pattern each follows. See TitleRow.
+   */
+  readonly titleRows = computed<TitleRow[]>(() => {
+    const meta = this.metadata();
+    const generated = meta?.titles ?? [];
+    const patterned = meta?.pattern_titles ?? [];
+    return [
+      ...generated.map((title, row) => ({ title: this.rawTitleText(title), row, pattern: null, firstPattern: false })),
+      ...patterned.map((p, i) => ({
+        title: p.title,
+        row: generated.length + i,
+        pattern: { name: p.pattern, how: p.how },
+        firstPattern: i === 0,
+      })),
+    ];
   });
 
   /** Scroll a slot's row into view and mark it. A slot with no row does nothing. */
@@ -1805,7 +1850,8 @@ export class MetadataReports implements OnInit, OnDestroy {
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
-    const titles = this.metadata()?.titles ?? [];
+    // The whole list, tested-pattern rows included: they are picked and edited like the rest.
+    const titles = this.titleRows().map((row) => row.title);
     if (titles.length === 0) return;
 
     const current = this.focusedTitleIndex();
@@ -3971,6 +4017,8 @@ export class MetadataReports implements OnInit, OnDestroy {
       clip_suggestions: toStrArray(raw.clip_suggestions || raw.clipSuggestions || raw.clips) || undefined,
       chapters: raw.chapters,
       chaptersSkipped: raw.chaptersSkipped,
+      // Verbatim: each entry is a pattern and its title, as the run recorded them.
+      pattern_titles: raw.pattern_titles,
       // Passed through verbatim — it is a record of a past run, not a value to normalize.
       content_provenance: raw.content_provenance,
       _title: raw._title,

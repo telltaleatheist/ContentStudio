@@ -153,6 +153,7 @@ check('the plan: the summary-from-lyrics call and the tags call, and no titles',
     hasChapters: false,
     alsoLoads: [],
     lifecycle: new lifecycleModule.JobModelLifecycle(),
+    titlePatterns: null,
   });
   const written = plan.units.flatMap((u) => u.fields).sort();
   eq(written, ['description', 'tags'], 'fields written:');

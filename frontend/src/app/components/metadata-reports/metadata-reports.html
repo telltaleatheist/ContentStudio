@@ -1019,6 +1019,10 @@
                      of a job that does not exist for it. -->
                 <h3>{{ publish.isPodcast() ? 'Title — Spreaker takes one' : 'A/B test — three variants' }}</h3>
                 <span class="cnt num">{{ metadata()!.titles.length }} generated</span>
+                @if (metadata()!.pattern_titles?.length) {
+                  <span class="cnt num"
+                        title="One title in each pattern distilled from this channel's own decided A/B tests and recent uploads, written after the ten by the same model. Listed under the ten; pick and edit them like any title.">+ {{ metadata()!.pattern_titles!.length }} in tested patterns</span>
+                }
                 @if (metadata()!.reroll_gate?.ranking) {
                   <span class="cnt"
                         title="#1 is the title the re-roll gate's snap ranking reads as most likely to be clicked and watched, from the order it asked the list in every rotation.">ranked by snap</span>
@@ -1080,7 +1084,18 @@
                    class="sug"
                    tabindex="0"
                    (keydown)="onTitlesKeydown($event)">
-                @for (title of metadata()!.titles; track $index; let i = $index) {
+                <!-- One list: the generated titles, then the tested-pattern titles under their own
+                     heading. Rows are addressed by place (keyboard, editor) and act by text
+                     (pick, edit, copy), so a pattern title behaves exactly like the rest. -->
+                @for (r of titleRows(); track r.row) {
+                  @let title = r.title;
+                  @let i = r.row;
+                  @if (r.firstPattern) {
+                    <div class="sug-group"
+                         title="Each title follows one pattern the channel's own decided A/B tests and recent uploads show winning. The patterns are distilled from the analytics evidence, not written by hand; hover a pattern name for how it is written.">
+                      Tested patterns
+                    </div>
+                  }
                   @if (isEditingTitle(i)) {
                     <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes ✓/✕
                          in the same place so nothing shifts under the cursor. The edit
@@ -1120,6 +1135,9 @@
                         {{ titleVariantNumber(title) ?? i + 1 }}
                       </span>
                       <span class="s-t">{{ getTitleText(title) }}</span>
+                      @if (r.pattern; as pattern) {
+                        <span class="slot-tag pattern" [title]="pattern.name + ': ' + pattern.how">{{ pattern.name }}</span>
+                      }
                       <!-- The re-roll gate's order (LEDGER #201): snap's rank for this title among
                            the run's list, best = 1, and its share against an even split. A title
                            still failing a rule after its re-rolls ships, marked, never hidden. -->

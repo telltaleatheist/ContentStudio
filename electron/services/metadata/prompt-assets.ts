@@ -112,6 +112,16 @@ export interface ChannelData {
   upload: ChannelUploadFlags | null;
   /** `captions`: null (absent) or `lyrics`: the timed lyrics go up as a caption track after an upload. */
   captions: 'lyrics' | null;
+  /**
+   * `pattern_titles`: false (absent) or true: each long-form item also gets the TESTED-PATTERN
+   * TITLES (pattern-titles.ts), one title in each of the five patterns distilled from this
+   * channel's own A/B tests and recent uploads, beside the ten. Absent is what every channel did
+   * before the key existed. It is an opt-in, and the condition is stated rather than inferred:
+   * the three long-form YouTube channels say true; shorts, the podcast and the song channel say
+   * nothing. A run on an opted-in channel still writes none when it carries no channel evidence
+   * (planMetadataUnits says so in the log).
+   */
+  patternTitles: boolean;
   /** Where this channel was loaded from, for error messages. */
   sourcePath: string;
 }
@@ -125,6 +135,12 @@ export interface FieldAsset {
   /** Self-check lines that need a SECOND field present in the same group to be followable. */
   selfCheckWith: Record<string, string[]>;
   defaultTitleFormat?: string;
+  /**
+   * The titles rules shared by the ten-title section and the tested-pattern section, filled into
+   * either through its `{title_rules}` slot. One copy, so the two calls cannot drift apart on the
+   * register, the length law or the claim-attribution rule. Absent on every other field.
+   */
+  titleRules?: string;
   /**
    * `[min, max]` words, on the fields that declare one. Only the description does today.
    *
@@ -351,9 +367,16 @@ export class PromptAssets {
       );
     }
     const song = this.readSongKeys(raw, id, filePath, fields as string[]);
+    if (raw.pattern_titles !== undefined && typeof raw.pattern_titles !== 'boolean') {
+      throw new Error(
+        `Channel "${id}" (${filePath}) has a "pattern_titles" key that is ${JSON.stringify(raw.pattern_titles)}. ` +
+          `Write pattern_titles: true or pattern_titles: false, or leave the key out for false.`
+      );
+    }
     return {
       id,
       ...song,
+      patternTitles: raw.pattern_titles === true,
       thumbnails: raw.thumbnails === undefined ? null : raw.thumbnails,
       tagStyle: raw.tag_style as TagStyle,
       name: this.requireString(raw, filePath, 'name'),
@@ -544,6 +567,15 @@ export class PromptAssets {
           ? loaded.default_title_format
           : undefined;
 
+    // Same file-level fallback as `default_title_format`: a variant that does not restate the
+    // shared rules is taking them. Only a section whose text carries the slot reads it.
+    const titleRules =
+      typeof source.title_rules === 'string'
+        ? source.title_rules
+        : typeof loaded.title_rules === 'string'
+          ? loaded.title_rules
+          : undefined;
+
     // `body_words` falls back to the FILE's value where the variant declares none, exactly as
     // `default_title_format` does — a variant that does not restate a shared number is taking
     // the shared number, not losing it. A value that is present and malformed throws.
@@ -581,6 +613,7 @@ export class PromptAssets {
       selfCheck,
       selfCheckWith,
       defaultTitleFormat,
+      titleRules,
       wordRange,
       taggedAddendum,
     };
@@ -603,7 +636,29 @@ export class PromptAssets {
    */
   fieldSection(channel: ChannelData, fieldId: string): string {
     const asset = this.field(channel, fieldId);
-    let text = asset.instructions;
+    return this.fillSlots(channel, fieldId, asset, asset.instructions);
+  }
+
+  /**
+   * The channel-data slots of one field's text, filled; every slot that asks for data the
+   * channel does not declare throws naming it. Shared by `fieldSection` and the tested-pattern
+   * section, so both read one set of rules filled one way.
+   */
+  private fillSlots(channel: ChannelData, fieldId: string, asset: FieldAsset, input: string): string {
+    let text = input;
+
+    // `{title_rules}` FIRST: the rules carry `{title_format}` and `{promoted_items}` slots of
+    // their own, which the steps below fill.
+    if (text.includes('{title_rules}')) {
+      if (!asset.titleRules) {
+        throw new Error(
+          `Channel "${channel.id}"'s "${fieldId}" instructions carry a {title_rules} slot and ` +
+            `shared/fields/titles.yml (field variant "${channel.fieldVariant}") has no "title_rules" text to fill it`
+        );
+      }
+      const rules = asset.titleRules.replace(/\s+$/, '');
+      text = text.replace(/\{title_rules\}/g, () => rules);
+    }
 
     if (text.includes('{title_format}')) {
       const format = channel.titleFormat || asset.defaultTitleFormat;
@@ -664,6 +719,67 @@ export class PromptAssets {
       );
     }
     return text;
+  }
+
+  /**
+   * The raw titles file plus the guard that the channel's titles ARE the shared top-level rules.
+   *
+   * The tested-pattern section lives only at the top of titles.yml, beside the long-form rules it
+   * shares. A field variant with its own titles override (shorts, the podcast) writes titles to a
+   * different brief, and pairing that brief with the long-form pattern section would be a third
+   * brief nobody wrote, so it throws rather than mixing them.
+   */
+  private longFormTitlesFile(channel: ChannelData): { loaded: any; filePath: string } {
+    // Reads (and caches) titles.yml, throwing on a missing file or a missing instructions key.
+    this.field(channel, 'titles');
+    const filePath = path.join(this.root, 'shared', 'fields', FIELD_FILES.titles);
+    const loaded = this.fieldFiles.get(FIELD_FILES.titles);
+    if (channel.fieldVariant !== 'default' && (loaded.overrides || {})[channel.fieldVariant]) {
+      throw new Error(
+        `Channel "${channel.id}" asks for tested-pattern titles (pattern_titles: true), and its field variant ` +
+          `"${channel.fieldVariant}" has its own titles rules in ${filePath}; the pattern section is written to the ` +
+          `long-form rules only. Take pattern_titles out of ${channel.sourcePath}.`
+      );
+    }
+    return { loaded, filePath };
+  }
+
+  /**
+   * The TESTED-PATTERN TITLES section (pattern-titles.ts): titles.yml's `pattern_instructions`,
+   * its `{title_rules}` and channel slots filled exactly as the ten-title section's are, then
+   * `{pattern_count}` and the rendered pattern list. The list goes in LAST, with a function
+   * replacer: it is model-written text, and a brace or a `$` inside it must reach the prompt as
+   * written rather than be read as a slot.
+   */
+  patternTitlesSection(channel: ChannelData, patternList: string, count: number): string {
+    const { loaded, filePath } = this.longFormTitlesFile(channel);
+    const asset = this.field(channel, 'titles');
+    const raw = this.requireString(loaded, filePath, 'pattern_instructions');
+    if (!raw.includes('{patterns}')) {
+      throw new Error(
+        `Prompt asset "${filePath}" key "pattern_instructions" has no {patterns} slot, so the call would be ` +
+          `asked for titles in patterns it is never shown`
+      );
+    }
+    const counted = raw.replace(/\{pattern_count\}/g, () => String(count));
+    const filled = this.fillSlots(channel, 'titles', asset, counted);
+    return filled.replace(/\{patterns\}/g, () => patternList);
+  }
+
+  /** The tested-pattern call's FINAL SELF-CHECK: titles.yml's `pattern_self_check`, then the global lines. */
+  patternTitlesSelfCheck(channel: ChannelData, count: number): string {
+    const { loaded, filePath } = this.longFormTitlesFile(channel);
+    const own = this.stringList(loaded.pattern_self_check, filePath, 'titles pattern_self_check');
+    if (own.length === 0) {
+      throw new Error(`Prompt asset "${filePath}" has no "pattern_self_check" lines for the tested-pattern titles call`);
+    }
+    const checkPath = path.join(this.root, 'shared', 'fields', 'self-check.yml');
+    const header = this.requireString(this.selfCheckFile, checkPath, 'header');
+    const lines = [
+      ...own.map((line) => line.replace(/\{pattern_count\}/g, () => String(count))),
+      ...this.stringList(this.selfCheckFile.global, checkPath, 'global'),
+    ];
+    return [header, '', ...lines.map((l) => `- ${l}`)].join('\n');
   }
 
   /**

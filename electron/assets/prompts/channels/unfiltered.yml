@@ -16,6 +16,8 @@ fields:
 
 thumbnails: true
 
+pattern_titles: true
+
 # How tags look: youtube (names and search phrases) or spreaker (one word each, at most 20).
 tag_style: youtube
 

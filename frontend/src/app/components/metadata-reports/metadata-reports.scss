@@ -1156,6 +1156,23 @@ button.ghost.reroll.armed {
   &.top { color: var(--rp-ink-2); font-weight: 500; }
 }
 .slot-tag.flag { color: var(--rp-warn); border-color: var(--rp-warn-line); }
+/* The tested-pattern titles: a quiet heading over their group, and each row's pattern name. */
+.sug-group {
+  padding: 12px 12px 6px 4px;
+  border-bottom: 1px solid var(--rp-line-soft);
+  font-size: var(--rp-fs-small);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
+}
+.slot-tag.pattern {
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rp-ink-2);
+}
 .s-acts {
   display: flex;
   gap: 2px;

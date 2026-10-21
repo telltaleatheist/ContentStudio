@@ -53,7 +53,8 @@ import { topEntities, transcriptCasing } from './entity-extraction';
 import { ENTITY_POOL_SIZE, PHRASE_POOL_SIZE, chapterPools } from './tags-hashtags';
 import { loadContextFor } from './context-sizing';
 import { SYSTEM_PROMPTS } from './system-prompts';
-import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/insights-guidelines';
+import { PATTERNS_PLACEHOLDER, PreparedChannelInsights, resolveGuidelinesBlock, resolveTitlePatterns } from '../analytics/insights-guidelines';
+import { TITLE_PATTERN_COUNT } from './pattern-titles';
 
 /**
  * Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer.
@@ -438,12 +439,24 @@ export class MetadataGeneratorService {
         lessonsResolved = true;
         if (!params.insights) return;
         params.progressCallback?.('lessons', 'Preparing channel lessons...');
+        const transport = this.guidelinesTransport(aiManager, params);
         aiManager.setInsightsBlock(
-          await resolveGuidelinesBlock(params.insights, {
-            dryRun: Boolean(params.showPrompt),
-            ...this.guidelinesTransport(aiManager, params),
-          })
+          await resolveGuidelinesBlock(params.insights, { dryRun: Boolean(params.showPrompt), ...transport })
         );
+        // THE TESTED PATTERNS (pattern-titles.ts), from the same evidence, on the same transport,
+        // AFTER the lessons (their save is what this one's builds on). Only where the channel asks
+        // for tested-pattern titles and the run is per item: a compilation has no titles unit to
+        // read them, so resolving them there would spend a distillation call for nothing.
+        if (aiManager.loadedChannel().patternTitles && (params.mode || 'individual') !== 'compilation') {
+          // The pattern section assembled once with the placeholder BEFORE any call is spent: an
+          // installed titles.yml without it (a hand-edited copy the installer withheld the update
+          // from) fails the run here, by name, not after the chapters and the ten titles.
+          promptAssets().patternTitlesSection(aiManager.loadedChannel(), PATTERNS_PLACEHOLDER, TITLE_PATTERN_COUNT);
+          promptAssets().patternTitlesSelfCheck(aiManager.loadedChannel(), TITLE_PATTERN_COUNT);
+          aiManager.setTitlePatterns(
+            await resolveTitlePatterns(params.insights, { dryRun: Boolean(params.showPrompt), ...transport })
+          );
+        }
       };
 
       if (!initialized) {
@@ -1267,6 +1280,7 @@ export class MetadataGeneratorService {
       hasChapters,
       alsoLoads,
       lifecycle,
+      titlePatterns: aiManager.titlePatterns(),
     });
     console.log(
       `[MetadataGenerator] ${sourceLabel}: ` +

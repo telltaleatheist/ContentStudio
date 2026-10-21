@@ -867,6 +867,7 @@ function plan(channelId, options) {
     hasChapters: Boolean(o.hasChapters),
     alsoLoads: o.alsoLoads || [],
     lifecycle: o.lifecycle || new lifecycleModule.JobModelLifecycle(),
+    titlePatterns: o.titlePatterns === undefined ? null : o.titlePatterns,
   });
 }
 

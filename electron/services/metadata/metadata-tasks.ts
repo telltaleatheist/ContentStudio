@@ -101,6 +101,8 @@ import type { AIManagerService, MetadataResult } from './ai-manager.service';
 import type { FieldContentMode } from './chapter-digest';
 import type { StretchSummary } from './stretch-summary';
 import { rankTagPools } from './tag-ranking';
+import { PatternTitlesUnit } from './pattern-titles';
+import type { ResolvedTitlePatterns } from '../analytics/insights-guidelines';
 
 /**
  * A metadata field a unit can be responsible for.
@@ -116,6 +118,7 @@ import { rankTagPools } from './tag-ranking';
  */
 export type MetadataFieldId =
   | 'titles'
+  | 'pattern_titles'
   | 'description'
   | 'description_hook'
   | 'description_options'
@@ -379,6 +382,10 @@ interface MetadataFieldSpec {
 
 export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec> = {
   titles: { section: 'TITLES', output: 'lines' },
+  // Not a prompt-set section of its own: the tested-pattern titles call (pattern-titles.ts) reads
+  // titles.yml's pattern section, and is planned only by the tested-pattern rule in
+  // planMetadataUnits. Here so the field id has its one registry entry and its plain shape.
+  pattern_titles: { section: 'TITLES', output: 'lines' },
   description: { section: 'DESCRIPTION', output: 'lines' },
   description_hook: { section: 'DESCRIPTION', output: 'lines' },
   description_options: { section: 'DESCRIPTION', output: 'lines' },
@@ -857,6 +864,13 @@ export interface MetadataPlanRequest {
    * stop. The orchestrator makes one per job and releases it once.
    */
   lifecycle: JobModelLifecycle;
+  /**
+   * This run's tested patterns (analytics/insights-guidelines.ts resolveTitlePatterns), or null
+   * when the run resolved none: the channel does not opt in, or the run carries no channel
+   * evidence. REQUIRED, null stated: the tested-pattern titles call is planned from it, and a
+   * caller that forgot it would silently drop the five titles from a channel that asks for them.
+   */
+  titlePatterns: ResolvedTitlePatterns | null;
 }
 
 /**
@@ -897,7 +911,10 @@ export interface MetadataPlanRequest {
  * written by the model the routing names. Both are logged per item.
  */
 export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan {
-  const { routing, models, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle } = request;
+  const { routing, models, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle, titlePatterns } = request;
+  if (titlePatterns === undefined) {
+    throw new Error('planMetadataUnits was not told this run\'s tested patterns (titlePatterns: null when it has none)');
+  }
 
   // A field the PROMPT SET does not define is not generated at all, whatever the routing
   // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
@@ -934,6 +951,28 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
   const titlesPlan = planned.find((p) => p.field === 'titles');
 
   /**
+   * THE TESTED-PATTERN TITLES (pattern-titles.ts), planned right after the titles, on the titles
+   * row's option, when ALL THREE hold: the channel file says `pattern_titles: true`, this run
+   * writes titles, and this run resolved tested patterns (it carries channel evidence). Every
+   * other case writes none and the log says which condition was missing.
+   */
+  const patternChannel = aiManager.loadedChannel();
+  if (patternChannel.patternTitles) {
+    if (!titlesPlan) {
+      log.info('[MetadataTasks] no tested-pattern titles: this channel asks for them, and nothing writes titles this run');
+    } else if (titlePatterns === null) {
+      log.info(
+        '[MetadataTasks] no tested-pattern titles: this channel asks for them, and this run carries no channel ' +
+          'evidence to take the patterns from (no analytics channel maps to the prompt set, or no insights computed)'
+      );
+    } else {
+      planned.splice(planned.indexOf(titlesPlan) + 1, 0, { field: 'pattern_titles', option: titlesPlan.option });
+    }
+  } else {
+    log.info(`[MetadataTasks] no tested-pattern titles: channel "${patternChannel.id}" does not ask for them (pattern_titles)`);
+  }
+
+  /**
    * A field the CHANNEL publishes that NO routing task owns.
    *
    * `spoken_keywords` is the only one, and only on the shorts channel. It used to ride along
@@ -955,6 +994,8 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     if (planned.some((p) => p.field === field)) continue;
     // Owned by code.
     if (field === 'hashtags' || field === 'tags') continue;
+    // Planned only by the tested-pattern rule above, never as an unrouted field.
+    if (field === 'pattern_titles') continue;
     unrouted.push(field);
   }
   for (const field of unrouted) {
@@ -1033,6 +1074,15 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
   const built: Array<{ field: MetadataFieldId; model: string; local: boolean; unit: MetadataUnit }> = [];
 
   for (const plan of planned) {
+    if (plan.field === 'pattern_titles') {
+      built.push({
+        field: plan.field,
+        model: plan.option.model,
+        local: plan.option.kind === 'local',
+        unit: new PatternTitlesUnit(aiManager, plan.option, lifecycle, titlePatterns!),
+      });
+      continue;
+    }
     const spec: MetadataFieldUnitSpec = {
       field: plan.field,
       model: plan.option.model,

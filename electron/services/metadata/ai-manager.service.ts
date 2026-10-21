@@ -29,6 +29,7 @@ import {
   MetadataRunContext,
   buildFieldInstructions,
   buildInputDataBlock,
+  buildOutputFormat,
   parseInstructionSections,
 } from './metadata-tasks';
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
@@ -39,6 +40,8 @@ import { stripThinking } from './plain-call';
 import { loadContextFor } from './context-sizing';
 import type { TagStyle } from './tags-hashtags';
 import { summaryBlock } from './stretch-summary';
+import { renderPatternList, TITLE_PATTERN_COUNT, type PatternTitle } from './pattern-titles';
+import type { ResolvedTitlePatterns } from '../analytics/insights-guidelines';
 
 /**
  * How much raw transcript each transport reads BEFORE anything is condensed.
@@ -204,6 +207,12 @@ export interface MetadataResult {
    * result being discarded before it could publish (too few chapters, all promo).
    */
   chaptersSkipped?: { outcome: 'failed' | 'skipped'; reason: string };
+  /**
+   * The TESTED-PATTERN TITLES (pattern-titles.ts): one title in each of the channel's distilled
+   * patterns, with the pattern it follows. BESIDE `titles`, never in it, so every reader of the ten
+   * reads exactly the ten. Absent on items generated before them and on runs that write none.
+   */
+  pattern_titles?: PatternTitle[];
 }
 
 /**
@@ -919,6 +928,85 @@ export class AIManagerService {
   }
 
   /**
+   * What a field call reads about the video, as its subject block: the stretch summary, the chosen
+   * chapter digest (titles), or the content with its chapter table. Split out of
+   * buildMetadataFieldPromptParts unchanged so the tested-pattern titles call reads exactly what
+   * the titles call reads (pattern-titles.ts); tools/pattern-titles-checks.js holds the titles
+   * prompt to its pre-split bytes.
+   */
+  private fieldSubjectBlock(field: MetadataFieldId, ctx: MetadataRunContext): string {
+    /**
+     * The chapter table of contents is passed only on the RAW path.
+     *
+     * On the digest path `ctx.content` already IS that table of contents — the same chapters,
+     * with their timestamps and the same detail prose, under a header that says there is no
+     * fuller transcript below (chapter-digest.ts). Passing the subjects as well would print the
+     * list twice under two different headings, which reads to a model as a video with twice as
+     * much in it. One item, one statement of what it covers.
+     */
+    const digestMode = ctx.contentMode === 'chapter-digest';
+    // TITLES READ THE VIDEO IN CHAPTER FORM whenever chapters exist — a choice, not a
+    // ceiling (operator, 2026-08-24: "wire it in", after the measured f3 side-by-side where
+    // chapter-fed titles matched transcript-fed titles on every hard check and pulled
+    // sharper specifics from the details, at a third less prompt). The digest content
+    // replaces the transcript AND the separate chapter table (one statement of what the
+    // video covers, same rule as digest mode), under the chosen-not-forced header, because
+    // "this transcript is longer than one call can read" would be false here. A chapterless
+    // item has an empty digest and keeps the transcript — there is nothing else to stand on.
+    const titlesOnChapters =
+      field === 'titles' && !digestMode && ctx.digestChapters.length > 0;
+    // THE STRETCH SUMMARY (LEDGER #288, Owen 2026-10-10: "i think summaries produce better
+    // titles"): titles, thumbnail text and the pinned comment read the paragraph-per-section summary
+    // in place of the transcript and the chapter list whenever the item has one. One statement of
+    // what the video covers, as with the digest.
+    const summary = SUMMARY_READING_FIELDS.includes(field) ? ctx.stretchSummary ?? null : null;
+    return summary !== null
+      ? this.buildSubjectBlock(summaryBlock(summary), ctx.sourceLabel, undefined, undefined, undefined)
+      : titlesOnChapters
+      ? this.buildSubjectBlock(
+          formatPrompt(SYSTEM_PROMPTS.CHAPTER_DIGEST_CHOSEN, {
+            chapterList: renderChapterList(ctx.digestChapters),
+          }),
+          ctx.sourceLabel,
+          undefined,
+          undefined,
+          undefined
+        )
+      : this.buildSubjectBlock(
+          ctx.content,
+          ctx.sourceLabel,
+          undefined,
+          digestMode ? undefined : ctx.chapterSubjects,
+          digestMode ? undefined : ctx.chapterDetails
+        );
+  }
+
+  /**
+   * The TESTED-PATTERN TITLES call's prompt (pattern-titles.ts): the titles call's own shared
+   * prefix (the plain contract and the same subject block, so a local engine reuses the titles
+   * call's prefill), then titles.yml's pattern section around the patterns, the lines OUTPUT
+   * FORMAT, and the pattern self-check. No insights block: the patterns are this call's evidence.
+   */
+  buildPatternTitlesPromptParts(
+    ctx: MetadataRunContext,
+    patterns: ResolvedTitlePatterns
+  ): { prompt: string; shared: string } {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    const count = patterns.kind === 'patterns' ? patterns.patterns.length : TITLE_PATTERN_COUNT;
+    const assets = promptAssets();
+    const section = assets.patternTitlesSection(this.channel(), renderPatternList(patterns), count);
+    const instructions = [
+      section,
+      buildOutputFormat('titles').trim(),
+      assets.patternTitlesSelfCheck(this.channel(), count).replace(/\s+$/, ''),
+    ].join('\n\n');
+    const shared = `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${this.fillSubject(this.fieldSubjectBlock('titles', ctx))}`;
+    return { prompt: `${shared}\n\n${instructions}`, shared };
+  }
+
+  /**
    * Assemble ONE FIELD's prompt (metadata-tasks.ts).
    *
    * Same three blocks the whole-metadata prompt has always had — the plain-text system header,
@@ -955,50 +1043,7 @@ export class AIManagerService {
     }
 
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    /**
-     * The chapter table of contents is passed only on the RAW path.
-     *
-     * On the digest path `ctx.content` already IS that table of contents — the same chapters,
-     * with their timestamps and the same detail prose, under a header that says there is no
-     * fuller transcript below (chapter-digest.ts). Passing the subjects as well would print the
-     * list twice under two different headings, which reads to a model as a video with twice as
-     * much in it. One item, one statement of what it covers.
-     */
-    const digestMode = ctx.contentMode === 'chapter-digest';
-    // TITLES READ THE VIDEO IN CHAPTER FORM whenever chapters exist — a choice, not a
-    // ceiling (operator, 2026-08-24: "wire it in", after the measured f3 side-by-side where
-    // chapter-fed titles matched transcript-fed titles on every hard check and pulled
-    // sharper specifics from the details, at a third less prompt). The digest content
-    // replaces the transcript AND the separate chapter table (one statement of what the
-    // video covers, same rule as digest mode), under the chosen-not-forced header, because
-    // "this transcript is longer than one call can read" would be false here. A chapterless
-    // item has an empty digest and keeps the transcript — there is nothing else to stand on.
-    const titlesOnChapters =
-      spec.field === 'titles' && !digestMode && ctx.digestChapters.length > 0;
-    // THE STRETCH SUMMARY (LEDGER #288, Owen 2026-10-10: "i think summaries produce better
-    // titles"): titles, thumbnail text and the pinned comment read the paragraph-per-section summary
-    // in place of the transcript and the chapter list whenever the item has one. One statement of
-    // what the video covers, as with the digest.
-    const summary = SUMMARY_READING_FIELDS.includes(spec.field) ? ctx.stretchSummary ?? null : null;
-    const subject = summary !== null
-      ? this.buildSubjectBlock(summaryBlock(summary), ctx.sourceLabel, undefined, undefined, undefined)
-      : titlesOnChapters
-      ? this.buildSubjectBlock(
-          formatPrompt(SYSTEM_PROMPTS.CHAPTER_DIGEST_CHOSEN, {
-            chapterList: renderChapterList(ctx.digestChapters),
-          }),
-          ctx.sourceLabel,
-          undefined,
-          undefined,
-          undefined
-        )
-      : this.buildSubjectBlock(
-          ctx.content,
-          ctx.sourceLabel,
-          undefined,
-          digestMode ? undefined : ctx.chapterSubjects,
-          digestMode ? undefined : ctx.chapterDetails
-        );
+    const subject = this.fieldSubjectBlock(spec.field, ctx);
     // Whatever an earlier call in this run wrote that this one has to read — today, the titles
     // the thumbnail text has to avoid repeating.
     const inputData = buildInputDataBlock(spec, ctx, options);
@@ -1109,6 +1154,22 @@ export class AIManagerService {
 
   hasInsightsBlock(): boolean {
     return Boolean(this.config.insightsBlock);
+  }
+
+  /**
+   * This run's TESTED PATTERNS, set once per run beside the insights block (metadata-generator's
+   * `ensureLessons`) on a channel that opts in; null when the run resolves none (the channel does
+   * not opt in, or the run carries no channel evidence). The planner reads it to plan the
+   * tested-pattern titles call (planMetadataUnits).
+   */
+  private resolvedTitlePatterns: ResolvedTitlePatterns | null = null;
+
+  setTitlePatterns(patterns: ResolvedTitlePatterns): void {
+    this.resolvedTitlePatterns = patterns;
+  }
+
+  titlePatterns(): ResolvedTitlePatterns | null {
+    return this.resolvedTitlePatterns;
   }
 
   /**

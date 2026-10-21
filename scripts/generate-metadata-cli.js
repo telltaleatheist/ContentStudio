@@ -658,7 +658,12 @@ async function main() {
   console.error(
     `  insights:    ${insights
       ? `evidence ${insights.rawBlock.length} chars, guidelines cache ` +
-        (insights.cached ? (insights.cached.sourceHash === insights.sourceHash && !insights.forceRefresh ? 'FRESH (no call)' : 'STALE (a real run distills once)') : 'EMPTY (a real run distills once)')
+        (insights.cached ? (insights.cached.sourceHash === insights.sourceHash && !insights.forceRefresh ? 'FRESH (no call)' : 'STALE (a real run distills once)') : 'EMPTY (a real run distills once)') +
+        // The tested patterns (pattern-titles.ts) keep their own hash beside the lessons.
+        ', tested patterns ' +
+        (insights.cached && insights.cached.patterns
+          ? (insights.cached.patterns.sourceHash === insights.sourceHash && !insights.forceRefresh ? 'FRESH (no call)' : 'STALE (a real run on an opted-in channel distills once)')
+          : 'EMPTY (a real run on an opted-in channel distills once)')
       : '(none)'}`
   );
   console.error(`               ${insightsSource}`);

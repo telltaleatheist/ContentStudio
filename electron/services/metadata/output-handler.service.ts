@@ -942,6 +942,15 @@ export class OutputHandlerService {
           }
         }
 
+        // The tested-pattern titles (pattern-titles.ts), right under the ten, each with the pattern
+        // it follows. Not in the field registry: each entry is a pattern and a title, not a string.
+        if (def.key === 'titles' && Array.isArray(metadata.pattern_titles) && metadata.pattern_titles.length > 0) {
+          emitSection(
+            'TESTED-PATTERN TITLES (one per pattern from this channel\'s A/B tests and recent uploads)',
+            metadata.pattern_titles.map((p, i) => `${i + 1}. [${p.pattern}] ${p.title}`)
+          );
+        }
+
         // Chapters section - injected in its current position (after thumbnail_text).
         // When there are none and the run recorded why, the reason takes the section's
         // place: a file that simply omits CHAPTERS cannot tell the reader whether they

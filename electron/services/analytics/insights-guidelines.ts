@@ -26,6 +26,19 @@
  * uses the stored lines with no call at all. The evidence only moves when the collector or a
  * distillation run rewrites insights.json, so most runs never pay the call.
  *
+ * THE TESTED PATTERNS (2026-10-21, Owen: "we create five additional titles that follow test
+ * patterns ... like the claim in the title, or dry humor"). From the SAME evidence render, a
+ * second distillation call (insights.yml `pattern_distiller`) names exactly TITLE_PATTERN_COUNT
+ * title patterns, each a 2-5 word name and one line saying how to write a title in it; the
+ * tested-pattern titles call (metadata/pattern-titles.ts) writes one title in each. A second
+ * call rather than one call answering both, so the lessons' answer keeps its shape ("- " lines)
+ * and each answer has one strict reader. They are cached in the same guidelines.json under
+ * `patterns`, with their OWN sourceHash, so lessons and patterns go stale independently; a
+ * guidelines.json written before patterns existed has no `patterns` and reads as STALE, so the
+ * next real run distills them (a dry run shows the placeholder), never as an empty list.
+ * Nothing is hand-coded: LEDGER #319 measured the shape Owen likes at 4 won / 6 lost on
+ * Telltale, so the patterns come from the evidence or not at all.
+ *
  * WHAT PREPARE RETURNS CROSSES A LAYER. `prepareChannelInsights` runs at the two producer
  * sites (ipc-handlers, the CLI), where the analytics store lives; the resolution — cache hit,
  * dry run, or the one call — runs inside metadata generation, where the routed transports
@@ -37,6 +50,7 @@
 import * as crypto from 'crypto';
 import * as log from 'electron-log';
 import { ChannelGuidelines, ChannelInsights, CrossChannelInsights } from './analytics-types';
+import { TITLE_PATTERN_COUNT, type TitlePattern } from '../metadata/pattern-titles';
 import { AnalyticsStoreService } from './analytics-store.service';
 import { buildInsightsBlock } from './insights-prompt';
 import { renderAbTitleRulesBlock } from './ab-title-rules';
@@ -55,8 +69,12 @@ export interface PreparedChannelInsights {
   rawBlock: string;
   /** sha256 of `rawBlock`; what the cache is keyed to. */
   sourceHash: string;
-  /** The stored guidelines, whatever their hash — staleness is judged at resolution time. */
-  cached: ChannelGuidelines | null;
+  /**
+   * The stored guidelines, whatever their hashes — staleness is judged at resolution time. Kept
+   * current in memory after each save in this run, so a run that refreshes both the lessons and
+   * the patterns writes the second without losing the first.
+   */
+  cached: StoredGuidelines | null;
   /** When true, a matching cache is ignored and the evidence is re-distilled (CLI --recompute-insights). */
   forceRefresh: boolean;
   /** The compact block's fixed parts, rendered once here so resolution needs no insights object. */
@@ -64,7 +82,25 @@ export interface PreparedChannelInsights {
   baselinesLine: string;
   abRulesBlock: string;
   /** Writes the fresh guidelines beside insights.json. A closure so generation never sees the store. */
-  save: (guidelines: ChannelGuidelines) => Promise<void>;
+  save: (guidelines: StoredGuidelines) => Promise<void>;
+}
+
+/** The cached patterns, keyed to the evidence they were distilled from exactly as the lessons are. */
+export interface ChannelTitlePatterns {
+  generatedAt: string;
+  model: string;
+  /** sha256 of the evidence render the pattern distiller read. */
+  sourceHash: string;
+  patterns: TitlePattern[];
+}
+
+/**
+ * guidelines.json as this module reads and writes it: the lessons record, plus `patterns` once
+ * they have been distilled. Absent `patterns` is a file from before they existed, and reads as
+ * stale (resolveTitlePatterns), never as an empty list.
+ */
+export interface StoredGuidelines extends ChannelGuidelines {
+  patterns?: ChannelTitlePatterns;
 }
 
 /**
@@ -250,15 +286,216 @@ export async function resolveGuidelinesBlock(
     );
   }
 
-  const guidelines: ChannelGuidelines = {
+  const guidelines: StoredGuidelines = {
     generatedAt: new Date().toISOString(),
     model: options.model,
     sourceHash: prepared.sourceHash,
     lines,
+    // The patterns ride along untouched: they are judged stale or fresh by their own hash.
+    ...(prepared.cached?.patterns === undefined ? {} : { patterns: prepared.cached.patterns }),
   };
   await prepared.save(guidelines);
+  prepared.cached = guidelines;
   log.info(
     `[InsightsGuidelines] distilled and cached ${lines.length} lesson(s) for "${prepared.channelName}"`
   );
   return buildCompactInsightsBlock(prepared, lines);
+}
+
+// ---------------------------------------------------------------------------
+// The tested patterns (the header's last section has the design)
+// ---------------------------------------------------------------------------
+
+/** The pattern distiller's whole prompt: the asset around the same evidence render the lessons read. */
+export function patternDistillerPromptFor(prepared: PreparedChannelInsights): string {
+  return formatPrompt(promptAssets().pipeline('insights.yml', 'pattern_distiller'), {
+    pattern_count: TITLE_PATTERN_COUNT,
+    performance_data: prepared.rawBlock,
+  });
+}
+
+/** A pattern's name, as Owen reads it beside the title: 2 to 5 words, and short enough to sit on one row. */
+const PATTERN_NAME_WORDS: [number, number] = [2, 5];
+const PATTERN_NAME_MAX_CHARS = 48;
+
+/** One pattern, or the reason it is not one. Shared by the answer reader and the cache reader. */
+function patternFault(pattern: { name: unknown; how: unknown }): string | null {
+  if (typeof pattern.name !== 'string' || typeof pattern.how !== 'string') return 'is not a name and a line of text';
+  const words = pattern.name.trim().split(/\s+/).filter((w) => w.length > 0).length;
+  if (words < PATTERN_NAME_WORDS[0] || words > PATTERN_NAME_WORDS[1]) {
+    return `has a name of ${words} word(s) ("${pattern.name}") where ${PATTERN_NAME_WORDS[0]}-${PATTERN_NAME_WORDS[1]} were asked for`;
+  }
+  if (pattern.name.trim().length > PATTERN_NAME_MAX_CHARS) {
+    return `has a name of ${pattern.name.trim().length} characters ("${pattern.name}"), over ${PATTERN_NAME_MAX_CHARS}`;
+  }
+  if (pattern.how.trim().split(/\s+/).length < 4) return `says too little about how to write it ("${pattern.how}")`;
+  return null;
+}
+
+function duplicateNames(patterns: TitlePattern[]): string[] {
+  const seen = new Set<string>();
+  const dupes: string[] = [];
+  for (const p of patterns) {
+    const key = p.name.toLowerCase();
+    if (seen.has(key)) dupes.push(p.name);
+    seen.add(key);
+  }
+  return dupes;
+}
+
+/**
+ * Read the pattern distiller's answer: exactly TITLE_PATTERN_COUNT lines of `name: how`.
+ *
+ * Bullets and numbering are normalization, as in parseGuidelineLines; everything else is
+ * strict, because each pattern is shown to Owen by its name and handed to the title call by
+ * its line, and a line that is not one pattern cannot be either. A wrong count, a line with no
+ * `name:`, a name outside 2-5 words, a near-empty instruction or two patterns with one name all
+ * THROW naming what came back — the caller's one-re-ask policy (the lessons' own) is the
+ * recovery, then a loud failure.
+ */
+export function parseTitlePatterns(text: string, what: string): TitlePattern[] {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => line.replace(/^(?:[-*•]|\d+[.)])\s*/, ''));
+  if (lines.length !== TITLE_PATTERN_COUNT) {
+    throw new Error(
+      `The answer to ${what} holds ${lines.length} line(s) where exactly ${TITLE_PATTERN_COUNT} patterns were asked for ` +
+        `(got: "${text.slice(0, 200)}")`
+    );
+  }
+  const patterns: TitlePattern[] = lines.map((line, i) => {
+    const colon = line.indexOf(':');
+    if (colon <= 0) {
+      throw new Error(`The answer to ${what}: line ${i + 1} is not "name: how to write it" (got: "${line.slice(0, 160)}")`);
+    }
+    const pattern = { name: line.slice(0, colon).trim(), how: line.slice(colon + 1).trim() };
+    const fault = patternFault(pattern);
+    if (fault) throw new Error(`The answer to ${what}: pattern ${i + 1} ${fault}`);
+    return pattern;
+  });
+  const dupes = duplicateNames(patterns);
+  if (dupes.length > 0) {
+    throw new Error(`The answer to ${what} names the same pattern twice: ${dupes.map((d) => `"${d}"`).join(', ')}`);
+  }
+  return patterns;
+}
+
+/**
+ * A stored `patterns` record, checked before it is used: guidelines.json is a file on disk and
+ * can be edited by hand. A record that is present and malformed THROWS naming the channel; it is
+ * never read as stale (that would quietly spend a call over a broken file), nor trimmed.
+ */
+function checkedStoredPatterns(stored: ChannelTitlePatterns, channelName: string): ChannelTitlePatterns {
+  const where = `the stored tested patterns for channel "${channelName}" (guidelines.json)`;
+  const again = 'delete the "patterns" key to have them distilled again';
+  if (!stored || typeof stored.sourceHash !== 'string' || !Array.isArray(stored.patterns)) {
+    throw new Error(`${where} are not { generatedAt, model, sourceHash, patterns: [...] }; ${again}`);
+  }
+  if (stored.patterns.length !== TITLE_PATTERN_COUNT) {
+    throw new Error(`${where} hold ${stored.patterns.length} pattern(s), not ${TITLE_PATTERN_COUNT}; ${again}`);
+  }
+  stored.patterns.forEach((p, i) => {
+    const fault = patternFault(p);
+    if (fault) throw new Error(`${where}: pattern ${i + 1} ${fault}; ${again}`);
+  });
+  const dupes = duplicateNames(stored.patterns);
+  if (dupes.length > 0) throw new Error(`${where} name the same pattern twice (${dupes.join(', ')}); ${again}`);
+  return stored;
+}
+
+/**
+ * The dry-run stand-in, by the GUIDELINES_PLACEHOLDER convention: a show-prompts flow on a
+ * channel whose patterns were never distilled for its current evidence shows this line where the
+ * five patterns will be, and spends nothing.
+ */
+export const PATTERNS_PLACEHOLDER =
+  "[tested patterns not yet distilled for this channel's current evidence — a real run makes the one pattern distillation call and caches it]";
+
+/** What the tested-pattern titles call is given: the patterns, or (dry runs only) the placeholder. */
+export type ResolvedTitlePatterns =
+  | { kind: 'patterns'; patterns: TitlePattern[]; sourceHash: string }
+  | { kind: 'placeholder'; text: string };
+
+/**
+ * This run's tested patterns: cache hit (the common path), dry-run placeholder, or the one
+ * pattern distillation call — asked at most twice, then a loud throw. Called after
+ * resolveGuidelinesBlock, whose save it builds on (`prepared.cached` is current by then).
+ */
+export async function resolveTitlePatterns(
+  prepared: PreparedChannelInsights,
+  options: ResolveGuidelinesOptions
+): Promise<ResolvedTitlePatterns> {
+  const stored =
+    prepared.cached?.patterns === undefined ? null : checkedStoredPatterns(prepared.cached.patterns, prepared.channelName);
+
+  if (stored !== null && stored.sourceHash === prepared.sourceHash && !prepared.forceRefresh) {
+    log.info(
+      `[InsightsGuidelines] tested patterns cache hit for "${prepared.channelName}": distilled ${stored.generatedAt} ` +
+        `by ${stored.model} — no call (${stored.patterns.map((p) => p.name).join(' | ')})`
+    );
+    return { kind: 'patterns', patterns: stored.patterns, sourceHash: stored.sourceHash };
+  }
+
+  const reason = prepared.forceRefresh
+    ? 'refresh forced (--recompute-insights)'
+    : stored !== null
+      ? `evidence moved (stored hash ${stored.sourceHash.slice(0, 12)}…, current ${prepared.sourceHash.slice(0, 12)}…)`
+      : prepared.cached === null
+        ? 'no guidelines were ever distilled for this channel'
+        : 'this guidelines.json predates tested patterns';
+
+  if (options.dryRun) {
+    log.info(
+      `[InsightsGuidelines] dry run, tested patterns for "${prepared.channelName}" are not current (${reason}) — ` +
+        `the placeholder stands in; no model is called from a dry run`
+    );
+    return { kind: 'placeholder', text: PATTERNS_PLACEHOLDER };
+  }
+
+  if (prepared.cached === null) {
+    throw new Error(
+      `The tested patterns for channel "${prepared.channelName}" were asked for before its lessons were resolved; ` +
+        `resolveGuidelinesBlock runs first and writes guidelines.json, so this is an ordering fault in the caller`
+    );
+  }
+
+  const what = `the tested title patterns for channel "${prepared.channelName}"`;
+  const prompt = patternDistillerPromptFor(prepared);
+  log.info(`[InsightsGuidelines] distilling tested patterns for "${prepared.channelName}": ${reason}`);
+
+  let patterns: TitlePattern[] | null = null;
+  for (const attempt of ['', ', second attempt'] as const) {
+    const answer = await options.distill(prompt, `${what}${attempt}`);
+    if (answer === null) continue;
+    try {
+      patterns = parseTitlePatterns(answer, `${what}${attempt}`);
+      break;
+    } catch (error) {
+      log.warn(`[InsightsGuidelines] ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!patterns) {
+    throw new Error(
+      `${what} could not be distilled: both asks returned no usable list of ${TITLE_PATTERN_COUNT} patterns (the ` +
+        `answers are in the log). Nothing is substituted — a pattern nobody distilled from the evidence would be a ` +
+        `hand-coded shape. Re-run, or run without insights.`
+    );
+  }
+
+  const record: ChannelTitlePatterns = {
+    generatedAt: new Date().toISOString(),
+    model: options.model,
+    sourceHash: prepared.sourceHash,
+    patterns,
+  };
+  const next: StoredGuidelines = { ...prepared.cached, patterns: record };
+  await prepared.save(next);
+  prepared.cached = next;
+  log.info(
+    `[InsightsGuidelines] distilled and cached ${patterns.length} tested pattern(s) for "${prepared.channelName}": ` +
+      patterns.map((p) => p.name).join(' | ')
+  );
+  return { kind: 'patterns', patterns, sourceHash: prepared.sourceHash };
 }

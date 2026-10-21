@@ -209,6 +209,40 @@ export function planSoftening(source: any, target: any): { plans: SoftenPlan[]; 
   };
 
   listField('titles', 'titles', 'titles');
+
+  // The tested-pattern titles (pattern-titles.ts) are titles too: their texts go out as lines
+  // under the titles' own label and come back onto the same entries by position, each keeping
+  // the pattern it follows. Left out, a softened set would carry five titles in the old register.
+  const patterned: unknown[] | null = Array.isArray(source?.pattern_titles) ? source.pattern_titles : null;
+  if (patterned === null || patterned.length === 0) {
+    skipped.push({ field: 'tested-pattern titles', reason: 'the item carries no tested-pattern titles.' });
+  } else {
+    const texts = patterned.map((entry: any, index) => {
+      const title = textOf(entry?.title);
+      if (title === null || typeof entry?.pattern !== 'string') {
+        throw new Error(
+          `Tested-pattern title ${index + 1} of ${patterned.length} on item ${itemId} is not { pattern, how, title }, ` +
+            `so the list cannot be softened as ${patterned.length} lines.`
+        );
+      }
+      return title;
+    });
+    plans.push({
+      field: 'tested-pattern titles',
+      labelKey: 'titles',
+      shape: 'lines',
+      text: texts.join('\n'),
+      count: texts.length,
+      apply: (softened, item) => {
+        const titles = softened as string[];
+        item.pattern_titles = (item.pattern_titles as Array<Record<string, unknown>>).map((entry, index) => ({
+          ...entry,
+          title: titles[index],
+        }));
+      },
+    });
+  }
+
   listField('thumbnail text', 'thumbnail_text', 'thumbnail_text');
   listField('pinned comment options', 'pinned_comment', 'pinned_comment');
   proseField('the description hook', 'description_hook', 'description_hook');
