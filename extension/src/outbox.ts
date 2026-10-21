@@ -5,14 +5,15 @@
 // cycle or when the user presses "Sync now". Entries are only removed after a
 // successful POST.
 
-import type { Snapshot, VideoRecord } from './types';
+import type { ChannelDay, Snapshot, VideoRecord } from './types';
 import type { AbTestRecord } from './catalogue';
-import { IngestError, pushAbTests, pushSnapshots, pushVideos, type IngestFailureKind } from './ingest-client';
+import { IngestError, pushAbTests, pushChannelDays, pushSnapshots, pushVideos, type IngestFailureKind } from './ingest-client';
 
 export type OutboxEntry =
   | { id: string; queuedAt: string; kind: 'videos'; videos: VideoRecord[] }
   | { id: string; queuedAt: string; kind: 'snapshots'; snapshots: Snapshot[] }
-  | { id: string; queuedAt: string; kind: 'ab-tests'; tests: AbTestRecord[] };
+  | { id: string; queuedAt: string; kind: 'ab-tests'; tests: AbTestRecord[] }
+  | { id: string; queuedAt: string; kind: 'channel-days'; days: ChannelDay[] };
 
 const OUTBOX_KEY = 'outbox';
 
@@ -30,8 +31,19 @@ export async function outboxDepth(): Promise<number> {
   return (await getOutbox()).length;
 }
 
+/**
+ * A channel's whole catalogue, sent every cycle since 2026-10-21 so title changes reach the
+ * store. A newer catalogue for the same channel supersedes any still-queued one: the store
+ * wants the live titles, and the queue lives in chrome.storage.local, whose 10 MB quota a
+ * closed ContentStudio would otherwise exhaust in under two days (the three channels'
+ * catalogues run to ~2 MB a cycle). Nothing is lost that a flush could have delivered: a
+ * title that changed and changed back while the app was closed was never seen by the store.
+ */
 export async function enqueueVideos(videos: VideoRecord[]): Promise<void> {
-  const entries = await getOutbox();
+  const channelIds = new Set(videos.map((v) => v.channelId));
+  const entries = (await getOutbox()).filter(
+    (entry) => !(entry.kind === 'videos' && entry.videos.length > 0 && entry.videos.every((v) => channelIds.has(v.channelId))),
+  );
   entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'videos', videos });
   await setOutbox(entries);
 }
@@ -47,6 +59,13 @@ export async function enqueueAbTests(tests: AbTestRecord[]): Promise<void> {
 export async function enqueueSnapshots(snapshots: Snapshot[]): Promise<void> {
   const entries = await getOutbox();
   entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'snapshots', snapshots });
+  await setOutbox(entries);
+}
+
+/** A channel's per-day series. Queued so a closed ContentStudio receives it on the next flush. */
+export async function enqueueChannelDays(days: ChannelDay[]): Promise<void> {
+  const entries = await getOutbox();
+  entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'channel-days', days });
   await setOutbox(entries);
 }
 
@@ -73,6 +92,8 @@ async function sendEntry(entry: OutboxEntry): Promise<void> {
     await pushAbTests(entry.tests);
   } else if (entry.kind === 'videos') {
     await pushVideos(entry.videos);
+  } else if (entry.kind === 'channel-days') {
+    await pushChannelDays(entry.days);
   } else {
     await pushSnapshots(entry.snapshots);
   }

@@ -5,6 +5,8 @@
 //   GET  /analytics/channels -> { channels: [{ channelId, name }] }
 //   POST /analytics/videos   -> body { videos: VideoRecord[] }
 //   POST /analytics/ingest   -> body { snapshots: Snapshot[] }
+//   POST /analytics/ab-tests -> body { tests: AbTestRecord[] }
+//   POST /analytics/days     -> body { days: ChannelDay[] }
 //
 // No auth: the server is localhost-bound and requires no token. As a CSRF guard
 // it rejects cross-origin web requests (Origin: http(s)://…) with 403; this
@@ -16,7 +18,7 @@
 //   Nothing in this module retries, degrades, or swallows errors.
 
 import type { AbTestRecord } from './catalogue';
-import type { Snapshot, VideoRecord } from './types';
+import type { ChannelDay, Snapshot, VideoRecord } from './types';
 import { getSettings, type ChannelConfig } from './settings';
 
 export type IngestFailureKind =
@@ -208,6 +210,17 @@ export async function pushVideos(videos: VideoRecord[]): Promise<void> {
 export async function pushAbTests(tests: AbTestRecord[]): Promise<void> {
   await post('/analytics/ab-tests', { tests });
 }
+
+/**
+ * POST /analytics/days — upsert a channel's per-day series by day (the newest fetch of a
+ * day replaces the stored one). Throws IngestError on any failure.
+ */
+export async function postChannelDays(days: ChannelDay[]): Promise<void> {
+  await post('/analytics/days', { days });
+}
+
+/** The outbox's name for postChannelDays, matching pushVideos/pushSnapshots/pushAbTests. */
+export const pushChannelDays = postChannelDays;
 
 /** POST /analytics/ingest — append metric snapshots. Throws IngestError on any failure. */
 export async function pushSnapshots(snapshots: Snapshot[]): Promise<void> {

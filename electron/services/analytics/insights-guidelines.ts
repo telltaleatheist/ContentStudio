@@ -12,8 +12,10 @@
  *
  * So the flow is now two-stage:
  *
- *   evidence (buildInsightsBlock, UNCHANGED — the raw render stays as the distiller's input
- *   and the operator's inspection surface)
+ *   evidence (buildInsightsBlock — the raw render stays as the distiller's input and the
+ *   operator's inspection surface; since 2026-10-21 it is dated and carries the last 90
+ *   days' uploads and decided A/B tests, none of which reaches generation except through
+ *   the lessons)
  *     → ONE plain-text distillation call, per channel, only when the evidence changed
  *     → guidelines.json beside insights.json  { generatedAt, model, sourceHash, lines }
  *     → the COMPACT block generation actually carries: the A/B title rules verbatim (already
@@ -104,7 +106,7 @@ export function prepareChannelInsightsFromData(
   cross: CrossChannelInsights | null,
   forceRefresh: boolean
 ): PreparedChannelInsights {
-  const rawBlock = buildInsightsBlock(insights, cross);
+  const rawBlock = buildInsightsBlock(insights, cross, store.loadAbTests(channel.channelId));
   const sourceHash = crypto.createHash('sha256').update(rawBlock, 'utf8').digest('hex');
   const b = insights.baselines;
   log.info(

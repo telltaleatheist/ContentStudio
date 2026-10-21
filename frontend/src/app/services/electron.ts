@@ -278,6 +278,10 @@ export interface AnalyticsChannelSummary {
 
 export interface AnalyticsVerdictSummary {
   title: string;
+  /** Optional here only: insights.json written before 2026-10-21 lacks these three. */
+  publishedAt?: string;
+  basis?: 'first-week' | 'lifetime';
+  avgPctViewed?: number | null;
   ctr: number | null;
   ctrPercentile: number | null;
   retention30s: number | null;
@@ -313,6 +317,8 @@ export interface AnalyticsChannelInsights {
   };
   topPackaging: AnalyticsVerdictSummary[];
   bottomPackaging: AnalyticsVerdictSummary[];
+  /** Absent on insights.json written before 2026-10-21; the next distillation adds it. */
+  recentUploads?: AnalyticsVerdictSummary[];
   abTitleRules: AnalyticsAbTitleRules;
   topSearchTerms: Array<{ term: string; views: number }>;
   aiBrief: string | null;
@@ -324,6 +330,40 @@ export interface AnalyticsCrossChannelInsights {
   recentOverperformers: Array<{ channelId: string; title: string; packagingScore: number; views: number }>;
   risingSearchTerms: Array<{ term: string; views: number; trendVsPriorPeriod: number }>;
   aiBrief: string | null;
+}
+
+/** One source's share of a channel day — mirror of SourceDay in analytics-types.ts. */
+export interface AnalyticsSourceDay {
+  impressions: number | null;
+  impressionsCtr: number | null;
+  views: number;
+}
+
+/**
+ * One channel's totals for one day — mirror of ChannelDay in
+ * electron/services/analytics/analytics-types.ts. null = not captured; newViewers and
+ * returningViewers are null while Studio has not computed the cohort yet (~2 most recent days).
+ */
+export interface AnalyticsChannelDay {
+  schemaVersion: 1;
+  channelId: string;
+  day: string;
+  capturedAt: string;
+  source: 'studio-extension';
+  impressions: number | null;
+  impressionsCtr: number | null;
+  views: number;
+  watchHours: number;
+  newViewers: number | null;
+  returningViewers: number | null;
+  subsNetChange: number | null;
+  bySource: {
+    browse: AnalyticsSourceDay; suggested: AnalyticsSourceDay; search: AnalyticsSourceDay;
+    channel: AnalyticsSourceDay; playlist: AnalyticsSourceDay; direct: AnalyticsSourceDay;
+    external: AnalyticsSourceDay; notification: AnalyticsSourceDay; shorts: AnalyticsSourceDay;
+    endScreen: AnalyticsSourceDay; other: AnalyticsSourceDay;
+  };
+  otherSources: string[];
 }
 
 export interface AnalyticsInsightsResult {
@@ -838,6 +878,7 @@ declare global {
       analyticsGetSummary: () => Promise<{ success: boolean; channels?: AnalyticsChannelSummary[]; error?: string }>;
       analyticsRunDistillation: () => Promise<{ success: boolean; summary?: { channels: number; videosProcessed: number; verdictsWritten: number }; error?: string }>;
       analyticsGetInsights: () => Promise<AnalyticsInsightsResult>;
+      analyticsGetDays: (channelId: string, limitDays: number) => Promise<{ success: boolean; days?: AnalyticsChannelDay[]; error?: string }>;
       analyticsSeedFakeData: () => Promise<{ success: boolean; summary?: { channels: number; videos: number; snapshots: number; channelIds: string[] }; error?: string }>;
 
       // YouTube (OAuth + API collector)
@@ -1626,6 +1667,11 @@ export class ElectronService {
   async analyticsGetInsights(): Promise<AnalyticsInsightsResult> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.analyticsGetInsights();
+  }
+
+  async analyticsGetDays(channelId: string, limitDays: number): Promise<{ success: boolean; days?: AnalyticsChannelDay[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsGetDays(channelId, limitDays);
   }
 
   async analyticsSeedFakeData(): Promise<{ success: boolean; summary?: { channels: number; videos: number; snapshots: number; channelIds: string[] }; error?: string }> {

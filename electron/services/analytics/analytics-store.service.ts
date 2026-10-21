@@ -11,6 +11,8 @@
  *       videos.json                    VideoRecord[]
  *       verdicts.json                  VideoVerdict[]
  *       insights.json                  ChannelInsights
+ *       days.json                      ChannelDay[] — one row per channel day,
+ *                                      ascending by day; upserted by day
  *       snapshots/YYYY-MM.jsonl        append-only, one Snapshot per line
  *                                      (file chosen by month of capturedAt)
  *
@@ -24,6 +26,9 @@ import * as path from 'path';
 import {
   AbTestResult,
   ANALYTICS_SCHEMA_VERSION,
+  CHANNEL_DAY_SOURCE_KEYS,
+  ChannelDay,
+  ChannelDayValidationError,
   ChannelInsights,
   ChannelRegistryEntry,
   CrossChannelInsights,
@@ -138,6 +143,46 @@ export function validateVideoRecord(raw: any): string[] {
   return reasons;
 }
 
+/**
+ * Validate a ChannelDay per the ingest contract. Returns the list of failing fields
+ * (empty = valid). NO coercion is performed.
+ */
+export function validateChannelDay(raw: any): string[] {
+  const reasons: string[] = [];
+  if (!raw || typeof raw !== 'object') {
+    return ['channel day is not an object'];
+  }
+  if (raw.schemaVersion !== ANALYTICS_SCHEMA_VERSION) {
+    reasons.push(`schemaVersion must be ${ANALYTICS_SCHEMA_VERSION} (got ${JSON.stringify(raw.schemaVersion)})`);
+  }
+  if (typeof raw.channelId !== 'string' || raw.channelId.length === 0) reasons.push('channelId must be a non-empty string');
+  if (typeof raw.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.day)) reasons.push('day must be a YYYY-MM-DD string');
+  if (!isParseableIso(raw.capturedAt)) reasons.push('capturedAt must be a parseable ISO date string');
+  if (raw.source !== 'studio-extension') reasons.push('source must be studio-extension');
+  if (!isNumOrNull(raw.impressions)) reasons.push('impressions must be a number or null');
+  if (!isNumOrNull(raw.impressionsCtr)) reasons.push('impressionsCtr must be a number or null');
+  if (!isNum(raw.views)) reasons.push('views must be a number');
+  if (!isNum(raw.watchHours)) reasons.push('watchHours must be a number');
+  if (!isNumOrNull(raw.newViewers)) reasons.push('newViewers must be a number or null');
+  if (!isNumOrNull(raw.returningViewers)) reasons.push('returningViewers must be a number or null');
+  if (!isNumOrNull(raw.subsNetChange)) reasons.push('subsNetChange must be a number or null');
+  if (!raw.bySource || typeof raw.bySource !== 'object') {
+    reasons.push(`bySource must be an object with ${CHANNEL_DAY_SOURCE_KEYS.join('/')}`);
+  } else {
+    for (const key of CHANNEL_DAY_SOURCE_KEYS) {
+      const src = raw.bySource[key];
+      if (!src || typeof src !== 'object'
+        || !isNumOrNull(src.impressions) || !isNumOrNull(src.impressionsCtr) || !isNum(src.views)) {
+        reasons.push(`bySource.${key} must be { impressions: number|null, impressionsCtr: number|null, views: number }`);
+      }
+    }
+  }
+  if (!Array.isArray(raw.otherSources) || raw.otherSources.some((s: any) => typeof s !== 'string' || s.length === 0)) {
+    reasons.push('otherSources must be an array of non-empty strings');
+  }
+  return reasons;
+}
+
 /** Month key ("YYYY-MM", UTC) for a capturedAt timestamp — names the monthly file. */
 function monthKeyOf(capturedAt: string): string {
   const d = new Date(capturedAt);
@@ -215,7 +260,10 @@ export class AnalyticsStoreService {
    * failing fields on bad input). Merge semantics for an existing videoId:
    * scalar fields are replaced by the incoming record; titleHistory is MERGED —
    * when the incoming record's current title differs from the stored current
-   * title, the stored current span is closed (to = now) and a new span appended.
+   * title, the stored current span is closed and a new span appended, classified
+   * against the channel's decided A/B tests (see mergeVideoRecord). The extension
+   * re-sends the whole catalogue every cycle, so a channel whose records all merge
+   * to what is stored is not rewritten.
    * Returns the number of records upserted.
    */
   upsertVideos(records: VideoRecord[]): Promise<number> {
@@ -242,17 +290,26 @@ export class AnalyticsStoreService {
         const filePath = path.join(this.channelDir(channelId), 'videos.json');
         const existing = this.readJson<VideoRecord[]>(filePath) || [];
         const byId = new Map(existing.map((v) => [v.videoId, v]));
+        const winners = this.decidedWinnersByVideo(channelId);
+        let changed = 0;
 
         for (const incoming of channelRecords) {
           const stored = byId.get(incoming.videoId);
           if (!stored) {
             byId.set(incoming.videoId, incoming);
+            changed++;
             continue;
           }
-          byId.set(incoming.videoId, this.mergeVideoRecord(stored, incoming));
+          const merged = this.mergeVideoRecord(stored, incoming, winners.get(incoming.videoId));
+          if (JSON.stringify(merged) !== JSON.stringify(stored)) {
+            byId.set(incoming.videoId, merged);
+            changed++;
+          }
         }
 
-        this.writeJson(filePath, Array.from(byId.values()));
+        if (changed > 0) {
+          this.writeJson(filePath, Array.from(byId.values()));
+        }
       }
 
       console.log(`[AnalyticsStore] Upserted ${records.length} video record(s) across ${byChannel.size} channel(s)`);
@@ -260,27 +317,48 @@ export class AnalyticsStoreService {
     });
   }
 
+  /** Each decided test's winning title and decision time, by video. */
+  private decidedWinnersByVideo(channelId: string): Map<string, { winner: string; decidedAt: string }> {
+    const out = new Map<string, { winner: string; decidedAt: string }>();
+    for (const test of this.loadAbTests(channelId)) {
+      out.set(test.videoId, { winner: test.winner, decidedAt: test.decidedAt });
+    }
+    return out;
+  }
+
   /**
    * Merge an incoming VideoRecord into a stored one. Scalars take the incoming
    * values; titleHistory keeps the stored spans and — when the incoming CURRENT
    * title differs from the stored current title — closes the stored current span
-   * (to = now) and appends the incoming current span.
+   * and appends the incoming current span.
+   *
+   * The catalogue only knows the live title, not why it changed, so every re-sent
+   * record arrives with origin 'upload' and the publish date as its span start. The
+   * store classifies the change: a title equal to the video's decided test winner is
+   * 'test-compare' from the decision time (YouTube applies the winner itself); any
+   * other new title is a 'manual-edit' from now. A first-time record is stored as sent.
    */
-  private mergeVideoRecord(stored: VideoRecord, incoming: VideoRecord): VideoRecord {
+  private mergeVideoRecord(
+    stored: VideoRecord,
+    incoming: VideoRecord,
+    decided: { winner: string; decidedAt: string } | undefined
+  ): VideoRecord {
     const history = stored.titleHistory.map((span) => ({ ...span }));
     const storedCurrent = history.find((span) => span.to === null);
     const incomingCurrent = incoming.titleHistory.find((span) => span.to === null);
 
     if (incomingCurrent && (!storedCurrent || storedCurrent.title !== incomingCurrent.title)) {
       const now = new Date().toISOString();
+      const wonTest = decided !== undefined && decided.winner === incomingCurrent.title;
+      const from = wonTest ? decided.decidedAt : now;
       if (storedCurrent) {
-        storedCurrent.to = now;
+        storedCurrent.to = from;
       }
       history.push({
         title: incomingCurrent.title,
-        from: incomingCurrent.from || now,
+        from,
         to: null,
-        origin: incomingCurrent.origin,
+        origin: wonTest ? 'test-compare' : 'manual-edit',
       });
     }
 
@@ -426,6 +504,57 @@ export class AnalyticsStoreService {
       }
 
       return results;
+    });
+  }
+
+  // ==================== CHANNEL DAYS ====================
+  //
+  // One row per channel per calendar day. Upserted by day, not appended: the collector
+  // re-fetches a rolling window every cycle and Studio revises recent days after the fact
+  // (viewer cohorts in particular arrive ~2 days late), so the newest fetch of a day is the
+  // truth about it.
+
+  /** Every stored day for a channel, ascending by day (empty when nothing is stored). */
+  loadChannelDays(channelId: string): ChannelDay[] {
+    return this.readJson<ChannelDay[]>(path.join(this.channelDir(channelId), 'days.json')) || [];
+  }
+
+  /**
+   * Validate + upsert channel days. Throws ChannelDayValidationError (listing every
+   * failing field of the first bad row) without writing anything when any row in the
+   * batch is invalid. Rows with the same day replace the stored one; the rest are kept.
+   * Returns the number of rows written.
+   */
+  upsertChannelDays(days: ChannelDay[]): Promise<number> {
+    // Validate the whole batch BEFORE queueing — all-or-nothing ingest.
+    for (const day of days) {
+      const reasons = validateChannelDay(day);
+      if (reasons.length > 0) {
+        throw new ChannelDayValidationError(
+          reasons.map((r) => `channelId=${(day as any)?.channelId ?? '<missing>'} day=${(day as any)?.day ?? '<missing>'}: ${r}`)
+        );
+      }
+    }
+
+    return this.enqueue(() => {
+      const byChannel = new Map<string, ChannelDay[]>();
+      for (const day of days) {
+        if (!byChannel.has(day.channelId)) byChannel.set(day.channelId, []);
+        byChannel.get(day.channelId)!.push(day);
+      }
+
+      let written = 0;
+      for (const [channelId, incoming] of byChannel) {
+        const filePath = path.join(this.channelDir(channelId), 'days.json');
+        const existing = this.readJson<ChannelDay[]>(filePath) || [];
+        const byDay = new Map(existing.map((d) => [d.day, d]));
+        for (const day of incoming) byDay.set(day.day, day);
+        const sorted = Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day));
+        this.writeJson(filePath, sorted);
+        written += incoming.length;
+      }
+      console.log(`[AnalyticsStore] Upserted ${written} channel day(s) across ${byChannel.size} channel(s)`);
+      return written;
     });
   }
 

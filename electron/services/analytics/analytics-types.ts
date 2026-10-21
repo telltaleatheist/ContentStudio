@@ -89,7 +89,22 @@ export interface VideoVerdict {
   topSearchTerms: string[];
 }
 
-export interface VideoVerdictSummary { title: string; ctr: number | null; ctrPercentile: number | null; retention30s: number | null; views: number; }
+/**
+ * One video as the insights render shows it. `basis` names the window `ctr`, `avgPctViewed`
+ * and `views` come from: 'first-week' when the verdict has a first-week capture with a CTR in
+ * it, 'lifetime' otherwise (top/bottom packaging are always 'lifetime'). `retention30s` is
+ * first-week only, whatever the basis. `ctrPercentile` is always over lifetime CTR.
+ */
+export interface VideoVerdictSummary {
+  title: string;
+  publishedAt: string;                // ISO, from the verdict
+  basis: 'first-week' | 'lifetime';
+  ctr: number | null;
+  ctrPercentile: number | null;
+  avgPctViewed: number | null;
+  retention30s: number | null;
+  views: number;
+}
 
 /** Structural title traits measured against each other in decided A/B tests. */
 export type AbTitleTraitId = 'colon' | 'question' | 'digit';
@@ -147,6 +162,8 @@ export interface ChannelInsights {
   baselines: { medianCtrFirstWeek: number | null; medianAvgPctViewed: number | null; medianRetention30s: number | null; medianFirstWeekViews: number | null };
   topPackaging: VideoVerdictSummary[];    // ~8 best by packagingScore, recency-weighted (videos <90d old get 2x weight)
   bottomPackaging: VideoVerdictSummary[]; // ~5 worst
+  /** Every long/live upload published in the 90 days before computedAt, newest first. */
+  recentUploads: VideoVerdictSummary[];
   /** Derived at distillation time from the channel's ab-tests.json — see ab-title-rules.ts. */
   abTitleRules: AbTitleRulesDerivation;
   topSearchTerms: Array<{ term: string; views: number }>;
@@ -208,6 +225,64 @@ export class VideoRecordValidationError extends Error {
   constructor(reasons: string[]) {
     super(`VideoRecord validation failed: ${reasons.join('; ')}`);
     this.name = 'VideoRecordValidationError';
+    this.reasons = reasons;
+  }
+}
+
+/**
+ * One source's share of a channel day. `impressions`/`impressionsCtr` are null when Studio
+ * returned no impressions value for that source that day (EXT_URL and NOTIFICATION rows often
+ * carry none) — null is "not reported", never 0. `views` is 0 when the source had no row.
+ */
+export interface SourceDay {
+  impressions: number | null;
+  impressionsCtr: number | null;      // percent
+  views: number;
+}
+
+/**
+ * One channel's totals for one calendar day (Studio's DAY dimension, the channel's own
+ * reporting day). Unlike Snapshot these are PER-DAY values, not lifetime-cumulative, and a
+ * later collection of the same day REPLACES the stored row (Studio revises recent days).
+ */
+export interface ChannelDay {
+  schemaVersion: 1;
+  channelId: string;
+  day: string;                        // 'YYYY-MM-DD'
+  capturedAt: string;                 // ISO, when this row was fetched
+  source: 'studio-extension';
+  impressions: number | null;
+  impressionsCtr: number | null;      // percent
+  views: number;
+  watchHours: number;
+  /**
+   * null = Studio has not computed the viewer cohort for that day yet. Observed 2026-10-21:
+   * for the most recent ~2 days NEW_VIEWERS and RETURNING_VIEWERS both come back 0 while
+   * EXTERNAL_VIEWS > 0. The next collection overwrites the row with the real numbers.
+   */
+  newViewers: number | null;
+  returningViewers: number | null;
+  subsNetChange: number | null;
+  /** Keys are OUR names; the collector maps Studio's TRAFFIC_SOURCE_TYPE enum onto them. */
+  bySource: {
+    browse: SourceDay; suggested: SourceDay; search: SourceDay; channel: SourceDay; playlist: SourceDay;
+    direct: SourceDay; external: SourceDay; notification: SourceDay; shorts: SourceDay; endScreen: SourceDay; other: SourceDay;
+  };
+  /** Studio enum names folded into `bySource.other`, deduped and sorted — nothing is dropped unnamed. */
+  otherSources: string[];
+}
+
+export const CHANNEL_DAY_SOURCE_KEYS = [
+  'browse', 'suggested', 'search', 'channel', 'playlist',
+  'direct', 'external', 'notification', 'shorts', 'endScreen', 'other',
+] as const;
+
+/** Thrown when a ChannelDay fails validation on ingest; `reasons` lists every failing field. */
+export class ChannelDayValidationError extends Error {
+  readonly reasons: string[];
+  constructor(reasons: string[]) {
+    super(`ChannelDay validation failed: ${reasons.join('; ')}`);
+    this.name = 'ChannelDayValidationError';
     this.reasons = reasons;
   }
 }

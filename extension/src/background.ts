@@ -39,7 +39,7 @@ import {
 import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
 import { isNavMessage } from './publish/nav-messages';
 import { NavSourceError, fetchNavListForTab } from './nav-source';
-import { enqueueAbTests, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
+import { enqueueAbTests, enqueueChannelDays, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
 import { DEFAULT_SETTINGS, saveSettings } from './settings';
 import { recordChannelAttempt, setLastCycle, type CycleSummary } from './status';
@@ -178,6 +178,10 @@ async function collectAllChannels(
       // into the metadata prompt, which is the point of collecting them.
       if (result.abTests.length > 0) {
         await enqueueAbTests(result.abTests);
+      }
+      // The channel's per-day series — shown on the Analytics page's Home feed card only.
+      if (result.days.length > 0) {
+        await enqueueChannelDays(result.days);
       }
       await recordChannelAttempt(channel.channelId, attemptAt, null, result.snapshots.length);
     } catch (err) {

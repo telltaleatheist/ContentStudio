@@ -244,6 +244,67 @@
     </div>
   }
 
+  <!-- Per-channel daily series: is the Home feed push holding? -->
+  @for (entry of channelDays(); track entry.channelId) {
+    <div class="card insights-card home-feed-card">
+      <div class="card-title">
+        <mat-icon>home</mat-icon>
+        <h3>{{ entry.name }}: Home feed, last 28 days</h3>
+        @if (!entry.error) {
+          <span class="computed-at">{{ entry.dayCount }} days stored</span>
+        }
+      </div>
+
+      @if (entry.error) {
+        <div class="ingest-error">
+          <mat-icon>error_outline</mat-icon>
+          <span>{{ entry.error }}</span>
+        </div>
+      } @else {
+        @if (entry.comparison; as cmp) {
+          @if (cmp.kind === 'ok') {
+            <div class="week-compare">
+              <span class="week-compare-label">Last 7 full days vs the 7 before</span>
+              <span class="week-metric"><strong>Browse impressions</strong> last 7: {{ fmtNum(cmp.last.browseImpressions) }} · prior 7: {{ fmtNum(cmp.prior.browseImpressions) }} ({{ fmtChange(cmp.change.browseImpressions) }})</span>
+              <span class="week-metric"><strong>Browse views</strong> last 7: {{ fmtNum(cmp.last.browseViews) }} · prior 7: {{ fmtNum(cmp.prior.browseViews) }} ({{ fmtChange(cmp.change.browseViews) }})</span>
+              <span class="week-metric"><strong>CTR</strong> last 7: {{ fmtPct(cmp.last.ctr) }} · prior 7: {{ fmtPct(cmp.prior.ctr) }} ({{ fmtChange(cmp.change.ctr) }})</span>
+              <span class="week-metric"><strong>Views</strong> last 7: {{ fmtNum(cmp.last.views) }} · prior 7: {{ fmtNum(cmp.prior.views) }} ({{ fmtChange(cmp.change.views) }})</span>
+            </div>
+          } @else {
+            <p class="empty-hint">{{ cmp.available }} of the 14 full days a week-on-week comparison needs are stored, so there is no comparison yet.</p>
+          }
+        }
+
+        <div class="table-wrapper">
+          <table class="insights-table days-table">
+            <thead>
+              <tr>
+                <th>Day</th><th>Impressions</th><th>CTR</th><th>Views</th><th>Browse views</th>
+                <th>Browse share</th><th>Suggested views</th><th>Search views</th><th>New viewers</th><th>Subs net</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (row of entry.rows; track row.day) {
+                <tr [class.partial-day]="row.partial">
+                  <td class="mono">{{ row.day }}@if (row.partial) { <span class="partial-tag">today</span> }</td>
+                  <td>{{ fmtNum(row.impressions) }}</td>
+                  <td>{{ fmtPct(row.ctr) }}</td>
+                  <td>{{ fmtNum(row.views) }}</td>
+                  <td>{{ fmtNum(row.browseViews) }}</td>
+                  <td>{{ fmtPct(row.browseShare) }}</td>
+                  <td>{{ fmtNum(row.suggestedViews) }}</td>
+                  <td>{{ fmtNum(row.searchViews) }}</td>
+                  <td [matTooltip]="row.newViewers === null ? 'Studio has not counted viewers for this day yet' : ''">{{ row.newViewers === null ? '—' : fmtNum(row.newViewers) }}</td>
+                  <td>{{ fmtSigned(row.subsNet) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </div>
+  }
+
   <!-- Per-channel insights -->
   @for (entry of channelInsights(); track entry.channelId) {
     @if (entry.insights; as insights) {
@@ -309,6 +370,29 @@
                     <td>{{ fmtPct(item.ctr) }}</td>
                     <td>{{ fmtPctl(item.ctrPercentile) }}</td>
                     <td>{{ fmtPct(item.retention30s) }}</td>
+                    <td>{{ fmtNum(item.views) }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+
+        @if (insights.recentUploads; as recent) {
+          <h4 class="table-heading">Recent uploads (90 days)</h4>
+          <div class="table-wrapper">
+            <table class="insights-table">
+              <thead>
+                <tr><th>Title</th><th>Published</th><th>CTR</th><th>CTR %ile</th><th>Avg % viewed</th><th>Views</th></tr>
+              </thead>
+              <tbody>
+                @for (item of recent; track $index) {
+                  <tr>
+                    <td class="title-cell">{{ item.title }}</td>
+                    <td>{{ item.publishedAt?.slice(0, 10) }}</td>
+                    <td>{{ fmtPct(item.ctr) }}</td>
+                    <td>{{ fmtPctl(item.ctrPercentile) }}</td>
+                    <td>{{ fmtPct(item.avgPctViewed) }}</td>
                     <td>{{ fmtNum(item.views) }}</td>
                   </tr>
                 }

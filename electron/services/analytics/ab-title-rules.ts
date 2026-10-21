@@ -354,6 +354,40 @@ export function renderAbTitleRulesBlock(
 }
 
 /**
+ * Render every decided test of the last `windowDays` before `asOf`, newest first, as the
+ * distiller's dated record of what has been winning lately.
+ *
+ * A different question from the exemplars: those are the ten biggest wins of all time, this
+ * is every recent result whatever its margin, so a test can appear in both. Same validation
+ * and runner-up as the derivation (toDecidedTests). The window is (asOf - windowDays, asOf]
+ * against decidedAt; a test decided after `asOf` belongs to the next distillation, which its
+ * ingest schedules. The empty window is stated in words, like the empty derivation.
+ */
+export function renderRecentAbTests(
+  records: AbTestResult[],
+  options: { channelId: string; asOf: Date; windowDays: number }
+): string {
+  const asOfMs = options.asOf.getTime();
+  const startMs = asOfMs - options.windowDays * 24 * 60 * 60 * 1000;
+  const recent = toDecidedTests(records, options.channelId)
+    .filter((test) => {
+      const t = Date.parse(test.decidedAt);
+      return t > startMs && t <= asOfMs;
+    })
+    // Ties broken by videoId so two tests decided at the same instant never swap places.
+    .sort((a, b) => Date.parse(b.decidedAt) - Date.parse(a.decidedAt) || a.videoId.localeCompare(b.videoId));
+
+  const lines: string[] = [`Recent decided A/B tests (last ${options.windowDays} days, newest first):`];
+  if (recent.length === 0) {
+    lines.push(`None: no A/B title test was decided in the last ${options.windowDays} days.`);
+  }
+  for (const test of recent) {
+    lines.push(`- ${isoDate(test.decidedAt)}: "${test.winner}" (+${round1(test.liftPts)} pts) beat "${test.runnerUp}"`);
+  }
+  return lines.join('\n');
+}
+
+/**
  * Convenience composition: raw store records straight to the prompt block.
  * Pure, and the shortest thing to point a test at.
  */

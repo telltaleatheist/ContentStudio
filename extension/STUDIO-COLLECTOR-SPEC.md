@@ -188,3 +188,43 @@ only due to post-load hook-injection timing, which a real content script avoids)
   per-channel and the popup surfaces it. Never emit a partial/guessed Snapshot.
 - If `serializedDelegationContext` is missing from ytcfg → the tab isn't a signed-in Studio
   channel context; throw, don't proceed.
+
+## Per-channel per-day series ("channel days") — verified live 2026-10-21
+
+Same endpoint, auth, headers and `TABLE_QUERY` envelope as the per-video query; restrict
+`USER`==channelId, `limit {pageSize: 5000, pageOffset: 0}`, `currency 'USD'`,
+`returnDataInNewFormat true`, `limitedToBatchedData false`. The collector
+(`collectChannelDaysInPage`) asks for the last 35 days including today (page-local calendar,
+`exclusiveEnd` = tomorrow) every cycle; ContentStudio upserts by day, so later fetches correct
+earlier rows. Two requests per channel per cycle.
+
+### Query 1 — per day  →  schema `ChannelDay` totals
+`dimensions: [{type:'DAY'}]`, metrics VIDEO_THUMBNAIL_IMPRESSIONS (`counts`),
+VIDEO_THUMBNAIL_IMPRESSIONS_VTR (`percentages`), EXTERNAL_VIEWS (`counts`),
+EXTERNAL_WATCH_TIME (`milliseconds`), NEW_VIEWERS (`counts`), RETURNING_VIEWERS (`counts`),
+SUBSCRIBERS_NET_CHANGE (`counts`). Any `orders` entry works; rows are sorted client-side.
+- The DAY dimension column carries its values in **`dimensionColumns[i].dateIds.values`** as
+  integers (`20261019`), not in `strings`. Match columns by `.dimension.type` / `.metric.type`,
+  never by index.
+- **Viewer cohorts lag.** For the most recent ~2 days Studio has not computed new vs returning
+  viewers yet and returns NEW_VIEWERS=0 and RETURNING_VIEWERS=0 while EXTERNAL_VIEWS>0. Stored
+  as `newViewers: null, returningViewers: null` ("not computed yet", not zero); a later cycle
+  overwrites the day with the real numbers.
+
+### Query 2 — per day per traffic source  →  schema `ChannelDay.bySource`
+`dimensions: [{type:'DAY'},{type:'TRAFFIC_SOURCE_TYPE'}]`, metrics VIDEO_THUMBNAIL_IMPRESSIONS,
+VIDEO_THUMBNAIL_IMPRESSIONS_VTR, EXTERNAL_VIEWS.
+- TRAFFIC_SOURCE_TYPE values are in **`dimensionColumns[i].enumValues.values`** as strings.
+  Seen: `SUBSCRIBER`, `YT_SEARCH`, `YT_RELATED`, `PLAYLIST`, `YT_CHANNEL`,
+  `UNKNOWN_MOBILE_OR_DIRECT`, `YT_OTHER_PAGE`, `EXT_URL`, `NOTIFICATION`, `SHORTS`,
+  `END_SCREEN`, `HASHTAGS`.
+- **`SUBSCRIBER` is Studio's "Browse features"** (Home + the subscriptions feed) — the Home feed
+  push — NOT the subscriber count.
+- Mapping: SUBSCRIBER→browse, YT_RELATED→suggested, YT_SEARCH→search, YT_CHANNEL→channel,
+  PLAYLIST→playlist, UNKNOWN_MOBILE_OR_DIRECT→direct, EXT_URL→external,
+  NOTIFICATION→notification, SHORTS→shorts, END_SCREEN→endScreen. Everything else
+  (YT_OTHER_PAGE, HASHTAGS, any future enum) is summed into `other` and its name listed in
+  `otherSources`.
+- A (day, source) pair with no row = 0 views for that source that day. Impressions are present
+  only on some sources' rows (SUBSCRIBER/YT_RELATED/YT_CHANNEL/YT_SEARCH carry them; EXT_URL and
+  NOTIFICATION rows may not) — a missing impressions value is `null` for that source, never 0.

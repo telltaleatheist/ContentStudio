@@ -551,6 +551,28 @@ or lost. The distilled lines are **cached per channel** (`guidelines.json` besid
 `insights.json`) and keyed to a hash of this call's exact input, so the call runs only when the
 evidence actually changed — a cache hit is the overwhelmingly common path.
 
+**Recency is dated evidence plus an instruction, never a hand-coded shape (2026-10-21).** The main
+channel changed what wins in about six weeks: all-lowercase spoken titles, 20-27 minute videos, a
+Home-feed push since 2026-10-11 with CTR up from ~4% to 5-7.5%. The distiller's input could not see
+that: a decided A/B test from 2025-10 (Title Case, another style) read exactly like one from last
+week, and nothing in the render said when anything happened, so the lessons followed the channel
+slowly. Measured before acting: Owen's hunch that one shape wins ("action. result. punchline", or a
+trailing parenthetical) does NOT hold on the full record — counted in isolation, head-to-head, it
+won 4 / lost 6 on Telltale and 5 / 12 on Fireside. So no shape went into any prompt. Instead:
+- The render is dated (`CHANNEL PERFORMANCE DATA (as of YYYY-MM-DD)`), the top/bottom packaging
+  lines carry their publish dates, and two recent sections sit before the A/B block: every long/live
+  upload of the last 90 days (newest first, capped at 40 with the cut stated; first-week numbers
+  where a first-week capture has a CTR, lifetime otherwise, and the line says which) and every
+  decided A/B test of the same 90 days (newest first, whatever its margin; the all-time top-10
+  exemplars stay, since they answer a different question).
+- The prompt says the lessons describe the channel NOW: where the last 90 days and older evidence
+  disagree the recent evidence wins and the lesson says what changed; a pattern found only in older
+  evidence is left out; at least half the lessons rest on the two recent sections. The subject-free
+  rule is unchanged.
+- Generation is unchanged: none of the new sections reaches it except through the lessons. The
+  input's hash moved, so each channel re-distills once on its next data change or Run Distillation.
+Unmeasured: no distillation has run on the new input yet (a live run needs Owen's OK).
+
 ### `summarization.yml`
 
 The output of this stage becomes the `{subject}` input to every downstream call, so it must

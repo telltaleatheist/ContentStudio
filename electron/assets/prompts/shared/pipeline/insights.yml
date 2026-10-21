@@ -1,7 +1,9 @@
 guidelines_distiller: |-
   Below is one YouTube channel's real performance evidence: its baselines, its
-  best- and worst-performing titles with their measurements, its decided A/B title
-  tests, and its search data.
+  best- and worst-performing titles with their measurements, every upload and every
+  decided A/B title test of the last 90 days, its all-time decided A/B title tests,
+  and its search data. Every title and test carries its date, and the evidence is
+  dated as of its first line.
 
   {performance_data}
 
@@ -17,6 +19,13 @@ guidelines_distiller: |-
     recognizable phrase from any title above may appear in any lesson. A lesson that
     names one only fits videos about that subject, and it will be read while writing
     about something else.
+  - The lessons describe the channel as it performs NOW. Where the last 90 days and
+    older evidence disagree, the recent evidence wins, and the lesson says what changed:
+    a shape that used to win and has stopped, or one that has started winning.
+  - A pattern that shows up only in older evidence is history, not a lesson; leave it
+    out.
+  - At least half the lessons are grounded in the two recent sections: the recent
+    uploads and the recent decided A/B tests.
   - Where the A/B evidence and the view data point the same way, one lesson saying so
     is worth more than two saying it separately.
   - 5 to 10 lessons, ordered most-load-bearing first.

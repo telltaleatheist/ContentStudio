@@ -330,6 +330,46 @@
     }
   }
 
+  // Home feed card: the week-on-week line above the per-day table.
+  .week-compare {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+
+    .week-compare-label {
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .week-metric strong {
+      font-weight: 600;
+      margin-right: 0.35rem;
+    }
+  }
+
+  .days-table {
+    td:not(:first-child),
+    th:not(:first-child) {
+      text-align: right;
+    }
+
+    .partial-day td {
+      color: var(--text-muted);
+    }
+
+    .partial-tag {
+      margin-left: 0.4rem;
+      font-family: inherit;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+  }
+
   .ab-list {
     margin: 0;
     padding-left: 1.25rem;

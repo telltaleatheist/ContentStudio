@@ -3618,6 +3618,24 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
+  // The channel's per-day series (Home feed panel): the LAST `limitDays` stored rows,
+  // ascending by day. The store keeps days.json sorted, so this is a tail slice.
+  ipcMain.handle('analytics-get-days', async (_event, channelId: string, limitDays: number) => {
+    try {
+      if (typeof channelId !== 'string' || channelId.length === 0) {
+        return { success: false, error: 'channelId must be a non-empty string' };
+      }
+      if (!Number.isInteger(limitDays) || limitDays <= 0) {
+        return { success: false, error: `limitDays must be a positive integer (got ${JSON.stringify(limitDays)})` };
+      }
+      const days = analyticsStore.loadChannelDays(channelId);
+      return { success: true, days: days.slice(-limitDays) };
+    } catch (error) {
+      log.error('Error getting analytics channel days:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
   // DEV: seed plausible fake data so the whole loop can be exercised end-to-end
   ipcMain.handle('analytics-seed-fake-data', async () => {
     try {

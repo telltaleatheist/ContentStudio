@@ -39,6 +39,11 @@ const INSIGHTS_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
 // is statistically meaningless (unlisted / dead / barely-seen videos), and such a
 // video must never be injected into the AI as a "top example to emulate".
 const MIN_PACKAGING_IMPRESSIONS = 1000;
+// The "Recent uploads" evidence: every long/live video published this many days before
+// computedAt, whatever its reach. Separate from INSIGHTS_WINDOW_MS on purpose — that window
+// chooses what the rankings learn from; this one is the dated record of the channel as it is
+// now, which the distiller is told to weigh above older evidence.
+const RECENT_UPLOADS_DAYS = 90;
 
 export interface DistillationSummary {
   channels: number;
@@ -284,6 +289,7 @@ export class DistillationService {
   computeChannelInsights(channelId: string): ChannelInsights {
     const verdicts = this.store.loadVerdicts(channelId);
     const now = Date.now();
+    const computedAt = new Date(now);
 
     // Recency window: insights — and therefore the AI prompt block — should reflect
     // CURRENT performance, so restrict the learning set to videos published within
@@ -314,18 +320,42 @@ export class DistillationService {
       (v) => v.packagingScore !== null && (v.lifetime.impressions ?? 0) >= MIN_PACKAGING_IMPRESSIONS,
     );
 
+    // Lifetime avg % viewed is not on the verdict (its lifetime block predates the field), so
+    // it is read here, once, for every video any summary below can name.
+    const avgPctViewed = this.latestAvgPctViewed(channelId);
+
     // Top ~8 by packagingScore, recency-weighted: videos published <90d ago get
     // 2x weight so fresh wins outrank equally-scored old ones.
     const topPackaging = [...scored]
       .sort((a, b) => this.recencyWeightedScore(b, now) - this.recencyWeightedScore(a, now))
       .slice(0, 8)
-      .map((v) => this.toSummary(v));
+      .map((v) => this.toSummary(v, avgPctViewed));
 
     // Bottom ~5 by plain packagingScore.
     const bottomPackaging = [...scored]
       .sort((a, b) => (a.packagingScore as number) - (b.packagingScore as number))
       .slice(0, 5)
-      .map((v) => this.toSummary(v));
+      .map((v) => this.toSummary(v, avgPctViewed));
+
+    // Every long/live upload of the last RECENT_UPLOADS_DAYS, newest first — no reach filter,
+    // since this is the record of what the channel has been doing, not a ranking. A verdict
+    // with no VideoRecord cannot say its format and is refused by id.
+    const formatByVideo = new Map(this.store.listVideos(channelId).map((v) => [v.videoId, v.format]));
+    const recentStart = now - RECENT_UPLOADS_DAYS * 24 * 60 * 60 * 1000;
+    const recentUploads = verdicts
+      .filter((v) => {
+        const format = formatByVideo.get(v.videoId);
+        if (!format) {
+          throw new Error(`[Distillation] verdict ${v.videoId} in ${channelId} has no video record to read its format from`);
+        }
+        const t = Date.parse(v.publishedAt);
+        if (Number.isNaN(t)) {
+          throw new Error(`[Distillation] verdict ${v.videoId} in ${channelId} has publishedAt "${v.publishedAt}", not a date`);
+        }
+        return format !== 'short' && t >= recentStart && t <= now;
+      })
+      .sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt) || a.videoId.localeCompare(b.videoId))
+      .map((v) => this.toRecentSummary(v, avgPctViewed));
 
     // A/B title evidence is DERIVED here, not accumulated: aggregate rules that cleared an
     // evidence band plus a capped, lift-ranked exemplar list. It is computed from the
@@ -340,16 +370,17 @@ export class DistillationService {
     const abTitleRules = deriveAbTitleRules(this.store.loadAbTests(channelId), {
       channelId,
       channelName: channel.name,
-      derivedAt: new Date(),
+      derivedAt: computedAt,
     });
 
     return {
       channelId,
-      computedAt: new Date().toISOString(),
+      computedAt: computedAt.toISOString(),
       videoCount: verdicts.length,
       baselines,
       topPackaging,
       bottomPackaging,
+      recentUploads,
       abTitleRules,
       topSearchTerms: this.aggregateChannelSearchTerms(channelId),
       aiBrief: null, // v1: reserved
@@ -362,14 +393,55 @@ export class DistillationService {
     return ageMs < NINETY_DAYS_MS ? score * 2 : score;
   }
 
-  private toSummary(verdict: VideoVerdict): VideoVerdictSummary {
+  private toSummary(verdict: VideoVerdict, avgPctViewed: Map<string, number>): VideoVerdictSummary {
     return {
       title: verdict.titles[verdict.titles.length - 1],
+      publishedAt: verdict.publishedAt,
+      basis: 'lifetime',
       ctr: verdict.lifetime ? verdict.lifetime.ctr : null,
       ctrPercentile: verdict.ctrPercentile,
+      avgPctViewed: avgPctViewed.get(verdict.videoId) ?? null,
       retention30s: verdict.firstWeek ? verdict.firstWeek.retention30s : null,
       views: verdict.lifetime.views,
     };
+  }
+
+  /**
+   * A recent upload's summary: its first-week numbers when a first-week capture carried a CTR,
+   * so videos of different ages compare on the same window; lifetime otherwise. Whole-object,
+   * never per field — one line never mixes two windows, and `basis` says which it is.
+   */
+  private toRecentSummary(verdict: VideoVerdict, avgPctViewed: Map<string, number>): VideoVerdictSummary {
+    const firstWeek = verdict.firstWeek;
+    if (firstWeek && firstWeek.ctr !== null) {
+      return {
+        title: verdict.titles[verdict.titles.length - 1],
+        publishedAt: verdict.publishedAt,
+        basis: 'first-week',
+        ctr: firstWeek.ctr,
+        ctrPercentile: verdict.ctrPercentile,
+        avgPctViewed: firstWeek.avgPctViewed,
+        retention30s: firstWeek.retention30s,
+        views: firstWeek.views,
+      };
+    }
+    return this.toSummary(verdict, avgPctViewed);
+  }
+
+  /**
+   * Latest captured avg % viewed per video (lifetime-cumulative, like every counter), keyed by
+   * videoId. A video with none captured is absent, and its summary reads null — not captured.
+   */
+  private latestAvgPctViewed(channelId: string): Map<string, number> {
+    const latest = new Map<string, { capturedAt: string; value: number }>();
+    for (const snapshot of this.store.iterateSnapshots(channelId)) {
+      if (snapshot.avgPctViewed === null) continue;
+      const seen = latest.get(snapshot.videoId);
+      if (!seen || snapshot.capturedAt > seen.capturedAt) {
+        latest.set(snapshot.videoId, { capturedAt: snapshot.capturedAt, value: snapshot.avgPctViewed });
+      }
+    }
+    return new Map(Array.from(latest.entries()).map(([videoId, entry]) => [videoId, entry.value]));
   }
 
   /**

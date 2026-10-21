@@ -54,7 +54,7 @@
 // `videos`. Cadence tiering below then activates automatically — no other change.
 // ============================================================================
 
-import type { Snapshot, VideoRecord } from './types';
+import type { ChannelDay, Snapshot, VideoRecord } from './types';
 import {
   fetchCatalogueInPage,
   fetchExperimentsInPage,
@@ -87,6 +87,8 @@ export interface ChannelCollectionResult {
   snapshots: Snapshot[];
   /** Decided A/B title tests — these become ChannelInsights.abLearnings. */
   abTests: AbTestRecord[];
+  /** The channel's per-day series over the rolling window (see collectChannelDaysInPage). */
+  days: ChannelDay[];
 }
 
 // ============================================================================
@@ -160,6 +162,10 @@ export class NoStudioTabError extends StudioCollectionError {
 const PAGE_SIZE = 10000;
 const STUDIO_TAB_KEY = 'studioCollectorTabId';
 const CONTEXT_TIMEOUT_MS = 30_000;
+// The per-day series is re-fetched whole every cycle and upserted by day on the
+// ContentStudio side, so late Studio revisions (viewer cohorts arrive ~2 days late)
+// overwrite the early numbers. 35 days covers the 28-day card plus a margin.
+const CHANNEL_DAYS_WINDOW = 35;
 const CONTEXT_POLL_MS = 1_000;
 
 const HOUR_MS = 3_600_000;
@@ -209,6 +215,12 @@ export async function collectChannel(
   if (!experimentResult.ok) throw mapCatalogueError(experimentResult, channelId);
   const abTests: AbTestRecord[] = experimentResult.tests;
 
+  // The channel's per-day series (Home feed card). Two cheap requests; a failure here is
+  // the channel's failure like every other call above — nothing half-collected is kept.
+  const daysResult = await runInjectedChannelDays(tabId, channelId);
+  if (!daysResult.ok) throw mapInjectedError(daysResult, channelId);
+  const days: ChannelDay[] = daysResult.days;
+
   // Cadence tiering (SW-side, where the last-capture state lives): keep only the
   // snapshots whose video is due this cycle. First-ever run per channel = every
   // video is due (backfill). See tierIntervalMs/isDue.
@@ -216,17 +228,21 @@ export async function collectChannel(
   const prior = await getChannelVideoState(channelId);
   const dueSnapshots = injected.snapshots.filter((s) => isDue(s.videoAgeHours, prior[s.videoId], nowMs));
 
-  // Emit VideoRecords only for videos we have not seen before (upsert-new). These now
-  // come from the catalogue rather than the analytics response, so they carry real
-  // publish dates; anything still unpublished is dropped by toVideoRecords rather than
-  // being given an invented date.
-  const known = new Set(Object.keys(prior));
-  const newVideos = toVideoRecords(catalogue, channelId).filter((v) => !known.has(v.videoId));
+  // Emit a VideoRecord for EVERY catalogue video, every cycle — not only unseen ones.
+  // A title changes after first sight: YouTube applies the winner of a title test, or
+  // the operator edits it. Until 2026-10-21 only unseen videos were sent, so the store
+  // kept the upload-day title for life, and two decided tests on the main channel had
+  // the LOSING title on record with the winner's numbers. The store merges title
+  // history and only appends a span when the live title differs, so the re-send costs
+  // one read of videos.json per cycle and nothing on disk when nothing changed. The
+  // catalogue carries real publish dates; anything still unpublished is dropped by
+  // toVideoRecords rather than being given an invented date.
+  const videos = toVideoRecords(catalogue, channelId);
 
   // Mark the emitted snapshots' capture time so cadence can skip them next cycle.
   await recordSnapshotTimes(channelId, dueSnapshots.map((s) => ({ videoId: s.videoId, capturedAt: s.capturedAt })));
 
-  return { videos: newVideos, snapshots: dueSnapshots, abTests };
+  return { videos, snapshots: dueSnapshots, abTests, days };
 }
 
 /** Injected catalogue fetch — MAIN world, same as the analytics collector. */
@@ -703,6 +719,28 @@ async function runInjectedCollection(tabId: number, channelId: string): Promise<
   return first.result;
 }
 
+type InjectedDaysResult = { ok: true; days: ChannelDay[] } | InjectedErr;
+
+/** Injected per-day fetch — MAIN world; same failure codes as the analytics collector. */
+async function runInjectedChannelDays(tabId: number, channelId: string): Promise<InjectedDaysResult> {
+  let results: chrome.scripting.InjectionResult<InjectedDaysResult>[];
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: collectChannelDaysInPage,
+      args: [channelId, { windowDays: CHANNEL_DAYS_WINDOW }],
+    });
+  } catch (err) {
+    throw new StudioTabError(channelId, 'INJECTION_FAILED', `executeScript (channel days) failed: ${msg(err)}`);
+  }
+  const first = results[0];
+  if (!first || first.result === undefined || first.result === null) {
+    throw new StudioTabError(channelId, 'NO_RESULT', 'Injected channel-days collection returned no result.');
+  }
+  return first.result;
+}
+
 function mapInjectedError(err: InjectedErr, channelId: string): StudioCollectionError {
   const message = err.message || `Studio collection failed (${err.code}).`;
   switch (err.code) {
@@ -1039,5 +1077,312 @@ export async function collectStudioAnalyticsInPage(
     return { ok: true, videos: videos, snapshots: snapshots };
   } catch (err: any) {
     return fail('INJECTION_EXCEPTION', 'Unexpected error in the injected collector: ' + (err && err.message ? err.message : String(err)));
+  }
+}
+
+/**
+ * Collect one channel's PER-DAY series over the last `windowDays` days (today included,
+ * page-local calendar) from the same yta_web/join endpoint. Two requests:
+ *   1. DAY                         -> impressions, CTR, views, watch time, new/returning
+ *                                     viewers, net subscribers
+ *   2. DAY x TRAFFIC_SOURCE_TYPE   -> impressions, CTR, views per source
+ * joined by day into ChannelDay rows. Returns a discriminated result like
+ * collectStudioAnalyticsInPage:
+ *   { ok: true, days: ChannelDay[] }   (ascending by day)
+ *   { ok: false, code, message, status? }
+ *
+ * Self-contained for the same reason as collectStudioAnalyticsInPage (it runs through
+ * executeScript world:'MAIN' and closes over NOTHING), so it repeats that function's auth,
+ * ytcfg and request code rather than sharing it. Standalone use, in a Studio console on the
+ * target channel:
+ *   await collectChannelDaysInPage('UCxxxxxxxxxxxxxxxxxxxxxx', { windowDays: 35 })
+ *
+ * A day Studio returns no DAY row for is not emitted: it is not known to be zero.
+ */
+export async function collectChannelDaysInPage(
+  channelId: string,
+  config: { windowDays: number },
+): Promise<any> {
+  const ORIGIN = 'https://studio.youtube.com';
+  const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/yta_web/join?alt=json';
+  const PAGE = 5000;
+
+  const fail = (code: string, message: string, extra?: any): any => Object.assign({ ok: false, code, message }, extra || {});
+
+  try {
+    const windowDays = config && typeof config.windowDays === 'number' && config.windowDays > 0 ? Math.floor(config.windowDays) : 0;
+    if (windowDays <= 0) return fail('INJECTION_EXCEPTION', 'collectChannelDaysInPage needs a positive config.windowDays.');
+
+    // ---- auth: SAPISIDHASH from the SAPISID cookie (as collectStudioAnalyticsInPage) ----
+    const readCookie = (name: string): string | null => {
+      const jar = document.cookie ? document.cookie.split('; ') : [];
+      for (const pair of jar) {
+        const eq = pair.indexOf('=');
+        const key = eq === -1 ? pair : pair.slice(0, eq);
+        if (key === name) return eq === -1 ? '' : decodeURIComponent(pair.slice(eq + 1));
+      }
+      return null;
+    };
+    const sapisid = readCookie('SAPISID') || readCookie('__Secure-3PAPISID');
+    if (!sapisid) return fail('NO_SAPISID', 'SAPISID cookie is not present on studio.youtube.com — the user is not signed in.');
+
+    const sha1Hex = async (input: string): Promise<string> => {
+      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(input)));
+      let hex = '';
+      for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    };
+    const ts = Math.floor(Date.now() / 1000);
+    const authorization = 'SAPISIDHASH ' + ts + '_' + (await sha1Hex(ts + ' ' + sapisid + ' ' + ORIGIN));
+
+    // ---- context from ytcfg ----
+    const cfg = (window as any).ytcfg;
+    if (!cfg || typeof cfg.get !== 'function') return fail('YTCFG_MISSING', 'window.ytcfg is not available — not a loaded Studio page.');
+    const innertube = cfg.get('INNERTUBE_CONTEXT');
+    const clientVersion = innertube && innertube.client && innertube.client.clientVersion;
+    if (!clientVersion) return fail('YTCFG_MISSING', 'ytcfg INNERTUBE_CONTEXT.client.clientVersion is missing.');
+    const activeChannel = cfg.get('CHANNEL_ID');
+    if (activeChannel !== channelId) return fail('CHANNEL_MISMATCH', 'ytcfg CHANNEL_ID (' + activeChannel + ') does not match requested channel (' + channelId + ').');
+    const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT');
+    if (!delegation) return fail('NO_DELEGATION', 'ytcfg INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT is missing — tab is not a signed-in channel context.');
+    // Brand channels need the delegation header + auth-user index too (verified 2026-07-22).
+    const authUser = (cfg.get('SESSION_INDEX') != null) ? String(cfg.get('SESSION_INDEX')) : '0';
+    const visitorData = (innertube.client && innertube.client.visitorData) || null;
+
+    // ---- window: [today - (windowDays-1), tomorrow) in the page's local calendar ----
+    const nowDate = new Date();
+    const dateId = (d: Date): number => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    const inclusiveStart = dateId(new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() - (windowDays - 1)));
+    const exclusiveEnd = dateId(new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() + 1));
+
+    const context = {
+      client: { clientName: 62, clientVersion: clientVersion },
+      user: { serializedDelegationContext: delegation },
+    };
+
+    const toNum = (v: any): number | null => {
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+      if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v);
+      return null;
+    };
+
+    // One TABLE_QUERY → its resultTable, or a fail() object (marked __fail).
+    const runQuery = async (label: string, dimensions: any[], metrics: string[]): Promise<any> => {
+      const body = {
+        context,
+        nodes: [{
+          key: 'TABLE_QUERY',
+          value: {
+            query: {
+              dimensions: dimensions,
+              metrics: metrics.map((type) => ({ type })),
+              restricts: [{ dimension: { type: 'USER' }, inValues: [channelId] }],
+              orders: [{ metric: { type: 'EXTERNAL_VIEWS' }, direction: 'ANALYTICS_ORDER_DIRECTION_DESC' }],
+              timeRange: { dateIdRange: { inclusiveStart: inclusiveStart, exclusiveEnd: exclusiveEnd } },
+              limit: { pageSize: PAGE, pageOffset: 0 },
+              currency: 'USD',
+              returnDataInNewFormat: true,
+              limitedToBatchedData: false,
+            },
+          },
+        }],
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(ENDPOINT, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authorization,
+            'X-Origin': ORIGIN,
+            'X-Goog-AuthUser': authUser,
+            'X-YouTube-Delegation-Context': delegation,
+            'X-YouTube-Client-Name': '62',
+            'X-YouTube-Client-Version': clientVersion,
+            ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      } catch (netErr: any) {
+        return { __fail: fail('NETWORK', 'Network error calling the Studio analytics endpoint (' + label + '): ' + (netErr && netErr.message ? netErr.message : String(netErr))) };
+      }
+      if (resp.status === 401 || resp.status === 403) return { __fail: fail('HTTP_AUTH', 'Studio analytics endpoint returned HTTP ' + resp.status + ' (' + label + ') — auth/delegation rejected.', { status: resp.status }) };
+      if (resp.status === 429) return { __fail: fail('HTTP_RATELIMIT', 'Studio analytics endpoint returned HTTP 429 (' + label + ') — rate limited.', { status: 429 }) };
+      if (!resp.ok) return { __fail: fail('HTTP_ERROR', 'Studio analytics endpoint returned HTTP ' + resp.status + ' (' + label + ').', { status: resp.status }) };
+      let data: any;
+      try { data = await resp.json(); } catch { return { __fail: fail('BAD_JSON', 'Studio analytics response body (' + label + ') was not valid JSON.') }; }
+      const results = data && data.results;
+      if (!Array.isArray(results)) return { __fail: fail('NO_RESULT_TABLE', 'Response (' + label + ') had no results[] array.') };
+      const node = results.find((r: any) => r && r.value && r.value.resultTable);
+      if (!node) return { __fail: fail('NO_RESULT_TABLE', 'No results[] entry (' + label + ') carried a resultTable.') };
+      return { table: node.value.resultTable };
+    };
+
+    // A dimension column by .dimension.type (never by index) and the named value holder.
+    const dimensionOf = (label: string, table: any, type: string, holder: string): any => {
+      const cols: any[] = Array.isArray(table.dimensionColumns) ? table.dimensionColumns : [];
+      const column = cols.find((c) => c && c.dimension && c.dimension.type === type);
+      const arr = column && column[holder] && column[holder].values;
+      if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Dimension column ' + type + '.' + holder + '.values is absent from the ' + label + ' response.') };
+      return arr;
+    };
+    // A metric column by .metric.type and its parallel array, checked against the row count.
+    const metricOf = (label: string, table: any, type: string, holder: string, rowCount: number): any => {
+      const cols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
+      const column = cols.find((c) => c && c.metric && c.metric.type === type);
+      if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + type + ' is absent from the ' + label + ' response.') };
+      const arr = column[holder] && column[holder].values;
+      if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has no ' + holder + '.values array.') };
+      if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') length ' + arr.length + ' != row count ' + rowCount + '.') };
+      return arr;
+    };
+    // DAY comes back as integer date ids (20261019) in the `dateIds` holder.
+    const dayKey = (id: any): string | null => {
+      const n = toNum(id);
+      if (n === null || !Number.isInteger(n) || n < 19000101 || n > 99991231) return null;
+      const s = String(n);
+      return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+    };
+
+    // ======== Query 1: per day ========
+    const q1 = await runQuery('per-day', [{ type: 'DAY' }], [
+      'VIDEO_THUMBNAIL_IMPRESSIONS', 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'EXTERNAL_VIEWS', 'EXTERNAL_WATCH_TIME',
+      'NEW_VIEWERS', 'RETURNING_VIEWERS', 'SUBSCRIBERS_NET_CHANGE',
+    ]);
+    if (q1.__fail) return q1.__fail;
+    const t1 = q1.table;
+    const days1 = dimensionOf('per-day', t1, 'DAY', 'dateIds');
+    if (days1.__err) return days1.__err;
+    const n1 = days1.length;
+    if (n1 >= PAGE) return fail('PAGE_CAP', 'Per-day query returned a full page of ' + PAGE + ' rows; offset paging is unsupported.');
+    const imp1 = metricOf('per-day', t1, 'VIDEO_THUMBNAIL_IMPRESSIONS', 'counts', n1); if (imp1.__err) return imp1.__err;
+    const vtr1 = metricOf('per-day', t1, 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages', n1); if (vtr1.__err) return vtr1.__err;
+    const views1 = metricOf('per-day', t1, 'EXTERNAL_VIEWS', 'counts', n1); if (views1.__err) return views1.__err;
+    const watch1 = metricOf('per-day', t1, 'EXTERNAL_WATCH_TIME', 'milliseconds', n1); if (watch1.__err) return watch1.__err;
+    const newV1 = metricOf('per-day', t1, 'NEW_VIEWERS', 'counts', n1); if (newV1.__err) return newV1.__err;
+    const retV1 = metricOf('per-day', t1, 'RETURNING_VIEWERS', 'counts', n1); if (retV1.__err) return retV1.__err;
+    const subs1 = metricOf('per-day', t1, 'SUBSCRIBERS_NET_CHANGE', 'counts', n1); if (subs1.__err) return subs1.__err;
+
+    const capturedAt = new Date().toISOString();
+    const emptySource = (): any => ({ impressions: null, impressionsCtr: null, views: 0 });
+    const byDay = new Map<string, any>();
+    for (let i = 0; i < n1; i++) {
+      const day = dayKey(days1[i]);
+      if (day === null) return fail('MISSING_VALUE', 'Per-day row ' + i + ' has an unreadable DAY id (' + JSON.stringify(days1[i]) + ').');
+      if (byDay.has(day)) return fail('MISSING_VALUE', 'Per-day response carries day ' + day + ' twice.');
+      const views = toNum(views1[i]);
+      const watchMs = toNum(watch1[i]);
+      if (views === null || watchMs === null) return fail('MISSING_VALUE', 'Day ' + day + ' is missing a required numeric views/watch-time value.');
+      let newViewers = toNum(newV1[i]);
+      let returningViewers = toNum(retV1[i]);
+      // Observed live 2026-10-21: for the most recent ~2 days Studio has not computed the
+      // viewer cohorts yet and returns NEW_VIEWERS=0 and RETURNING_VIEWERS=0 while the day
+      // already has views. That is "not computed yet", not zero, so it is stored as null; a
+      // later cycle re-fetches the day and overwrites it with the real numbers.
+      if (newViewers === 0 && returningViewers === 0 && views > 0) {
+        newViewers = null;
+        returningViewers = null;
+      }
+      byDay.set(day, {
+        schemaVersion: 1,
+        channelId: channelId,
+        day: day,
+        capturedAt: capturedAt,
+        source: 'studio-extension',
+        impressions: toNum(imp1[i]),
+        impressionsCtr: toNum(vtr1[i]),
+        views: views,
+        // EXTERNAL_WATCH_TIME is in MILLISECONDS (holder `milliseconds`), as in the per-video query.
+        watchHours: watchMs / 3600000,
+        newViewers: newViewers,
+        returningViewers: returningViewers,
+        subsNetChange: toNum(subs1[i]),
+        bySource: {
+          browse: emptySource(), suggested: emptySource(), search: emptySource(), channel: emptySource(),
+          playlist: emptySource(), direct: emptySource(), external: emptySource(), notification: emptySource(),
+          shorts: emptySource(), endScreen: emptySource(), other: emptySource(),
+        },
+        otherSources: [],
+      });
+    }
+
+    // ======== Query 2: per day per traffic source ========
+    const q2 = await runQuery('per-day-per-source', [{ type: 'DAY' }, { type: 'TRAFFIC_SOURCE_TYPE' }], [
+      'VIDEO_THUMBNAIL_IMPRESSIONS', 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'EXTERNAL_VIEWS',
+    ]);
+    if (q2.__fail) return q2.__fail;
+    const t2 = q2.table;
+    const days2 = dimensionOf('per-day-per-source', t2, 'DAY', 'dateIds');
+    if (days2.__err) return days2.__err;
+    const sources2 = dimensionOf('per-day-per-source', t2, 'TRAFFIC_SOURCE_TYPE', 'enumValues');
+    if (sources2.__err) return sources2.__err;
+    const n2 = days2.length;
+    if (sources2.length !== n2) return fail('MISSING_COLUMN', 'TRAFFIC_SOURCE_TYPE column length ' + sources2.length + ' != DAY column length ' + n2 + '.');
+    if (n2 >= PAGE) return fail('PAGE_CAP', 'Per-source query returned a full page of ' + PAGE + ' rows; offset paging is unsupported.');
+    const imp2 = metricOf('per-day-per-source', t2, 'VIDEO_THUMBNAIL_IMPRESSIONS', 'counts', n2); if (imp2.__err) return imp2.__err;
+    const vtr2 = metricOf('per-day-per-source', t2, 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages', n2); if (vtr2.__err) return vtr2.__err;
+    const views2 = metricOf('per-day-per-source', t2, 'EXTERNAL_VIEWS', 'counts', n2); if (views2.__err) return views2.__err;
+
+    // Studio enum -> our key. SUBSCRIBER is YouTube's "Browse features" (Home + the
+    // subscriptions feed), NOT the subscriber count. Anything not named here — YT_OTHER_PAGE,
+    // HASHTAGS, or an enum Studio adds later — is folded into `other` and its name recorded
+    // in otherSources, so nothing disappears unnamed.
+    const SOURCE_KEYS: Record<string, string> = {
+      SUBSCRIBER: 'browse',
+      YT_RELATED: 'suggested',
+      YT_SEARCH: 'search',
+      YT_CHANNEL: 'channel',
+      PLAYLIST: 'playlist',
+      UNKNOWN_MOBILE_OR_DIRECT: 'direct',
+      EXT_URL: 'external',
+      NOTIFICATION: 'notification',
+      SHORTS: 'shorts',
+      END_SCREEN: 'endScreen',
+    };
+    const seen = new Set<string>();
+    const otherNames = new Map<string, Set<string>>();
+    for (let i = 0; i < n2; i++) {
+      const day = dayKey(days2[i]);
+      if (day === null) return fail('MISSING_VALUE', 'Per-source row ' + i + ' has an unreadable DAY id (' + JSON.stringify(days2[i]) + ').');
+      const studioName = sources2[i];
+      if (typeof studioName !== 'string' || studioName.length === 0) return fail('MISSING_VALUE', 'Per-source row ' + i + ' (' + day + ') has no TRAFFIC_SOURCE_TYPE name.');
+      const row = byDay.get(day);
+      // The per-source rows split the per-day totals, so a source row for a day the per-day
+      // query did not return means the two answers disagree — refuse rather than guess.
+      if (!row) return fail('MISSING_VALUE', 'Per-source response has day ' + day + ' (' + studioName + ') that the per-day response does not.');
+      const views = toNum(views2[i]);
+      if (views === null) return fail('MISSING_VALUE', 'Day ' + day + ' source ' + studioName + ' has no numeric views value.');
+      const impressions = toNum(imp2[i]);
+      const ctr = toNum(vtr2[i]);
+      const key = SOURCE_KEYS[studioName];
+      if (key) {
+        if (seen.has(day + '|' + key)) return fail('MISSING_VALUE', 'Per-source response carries ' + studioName + ' twice for day ' + day + '.');
+        seen.add(day + '|' + key);
+        row.bySource[key] = { impressions: impressions, impressionsCtr: ctr, views: views };
+      } else {
+        const other = row.bySource.other;
+        other.views += views;
+        // Summed over the folded rows that HAVE impressions; stays null if none do.
+        if (impressions !== null) other.impressions = (other.impressions === null ? 0 : other.impressions) + impressions;
+        if (!otherNames.has(day)) otherNames.set(day, new Set<string>());
+        otherNames.get(day)!.add(studioName);
+      }
+    }
+    for (const [day, names] of otherNames) {
+      const row = byDay.get(day);
+      row.otherSources = Array.from(names).sort();
+      const other = row.bySource.other;
+      // A folded bucket has no CTR of its own from Studio; it is derived only when there is
+      // a positive impressions figure to divide by.
+      other.impressionsCtr = typeof other.impressions === 'number' && other.impressions > 0
+        ? (other.views / other.impressions) * 100
+        : null;
+    }
+
+    const days = Array.from(byDay.values()).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+    return { ok: true, days: days };
+  } catch (err: any) {
+    return fail('INJECTION_EXCEPTION', 'Unexpected error in the injected channel-days collector: ' + (err && err.message ? err.message : String(err)));
   }
 }

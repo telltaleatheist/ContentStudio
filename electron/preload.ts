@@ -225,6 +225,7 @@ const api = {
   analyticsGetSummary: () => ipcRenderer.invoke('analytics-get-summary'),
   analyticsRunDistillation: () => ipcRenderer.invoke('analytics-run-distillation'),
   analyticsGetInsights: () => ipcRenderer.invoke('analytics-get-insights'),
+  analyticsGetDays: (channelId: string, limitDays: number) => ipcRenderer.invoke('analytics-get-days', channelId, limitDays),
   analyticsSeedFakeData: () => ipcRenderer.invoke('analytics-seed-fake-data'),
 
   // YouTube (OAuth + API collector)

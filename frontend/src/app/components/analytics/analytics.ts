@@ -20,11 +20,33 @@ import {
   YouTubeChannelCollectResult,
 } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
+import {
+  compareSevenDays,
+  dayTableRows,
+  localDayKey,
+  type DayTableRow,
+  type SevenDayComparison,
+} from './channel-days-compare';
 
 interface PromptSetListItem {
   id: string;
   name: string;
 }
+
+/** One channel's "Home feed" card: its stored days, already reduced for display. */
+interface ChannelDaysEntry {
+  channelId: string;
+  name: string;
+  dayCount: number;
+  comparison: SevenDayComparison | null;
+  rows: DayTableRow[];
+  /** Set when the days could not be read; the card shows it instead of numbers. */
+  error: string | null;
+}
+
+/** The card's window, and how many of those days the table lists. */
+const HOME_FEED_DAYS = 28;
+const HOME_FEED_TABLE_ROWS = 14;
 
 interface ChannelInsightsEntry {
   channelId: string;
@@ -80,6 +102,9 @@ export class Analytics implements OnInit, OnDestroy {
   channelInsights = signal<ChannelInsightsEntry[]>([]);
   crossChannel = signal<AnalyticsCrossChannelInsights | null>(null);
 
+  // Per-channel daily series (Home feed card)
+  channelDays = signal<ChannelDaysEntry[]>([]);
+
   // YouTube connections + API collector
   connections = signal<YouTubeConnection[]>([]);
   collectorState = signal<YouTubeCollectorState | null>(null);
@@ -103,6 +128,7 @@ export class Analytics implements OnInit, OnDestroy {
       this.loadIngestInfo(),
       this.loadSummary(),
       this.loadInsights(),
+      this.loadChannelDays(),
       this.loadConnections(),
       this.loadCollectorState(),
     ]);
@@ -122,6 +148,7 @@ export class Analytics implements OnInit, OnDestroy {
         this.loadIngestInfo(),
         this.loadSummary(),
         this.loadInsights(),
+        this.loadChannelDays(),
         this.loadCollectorState(),
       ]);
     } catch {
@@ -169,6 +196,36 @@ export class Analytics implements OnInit, OnDestroy {
       this.channelInsights.set(result.channels || []);
       this.crossChannel.set(result.crossChannel || null);
     }
+  }
+
+  /**
+   * The last HOME_FEED_DAYS stored days per registered channel. Channels with no days yet
+   * get no card (the extension has not collected them); a channel whose days could not be
+   * read gets a card that says so, rather than silently vanishing.
+   */
+  async loadChannelDays() {
+    const list = await this.electron.analyticsListChannels();
+    if (!list.success || !list.channels) return;
+    const today = localDayKey(new Date());
+    const entries = await Promise.all(list.channels.map(async (channel): Promise<ChannelDaysEntry | null> => {
+      const result = await this.electron.analyticsGetDays(channel.channelId, HOME_FEED_DAYS);
+      if (!result.success || !result.days) {
+        return {
+          channelId: channel.channelId, name: channel.name, dayCount: 0,
+          comparison: null, rows: [], error: result.error || 'Could not read the stored days',
+        };
+      }
+      if (result.days.length === 0) return null;
+      return {
+        channelId: channel.channelId,
+        name: channel.name,
+        dayCount: result.days.length,
+        comparison: compareSevenDays(result.days, today),
+        rows: dayTableRows(result.days, today, HOME_FEED_TABLE_ROWS),
+        error: null,
+      };
+    }));
+    this.channelDays.set(entries.filter((e): e is ChannelDaysEntry => e !== null));
   }
 
   async loadConnections() {
@@ -419,6 +476,20 @@ export class Analytics implements OnInit, OnDestroy {
   fmtNum(value: number | null | undefined): string {
     if (value === null || value === undefined) return 'n/a';
     return Math.round(value).toLocaleString('en-US');
+  }
+
+  /** "+12%" / "-3%" / "n/a" for a relative change from compareSevenDays. */
+  fmtChange(value: number | null | undefined): string {
+    if (value === null || value === undefined) return 'n/a';
+    const rounded = Math.round(value);
+    return `${rounded > 0 ? '+' : ''}${rounded}%`;
+  }
+
+  /** Net subscriber change with its sign, since a loss is the thing to notice. */
+  fmtSigned(value: number | null | undefined): string {
+    if (value === null || value === undefined) return 'n/a';
+    const rounded = Math.round(value);
+    return `${rounded > 0 ? '+' : ''}${rounded.toLocaleString('en-US')}`;
   }
 
   fmtDate(value: string | null | undefined): string {

@@ -9,9 +9,15 @@
  * without a store or Electron runtime.
  */
 
-import { ChannelInsights, CrossChannelInsights, VideoVerdictSummary } from './analytics-types';
+import { AbTestResult, ChannelInsights, CrossChannelInsights, VideoVerdictSummary } from './analytics-types';
 import { AnalyticsStoreService } from './analytics-store.service';
-import { renderAbTitleRulesBlock } from './ab-title-rules';
+import { renderAbTitleRulesBlock, renderRecentAbTests } from './ab-title-rules';
+
+/** The "recent" window both recent sections cover; the distiller prompt names the same 90 days. */
+const RECENT_WINDOW_DAYS = 90;
+
+/** Most recent-upload lines rendered; the newest are kept and the cut is stated. */
+const RECENT_UPLOADS_CAP = 40;
 
 /** "5.3%" / "n/a" for possibly-missing percent metrics. */
 function pct(value: number | null): string {
@@ -24,19 +30,46 @@ function pctl(value: number | null): string {
 }
 
 function summaryLine(item: VideoVerdictSummary): string {
-  return `- "${item.title}" — CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), 30s retention ${pct(item.retention30s)}, ${item.views.toLocaleString('en-US')} views`;
+  return `- "${item.title}" — published ${item.publishedAt.slice(0, 10)}, CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), 30s retention ${pct(item.retention30s)}, ${item.views.toLocaleString('en-US')} views`;
+}
+
+function recentLine(item: VideoVerdictSummary): string {
+  const basis = item.basis === 'first-week' ? 'first week' : 'lifetime';
+  return `- "${item.title}" — published ${item.publishedAt.slice(0, 10)}, CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), avg % viewed ${pct(item.avgPctViewed)}, ${item.views.toLocaleString('en-US')} views (${basis})`;
 }
 
 /**
  * Build the "CHANNEL PERFORMANCE DATA" prompt block from a channel's insights
- * (required) and cross-channel insights (optional — section omitted when null).
+ * (required), its decided A/B test records (the recent-tests section is rendered from
+ * them, dated against the insights' computedAt) and cross-channel insights (optional —
+ * section omitted when null).
+ *
+ * The whole render is dated ("as of" computedAt) and carries two dated recent sections, so
+ * the distiller can tell what the channel does NOW from what used to work; its prompt says
+ * recent evidence outranks old.
  */
 export function buildInsightsBlock(
   channelInsights: ChannelInsights,
-  crossChannelInsights: CrossChannelInsights | null
+  crossChannelInsights: CrossChannelInsights | null,
+  abTests: AbTestResult[]
 ): string {
+  if (!channelInsights.recentUploads) {
+    // A ChannelInsights written before recent uploads were recorded. Without them the render
+    // has no dated view of the channel now, and its summaries carry no publish dates either.
+    throw new Error(
+      `[InsightsPrompt] channel ${channelInsights.channelId} has insights from before recent-upload ` +
+      `tracking (computed ${channelInsights.computedAt}); re-run distillation`
+    );
+  }
+  const asOf = new Date(channelInsights.computedAt);
+  if (Number.isNaN(asOf.getTime())) {
+    throw new Error(
+      `[InsightsPrompt] channel ${channelInsights.channelId} has computedAt "${channelInsights.computedAt}", not a date`
+    );
+  }
+
   const lines: string[] = [];
-  lines.push('CHANNEL PERFORMANCE DATA');
+  lines.push(`CHANNEL PERFORMANCE DATA (as of ${channelInsights.computedAt.slice(0, 10)})`);
   lines.push(`(Real audience data for this channel, ${channelInsights.videoCount} videos analyzed. Emulate the framing patterns of overperformers; avoid patterns of underperformers; this data outranks generic best practices.)`);
   lines.push('');
 
@@ -59,6 +92,26 @@ export function buildInsightsBlock(
       lines.push(summaryLine(item));
     }
   }
+
+  lines.push('');
+  lines.push(`Recent uploads (last ${RECENT_WINDOW_DAYS} days, newest first):`);
+  if (channelInsights.recentUploads.length === 0) {
+    lines.push(`None: no long or live video was published in the last ${RECENT_WINDOW_DAYS} days.`);
+  }
+  for (const item of channelInsights.recentUploads.slice(0, RECENT_UPLOADS_CAP)) {
+    lines.push(recentLine(item));
+  }
+  const cut = channelInsights.recentUploads.length - RECENT_UPLOADS_CAP;
+  if (cut > 0) {
+    lines.push(`(${cut} older upload(s) from the window not shown; the newest ${RECENT_UPLOADS_CAP} are listed.)`);
+  }
+
+  lines.push('');
+  lines.push(renderRecentAbTests(abTests, {
+    channelId: channelInsights.channelId,
+    asOf,
+    windowDays: RECENT_WINDOW_DAYS,
+  }));
 
   // Derived A/B title evidence: threshold-clearing rules WITH their provenance, plus a
   // capped exemplar list. This replaced an unbounded per-test dump that grew one line per
@@ -122,5 +175,5 @@ export function resolveInsightsBlockForPromptSet(
   }
   const crossChannelInsights = store.loadCrossChannelInsights();
   console.log(`[InsightsPrompt] Injecting performance data for channel "${channel.name}" (prompt set: ${promptSetName})`);
-  return buildInsightsBlock(channelInsights, crossChannelInsights);
+  return buildInsightsBlock(channelInsights, crossChannelInsights, store.loadAbTests(channel.channelId));
 }
