@@ -13,6 +13,7 @@
  *       insights.json                  ChannelInsights
  *       days.json                      ChannelDay[] — one row per channel day,
  *                                      ascending by day; upserted by day
+ *       first-weeks.json               VideoFirstWeek[] — upserted by videoId
  *       snapshots/YYYY-MM.jsonl        append-only, one Snapshot per line
  *                                      (file chosen by month of capturedAt)
  *
@@ -25,8 +26,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   AbTestResult,
-  ANALYTICS_SCHEMA_VERSION,
+  CHANNEL_DAY_LOCATION_KEYS,
   CHANNEL_DAY_SOURCE_KEYS,
+  VideoFirstWeek,
+  VideoFirstWeekValidationError,
   ChannelDay,
   ChannelDayValidationError,
   ChannelInsights,
@@ -41,6 +44,11 @@ import {
 const VALID_FORMATS = ['long', 'short', 'live'];
 const VALID_TITLE_ORIGINS = ['upload', 'manual-edit', 'ab-rotation', 'test-compare'];
 const VALID_SOURCES = ['studio-extension', 'analytics-api'];
+const SNAPSHOT_V2_KEYS = ['engagedViews', 'estimatedEarnings', 'cpm', 'subsLost'];
+const CHANNEL_DAY_V2_KEYS = [
+  'engagedViews', 'estimatedEarnings', 'cpm', 'likes', 'comments', 'shares', 'subsGained', 'subsLost',
+  'byLocation', 'otherLocations',
+];
 
 /** True when `value` is a parseable ISO date string. */
 function isParseableIso(value: unknown): value is string {
@@ -66,8 +74,19 @@ export function validateSnapshot(raw: any): string[] {
   if (!raw || typeof raw !== 'object') {
     return ['snapshot is not an object'];
   }
-  if (raw.schemaVersion !== ANALYTICS_SCHEMA_VERSION) {
-    reasons.push(`schemaVersion must be ${ANALYTICS_SCHEMA_VERSION} (got ${JSON.stringify(raw.schemaVersion)})`);
+  if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2) {
+    reasons.push(`schemaVersion must be 1 or 2 (got ${JSON.stringify(raw.schemaVersion)})`);
+  }
+  if (raw.schemaVersion === 2) {
+    if (!isNum(raw.engagedViews)) reasons.push('engagedViews must be a number (schemaVersion 2)');
+    if (!isNumOrNull(raw.estimatedEarnings)) reasons.push('estimatedEarnings must be a number or null (schemaVersion 2)');
+    if (!isNumOrNull(raw.cpm)) reasons.push('cpm must be a number or null (schemaVersion 2)');
+    if (!isNumOrNull(raw.subsLost)) reasons.push('subsLost must be a number or null (schemaVersion 2)');
+  } else {
+    // A v1 snapshot carrying v2 fields is mislabeled; reading it as v1 would drop them.
+    for (const key of SNAPSHOT_V2_KEYS) {
+      if (key in raw) reasons.push(`${key} is a schemaVersion 2 field; this snapshot says schemaVersion ${JSON.stringify(raw.schemaVersion)}`);
+    }
   }
   if (typeof raw.videoId !== 'string' || raw.videoId.length === 0) reasons.push('videoId must be a non-empty string');
   if (typeof raw.channelId !== 'string' || raw.channelId.length === 0) reasons.push('channelId must be a non-empty string');
@@ -152,8 +171,31 @@ export function validateChannelDay(raw: any): string[] {
   if (!raw || typeof raw !== 'object') {
     return ['channel day is not an object'];
   }
-  if (raw.schemaVersion !== ANALYTICS_SCHEMA_VERSION) {
-    reasons.push(`schemaVersion must be ${ANALYTICS_SCHEMA_VERSION} (got ${JSON.stringify(raw.schemaVersion)})`);
+  if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2) {
+    reasons.push(`schemaVersion must be 1 or 2 (got ${JSON.stringify(raw.schemaVersion)})`);
+  }
+  if (raw.schemaVersion === 2) {
+    if (!isNum(raw.engagedViews)) reasons.push('engagedViews must be a number (schemaVersion 2)');
+    for (const key of ['estimatedEarnings', 'cpm', 'likes', 'comments', 'shares', 'subsGained', 'subsLost']) {
+      if (!isNumOrNull(raw[key])) reasons.push(`${key} must be a number or null (schemaVersion 2)`);
+    }
+    if (!raw.byLocation || typeof raw.byLocation !== 'object') {
+      reasons.push(`byLocation must be an object with ${CHANNEL_DAY_LOCATION_KEYS.join('/')}`);
+    } else {
+      for (const key of CHANNEL_DAY_LOCATION_KEYS) {
+        const loc = raw.byLocation[key];
+        if (!loc || typeof loc !== 'object' || !isNum(loc.views) || !isNum(loc.engagedViews) || !isNum(loc.watchHours)) {
+          reasons.push(`byLocation.${key} must be { views: number, engagedViews: number, watchHours: number }`);
+        }
+      }
+    }
+    if (!Array.isArray(raw.otherLocations) || raw.otherLocations.some((s: any) => typeof s !== 'string' || s.length === 0)) {
+      reasons.push('otherLocations must be an array of non-empty strings (schemaVersion 2)');
+    }
+  } else {
+    for (const key of CHANNEL_DAY_V2_KEYS) {
+      if (key in raw) reasons.push(`${key} is a schemaVersion 2 field; this day says schemaVersion ${JSON.stringify(raw.schemaVersion)}`);
+    }
   }
   if (typeof raw.channelId !== 'string' || raw.channelId.length === 0) reasons.push('channelId must be a non-empty string');
   if (typeof raw.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.day)) reasons.push('day must be a YYYY-MM-DD string');
@@ -180,6 +222,37 @@ export function validateChannelDay(raw: any): string[] {
   if (!Array.isArray(raw.otherSources) || raw.otherSources.some((s: any) => typeof s !== 'string' || s.length === 0)) {
     reasons.push('otherSources must be an array of non-empty strings');
   }
+  return reasons;
+}
+
+/**
+ * Validate a VideoFirstWeek per the ingest contract. Returns the list of failing fields
+ * (empty = valid). NO coercion is performed.
+ */
+export function validateVideoFirstWeek(raw: any): string[] {
+  if (!raw || typeof raw !== 'object') {
+    return ['first week is not an object'];
+  }
+  const reasons: string[] = [];
+  if (raw.schemaVersion !== 1) reasons.push(`schemaVersion must be 1 (got ${JSON.stringify(raw.schemaVersion)})`);
+  if (typeof raw.videoId !== 'string' || raw.videoId.length === 0) reasons.push('videoId must be a non-empty string');
+  if (typeof raw.channelId !== 'string' || raw.channelId.length === 0) reasons.push('channelId must be a non-empty string');
+  if (!isParseableIso(raw.publishedAt)) reasons.push('publishedAt must be a parseable ISO date string');
+  const dayRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (typeof raw.firstDay !== 'string' || !dayRe.test(raw.firstDay)) reasons.push('firstDay must be a YYYY-MM-DD string');
+  if (typeof raw.lastDay !== 'string' || !dayRe.test(raw.lastDay)) reasons.push('lastDay must be a YYYY-MM-DD string');
+  if (typeof raw.firstDay === 'string' && typeof raw.lastDay === 'string' && dayRe.test(raw.firstDay) && dayRe.test(raw.lastDay)) {
+    const span = (Date.parse(`${raw.lastDay}T12:00:00Z`) - Date.parse(`${raw.firstDay}T12:00:00Z`)) / 86_400_000;
+    if (span !== 6) reasons.push(`lastDay must be firstDay + 6 (got ${raw.firstDay}..${raw.lastDay})`);
+  }
+  if (!isParseableIso(raw.capturedAt)) reasons.push('capturedAt must be a parseable ISO date string');
+  if (raw.source !== 'studio-extension') reasons.push('source must be studio-extension');
+  if (!isNum(raw.views)) reasons.push('views must be a number');
+  if (!isNum(raw.engagedViews)) reasons.push('engagedViews must be a number');
+  if (!isNum(raw.watchHours)) reasons.push('watchHours must be a number');
+  if (!isNumOrNull(raw.impressions)) reasons.push('impressions must be a number or null');
+  if (!isNumOrNull(raw.impressionsCtr)) reasons.push('impressionsCtr must be a number or null');
+  if (!isNumOrNull(raw.avgPctViewed)) reasons.push('avgPctViewed must be a number or null');
   return reasons;
 }
 
@@ -522,7 +595,10 @@ export class AnalyticsStoreService {
   /**
    * Validate + upsert channel days. Throws ChannelDayValidationError (listing every
    * failing field of the first bad row) without writing anything when any row in the
-   * batch is invalid. Rows with the same day replace the stored one; the rest are kept.
+   * batch is invalid. Rows with the same day replace the stored one; the rest are kept —
+   * except that a schemaVersion 1 row never replaces a stored 2 (an 0.2.10 entry still
+   * queued in the extension's outbox is older than any 0.2.11 fetch). A v1 row of a day the
+   * 400-day fetch no longer covers stays v1 and is read as v1.
    * Returns the number of rows written.
    */
   upsertChannelDays(days: ChannelDay[]): Promise<number> {
@@ -548,13 +624,59 @@ export class AnalyticsStoreService {
         const filePath = path.join(this.channelDir(channelId), 'days.json');
         const existing = this.readJson<ChannelDay[]>(filePath) || [];
         const byDay = new Map(existing.map((d) => [d.day, d]));
-        for (const day of incoming) byDay.set(day.day, day);
+        let kept = 0;
+        for (const day of incoming) {
+          const stored = byDay.get(day.day);
+          if (stored && stored.schemaVersion === 2 && day.schemaVersion === 1) {
+            kept++;
+            continue;
+          }
+          byDay.set(day.day, day);
+          written++;
+        }
         const sorted = Array.from(byDay.values()).sort((a, b) => a.day.localeCompare(b.day));
         this.writeJson(filePath, sorted);
-        written += incoming.length;
+        if (kept > 0) console.log(`[AnalyticsStore] ${channelId}: kept ${kept} stored v2 day(s) over incoming v1 row(s)`);
       }
       console.log(`[AnalyticsStore] Upserted ${written} channel day(s) across ${byChannel.size} channel(s)`);
       return written;
+    });
+  }
+
+  // ==================== FIRST WEEKS ====================
+
+  /** Every stored first-week record for a channel (empty when nothing is stored). */
+  loadFirstWeeks(channelId: string): VideoFirstWeek[] {
+    return this.readJson<VideoFirstWeek[]>(path.join(this.channelDir(channelId), 'first-weeks.json')) || [];
+  }
+
+  /**
+   * Validate + upsert first-week records by videoId (all-or-nothing, like the days).
+   * Returns the number of records written.
+   */
+  upsertFirstWeeks(records: VideoFirstWeek[]): Promise<number> {
+    for (const record of records) {
+      const reasons = validateVideoFirstWeek(record);
+      if (reasons.length > 0) {
+        throw new VideoFirstWeekValidationError(
+          reasons.map((r) => `videoId=${(record as any)?.videoId ?? '<missing>'}: ${r}`)
+        );
+      }
+    }
+    return this.enqueue(() => {
+      const byChannel = new Map<string, VideoFirstWeek[]>();
+      for (const record of records) {
+        if (!byChannel.has(record.channelId)) byChannel.set(record.channelId, []);
+        byChannel.get(record.channelId)!.push(record);
+      }
+      for (const [channelId, incoming] of byChannel) {
+        const filePath = path.join(this.channelDir(channelId), 'first-weeks.json');
+        const byId = new Map((this.readJson<VideoFirstWeek[]>(filePath) || []).map((r) => [r.videoId, r]));
+        for (const record of incoming) byId.set(record.videoId, record);
+        this.writeJson(filePath, Array.from(byId.values()).sort((a, b) => a.firstDay.localeCompare(b.firstDay) || a.videoId.localeCompare(b.videoId)));
+      }
+      console.log(`[AnalyticsStore] Upserted ${records.length} first-week record(s) across ${byChannel.size} channel(s)`);
+      return records.length;
     });
   }
 

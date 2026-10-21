@@ -228,3 +228,59 @@ VIDEO_THUMBNAIL_IMPRESSIONS_VTR, EXTERNAL_VIEWS.
 - A (day, source) pair with no row = 0 views for that source that day. Impressions are present
   only on some sources' rows (SUBSCRIBER/YT_RELATED/YT_CHANNEL/YT_SEARCH carry them; EXT_URL and
   NOTIFICATION rows may not) — a missing impressions value is `null` for that source, never 0.
+
+## Engaged views, money, playback locations, first weeks — verified live 2026-10-21 (extension 0.2.11)
+
+### Why: views changed meaning on 2026-08-27
+From 2026-08-27 YouTube counts inline Home-feed autoplay previews as views. `EXTERNAL_VIEWS`
+(what the collector stores as `views`) equalled `ENGAGED_VIEWS` on every channel through
+2026-08-26 and runs ~2-2.5x it since. By `PLAYBACK_LOCATION_TYPE`, main channel: 08-26 BROWSE
+181 views / 181 engaged, avg 1.0 min; 08-27 BROWSE 5,276 views / 713 engaged, avg 0.2 min; WATCH
+also gained some non-engaged views. Any comparison of raw views across 2026-08-27 is wrong;
+ContentStudio compares on engaged views.
+
+### Names verified (200 on both DAY and VIDEO, all three channels)
+Metrics: `ENGAGED_VIEWS`, `CPM` (USD x1000: 16501 = $16.50; the value is `{}` where no ads ran),
+`TOTAL_ESTIMATED_EARNINGS` (USD x1000: 1000110 = $1,000.11, matches Studio's UI),
+`RATINGS_LIKES`, `RATINGS_DISLIKES`, `COMMENTS`, `SHARINGS`, `SUBSCRIBERS_GAINED`,
+`SUBSCRIBERS_LOST`, `SUBSCRIBERS_NET_CHANGE`, `AVERAGE_WATCH_TIME` (ms),
+`AVERAGE_WATCH_PERCENTAGE`, `PLAYLIST_STARTS`, `SHORTS_FEED_IMPRESSIONS`. `VIEWS` exists but
+equals `ENGAGED_VIEWS` — do not use it. Revenue metrics need channel-owner access (they worked
+on all three channels). Brand channels need the delegation in the body AND the headers, as above.
+
+Dimensions: `DAY`, `VIDEO`, `MONTH`, `TRAFFIC_SOURCE_TYPE`, `CREATOR_CONTENT_TYPE`
+(VIDEO_ON_DEMAND | SHORTS | LIVE_STREAM | CREATOR_CONTENT_TYPE_UNSPECIFIED),
+`PLAYBACK_LOCATION_TYPE` (BROWSE | WATCH | SHORTS_FEED | CHANNEL | EMBEDDED | ...), `COUNTRY`
+(ISO codes), `SHARING_SERVICE`; the two-dimension `DAY` x `PLAYBACK_LOCATION_TYPE` works.
+
+Rejected (HTTP 400): `RPM`, `ESTIMATED_REVENUE`, `AD_IMPRESSIONS`, `MONETIZED_PLAYBACKS`,
+`PLAYBACK_BASED_CPM`, `UNIQUE_VIEWERS*`, card / end-screen clicks, `DEVICE_TYPE`, `AGE_GROUP`,
+`GENDER`, `SUBSCRIBED_STATUS`.
+
+NOT recorded live: which value holder the new metrics come back in, and which holder carries
+the `PLAYBACK_LOCATION_TYPE` values. The collector reads the column's ONE holder carrying a
+`values[]` array, whatever it is called, and fails `MISSING_COLUMN` on none or several (CPM
+alone may have none: every row's CPM is then null). Also not verified live: these metrics
+combined in ONE query with the existing ones; a rejection fails the channel's cycle with HTTP 400.
+
+### What 0.2.11 collects
+- **Per-video lifetime query** gains ENGAGED_VIEWS (required, like views),
+  TOTAL_ESTIMATED_EARNINGS, CPM, RATINGS_LIKES, COMMENTS, SHARINGS, SUBSCRIBERS_GAINED,
+  SUBSCRIBERS_LOST → Snapshot **schemaVersion 2** (`engagedViews`, `estimatedEarnings`, `cpm`,
+  `subsLost`; `likes`/`comments`/`shares`/`subsGained` filled — they were always null before).
+  Snapshots now carry their real `videoAgeHours` from the catalogue (it was -1 on every
+  extension snapshot), so cadence tiering works; the cadence state moved to a new key so every
+  video gets one v2 snapshot on the first cycle.
+- **Per-day query** gains the same metrics → ChannelDay **schemaVersion 2** (`engagedViews`,
+  `estimatedEarnings`, `cpm`, `likes`, `comments`, `shares`, `subsGained`, `subsLost`), and a
+  third request, `DAY` x `PLAYBACK_LOCATION_TYPE` × {EXTERNAL_VIEWS, ENGAGED_VIEWS,
+  EXTERNAL_WATCH_TIME} → `byLocation` {browse, watch, shortsFeed, channel, embedded, other} with
+  unknown names folded into `other` and listed in `otherLocations`; a (day, location) with no
+  row is zeros. Window 400 days (was 35), page size 10,000 (DAY x TRAFFIC_SOURCE_TYPE alone is
+  ~400 x 13 rows).
+- **First weeks**: for each long/live upload published within 200 days whose first seven local
+  days ended 3+ days ago and was not sent before, one `VIDEO` query per publish day with
+  `timeRange` = those seven days (USER restrict only) × {EXTERNAL_VIEWS, ENGAGED_VIEWS,
+  EXTERNAL_WATCH_TIME, impressions, CTR, AVERAGE_WATCH_PERCENTAGE}; the requested videos' rows
+  become `VideoFirstWeek` records (a requested video with no row = 0 views that week), POST
+  `/analytics/first-weeks`. At most 30 windows a cycle, newest first; the first run backfills.

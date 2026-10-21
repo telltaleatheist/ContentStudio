@@ -11,12 +11,13 @@
  *   POST /analytics/ingest   -> body {snapshots: Snapshot[]}   -> validate+append, 200 {accepted:N}
  *   POST /analytics/ab-tests -> body {tests: AbTestResult[]}   -> upsert, 200 {accepted:N}
  *   POST /analytics/days     -> body {days: ChannelDay[]}      -> validate+upsert by day, 200 {accepted:N}
+ *   POST /analytics/first-weeks -> body {firstWeeks: VideoFirstWeek[]} -> validate+upsert by video, re-distill, 200 {accepted:N}
  *
  * Auth: NONE — there is no token to configure. Because the server is bound to
  * 127.0.0.1, the only realistic attacker is a malicious web page the user
  * visits that tries to POST to 127.0.0.1. Such cross-site browser requests
  * ALWAYS carry an `Origin: http(s)://…` header, so /analytics/channels,
- * /analytics/videos, /analytics/ingest, /analytics/ab-tests and /analytics/days reject any request whose Origin
+ * /analytics/videos, /analytics/ingest, /analytics/ab-tests, /analytics/days and /analytics/first-weeks reject any request whose Origin
  * starts with http:// or https:// (403) as a zero-config CSRF safeguard.
  * Requests with no Origin (curl / local tools) or a chrome-extension:// Origin
  * (the companion extension) are allowed. GET /health is fully open.
@@ -41,6 +42,8 @@ import {
   Snapshot,
   SnapshotValidationError,
   VideoRecord,
+  VideoFirstWeek,
+  VideoFirstWeekValidationError,
   VideoRecordValidationError,
 } from './analytics-types';
 import { AnalyticsStoreService } from './analytics-store.service';
@@ -504,7 +507,7 @@ export class IngestServerService {
     if (
       req.method === 'POST' &&
       (url === '/analytics/videos' || url === '/analytics/ingest' || url === '/analytics/ab-tests' ||
-        url === '/analytics/days')
+        url === '/analytics/days' || url === '/analytics/first-weeks')
     ) {
       // CSRF guard: reject cross-origin web requests BEFORE reading the body.
       if (this.isCrossOriginWebRequest(req)) {
@@ -542,6 +545,16 @@ export class IngestServerService {
           // No re-distillation: channel days are shown on the Analytics page only and do
           // not feed verdicts, insights or generation.
           this.sendJson(res, 200, { accepted });
+        } else if (url === '/analytics/first-weeks') {
+          if (!body || !Array.isArray(body.firstWeeks)) {
+            this.sendJson(res, 400, { error: 'Body must be {firstWeeks: VideoFirstWeek[]}', details: [] });
+            return;
+          }
+          const accepted = await this.store.upsertFirstWeeks(body.firstWeeks as VideoFirstWeek[]);
+          console.log(`[IngestServer] Accepted ${accepted} first-week record(s)`);
+          // First weeks are what the distiller compares uploads on, so re-distill.
+          if (accepted > 0) this.scheduleRedistill();
+          this.sendJson(res, 200, { accepted });
         } else if (url === '/analytics/videos') {
           if (!body || !Array.isArray(body.videos)) {
             this.sendJson(res, 400, { error: 'Body must be {videos: VideoRecord[]}', details: [] });
@@ -563,7 +576,7 @@ export class IngestServerService {
         }
       } catch (error) {
         if (error instanceof SnapshotValidationError || error instanceof VideoRecordValidationError ||
-          error instanceof ChannelDayValidationError) {
+          error instanceof ChannelDayValidationError || error instanceof VideoFirstWeekValidationError) {
           console.error(`[IngestServer] Validation failed: ${error.message}`);
           this.sendJson(res, 400, { error: error.name, details: error.reasons });
           return;

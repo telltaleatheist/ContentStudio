@@ -85,7 +85,7 @@ check('validateChannelDay accepts a good row', () => {
 
 check('validateChannelDay lists every bad field, not just the first', () => {
   const bad = goodDay('2026-10-18', {
-    schemaVersion: 2, day: '2026-10-18T00:00', views: null, newViewers: 'many', capturedAt: 'yesterday',
+    schemaVersion: 3, day: '2026-10-18T00:00', views: null, newViewers: 'many', capturedAt: 'yesterday',
   });
   bad.bySource = { ...bad.bySource, browse: { impressions: 0, impressionsCtr: null } };
   bad.otherSources = [''];
@@ -118,7 +118,28 @@ const PER_DAY = (omit) => table(
     { type: 'EXTERNAL_WATCH_TIME', holder: 'milliseconds', values: [0, 36000000, 7200000] },
     { type: 'NEW_VIEWERS', holder: 'counts', values: [0, 50, 0] },
     { type: 'RETURNING_VIEWERS', holder: 'counts', values: [0, 100, 0] },
+    // 0.2.11 columns (their own checks are in tools/engaged-views-checks.js).
+    { type: 'ENGAGED_VIEWS', holder: 'counts', values: [0, 120, 90] },
+    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'doubles', values: [0, 2500, 1800] },
+    { type: 'CPM', holder: 'doubles', values: [{}, 9000, 8000] },
+    { type: 'RATINGS_LIKES', holder: 'counts', values: [0, 10, 8] },
+    { type: 'COMMENTS', holder: 'counts', values: [0, 2, 1] },
+    { type: 'SHARINGS', holder: 'counts', values: [0, 1, 0] },
+    { type: 'SUBSCRIBERS_GAINED', holder: 'counts', values: [0, 4, 1] },
+    { type: 'SUBSCRIBERS_LOST', holder: 'counts', values: [0, 1, 2] },
   ].filter((m) => m.type !== omit),
+);
+
+const PER_LOCATION = table(
+  [
+    { type: 'DAY', holder: 'dateIds', values: [20261018, 20261019] },
+    { type: 'PLAYBACK_LOCATION_TYPE', holder: 'enumValues', values: ['BROWSE', 'WATCH'] },
+  ],
+  [
+    { type: 'EXTERNAL_VIEWS', holder: 'counts', values: [150, 150] },
+    { type: 'ENGAGED_VIEWS', holder: 'counts', values: [70, 90] },
+    { type: 'EXTERNAL_WATCH_TIME', holder: 'milliseconds', values: [3600000, 7200000] },
+  ],
 );
 
 const ROWS = [
@@ -145,7 +166,7 @@ const PER_SOURCE = table(
 );
 
 /** Run the injected function against a fake Studio page; returns { result, requests }. */
-async function runCollector({ perDay = PER_DAY(), perSource = PER_SOURCE } = {}) {
+async function runCollector({ perDay = PER_DAY(), perSource = PER_SOURCE, perLocation = PER_LOCATION } = {}) {
   const requests = [];
   const saved = { window: global.window, document: global.document, fetch: global.fetch };
   global.window = { ytcfg: { get: (k) => ({
@@ -159,7 +180,7 @@ async function runCollector({ perDay = PER_DAY(), perSource = PER_SOURCE } = {})
     const body = JSON.parse(init.body);
     requests.push({ url, headers: init.headers, query: body.nodes[0].value.query });
     const dims = body.nodes[0].value.query.dimensions.map((d) => d.type).join(',');
-    const data = dims === 'DAY' ? perDay : perSource;
+    const data = dims === 'DAY' ? perDay : dims === 'DAY,TRAFFIC_SOURCE_TYPE' ? perSource : perLocation;
     return { status: 200, ok: true, json: async () => data };
   };
   try {
@@ -170,10 +191,11 @@ async function runCollector({ perDay = PER_DAY(), perSource = PER_SOURCE } = {})
   }
 }
 
-check('the two requests: DAY, then DAY x TRAFFIC_SOURCE_TYPE, a 35-day window ending tomorrow', async () => {
+check('the requests: DAY, DAY x TRAFFIC_SOURCE_TYPE, DAY x PLAYBACK_LOCATION_TYPE, the asked window ending tomorrow', async () => {
   const { result, requests } = await runCollector();
   eq(result.ok, true, 'ok');
-  eq(requests.length, 2, 'request count');
+  eq(requests.length, 3, 'request count');
+  eq(requests[2].query.dimensions, [{ type: 'DAY' }, { type: 'PLAYBACK_LOCATION_TYPE' }], 'q3 dims');
   eq(requests[0].query.dimensions, [{ type: 'DAY' }], 'q1 dims');
   eq(requests[1].query.dimensions, [{ type: 'DAY' }, { type: 'TRAFFIC_SOURCE_TYPE' }], 'q2 dims');
   eq(requests[0].query.restricts, [{ dimension: { type: 'USER' }, inValues: [CHANNEL] }], 'restrict');

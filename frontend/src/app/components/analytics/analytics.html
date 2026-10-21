@@ -249,7 +249,7 @@
     <div class="card insights-card home-feed-card">
       <div class="card-title">
         <mat-icon>home</mat-icon>
-        <h3>{{ entry.name }}: Home feed, last 28 days</h3>
+        <h3>{{ entry.name }}: Home feed</h3>
         @if (!entry.error) {
           <span class="computed-at">{{ entry.dayCount }} days stored</span>
         }
@@ -269,6 +269,9 @@
               <span class="week-metric"><strong>Browse views</strong> last 7: {{ fmtNum(cmp.last.browseViews) }} · prior 7: {{ fmtNum(cmp.prior.browseViews) }} ({{ fmtChange(cmp.change.browseViews) }})</span>
               <span class="week-metric"><strong>CTR</strong> last 7: {{ fmtPct(cmp.last.ctr) }} · prior 7: {{ fmtPct(cmp.prior.ctr) }} ({{ fmtChange(cmp.change.ctr) }})</span>
               <span class="week-metric"><strong>Views</strong> last 7: {{ fmtNum(cmp.last.views) }} · prior 7: {{ fmtNum(cmp.prior.views) }} ({{ fmtChange(cmp.change.views) }})</span>
+              <span class="week-metric" matTooltip="Views without the Home-feed autoplay previews YouTube has counted as views since 2026-08-27"><strong>Engaged views</strong> last 7: {{ fmtNum(cmp.last.engagedViews) }} · prior 7: {{ fmtNum(cmp.prior.engagedViews) }} ({{ fmtChange(cmp.change.engagedViews) }})</span>
+              <span class="week-metric"><strong>Earnings</strong> last 7: {{ fmtUsd(cmp.last.earnings) }} · prior 7: {{ fmtUsd(cmp.prior.earnings) }} ({{ fmtChange(cmp.change.earnings) }})</span>
+              <span class="week-metric"><strong>Revenue per 1,000 engaged views</strong> last 7: {{ fmtUsd(cmp.last.revenuePerThousandEngaged) }} · prior 7: {{ fmtUsd(cmp.prior.revenuePerThousandEngaged) }} ({{ fmtChange(cmp.change.revenuePerThousandEngaged) }})</span>
             </div>
           } @else {
             <p class="empty-hint">{{ cmp.available }} of the 14 full days a week-on-week comparison needs are stored, so there is no comparison yet.</p>
@@ -279,8 +282,8 @@
           <table class="insights-table days-table">
             <thead>
               <tr>
-                <th>Day</th><th>Impressions</th><th>CTR</th><th>Views</th><th>Browse views</th>
-                <th>Browse share</th><th>Suggested views</th><th>Search views</th><th>New viewers</th><th>Subs net</th>
+                <th>Day</th><th>Impressions</th><th>CTR</th><th>Views</th><th>Engaged views</th><th>Browse views</th>
+                <th>Browse share</th><th>Suggested views</th><th>Search views</th><th>New viewers</th><th>Subs net</th><th>Earnings</th>
               </tr>
             </thead>
             <tbody>
@@ -290,12 +293,41 @@
                   <td>{{ fmtNum(row.impressions) }}</td>
                   <td>{{ fmtPct(row.ctr) }}</td>
                   <td>{{ fmtNum(row.views) }}</td>
+                  <td>{{ fmtNum(row.engagedViews) }}</td>
                   <td>{{ fmtNum(row.browseViews) }}</td>
                   <td>{{ fmtPct(row.browseShare) }}</td>
                   <td>{{ fmtNum(row.suggestedViews) }}</td>
                   <td>{{ fmtNum(row.searchViews) }}</td>
                   <td [matTooltip]="row.newViewers === null ? 'Studio has not counted viewers for this day yet' : ''">{{ row.newViewers === null ? '—' : fmtNum(row.newViewers) }}</td>
                   <td>{{ fmtSigned(row.subsNet) }}</td>
+                  <td>{{ fmtUsd(row.earnings) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <h4 class="table-heading">By week, last {{ entry.weeks.length }} full weeks</h4>
+        <div class="table-wrapper">
+          <table class="insights-table days-table">
+            <thead>
+              <tr>
+                <th>Week</th><th>Views</th><th>Engaged views</th><th>Browse views</th><th>Earnings</th><th>Per 1,000 engaged</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (week of entry.weeks; track week.from) {
+                <tr>
+                  <td class="mono">{{ week.from }} to {{ week.to }}</td>
+                  @if (week.daysStored === 7) {
+                    <td>{{ fmtNum(week.views) }}</td>
+                    <td>{{ fmtNum(week.engagedViews) }}</td>
+                    <td>{{ fmtNum(week.browseViews) }}</td>
+                    <td>{{ fmtUsd(week.earnings) }}</td>
+                    <td>{{ fmtUsd(week.revenuePerThousandEngaged) }}</td>
+                  } @else {
+                    <td colspan="5" class="partial-day">{{ week.daysStored }} of 7 days stored</td>
+                  }
                 </tr>
               }
             </tbody>
@@ -329,8 +361,8 @@
             <span class="stat-label">median 30s retention</span>
           </div>
           <div class="baseline">
-            <span class="stat-value">{{ fmtNum(insights.baselines.medianFirstWeekViews) }}</span>
-            <span class="stat-label">median first-week views</span>
+            <span class="stat-value">{{ fmtNum(insights.baselines.medianFirstWeekEngagedViews) }}</span>
+            <span class="stat-label">median first-7-day engaged views</span>
           </div>
         </div>
 
@@ -339,7 +371,7 @@
           <div class="table-wrapper">
             <table class="insights-table">
               <thead>
-                <tr><th>Title</th><th>CTR</th><th>CTR %ile</th><th>30s retention</th><th>Views</th></tr>
+                <tr><th>Title</th><th>CTR</th><th>CTR %ile</th><th>30s retention</th><th>Engaged views</th></tr>
               </thead>
               <tbody>
                 @for (item of insights.topPackaging; track item.title) {
@@ -348,7 +380,7 @@
                     <td>{{ fmtPct(item.ctr) }}</td>
                     <td>{{ fmtPctl(item.ctrPercentile) }}</td>
                     <td>{{ fmtPct(item.retention30s) }}</td>
-                    <td>{{ fmtNum(item.views) }}</td>
+                    <td>{{ fmtNum(item.engagedViews) }}</td>
                   </tr>
                 }
               </tbody>
@@ -361,7 +393,7 @@
           <div class="table-wrapper">
             <table class="insights-table">
               <thead>
-                <tr><th>Title</th><th>CTR</th><th>CTR %ile</th><th>30s retention</th><th>Views</th></tr>
+                <tr><th>Title</th><th>CTR</th><th>CTR %ile</th><th>30s retention</th><th>Engaged views</th></tr>
               </thead>
               <tbody>
                 @for (item of insights.bottomPackaging; track item.title) {
@@ -370,7 +402,7 @@
                     <td>{{ fmtPct(item.ctr) }}</td>
                     <td>{{ fmtPctl(item.ctrPercentile) }}</td>
                     <td>{{ fmtPct(item.retention30s) }}</td>
-                    <td>{{ fmtNum(item.views) }}</td>
+                    <td>{{ fmtNum(item.engagedViews) }}</td>
                   </tr>
                 }
               </tbody>
@@ -383,7 +415,7 @@
           <div class="table-wrapper">
             <table class="insights-table">
               <thead>
-                <tr><th>Title</th><th>Published</th><th>CTR</th><th>CTR %ile</th><th>Avg % viewed</th><th>Views</th></tr>
+                <tr><th>Title</th><th>Published</th><th>CTR</th><th>CTR %ile</th><th>Avg % viewed</th><th>Engaged views</th><th>Window</th></tr>
               </thead>
               <tbody>
                 @for (item of recent; track $index) {
@@ -393,7 +425,8 @@
                     <td>{{ fmtPct(item.ctr) }}</td>
                     <td>{{ fmtPctl(item.ctrPercentile) }}</td>
                     <td>{{ fmtPct(item.avgPctViewed) }}</td>
-                    <td>{{ fmtNum(item.views) }}</td>
+                    <td>{{ fmtNum(item.engagedViews) }}</td>
+                    <td>{{ item.basis === 'first-week' ? 'first 7 days' : 'lifetime' }}</td>
                   </tr>
                 }
               </tbody>
@@ -456,7 +489,7 @@
         <div class="table-wrapper">
           <table class="insights-table">
             <thead>
-              <tr><th>Channel</th><th>Title</th><th>Packaging score</th><th>Views</th></tr>
+              <tr><th>Channel</th><th>Title</th><th>Packaging score</th><th>Engaged views</th></tr>
             </thead>
             <tbody>
               @for (item of cross.recentOverperformers; track item.title) {
@@ -464,7 +497,7 @@
                   <td>{{ channelName(item.channelId) }}</td>
                   <td class="title-cell">{{ item.title }}</td>
                   <td>{{ fmtNum(item.packagingScore) }}</td>
-                  <td>{{ fmtNum(item.views) }}</td>
+                  <td>{{ fmtNum(item.engagedViews) }}</td>
                 </tr>
               }
             </tbody>

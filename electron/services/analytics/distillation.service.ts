@@ -15,6 +15,7 @@
 import {
   ChannelInsights,
   CrossChannelInsights,
+  ENGAGED_VIEWS_EQUAL_BEFORE,
   Snapshot,
   VideoRecord,
   VideoVerdict,
@@ -74,6 +75,24 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/**
+ * A video's lifetime engaged views from its snapshots (ascending by capturedAt):
+ *  - the latest schemaVersion 2 snapshot's engagedViews, when there is one;
+ *  - else the latest snapshot's views when it was captured before ENGAGED_VIEWS_EQUAL_BEFORE
+ *    (YouTube counted no autoplay previews then, so its views are its engaged views);
+ *  - else null: the video's newest counts include 2026-08-27 or later and nothing measured
+ *    its engaged views. No ratio is applied to raw views — the inflation varies by video.
+ */
+export function lifetimeEngagedViews(snapshots: Snapshot[]): number | null {
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    const s = snapshots[i];
+    if (s.schemaVersion === 2) return s.engagedViews;
+  }
+  if (snapshots.length === 0) return null;
+  const latest = snapshots[snapshots.length - 1];
+  return Date.parse(latest.capturedAt) < Date.parse(ENGAGED_VIEWS_EQUAL_BEFORE) ? latest.views : null;
+}
+
 /** Round to one decimal for stored percentiles/scores (keeps JSON readable). */
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
@@ -113,6 +132,9 @@ export class DistillationService {
       ])
     );
 
+    // First seven Studio days per video (the extension sends each once its week has settled).
+    const firstWeekByVideo = new Map(this.store.loadFirstWeeks(channelId).map((f) => [f.videoId, f]));
+
     // Bucket snapshots by videoId in one pass over the monthly files.
     const snapshotsByVideo = new Map<string, Snapshot[]>();
     for (const snapshot of this.store.iterateSnapshots(channelId)) {
@@ -126,6 +148,7 @@ export class DistillationService {
       video: VideoRecord;
       firstWeek: VideoVerdict['firstWeek'];
       lifetime: VideoVerdict['lifetime'] | null; // null = no snapshots at all
+      firstSevenDays: VideoVerdict['firstSevenDays'];
       topSearchTerms: string[];
     }
     const drafts: Draft[] = videos.map((video) => {
@@ -167,6 +190,19 @@ export class DistillationService {
             views: latestNonNull((s) => s.views) ?? 0,
             watchHours: latestNonNull((s) => s.watchHours) ?? 0,
             subsGained: latestNonNull((s) => s.subsGained),
+            engagedViews: lifetimeEngagedViews(snapshots),
+          }
+        : null;
+
+      const record = firstWeekByVideo.get(video.videoId);
+      const firstSevenDays: VideoVerdict['firstSevenDays'] = record
+        ? {
+            firstDay: record.firstDay,
+            views: record.views,
+            engagedViews: record.engagedViews,
+            impressions: record.impressions,
+            ctr: record.impressionsCtr,
+            avgPctViewed: record.avgPctViewed,
           }
         : null;
 
@@ -179,7 +215,7 @@ export class DistillationService {
             .map((t) => t.term)
         : [];
 
-      return { video, firstWeek, lifetime, topSearchTerms };
+      return { video, firstWeek, lifetime, firstSevenDays, topSearchTerms };
     });
 
     // Percentile cohorts: age-matched first-week metrics, nulls excluded.
@@ -238,7 +274,9 @@ export class DistillationService {
           views: 0,
           watchHours: 0,
           subsGained: null,
+          engagedViews: null,
         },
+        firstSevenDays: draft.firstSevenDays,
         ctrPercentile,
         retentionPercentile,
         packagingScore,
@@ -288,6 +326,16 @@ export class DistillationService {
    */
   computeChannelInsights(channelId: string): ChannelInsights {
     const verdicts = this.store.loadVerdicts(channelId);
+    for (const v of verdicts) {
+      if (v.firstSevenDays === undefined || !v.lifetime || v.lifetime.engagedViews === undefined) {
+        // verdicts.json from before engaged views. runDistillation rewrites it first, so this
+        // only fires on a stale file read directly — never read it as "no engaged views".
+        throw new Error(
+          `[Distillation] verdict ${v.videoId} in ${channelId} predates engaged views (no firstSevenDays / ` +
+          `lifetime.engagedViews); re-run distillation`
+        );
+      }
+    }
     const now = Date.now();
     const computedAt = new Date(now);
 
@@ -312,6 +360,11 @@ export class DistillationService {
       medianAvgPctViewed: median(firstWeeks.map((fw) => fw.avgPctViewed).filter((v): v is number => v !== null)),
       medianRetention30s: median(firstWeeks.map((fw) => fw.retention30s).filter((v): v is number => v !== null)),
       medianFirstWeekViews: median(firstWeeks.map((fw) => fw.views)),
+      // Over the first seven Studio days, engaged views: comparable across 2026-08-27, unlike
+      // the raw first-week views above (kept, not rendered).
+      medianFirstWeekEngagedViews: median(
+        recent.map((v) => v.firstSevenDays?.engagedViews).filter((n): n is number => typeof n === 'number')
+      ),
     };
 
     // Within the window, packaging rankings still need enough reach to carry a real
@@ -403,26 +456,31 @@ export class DistillationService {
       avgPctViewed: avgPctViewed.get(verdict.videoId) ?? null,
       retention30s: verdict.firstWeek ? verdict.firstWeek.retention30s : null,
       views: verdict.lifetime.views,
+      engagedViews: verdict.lifetime.engagedViews,
     };
   }
 
   /**
-   * A recent upload's summary: its first-week numbers when a first-week capture carried a CTR,
-   * so videos of different ages compare on the same window; lifetime otherwise. Whole-object,
-   * never per field — one line never mixes two windows, and `basis` says which it is.
+   * A recent upload's summary: its first seven Studio days when they are collected, so videos
+   * of different ages compare on the same window (CTR, avg % viewed and engaged views all from
+   * that window); lifetime otherwise. Whole-object, never per field — one line never mixes two
+   * windows, and `basis` says which it is. (Until 2026-10-21 the first-week basis came from the
+   * snapshot nearest 168 h of age, which no extension snapshot could be: they all carried age
+   * -1. The seven-day record replaces it here.)
    */
   private toRecentSummary(verdict: VideoVerdict, avgPctViewed: Map<string, number>): VideoVerdictSummary {
-    const firstWeek = verdict.firstWeek;
-    if (firstWeek && firstWeek.ctr !== null) {
+    const week = verdict.firstSevenDays;
+    if (week) {
       return {
         title: verdict.titles[verdict.titles.length - 1],
         publishedAt: verdict.publishedAt,
         basis: 'first-week',
-        ctr: firstWeek.ctr,
+        ctr: week.ctr,
         ctrPercentile: verdict.ctrPercentile,
-        avgPctViewed: firstWeek.avgPctViewed,
-        retention30s: firstWeek.retention30s,
-        views: firstWeek.views,
+        avgPctViewed: week.avgPctViewed,
+        retention30s: verdict.firstWeek ? verdict.firstWeek.retention30s : null,
+        views: week.views,
+        engagedViews: week.engagedViews,
       };
     }
     return this.toSummary(verdict, avgPctViewed);
@@ -505,6 +563,7 @@ export class DistillationService {
           title: verdict.titles[verdict.titles.length - 1],
           packagingScore: verdict.packagingScore,
           views: verdict.lifetime.views,
+          engagedViews: verdict.lifetime.engagedViews,
         });
       }
     }

@@ -30,8 +30,42 @@ export interface VideoRecord {
   }>;
 }
 
-export interface Snapshot {
+/**
+ * A video's lifetime counters at one capture. schemaVersion 1 is every snapshot written before
+ * extension 0.2.11 (and every analytics-api one); 2 adds the fields of SnapshotV2. The ingest
+ * validator checks each version's exact shape.
+ */
+export type Snapshot = SnapshotV1 | SnapshotV2;
+
+export interface SnapshotV1 extends SnapshotFields {
   schemaVersion: 1;
+}
+
+/**
+ * Extension 0.2.11+. `engagedViews` is YouTube's ENGAGED_VIEWS: views without the inline
+ * Home-feed autoplay previews it has counted as views since 2026-08-27 (see
+ * ENGAGED_VIEWS_EQUAL_BEFORE). Money is USD; `cpm` is null where no ads ran.
+ */
+export interface SnapshotV2 extends SnapshotFields {
+  schemaVersion: 2;
+  engagedViews: number;
+  estimatedEarnings: number | null;
+  cpm: number | null;
+  subsLost: number | null;
+}
+
+/**
+ * The day YouTube started counting inline Home-feed autoplay previews as views. Verified live
+ * 2026-10-21 against all three channels (Studio yta_web/join, DAY series): EXTERNAL_VIEWS equalled
+ * ENGAGED_VIEWS on every channel through 2026-08-26 and ran ~2-2.5x it from 2026-08-27 (main
+ * channel BROWSE location: 181 views / 181 engaged on 08-26, 5,276 / 713 on 08-27). So a
+ * lifetime count captured before this instant holds only views from before the change, and its
+ * views ARE its engaged views — a dated fact, not an estimate. Midnight UTC is still 08-26 in
+ * every timezone west of UTC, Studio's and Owen's included.
+ */
+export const ENGAGED_VIEWS_EQUAL_BEFORE = '2026-08-27T00:00:00.000Z';
+
+interface SnapshotFields {
   videoId: string;
   channelId: string;
   capturedAt: string;
@@ -80,7 +114,21 @@ export interface VideoVerdict {
   publishedAt: string;
   titles: string[];                   // chronological, from titleHistory
   firstWeek: { impressions: number | null; ctr: number | null; views: number; avgPctViewed: number | null; retention30s: number | null; dominantSource: string } | null;  // null for back-catalog imports with no early snapshots
-  lifetime: { impressions: number | null; ctr: number | null; views: number; watchHours: number; subsGained: number | null };
+  /**
+   * `engagedViews`: from the latest SnapshotV2, or from the latest snapshot when it was captured
+   * before ENGAGED_VIEWS_EQUAL_BEFORE (its views are its engaged views); null otherwise — a video
+   * whose newest counts are from 2026-08-27 on with no V2 snapshot yet.
+   */
+  lifetime: { impressions: number | null; ctr: number | null; views: number; watchHours: number; subsGained: number | null; engagedViews: number | null };
+  /** The video's first seven Studio days (VideoFirstWeek); null until collected. */
+  firstSevenDays: {
+    firstDay: string;
+    views: number;
+    engagedViews: number;
+    impressions: number | null;
+    ctr: number | null;
+    avgPctViewed: number | null;
+  } | null;
   ctrPercentile: number | null;       // within-channel, age-matched cohort
   retentionPercentile: number | null;
   packagingScore: number | null;      // mean of ctrPercentile and retentionPercentile
@@ -90,10 +138,12 @@ export interface VideoVerdict {
 }
 
 /**
- * One video as the insights render shows it. `basis` names the window `ctr`, `avgPctViewed`
- * and `views` come from: 'first-week' when the verdict has a first-week capture with a CTR in
- * it, 'lifetime' otherwise (top/bottom packaging are always 'lifetime'). `retention30s` is
- * first-week only, whatever the basis. `ctrPercentile` is always over lifetime CTR.
+ * One video as the insights render shows it. `basis` names the window `ctr`, `avgPctViewed`,
+ * `views` and `engagedViews` come from: 'first-week' when the verdict has its first seven
+ * Studio days (firstSevenDays), 'lifetime' otherwise (top/bottom packaging are always
+ * 'lifetime'). `retention30s` is first-week only, whatever the basis. `ctrPercentile` is
+ * always over lifetime CTR. The render compares on `engagedViews`; `views` includes Home-feed
+ * autoplay previews from 2026-08-27 and is kept for the record only.
  */
 export interface VideoVerdictSummary {
   title: string;
@@ -104,6 +154,7 @@ export interface VideoVerdictSummary {
   avgPctViewed: number | null;
   retention30s: number | null;
   views: number;
+  engagedViews: number | null;
 }
 
 /** Structural title traits measured against each other in decided A/B tests. */
@@ -159,7 +210,14 @@ export interface ChannelInsights {
   channelId: string;
   computedAt: string;
   videoCount: number;
-  baselines: { medianCtrFirstWeek: number | null; medianAvgPctViewed: number | null; medianRetention30s: number | null; medianFirstWeekViews: number | null };
+  /**
+   * `medianFirstWeekViews` is raw views from first-week snapshots and is not rendered (raw views
+   * doubled from 2026-08-27); `medianFirstWeekEngagedViews` is over firstSevenDays and is.
+   */
+  baselines: {
+    medianCtrFirstWeek: number | null; medianAvgPctViewed: number | null; medianRetention30s: number | null; medianFirstWeekViews: number | null;
+    medianFirstWeekEngagedViews: number | null;
+  };
   topPackaging: VideoVerdictSummary[];    // ~8 best by packagingScore, recency-weighted (videos <90d old get 2x weight)
   bottomPackaging: VideoVerdictSummary[]; // ~5 worst
   /** Every long/live upload published in the 90 days before computedAt, newest first. */
@@ -187,7 +245,7 @@ export interface ChannelGuidelines {
 export interface CrossChannelInsights {
   computedAt: string;
   channelIds: string[];
-  recentOverperformers: Array<{ channelId: string; title: string; packagingScore: number; views: number }>;  // last 90d across channels — percentile-normalized comparison only
+  recentOverperformers: Array<{ channelId: string; title: string; packagingScore: number; views: number; engagedViews: number | null }>;  // last 90d across channels — percentile-normalized comparison only
   /**
    * risingSearchTerms.trendVsPriorPeriod encoding:
    *   > 0  = ratio of current-90d-window view growth to prior-90d-window growth
@@ -244,9 +302,85 @@ export interface SourceDay {
  * One channel's totals for one calendar day (Studio's DAY dimension, the channel's own
  * reporting day). Unlike Snapshot these are PER-DAY values, not lifetime-cumulative, and a
  * later collection of the same day REPLACES the stored row (Studio revises recent days).
+ *
+ * schemaVersion 1 rows were written by extension 0.2.10 only (2026-10-21, a 35-day window).
+ * 0.2.11 fetches 400 days every cycle, so its first fetch replaces every v1 row; a v1 row is
+ * still read as what it is — no engaged views, earnings or locations — never padded out.
  */
-export interface ChannelDay {
+export type ChannelDay = ChannelDayV1 | ChannelDayV2;
+
+export interface ChannelDayV1 extends ChannelDayFields {
   schemaVersion: 1;
+}
+
+/**
+ * One PLAYBACK_LOCATION_TYPE's share of a channel day: where the view happened (BROWSE is the
+ * Home feed itself), as opposed to bySource, which surface sent the viewer. A location with
+ * no row that day is all zeros.
+ */
+export interface LocationDay {
+  views: number;
+  engagedViews: number;
+  watchHours: number;
+}
+
+export const CHANNEL_DAY_LOCATION_KEYS = ['browse', 'watch', 'shortsFeed', 'channel', 'embedded', 'other'] as const;
+
+/** Extension 0.2.11+. Money is USD; `cpm` is null on a day no ads ran; null = not reported. */
+export interface ChannelDayV2 extends ChannelDayFields {
+  schemaVersion: 2;
+  engagedViews: number;
+  estimatedEarnings: number | null;
+  cpm: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  subsGained: number | null;
+  subsLost: number | null;
+  byLocation: {
+    browse: LocationDay; watch: LocationDay; shortsFeed: LocationDay; channel: LocationDay;
+    embedded: LocationDay; other: LocationDay;
+  };
+  /** Studio location names folded into `byLocation.other`, deduped and sorted. */
+  otherLocations: string[];
+}
+
+/**
+ * A video's first seven Studio days — its local publish day and the six after — from one
+ * VIDEO query over exactly that range, collected once the window has closed and settled.
+ * Upserted by videoId into <channel>/first-weeks.json. This is the first-week measure the
+ * distiller compares uploads on: the same window for every video, whenever it was published,
+ * with engaged views whatever the date (the per-video snapshots from 2026-08-27 until
+ * extension 0.2.11 carry none).
+ */
+export interface VideoFirstWeek {
+  schemaVersion: 1;
+  videoId: string;
+  channelId: string;
+  publishedAt: string;          // ISO
+  firstDay: string;             // 'YYYY-MM-DD'
+  lastDay: string;              // firstDay + 6
+  capturedAt: string;
+  source: 'studio-extension';
+  views: number;
+  engagedViews: number;
+  watchHours: number;
+  impressions: number | null;
+  impressionsCtr: number | null;  // percent
+  avgPctViewed: number | null;    // percent
+}
+
+/** Thrown when a VideoFirstWeek fails validation on ingest; `reasons` lists every failing field. */
+export class VideoFirstWeekValidationError extends Error {
+  readonly reasons: string[];
+  constructor(reasons: string[]) {
+    super(`VideoFirstWeek validation failed: ${reasons.join('; ')}`);
+    this.name = 'VideoFirstWeekValidationError';
+    this.reasons = reasons;
+  }
+}
+
+interface ChannelDayFields {
   channelId: string;
   day: string;                        // 'YYYY-MM-DD'
   capturedAt: string;                 // ISO, when this row was fetched
