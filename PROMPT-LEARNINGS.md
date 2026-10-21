@@ -573,6 +573,26 @@ won 4 / lost 6 on Telltale and 5 / 12 on Fireside. So no shape went into any pro
   input's hash moved, so each channel re-distills once on its next data change or Run Distillation.
 Unmeasured: no distillation has run on the new input yet (a live run needs Owen's OK).
 
+**Tested patterns are distilled, never installed (2026-10-21, LEDGER #321).** Owen asked for five
+more titles per item "that reflect the winning patterns, like the claim in the title, or dry humor",
+beside the unchanged ten. His examples set the granularity, not the list: the shape he liked measured
+4 won / 6 lost on Telltale, so any fixed list would bake in a loser. A second key, `pattern_distiller`,
+reads the SAME evidence render as the lessons and names exactly five `name: how` patterns. It reuses
+the lessons prompt's recency and subject-free clauses word for word so the two distillers cannot
+disagree, adds the swap test for patterns ("two titles written in two of them about the same video
+read as two different titles, not one title reworded"), and pins names to 2-5 spoken words because
+Owen reads them beside each title. A separate key and call, so the lessons' "- " answer keeps its
+shape (its prompt text is pinned by sha256 in tools/pattern-titles-checks.js).
+
+In `titles.yml` the ten's rules moved verbatim into `title_rules` and both sections fill a
+`{title_rules}` slot, so the pattern call cannot drift on register, length or claim attribution; the
+ten's assembled prompt is held byte-identical to ea53529's by 30 golden files (every title-writing
+channel x summary/digest/raw x with/without insights). `pattern_instructions` adds three lines: the
+pattern decides the shape and the video decides everything inside it; every pattern gets its title,
+as far as the video's own material honestly goes (keeps the count reliable without inviting
+invention); an ordered answer, one line per pattern. The pattern call carries no lessons block; the
+patterns are its evidence. Unmeasured: no live distillation or generation has run.
+
 ### `summarization.yml`
 
 The output of this stage becomes the `{subject}` input to every downstream call, so it must
