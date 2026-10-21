@@ -1153,9 +1153,9 @@ export async function collectStudioAnalyticsInPage(
       return null;
     };
 
-    // Studio sends money as USD x1000 (TOTAL_ESTIMATED_EARNINGS 1000110 = $1,000.11, CPM 16501
-    // = $16.50; checked against Studio's own UI 2026-10-21). A value that is not a number —
-    // CPM comes back as {} where no ads ran — is null: not reported, never $0.
+    // Studio sends money as USD x1000 in the `earnings` holder (TOTAL_ESTIMATED_EARNINGS
+    // 1000110 = $1,000.11, CPM 16501 = $16.50; checked against Studio's own UI 2026-10-21).
+    // A row Studio lists in undefinedValueIndices (CPM where no ads ran) arrives here as null.
     const toUsd = (v: any): number | null => {
       const n = toNum(v);
       return n === null ? null : n / 1000;
@@ -1208,58 +1208,52 @@ export async function collectStudioAnalyticsInPage(
       const rowCount = ids.length;
       const metricCols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
 
-      // Match a required metric column by .metric.type (never by index) and
-      // return its parallel numeric array. Returns { __err } on any shape break.
-      const seriesOf = (metricType: string, kinds: string[]): any => {
+      // Match a metric column by .metric.type (never by index), read its NAMED value holder,
+      // and return the parallel array with null at every undefined index. Returns { __err }
+      // on any shape break.
+      // In the new-format response a metric column may carry, beside its value holder,
+      // `undefinedValueIndices` (rows where Studio has NO value; the value array still holds 0
+      // there). Measured live 2026-10-21 on a 3,057-row per-video table: CPM 798 such rows,
+      // TOTAL_ESTIMATED_EARNINGS 503, VTR 9, views/engaged views 1. Those rows are null — not
+      // captured, never a real-looking 0. A required metric's null still fails as MISSING_VALUE.
+      // `columnAnomalies` is informational and ignored.
+      const seriesOf = (metricType: string, holderName: string): any => {
         const column = metricCols.find((c) => c && c.metric && c.metric.type === metricType);
         if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + metricType + ' is absent from the response.') };
-        for (const kind of kinds) {
-          const holder = column[kind];
-          const arr = holder && holder.values;
-          if (Array.isArray(arr)) {
-            if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' length ' + arr.length + ' != row count ' + rowCount + '.') };
-            return arr;
-          }
+        const arr = column[holderName] && column[holderName].values;
+        if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has no ' + holderName + '.values array (keys: ' + Object.keys(column).join(', ') + ').') };
+        if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' length ' + arr.length + ' != row count ' + rowCount + '.') };
+        const undef = column.undefinedValueIndices;
+        if (undef === undefined) return arr;
+        if (!Array.isArray(undef) || undef.some((i: any) => !Number.isInteger(i) || i < 0 || i >= rowCount)) {
+          return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has an unreadable undefinedValueIndices (' + JSON.stringify(undef).slice(0, 80) + ').') };
         }
-        return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has none of the expected value arrays (' + kinds.join('/') + ').') };
+        const out = arr.slice();
+        for (const i of undef) out[i] = null;
+        return out;
       };
 
-      const impArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS', ['counts']);
+      const impArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS', 'counts');
       if (impArr && impArr.__err) return impArr.__err;
-      const vtrArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', ['percentages']);
+      const vtrArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages');
       if (vtrArr && vtrArr.__err) return vtrArr.__err;
-      const viewsArr = seriesOf('EXTERNAL_VIEWS', ['counts']);
+      const viewsArr = seriesOf('EXTERNAL_VIEWS', 'counts');
       if (viewsArr && viewsArr.__err) return viewsArr.__err;
-      const watchArr = seriesOf('EXTERNAL_WATCH_TIME', ['milliseconds']);
+      const watchArr = seriesOf('EXTERNAL_WATCH_TIME', 'milliseconds');
       if (watchArr && watchArr.__err) return watchArr.__err;
-      const avgArr = seriesOf('AVERAGE_WATCH_PERCENTAGE', ['percentages']);
+      const avgArr = seriesOf('AVERAGE_WATCH_PERCENTAGE', 'percentages');
       if (avgArr && avgArr.__err) return avgArr.__err;
 
-      // The 0.2.11 metrics. Which value holder each one comes back in was not recorded when
-      // they were verified, so the column's ONE holder carrying a values[] array is read,
-      // whatever its name; none, or more than one, is a shape failure. CPM alone may carry
-      // no values at all (a channel or catalogue with no ads): every row's CPM is then null.
-      const anySeriesOf = (metricType: string, mayBeEmpty: boolean): any => {
-        const column = metricCols.find((c) => c && c.metric && c.metric.type === metricType);
-        if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + metricType + ' is absent from the response.') };
-        const holders = Object.keys(column).filter((k) => k !== 'metric' && column[k] && typeof column[k] === 'object' && Array.isArray(column[k].values));
-        if (holders.length === 0) {
-          if (mayBeEmpty) return new Array(rowCount).fill(null);
-          return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has no value array (keys: ' + Object.keys(column).join(', ') + ').') };
-        }
-        if (holders.length > 1) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' carries several value arrays (' + holders.join(', ') + '); which is the value is unknown.') };
-        const arr = column[holders[0]!].values;
-        if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' length ' + arr.length + ' != row count ' + rowCount + '.') };
-        return arr;
-      };
-      const engagedArr = anySeriesOf('ENGAGED_VIEWS', false); if (engagedArr.__err) return engagedArr.__err;
-      const earnArr = anySeriesOf('TOTAL_ESTIMATED_EARNINGS', false); if (earnArr.__err) return earnArr.__err;
-      const cpmArr = anySeriesOf('CPM', true); if (cpmArr.__err) return cpmArr.__err;
-      const likesArr = anySeriesOf('RATINGS_LIKES', false); if (likesArr.__err) return likesArr.__err;
-      const commentsArr = anySeriesOf('COMMENTS', false); if (commentsArr.__err) return commentsArr.__err;
-      const sharesArr = anySeriesOf('SHARINGS', false); if (sharesArr.__err) return sharesArr.__err;
-      const gainedArr = anySeriesOf('SUBSCRIBERS_GAINED', false); if (gainedArr.__err) return gainedArr.__err;
-      const lostArr = anySeriesOf('SUBSCRIBERS_LOST', false); if (lostArr.__err) return lostArr.__err;
+      // The 0.2.11 metrics; holders verified live 2026-10-21 (Fireside): counts, and
+      // `earnings` for the two money metrics.
+      const engagedArr = seriesOf('ENGAGED_VIEWS', 'counts'); if (engagedArr.__err) return engagedArr.__err;
+      const earnArr = seriesOf('TOTAL_ESTIMATED_EARNINGS', 'earnings'); if (earnArr.__err) return earnArr.__err;
+      const cpmArr = seriesOf('CPM', 'earnings'); if (cpmArr.__err) return cpmArr.__err;
+      const likesArr = seriesOf('RATINGS_LIKES', 'counts'); if (likesArr.__err) return likesArr.__err;
+      const commentsArr = seriesOf('COMMENTS', 'counts'); if (commentsArr.__err) return commentsArr.__err;
+      const sharesArr = seriesOf('SHARINGS', 'counts'); if (sharesArr.__err) return sharesArr.__err;
+      const gainedArr = seriesOf('SUBSCRIBERS_GAINED', 'counts'); if (gainedArr.__err) return gainedArr.__err;
+      const lostArr = seriesOf('SUBSCRIBERS_LOST', 'counts'); if (lostArr.__err) return lostArr.__err;
 
       for (let i = 0; i < rowCount; i++) {
         const videoId = ids[i];
@@ -1493,6 +1487,8 @@ export async function collectChannelDaysInPage(
       return arr;
     };
     // A metric column by .metric.type and its parallel array, checked against the row count.
+    // Columns may list `undefinedValueIndices` beside the holder: those rows are null (see
+    // collectStudioAnalyticsInPage). A required metric's null still fails as MISSING_VALUE.
     const metricOf = (label: string, table: any, type: string, holder: string, rowCount: number): any => {
       const cols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
       const column = cols.find((c) => c && c.metric && c.metric.type === type);
@@ -1500,37 +1496,18 @@ export async function collectChannelDaysInPage(
       const arr = column[holder] && column[holder].values;
       if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has no ' + holder + '.values array.') };
       if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') length ' + arr.length + ' != row count ' + rowCount + '.') };
-      return arr;
-    };
-    // The 0.2.11 columns. Their value holder was not recorded when the names were verified
-    // live, so the column's ONE holder carrying a values[] array is read, whatever its name;
-    // none, or several, is a shape failure. CPM alone may carry none at all (no ads in the
-    // window): every day's CPM is then null.
-    const metricAnyOf = (label: string, table: any, type: string, rowCount: number, mayBeEmpty: boolean): any => {
-      const cols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
-      const column = cols.find((c) => c && c.metric && c.metric.type === type);
-      if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + type + ' is absent from the ' + label + ' response.') };
-      const holders = Object.keys(column).filter((k) => k !== 'metric' && column[k] && typeof column[k] === 'object' && Array.isArray(column[k].values));
-      if (holders.length === 0) {
-        if (mayBeEmpty) return new Array(rowCount).fill(null);
-        return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has no value array (keys: ' + Object.keys(column).join(', ') + ').') };
+      const undef = column.undefinedValueIndices;
+      if (undef === undefined) return arr;
+      if (!Array.isArray(undef) || undef.some((n: any) => !Number.isInteger(n) || n < 0 || n >= rowCount)) {
+        return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has an unreadable undefinedValueIndices.') };
       }
-      if (holders.length > 1) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') carries several value arrays (' + holders.join(', ') + ').') };
-      const arr = column[holders[0]!].values;
-      if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') length ' + arr.length + ' != row count ' + rowCount + '.') };
-      return arr;
+      const out = arr.slice();
+      for (const n of undef) out[n] = null;
+      return out;
     };
-    const dimensionAnyOf = (label: string, table: any, type: string): any => {
-      const cols: any[] = Array.isArray(table.dimensionColumns) ? table.dimensionColumns : [];
-      const column = cols.find((c) => c && c.dimension && c.dimension.type === type);
-      if (!column) return { __err: fail('MISSING_COLUMN', 'Dimension column ' + type + ' is absent from the ' + label + ' response.') };
-      const holders = Object.keys(column).filter((k) => k !== 'dimension' && column[k] && typeof column[k] === 'object' && Array.isArray(column[k].values));
-      if (holders.length !== 1) return { __err: fail('MISSING_COLUMN', 'Dimension column ' + type + ' (' + label + ') has ' + holders.length + ' value arrays, expected one.') };
-      return column[holders[0]!].values;
-    };
-    // Money is USD x1000 (TOTAL_ESTIMATED_EARNINGS 1000110 = $1,000.11, CPM 16501 = $16.50,
-    // checked against Studio's UI 2026-10-21). Not a number (CPM is {} on a day no ads ran) =
-    // null, never $0.
+    // Money is USD x1000 in the `earnings` holder (TOTAL_ESTIMATED_EARNINGS 1000110 =
+    // $1,000.11, CPM 16501 = $16.50, checked against Studio's UI 2026-10-21). A row in the
+    // column's undefinedValueIndices (CPM where no ads ran) is null, never $0.
     const toUsd = (v: any): number | null => {
       const n = toNum(v);
       return n === null ? null : n / 1000;
@@ -1564,14 +1541,14 @@ export async function collectChannelDaysInPage(
     const newV1 = metricOf('per-day', t1, 'NEW_VIEWERS', 'counts', n1); if (newV1.__err) return newV1.__err;
     const retV1 = metricOf('per-day', t1, 'RETURNING_VIEWERS', 'counts', n1); if (retV1.__err) return retV1.__err;
     const subs1 = metricOf('per-day', t1, 'SUBSCRIBERS_NET_CHANGE', 'counts', n1); if (subs1.__err) return subs1.__err;
-    const engaged1 = metricAnyOf('per-day', t1, 'ENGAGED_VIEWS', n1, false); if (engaged1.__err) return engaged1.__err;
-    const earn1 = metricAnyOf('per-day', t1, 'TOTAL_ESTIMATED_EARNINGS', n1, false); if (earn1.__err) return earn1.__err;
-    const cpm1 = metricAnyOf('per-day', t1, 'CPM', n1, true); if (cpm1.__err) return cpm1.__err;
-    const likes1 = metricAnyOf('per-day', t1, 'RATINGS_LIKES', n1, false); if (likes1.__err) return likes1.__err;
-    const comments1 = metricAnyOf('per-day', t1, 'COMMENTS', n1, false); if (comments1.__err) return comments1.__err;
-    const shares1 = metricAnyOf('per-day', t1, 'SHARINGS', n1, false); if (shares1.__err) return shares1.__err;
-    const gained1 = metricAnyOf('per-day', t1, 'SUBSCRIBERS_GAINED', n1, false); if (gained1.__err) return gained1.__err;
-    const lost1 = metricAnyOf('per-day', t1, 'SUBSCRIBERS_LOST', n1, false); if (lost1.__err) return lost1.__err;
+    const engaged1 = metricOf('per-day', t1, 'ENGAGED_VIEWS', 'counts', n1); if (engaged1.__err) return engaged1.__err;
+    const earn1 = metricOf('per-day', t1, 'TOTAL_ESTIMATED_EARNINGS', 'earnings', n1); if (earn1.__err) return earn1.__err;
+    const cpm1 = metricOf('per-day', t1, 'CPM', 'earnings', n1); if (cpm1.__err) return cpm1.__err;
+    const likes1 = metricOf('per-day', t1, 'RATINGS_LIKES', 'counts', n1); if (likes1.__err) return likes1.__err;
+    const comments1 = metricOf('per-day', t1, 'COMMENTS', 'counts', n1); if (comments1.__err) return comments1.__err;
+    const shares1 = metricOf('per-day', t1, 'SHARINGS', 'counts', n1); if (shares1.__err) return shares1.__err;
+    const gained1 = metricOf('per-day', t1, 'SUBSCRIBERS_GAINED', 'counts', n1); if (gained1.__err) return gained1.__err;
+    const lost1 = metricOf('per-day', t1, 'SUBSCRIBERS_LOST', 'counts', n1); if (lost1.__err) return lost1.__err;
 
     const capturedAt = new Date().toISOString();
     const emptySource = (): any => ({ impressions: null, impressionsCtr: null, views: 0 });
@@ -1716,18 +1693,20 @@ export async function collectChannelDaysInPage(
     const t3 = q3.table;
     const days3 = dimensionOf('per-day-per-location', t3, 'DAY', 'dateIds');
     if (days3.__err) return days3.__err;
-    // The location enum's holder was not recorded live; the column's one value array is read.
-    const locations3 = dimensionAnyOf('per-day-per-location', t3, 'PLAYBACK_LOCATION_TYPE');
+    // Location names are in `enumValues`, like TRAFFIC_SOURCE_TYPE (verified live 2026-10-21).
+    const locations3 = dimensionOf('per-day-per-location', t3, 'PLAYBACK_LOCATION_TYPE', 'enumValues');
     if (locations3.__err) return locations3.__err;
     const n3 = days3.length;
     if (locations3.length !== n3) return fail('MISSING_COLUMN', 'PLAYBACK_LOCATION_TYPE column length ' + locations3.length + ' != DAY column length ' + n3 + '.');
     if (n3 >= PAGE) return fail('PAGE_CAP', 'Per-location query returned a full page of ' + PAGE + ' rows; offset paging is unsupported.');
     const views3 = metricOf('per-day-per-location', t3, 'EXTERNAL_VIEWS', 'counts', n3); if (views3.__err) return views3.__err;
-    const engaged3 = metricAnyOf('per-day-per-location', t3, 'ENGAGED_VIEWS', n3, false); if (engaged3.__err) return engaged3.__err;
+    const engaged3 = metricOf('per-day-per-location', t3, 'ENGAGED_VIEWS', 'counts', n3); if (engaged3.__err) return engaged3.__err;
     const watch3 = metricOf('per-day-per-location', t3, 'EXTERNAL_WATCH_TIME', 'milliseconds', n3); if (watch3.__err) return watch3.__err;
 
-    // Studio enum -> our key, as for traffic sources: anything else (SEARCH, EXTERNAL_APP,
-    // YT_OTHER, UNKNOWN, a future enum) is summed into `other` and named in otherLocations.
+    // Studio enum -> our key, as for traffic sources. Seen live over 400 days (2026-10-21):
+    // WATCH, BROWSE, SHORTS_FEED, EMBEDDED, IMMERSIVE_LIVE_FEED, CHANNEL. Anything else —
+    // IMMERSIVE_LIVE_FEED included, or a future enum — is summed into `other` and named in
+    // otherLocations.
     const LOCATION_KEYS: Record<string, string> = {
       BROWSE: 'browse',
       WATCH: 'watch',
@@ -1905,24 +1884,25 @@ export async function collectFirstWeeksInPage(
       const rowCount = ids.length;
       if (rowCount >= PAGE) return fail('PAGE_CAP', 'First-week query (' + label + ') returned a full page of ' + PAGE + ' rows; offset paging is unsupported.');
       const metricCols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
-      // holder === null: read the column's one values[] array (ENGAGED_VIEWS; see metricAnyOf).
-      const series = (type: string, holder: string | null): any => {
+      // Named holder; rows in the column's undefinedValueIndices are null (see
+      // collectStudioAnalyticsInPage), and a required metric's null fails as MISSING_VALUE.
+      const series = (type: string, holder: string): any => {
         const column = metricCols.find((c) => c && c.metric && c.metric.type === type);
         if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + type + ' is absent from the ' + label + ' response.') };
-        let arr: any;
-        if (holder !== null) {
-          arr = column[holder] && column[holder].values;
-        } else {
-          const holders = Object.keys(column).filter((k) => k !== 'metric' && column[k] && typeof column[k] === 'object' && Array.isArray(column[k].values));
-          if (holders.length !== 1) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has ' + holders.length + ' value arrays, expected one.') };
-          arr = column[holders[0]!].values;
-        }
+        const arr = column[holder] && column[holder].values;
         if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has no ' + holder + '.values array.') };
         if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') length ' + arr.length + ' != row count ' + rowCount + '.') };
-        return arr;
+        const undef = column.undefinedValueIndices;
+        if (undef === undefined) return arr;
+        if (!Array.isArray(undef) || undef.some((n: any) => !Number.isInteger(n) || n < 0 || n >= rowCount)) {
+          return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has an unreadable undefinedValueIndices.') };
+        }
+        const out = arr.slice();
+        for (const n of undef) out[n] = null;
+        return out;
       };
       const views = series('EXTERNAL_VIEWS', 'counts'); if (views.__err) return views.__err;
-      const engaged = series('ENGAGED_VIEWS', null); if (engaged.__err) return engaged.__err;
+      const engaged = series('ENGAGED_VIEWS', 'counts'); if (engaged.__err) return engaged.__err;
       const watch = series('EXTERNAL_WATCH_TIME', 'milliseconds'); if (watch.__err) return watch.__err;
       const imp = series('VIDEO_THUMBNAIL_IMPRESSIONS', 'counts'); if (imp.__err) return imp.__err;
       const vtr = series('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages'); if (vtr.__err) return vtr.__err;

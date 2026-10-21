@@ -102,7 +102,10 @@ function table(dims, metrics) {
   return {
     results: [{ key: 'TABLE_QUERY', value: { resultTable: {
       dimensionColumns: dims.map((d) => ({ dimension: { type: d.type }, [d.holder]: { values: d.values } })),
-      metricColumns: metrics.map((m) => ({ metric: { type: m.type }, [m.holder]: { values: m.values } })),
+      metricColumns: metrics.map((m) => ({
+        metric: { type: m.type }, [m.holder]: { values: m.values },
+        ...(m.undef ? { undefinedValueIndices: m.undef, columnAnomalies: { ids: [] } } : {}),
+      })),
     } } }],
   };
 }
@@ -120,8 +123,8 @@ const PER_DAY = (omit) => table(
     { type: 'RETURNING_VIEWERS', holder: 'counts', values: [0, 100, 0] },
     // 0.2.11 columns (their own checks are in tools/engaged-views-checks.js).
     { type: 'ENGAGED_VIEWS', holder: 'counts', values: [0, 120, 90] },
-    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'doubles', values: [0, 2500, 1800] },
-    { type: 'CPM', holder: 'doubles', values: [{}, 9000, 8000] },
+    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'earnings', values: [0, 2500, 1800] },
+    { type: 'CPM', holder: 'earnings', values: [0, 9000, 8000], undef: [0] },
     { type: 'RATINGS_LIKES', holder: 'counts', values: [0, 10, 8] },
     { type: 'COMMENTS', holder: 'counts', values: [0, 2, 1] },
     { type: 'SHARINGS', holder: 'counts', values: [0, 1, 0] },
@@ -239,6 +242,18 @@ check('new/returning 0,0 with views is "not computed yet" (null); 0,0 with no vi
   const { result } = await runCollector();
   eq([result.days[1].newViewers, result.days[1].returningViewers], [null, null], '19th: views 150, cohorts 0/0');
   eq([result.days[2].newViewers, result.days[2].returningViewers], [0, 0], '20th: no views at all');
+});
+
+check('undefinedValueIndices: an undefined CPM is null, never $0; an undefined required value fails', async () => {
+  const { result } = await runCollector();
+  eq(result.days.map((d) => d.cpm), [9, 8, null], 'cpm by day, ascending (the 20th is undefined)');
+  const undefViews = table([{ type: 'DAY', holder: 'dateIds', values: [20261018] }], PER_DAY().results[0].value.resultTable.metricColumns.map((c) => {
+    const type = c.metric.type;
+    const holder = Object.keys(c).find((k) => k !== 'metric' && k !== 'undefinedValueIndices' && k !== 'columnAnomalies');
+    return { type, holder, values: [c[holder].values[1]], undef: type === 'EXTERNAL_WATCH_TIME' ? [0] : undefined };
+  }));
+  const bad = (await runCollector({ perDay: undefViews })).result;
+  eq([bad.ok, bad.code], [false, 'MISSING_VALUE'], 'undefined watch time');
 });
 
 check('every row the collector emits passes the ingest validator', async () => {

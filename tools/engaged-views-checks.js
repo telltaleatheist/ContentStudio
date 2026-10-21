@@ -75,7 +75,12 @@ function table(dims, metrics) {
   return {
     results: [{ key: 'TABLE_QUERY', value: { resultTable: {
       dimensionColumns: dims.map((d) => ({ dimension: { type: d.type }, [d.holder]: { values: d.values } })),
-      metricColumns: metrics.map((m) => (m.raw ? { metric: { type: m.type }, ...m.raw } : { metric: { type: m.type }, [m.holder]: { values: m.values } })),
+      // Like Studio's new format: an `undefinedValueIndices` beside the holder (with 0 in the
+      // value array at those rows) and an informational `columnAnomalies`.
+      metricColumns: metrics.map((m) => ({
+        metric: { type: m.type }, [m.holder]: { values: m.values },
+        ...(m.undef ? { undefinedValueIndices: m.undef, columnAnomalies: { ids: [] } } : {}),
+      })),
     } } }],
   };
 }
@@ -103,31 +108,30 @@ async function inPage(fn, args, answer) {
   }
 }
 
-// Per-video lifetime: three videos, columns deliberately out of request order, the new
-// metrics in holders named whatever (the parser must not care), CPM {} where no ads ran.
-function perVideo({ omit = null, cpm = null, engaged = null } = {}) {
+// Per-video lifetime: three videos, columns deliberately out of request order, holders as
+// verified live 2026-10-21, CPM undefined (0 in the array, listed in undefinedValueIndices)
+// where no ads ran.
+function perVideo({ omit = null, patch = {} } = {}) {
   const metrics = [
-    { type: 'CPM', holder: 'doubles', values: [16501, {}, 4000] },
+    { type: 'CPM', holder: 'earnings', values: [16501, 0, 4000], undef: [1] },
     { type: 'EXTERNAL_VIEWS', holder: 'counts', values: [1000, 50, 10] },
     { type: 'ENGAGED_VIEWS', holder: 'counts', values: [400, 50, 10] },
     { type: 'VIDEO_THUMBNAIL_IMPRESSIONS', holder: 'counts', values: [20000, 900, 100] },
     { type: 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', holder: 'percentages', values: [5, 4, 3] },
     { type: 'EXTERNAL_WATCH_TIME', holder: 'milliseconds', values: [36000000, 3600000, 0] },
     { type: 'AVERAGE_WATCH_PERCENTAGE', holder: 'percentages', values: [40, 30, 20] },
-    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'milliUsd', values: [1000110, 0, 120] },
+    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'earnings', values: [1000110, 0, 120] },
     { type: 'RATINGS_LIKES', holder: 'counts', values: [30, 2, 0] },
     { type: 'COMMENTS', holder: 'counts', values: [5, 0, 0] },
     { type: 'SHARINGS', holder: 'counts', values: [3, 0, 0] },
     { type: 'SUBSCRIBERS_GAINED', holder: 'counts', values: [7, 1, 0] },
     { type: 'SUBSCRIBERS_LOST', holder: 'counts', values: [2, 0, 1] },
-  ].filter((m) => m.type !== omit);
-  if (cpm) metrics[0] = { type: 'CPM', raw: cpm };
-  if (engaged) metrics[2] = { type: 'ENGAGED_VIEWS', raw: engaged };
+  ].filter((m) => m.type !== omit).map((m) => (patch[m.type] ? { ...m, ...patch[m.type] } : m));
   return table([{ type: 'VIDEO', holder: 'strings', values: ['vidA', 'vidB', 'vidC'] }], metrics);
 }
 const runVideos = (opts) => inPage(collector.collectStudioAnalyticsInPage, [CH, { pageSize: 10000 }], () => perVideo(opts));
 
-check('per-video: a v2 snapshot with engaged views, USD money, CPM {} -> null, filled engagement counts', async () => {
+check('per-video: a v2 snapshot with engaged views, USD money, an undefined CPM -> null (not $0), filled engagement counts', async () => {
   const { result, requests } = await runVideos();
   eq(result.ok, true, 'ok');
   const types = requests[0].metrics.map((m) => m.type);
@@ -142,20 +146,31 @@ check('per-video: a v2 snapshot with engaged views, USD money, CPM {} -> null, f
   for (const s of result.snapshots) eq(validateSnapshot(s), [], `validator on ${s.videoId}`);
 });
 
-check('per-video: CPM with no value array at all is null for every row', async () => {
-  const { result } = await runVideos({ cpm: { doubles: {} } });
-  eq(result.snapshots.map((s) => s.cpm), [null, null, null], 'cpm');
+check('per-video: undefinedValueIndices make optional values null and old metrics too (impressions, VTR)', async () => {
+  const { result } = await runVideos({ patch: {
+    TOTAL_ESTIMATED_EARNINGS: { undef: [0, 2] },
+    VIDEO_THUMBNAIL_IMPRESSIONS_VTR: { values: [5, 0, 3], undef: [1] },
+    RATINGS_LIKES: { undef: [] },
+  } });
+  eq(result.snapshots.map((s) => s.estimatedEarnings), [null, 0, null], 'earnings: undefined rows null, a defined 0 stays 0');
+  eq(result.snapshots.map((s) => s.impressionsCtr), [5, null, 3], 'vtr');
+  eq(result.snapshots.map((s) => s.likes), [30, 2, 0], 'an empty list changes nothing');
 });
 
-check('per-video: a missing ENGAGED_VIEWS column or two value arrays is a named failure', async () => {
+check('per-video: an undefined required value, a missing column, a wrong holder, bad indices are named failures', async () => {
+  const undefEngaged = (await runVideos({ patch: { ENGAGED_VIEWS: { values: [400, 0, 10], undef: [1] } } })).result;
+  eq([undefEngaged.ok, undefEngaged.code], [false, 'MISSING_VALUE'], 'undefined engaged views');
+  includes(undefEngaged.message, 'vidB', 'names the video');
+  const undefViews = (await runVideos({ patch: { EXTERNAL_VIEWS: { undef: [2] } } })).result;
+  eq([undefViews.ok, undefViews.code], [false, 'MISSING_VALUE'], 'undefined views');
   const missing = (await runVideos({ omit: 'ENGAGED_VIEWS' })).result;
   eq([missing.ok, missing.code], [false, 'MISSING_COLUMN'], 'missing');
   includes(missing.message, 'ENGAGED_VIEWS', 'message names the column');
-  const two = (await runVideos({ engaged: { counts: { values: [1, 2, 3] }, doubles: { values: [1, 2, 3] } } })).result;
-  eq([two.ok, two.code], [false, 'MISSING_COLUMN'], 'ambiguous');
-  includes(two.message, 'several value arrays', 'message');
-  const blank = (await runVideos({ engaged: { counts: { values: [1, {}, 3] } } })).result;
-  eq([blank.ok, blank.code], [false, 'MISSING_VALUE'], 'a row without engaged views');
+  const wrongHolder = (await runVideos({ patch: { CPM: { holder: 'doubles' } } })).result;
+  eq([wrongHolder.ok, wrongHolder.code], [false, 'MISSING_COLUMN'], 'CPM not in earnings');
+  includes(wrongHolder.message, 'earnings.values', 'message names the expected holder');
+  const badIdx = (await runVideos({ patch: { CPM: { undef: [7] } } })).result;
+  eq([badIdx.ok, badIdx.code], [false, 'MISSING_COLUMN'], 'an index past the rows');
 });
 
 // ---------------------------------------------------------------- per-day v2
@@ -171,8 +186,8 @@ function perDay() {
     { type: 'RETURNING_VIEWERS', holder: 'counts', values: [100, 90] },
     { type: 'SUBSCRIBERS_NET_CHANGE', holder: 'counts', values: [3, -1] },
     { type: 'ENGAGED_VIEWS', holder: 'counts', values: [900, 280] },
-    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'doubles', values: [12340, 5000] },
-    { type: 'CPM', holder: 'doubles', values: [9000, {}] },
+    { type: 'TOTAL_ESTIMATED_EARNINGS', holder: 'earnings', values: [12340, 5000] },
+    { type: 'CPM', holder: 'earnings', values: [9000, 0], undef: [1] },
     { type: 'RATINGS_LIKES', holder: 'counts', values: [10, 8] },
     { type: 'COMMENTS', holder: 'counts', values: [2, 1] },
     { type: 'SHARINGS', holder: 'counts', values: [1, 0] },
@@ -189,7 +204,7 @@ const LOC_ROWS = [
   [20261018, 'BROWSE', 5276, 713, 3600000],
   [20261018, 'WATCH', 200, 170, 30000000],
   [20261018, 'SEARCH', 14, 10, 360000],
-  [20261018, 'EXTERNAL_APP', 10, 7, 0],
+  [20261018, 'IMMERSIVE_LIVE_FEED', 10, 7, 0],
   [20261019, 'WATCH', 300, 280, 7200000],
 ];
 function perLocation(rows = LOC_ROWS, holder = 'enumValues') {
@@ -227,13 +242,14 @@ check('per-day: playback locations — BROWSE/WATCH kept, others folded into oth
   eq(d18.byLocation.browse, { views: 5276, engagedViews: 713, watchHours: 1 }, 'browse');
   eq([d18.byLocation.other.views, d18.byLocation.other.engagedViews], [24, 17], 'other summed');
   near(d18.byLocation.other.watchHours, 0.1, 'other hours');
-  eq(d18.otherLocations, ['EXTERNAL_APP', 'SEARCH'], 'other names');
+  eq(d18.otherLocations, ['IMMERSIVE_LIVE_FEED', 'SEARCH'], 'other names (IMMERSIVE_LIVE_FEED, seen live, folds into other)');
   eq(d19.byLocation.browse, { views: 0, engagedViews: 0, watchHours: 0 }, 'no BROWSE row on the 19th');
   eq(d19.otherLocations, [], 'nothing folded on the 19th');
 });
 
-check('per-day: the location enum is read from whatever its one holder is; a stray day or duplicate is refused', async () => {
-  eq((await runDays(perLocation(LOC_ROWS, 'strings'))).result.ok, true, 'strings holder');
+check('per-day: the location enum must be in enumValues; a stray day or duplicate is refused', async () => {
+  const wrong = (await runDays(perLocation(LOC_ROWS, 'strings'))).result;
+  eq([wrong.ok, wrong.code], [false, 'MISSING_COLUMN'], 'strings holder');
   const stray = (await runDays(perLocation([[20261001, 'BROWSE', 1, 1, 0]]))).result;
   eq([stray.ok, stray.code], [false, 'MISSING_VALUE'], 'stray day');
   const dup = (await runDays(perLocation([[20261018, 'BROWSE', 1, 1, 0], [20261018, 'BROWSE', 1, 1, 0]]))).result;

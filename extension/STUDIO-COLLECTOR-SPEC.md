@@ -240,7 +240,7 @@ also gained some non-engaged views. Any comparison of raw views across 2026-08-2
 ContentStudio compares on engaged views.
 
 ### Names verified (200 on both DAY and VIDEO, all three channels)
-Metrics: `ENGAGED_VIEWS`, `CPM` (USD x1000: 16501 = $16.50; the value is `{}` where no ads ran),
+Metrics: `ENGAGED_VIEWS`, `CPM` (USD x1000: 16501 = $16.50; undefined where no ads ran, see below),
 `TOTAL_ESTIMATED_EARNINGS` (USD x1000: 1000110 = $1,000.11, matches Studio's UI),
 `RATINGS_LIKES`, `RATINGS_DISLIKES`, `COMMENTS`, `SHARINGS`, `SUBSCRIBERS_GAINED`,
 `SUBSCRIBERS_LOST`, `SUBSCRIBERS_NET_CHANGE`, `AVERAGE_WATCH_TIME` (ms),
@@ -257,11 +257,35 @@ Rejected (HTTP 400): `RPM`, `ESTIMATED_REVENUE`, `AD_IMPRESSIONS`, `MONETIZED_PL
 `PLAYBACK_BASED_CPM`, `UNIQUE_VIEWERS*`, card / end-screen clicks, `DEVICE_TYPE`, `AGE_GROUP`,
 `GENDER`, `SUBSCRIBED_STATUS`.
 
-NOT recorded live: which value holder the new metrics come back in, and which holder carries
-the `PLAYBACK_LOCATION_TYPE` values. The collector reads the column's ONE holder carrying a
-`values[]` array, whatever it is called, and fails `MISSING_COLUMN` on none or several (CPM
-alone may have none: every row's CPM is then null). Also not verified live: these metrics
-combined in ONE query with the existing ones; a rejection fails the channel's cycle with HTTP 400.
+### Value holders — verified live on Fireside (brand channel), 2026-10-21
+`counts`: ENGAGED_VIEWS, EXTERNAL_VIEWS, VIDEO_THUMBNAIL_IMPRESSIONS, RATINGS_LIKES, COMMENTS,
+SHARINGS, SUBSCRIBERS_GAINED, SUBSCRIBERS_LOST, SUBSCRIBERS_NET_CHANGE, NEW_VIEWERS,
+RETURNING_VIEWERS. `earnings` (USD x1000; per-day CPM 12219 = $12.22, earnings 384195 = $384.20):
+TOTAL_ESTIMATED_EARNINGS, CPM. `milliseconds`: EXTERNAL_WATCH_TIME. `percentages`:
+VIDEO_THUMBNAIL_IMPRESSIONS_VTR, AVERAGE_WATCH_PERCENTAGE. Dimensions: DAY → `dateIds`,
+TRAFFIC_SOURCE_TYPE and PLAYBACK_LOCATION_TYPE → `enumValues`, VIDEO → `strings`. The collector
+reads each by its name and fails `MISSING_COLUMN` on anything else.
+
+All five query shapes (per-video 13 metrics; per-day 15 metrics over 399 days; DAY x
+TRAFFIC_SOURCE_TYPE; DAY x PLAYBACK_LOCATION_TYPE; the 7-day first-week VIDEO query) returned
+200 as written, on Fireside, 2026-10-21.
+
+### `undefinedValueIndices` — rows with NO value
+In the new-format response a metric column can carry, beside its value holder,
+`undefinedValueIndices: number[]` (row indices where Studio has no value) and
+`columnAnomalies: {ids: [...]}`. The value array stays full length and holds **0** at each
+undefined index. Measured on a 3,057-row per-video table: CPM 798 undefined rows,
+TOTAL_ESTIMATED_EARNINGS 503, VIDEO_THUMBNAIL_IMPRESSIONS_VTR 9, ENGAGED_VIEWS / EXTERNAL_VIEWS 1
+(a video with 0 views). Rule, in every reader (per-video, per-day, per-source, per-location,
+first weeks): a value at an undefined index is **null** (not captured), never the 0 in the
+array; for a required metric (views, engaged views, watch time) that null fails `MISSING_VALUE`.
+An index that is not an integer within the rows fails `MISSING_COLUMN`. `columnAnomalies` is
+informational and ignored. Over 399 per-day rows and the first-week tables every column's list
+was empty, so this matters mostly for the per-video table.
+
+### PLAYBACK_LOCATION_TYPE values seen over 400 days
+WATCH, BROWSE, SHORTS_FEED, EMBEDDED, IMMERSIVE_LIVE_FEED, CHANNEL. IMMERSIVE_LIVE_FEED (and any
+future value) folds into `byLocation.other` and is listed in `otherLocations`.
 
 ### What 0.2.11 collects
 - **Per-video lifetime query** gains ENGAGED_VIEWS (required, like views),
