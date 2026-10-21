@@ -8,6 +8,8 @@
  *
  * null means "not captured" throughout: a window sum that includes a null is null, never a
  * sum of the values that happened to be there, because a partial sum reads as a real drop.
+ * A schemaVersion 1 day (extension 0.2.10) has no engaged views or earnings: it reads as null
+ * for those, never as zero.
  */
 
 export interface DaySourceLike {
@@ -16,7 +18,7 @@ export interface DaySourceLike {
   views: number;
 }
 
-export interface ChannelDayLike {
+interface ChannelDayLikeFields {
   day: string;
   impressions: number | null;
   impressionsCtr: number | null;
@@ -26,12 +28,48 @@ export interface ChannelDayLike {
   bySource: { browse: DaySourceLike; suggested: DaySourceLike; search: DaySourceLike };
 }
 
+export interface ChannelDayLikeV1 extends ChannelDayLikeFields {
+  schemaVersion: 1;
+}
+
+export interface ChannelDayLikeV2 extends ChannelDayLikeFields {
+  schemaVersion: 2;
+  engagedViews: number;
+  /** USD. */
+  estimatedEarnings: number | null;
+  byLocation: { browse: { views: number; engagedViews: number } };
+}
+
+export type ChannelDayLike = ChannelDayLikeV1 | ChannelDayLikeV2;
+
+/** A day's engaged views; null on a v1 day, which never measured them. */
+export function engagedViewsOf(d: ChannelDayLike): number | null {
+  return d.schemaVersion === 2 ? d.engagedViews : null;
+}
+
+/** A day's estimated earnings (USD); null on a v1 day or a day Studio reported none for. */
+export function earningsOf(d: ChannelDayLike): number | null {
+  return d.schemaVersion === 2 ? d.estimatedEarnings : null;
+}
+
+/** Earnings per 1,000 engaged views (USD); null when either is unknown or there were none. */
+export function revenuePerThousandEngaged(earnings: number | null, engagedViews: number | null): number | null {
+  if (earnings === null || engagedViews === null || engagedViews === 0) return null;
+  return (earnings / engagedViews) * 1000;
+}
+
 export interface WindowTotals {
   browseImpressions: number | null;
   browseViews: number;
   /** Impression-weighted CTR over the window, percent. */
   ctr: number | null;
   views: number;
+  /** null when any day of the window has none (a v1 day). */
+  engagedViews: number | null;
+  /** USD; null when any day of the window has none. */
+  earnings: number | null;
+  /** USD per 1,000 engaged views. */
+  revenuePerThousandEngaged: number | null;
 }
 
 export interface WindowChange {
@@ -40,6 +78,9 @@ export interface WindowChange {
   /** CTR change is RELATIVE (percent of the prior CTR), like the others — not points. */
   ctr: number | null;
   views: number | null;
+  engagedViews: number | null;
+  earnings: number | null;
+  revenuePerThousandEngaged: number | null;
 }
 
 export type SevenDayComparison =
@@ -54,9 +95,13 @@ export interface DayTableRow {
   impressions: number | null;
   ctr: number | null;
   views: number;
+  /** null on a v1 day. */
+  engagedViews: number | null;
   browseViews: number;
   /** Browse views as a percent of all views; null when the day had no views. */
   browseShare: number | null;
+  /** USD; null on a v1 day or when Studio reported none. */
+  earnings: number | null;
   suggestedViews: number;
   searchViews: number;
   newViewers: number | null;
@@ -103,7 +148,12 @@ function totalsOf(rows: ChannelDayLike[]): WindowTotals {
     }
     ctr = impressions > 0 ? (clicks / impressions) * 100 : null;
   }
-  return { browseImpressions, browseViews, ctr, views };
+  const engagedViews = sumOrNull(rows.map(engagedViewsOf));
+  const earnings = sumOrNull(rows.map(earningsOf));
+  return {
+    browseImpressions, browseViews, ctr, views, engagedViews, earnings,
+    revenuePerThousandEngaged: revenuePerThousandEngaged(earnings, engagedViews),
+  };
 }
 
 /** Relative change in percent; null when either side is unknown or the prior is 0. */
@@ -140,6 +190,9 @@ export function compareSevenDays(days: ChannelDayLike[], today: string): SevenDa
       browseViews: pctChange(last.browseViews, prior.browseViews),
       ctr: pctChange(last.ctr, prior.ctr),
       views: pctChange(last.views, prior.views),
+      engagedViews: pctChange(last.engagedViews, prior.engagedViews),
+      earnings: pctChange(last.earnings, prior.earnings),
+      revenuePerThousandEngaged: pctChange(last.revenuePerThousandEngaged, prior.revenuePerThousandEngaged),
     },
     lastFrom: lastDays[6],
     lastTo: lastDays[0],
@@ -159,11 +212,56 @@ export function dayTableRows(days: ChannelDayLike[], today: string, limit: numbe
       impressions: d.impressions,
       ctr: d.impressionsCtr,
       views: d.views,
+      engagedViews: engagedViewsOf(d),
       browseViews: d.bySource.browse.views,
       browseShare: d.views > 0 ? (d.bySource.browse.views / d.views) * 100 : null,
+      earnings: earningsOf(d),
       suggestedViews: d.bySource.suggested.views,
       searchViews: d.bySource.search.views,
       newViewers: d.newViewers,
       subsNet: d.subsNetChange,
     }));
+}
+
+export interface WeekRow {
+  /** First and last day of the week, 'YYYY-MM-DD'. */
+  from: string;
+  to: string;
+  /** How many of the week's 7 days are stored; every total below is null unless all 7 are. */
+  daysStored: number;
+  views: number | null;
+  engagedViews: number | null;
+  browseViews: number | null;
+  /** USD. */
+  earnings: number | null;
+  revenuePerThousandEngaged: number | null;
+}
+
+/**
+ * The last `weeks` full 7-day weeks, newest first, each ending the day before the next one
+ * starts; the newest ends yesterday (today is partial). A week missing any stored day has no
+ * totals — it says how many days it has instead — so a gap never reads as a quiet week.
+ */
+export function weeklyRows(days: ChannelDayLike[], today: string, weeks: number): WeekRow[] {
+  const byDay = new Map(days.map((d) => [d.day, d]));
+  const out: WeekRow[] = [];
+  for (let w = 0; w < weeks; w++) {
+    const dayKeys: string[] = [];
+    for (let i = 1; i <= 7; i++) dayKeys.push(shiftDay(today, w * 7 + i));
+    const rows = dayKeys.map((k) => byDay.get(k)).filter((d): d is ChannelDayLike => d !== undefined);
+    const complete = rows.length === 7;
+    const engagedViews = complete ? sumOrNull(rows.map(engagedViewsOf)) : null;
+    const earnings = complete ? sumOrNull(rows.map(earningsOf)) : null;
+    out.push({
+      from: dayKeys[6],
+      to: dayKeys[0],
+      daysStored: rows.length,
+      views: complete ? rows.reduce((s, r) => s + r.views, 0) : null,
+      engagedViews,
+      browseViews: complete ? rows.reduce((s, r) => s + r.bySource.browse.views, 0) : null,
+      earnings,
+      revenuePerThousandEngaged: revenuePerThousandEngaged(earnings, engagedViews),
+    });
+  }
+  return out;
 }

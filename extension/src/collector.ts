@@ -33,7 +33,9 @@
 // missing for a row is null, never 0.
 //
 // ----------------------------------------------------------------------------
-// TODO(v1-metadata) — VideoRecords are DEFERRED, and here is exactly why + how:
+// TODO(v1-metadata) — RESOLVED: the catalogue (catalogue.ts) supplies VideoRecords, and since
+// 0.2.11 collectChannel sets each snapshot's videoAgeHours from it (withVideoAges). The
+// original note, kept for the history:
 // ----------------------------------------------------------------------------
 // The CORE analytics query returns only videoIds. A VALID VideoRecord needs a
 // real publishedAt: ContentStudio's ingest (validateVideoRecord) REJECTS any
@@ -54,7 +56,7 @@
 // `videos`. Cadence tiering below then activates automatically — no other change.
 // ============================================================================
 
-import type { ChannelDay, Snapshot, VideoRecord } from './types';
+import type { ChannelDay, Snapshot, VideoFirstWeek, VideoRecord } from './types';
 import {
   fetchCatalogueInPage,
   fetchExperimentsInPage,
@@ -62,7 +64,7 @@ import {
   type AbTestRecord,
   type CatalogueVideo,
 } from './catalogue';
-import { getChannelVideoState, recordSnapshotTimes } from './collection-state';
+import { getChannelVideoState, getFirstWeekState, recordFirstWeeks, recordSnapshotTimes } from './collection-state';
 
 /**
  * The popup badge reads this to render the collector status line. Now that
@@ -89,6 +91,8 @@ export interface ChannelCollectionResult {
   abTests: AbTestRecord[];
   /** The channel's per-day series over the rolling window (see collectChannelDaysInPage). */
   days: ChannelDay[];
+  /** First-week totals for uploads whose first week closed since the last cycle (see collectFirstWeeksInPage). */
+  firstWeeks: VideoFirstWeek[];
 }
 
 // ============================================================================
@@ -164,8 +168,20 @@ const STUDIO_TAB_KEY = 'studioCollectorTabId';
 const CONTEXT_TIMEOUT_MS = 30_000;
 // The per-day series is re-fetched whole every cycle and upserted by day on the
 // ContentStudio side, so late Studio revisions (viewer cohorts arrive ~2 days late)
-// overwrite the early numbers. 35 days covers the 28-day card plus a margin.
-const CHANNEL_DAYS_WINDOW = 35;
+// overwrite the early numbers. 400 days (since 0.2.11; 35 before) is a year plus five
+// weeks, so a week can be read against the same week a year earlier. It is still three
+// requests per channel; the largest is DAY x TRAFFIC_SOURCE_TYPE at <= 400 x 13 rows,
+// under the 10,000-row page. A queued fetch is ~0.7 MB per channel and the outbox keeps
+// one per channel (see enqueueChannelDays).
+const CHANNEL_DAYS_WINDOW = 400;
+// First-week totals (collectFirstWeeksInPage): uploads published within this many days are
+// eligible, which covers the distiller's 180-day insights window with a margin...
+const FIRST_WEEK_LOOKBACK_DAYS = 200;
+// ...once their seven days are over and Studio has had this many more days to settle them.
+const FIRST_WEEK_SETTLE_DAYS = 3;
+// One request per distinct publish day; the first run backfills the whole lookback, so it is
+// spread over cycles rather than sent as one burst.
+const FIRST_WEEK_MAX_REQUESTS_PER_CYCLE = 30;
 const CONTEXT_POLL_MS = 1_000;
 
 const HOUR_MS = 3_600_000;
@@ -221,12 +237,37 @@ export async function collectChannel(
   if (!daysResult.ok) throw mapInjectedError(daysResult, channelId);
   const days: ChannelDay[] = daysResult.days;
 
+  // Every snapshot takes its real age from the catalogue. Until 0.2.11 every extension
+  // snapshot kept the injected -1 "unknown" sentinel even after the catalogue landed, so the
+  // cadence below never tiered (every video every cycle, ~6,300 snapshots a cycle across the
+  // three channels) and ContentStudio's first-week pick (age 168 h +/- 48 h) never matched an
+  // extension snapshot. A video the catalogue gives no publish date (never published) keeps -1.
+  const snapshots = withVideoAges(injected.snapshots, catalogue, channelId);
+
+  // First-week totals for long/live uploads whose first seven days closed and settled since
+  // they were last sent. A video's lifetime counters say nothing about its first week once it
+  // is older, so this is what lets every upload of the lookback be compared on the same
+  // window — including the ones published after 2026-08-27, whose snapshots carry no engaged
+  // views. Capped per cycle; the rest wait for the next one.
+  const firstWeekState = await getFirstWeekState(channelId);
+  const windows = planFirstWeeks(catalogue, firstWeekState, new Date(), {
+    lookbackDays: FIRST_WEEK_LOOKBACK_DAYS,
+    settleDays: FIRST_WEEK_SETTLE_DAYS,
+    maxWindows: FIRST_WEEK_MAX_REQUESTS_PER_CYCLE,
+  });
+  let firstWeeks: VideoFirstWeek[] = [];
+  if (windows.length > 0) {
+    const firstWeekResult = await runInjectedFirstWeeks(tabId, channelId, windows);
+    if (!firstWeekResult.ok) throw mapInjectedError(firstWeekResult, channelId);
+    firstWeeks = toFirstWeeks(windows, firstWeekResult.windows, channelId, new Date().toISOString());
+  }
+
   // Cadence tiering (SW-side, where the last-capture state lives): keep only the
   // snapshots whose video is due this cycle. First-ever run per channel = every
   // video is due (backfill). See tierIntervalMs/isDue.
   const nowMs = Date.now();
   const prior = await getChannelVideoState(channelId);
-  const dueSnapshots = injected.snapshots.filter((s) => isDue(s.videoAgeHours, prior[s.videoId], nowMs));
+  const dueSnapshots = snapshots.filter((s) => isDue(s.videoAgeHours, prior[s.videoId], nowMs));
 
   // Emit a VideoRecord for EVERY catalogue video, every cycle — not only unseen ones.
   // A title changes after first sight: YouTube applies the winner of a title test, or
@@ -241,8 +282,138 @@ export async function collectChannel(
 
   // Mark the emitted snapshots' capture time so cadence can skip them next cycle.
   await recordSnapshotTimes(channelId, dueSnapshots.map((s) => ({ videoId: s.videoId, capturedAt: s.capturedAt })));
+  // Recorded at collection time, like the snapshot times: the records go into the durable
+  // outbox right after this returns, and a refused one stays queued there, not lost.
+  await recordFirstWeeks(channelId, firstWeeks.map((f) => f.videoId), FIRST_WEEK_LOOKBACK_DAYS + 30);
 
-  return { videos, snapshots: dueSnapshots, abTests, days };
+  return { videos, snapshots: dueSnapshots, abTests, days, firstWeeks };
+}
+
+/** Set each snapshot's videoAgeHours from the catalogue's publish date (see collectChannel). */
+export function withVideoAges(snapshots: Snapshot[], catalogue: CatalogueVideo[], channelId: string): Snapshot[] {
+  const publishedById = new Map<string, string>();
+  for (const v of catalogue) if (v.publishedAt) publishedById.set(v.videoId, v.publishedAt);
+  return snapshots.map((s) => {
+    const publishedAt = publishedById.get(s.videoId);
+    if (publishedAt === undefined) return s;
+    const ageMs = Date.parse(s.capturedAt) - Date.parse(publishedAt);
+    if (!Number.isFinite(ageMs)) {
+      throw new StudioShapeError(channelId, 'BAD_PUBLISHED_AT',
+        `Video ${s.videoId}: cannot age a snapshot captured ${s.capturedAt} against publishedAt "${publishedAt}".`);
+    }
+    return { ...s, videoAgeHours: ageMs / HOUR_MS };
+  });
+}
+
+/** One publish day's first-week request: the videos published that (local) day. */
+export interface FirstWeekWindow {
+  firstDay: string;       // 'YYYY-MM-DD', the local publish day
+  lastDay: string;        // firstDay + 6
+  startDateId: number;    // firstDay as a Studio date id (inclusive)
+  endDateId: number;      // firstDay + 7 (exclusive)
+  videos: Array<{ videoId: string; publishedAt: string }>;
+}
+
+/**
+ * Which first weeks to fetch this cycle: long/live uploads (Shorts count views differently and
+ * the distiller leaves them out) published on a local day within `lookbackDays` of today,
+ * whose seven days ended at least `settleDays` ago, not already sent. One window per publish
+ * day, newest first, at most `maxWindows`. The local calendar is the one the per-day series
+ * uses (the Studio page's, which is this machine's).
+ */
+export function planFirstWeeks(
+  catalogue: CatalogueVideo[],
+  sent: Record<string, string>,
+  now: Date,
+  limits: { lookbackDays: number; settleDays: number; maxWindows: number },
+): FirstWeekWindow[] {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayMs = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const addDays = (d: Date, n: number): Date => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  const key = (d: Date): string =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const dateId = (d: Date): number => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  const earliest = addDays(today, -limits.lookbackDays).getTime();
+  // The newest publish day whose window [D, D+7) ended settleDays or more before today.
+  const latest = addDays(today, -(7 + limits.settleDays)).getTime();
+
+  const byDay = new Map<string, FirstWeekWindow>();
+  for (const v of catalogue) {
+    if (!v.publishedAt || v.isShort || sent[v.videoId] !== undefined) continue;
+    const published = new Date(v.publishedAt);
+    if (Number.isNaN(published.getTime())) {
+      throw new Error(`Catalogue video ${v.videoId} has publishedAt "${v.publishedAt}", not a date.`);
+    }
+    const day = new Date(dayMs(published));
+    if (day.getTime() < earliest || day.getTime() > latest) continue;
+    const k = key(day);
+    let window = byDay.get(k);
+    if (!window) {
+      window = {
+        firstDay: k,
+        lastDay: key(addDays(day, 6)),
+        startDateId: dateId(day),
+        endDateId: dateId(addDays(day, 7)),
+        videos: [],
+      };
+      byDay.set(k, window);
+    }
+    window.videos.push({ videoId: v.videoId, publishedAt: v.publishedAt });
+  }
+  return Array.from(byDay.values())
+    .sort((a, b) => b.firstDay.localeCompare(a.firstDay))
+    .slice(0, limits.maxWindows);
+}
+
+/** What collectFirstWeeksInPage returns per window: the requested videos' rows, by id. */
+export interface FirstWeekRows {
+  startDateId: number;
+  rows: Record<string, {
+    views: number; engagedViews: number; watchHours: number;
+    impressions: number | null; impressionsCtr: number | null; avgPctViewed: number | null;
+  }>;
+}
+
+/**
+ * Join the planned windows with Studio's answer. A requested video with no row in its week had
+ * no views that week (the query returns every video with activity in the range), so it is 0
+ * views / 0 engaged / 0 hours with impressions, CTR and avg % viewed null — not reported.
+ * A window Studio's answer does not carry is a shape failure, never an empty week.
+ */
+export function toFirstWeeks(
+  windows: FirstWeekWindow[],
+  answered: FirstWeekRows[],
+  channelId: string,
+  capturedAt: string,
+): VideoFirstWeek[] {
+  const byStart = new Map(answered.map((a) => [a.startDateId, a]));
+  const out: VideoFirstWeek[] = [];
+  for (const window of windows) {
+    const answer = byStart.get(window.startDateId);
+    if (!answer) {
+      throw new StudioShapeError(channelId, 'MISSING_VALUE', `First-week answer has no window starting ${window.firstDay}.`);
+    }
+    for (const v of window.videos) {
+      const row = answer.rows[v.videoId];
+      out.push({
+        schemaVersion: 1,
+        videoId: v.videoId,
+        channelId,
+        publishedAt: v.publishedAt,
+        firstDay: window.firstDay,
+        lastDay: window.lastDay,
+        capturedAt,
+        source: 'studio-extension',
+        views: row ? row.views : 0,
+        engagedViews: row ? row.engagedViews : 0,
+        watchHours: row ? row.watchHours : 0,
+        impressions: row ? row.impressions : null,
+        impressionsCtr: row ? row.impressionsCtr : null,
+        avgPctViewed: row ? row.avgPctViewed : null,
+      });
+    }
+  }
+  return out;
 }
 
 /** Injected catalogue fetch — MAIN world, same as the analytics collector. */
@@ -719,6 +890,34 @@ async function runInjectedCollection(tabId: number, channelId: string): Promise<
   return first.result;
 }
 
+type InjectedFirstWeeksResult = { ok: true; windows: FirstWeekRows[] } | InjectedErr;
+
+/** Injected first-week fetch — MAIN world; same failure codes as the analytics collector. */
+async function runInjectedFirstWeeks(
+  tabId: number,
+  channelId: string,
+  windows: FirstWeekWindow[],
+): Promise<InjectedFirstWeeksResult> {
+  let results: chrome.scripting.InjectionResult<InjectedFirstWeeksResult>[];
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: collectFirstWeeksInPage,
+      args: [channelId, {
+        windows: windows.map((w) => ({ startDateId: w.startDateId, endDateId: w.endDateId, videoIds: w.videos.map((v) => v.videoId) })),
+      }],
+    });
+  } catch (err) {
+    throw new StudioTabError(channelId, 'INJECTION_FAILED', `executeScript (first weeks) failed: ${msg(err)}`);
+  }
+  const first = results[0];
+  if (!first || first.result === undefined || first.result === null) {
+    throw new StudioTabError(channelId, 'NO_RESULT', 'Injected first-week collection returned no result.');
+  }
+  return first.result;
+}
+
 type InjectedDaysResult = { ok: true; days: ChannelDay[] } | InjectedErr;
 
 /** Injected per-day fetch — MAIN world; same failure codes as the analytics collector. */
@@ -926,6 +1125,15 @@ export async function collectStudioAnalyticsInPage(
               { type: 'EXTERNAL_VIEWS' },
               { type: 'EXTERNAL_WATCH_TIME' },
               { type: 'AVERAGE_WATCH_PERCENTAGE' },
+              // Added in 0.2.11 (names verified live 2026-10-21 on DAY and VIDEO).
+              { type: 'ENGAGED_VIEWS' },
+              { type: 'TOTAL_ESTIMATED_EARNINGS' },
+              { type: 'CPM' },
+              { type: 'RATINGS_LIKES' },
+              { type: 'COMMENTS' },
+              { type: 'SHARINGS' },
+              { type: 'SUBSCRIBERS_GAINED' },
+              { type: 'SUBSCRIBERS_LOST' },
             ],
             restricts: [{ dimension: { type: 'USER' }, inValues: [channelId] }],
             orders: [{ metric: { type: 'EXTERNAL_VIEWS' }, direction: 'ANALYTICS_ORDER_DIRECTION_DESC' }],
@@ -945,7 +1153,19 @@ export async function collectStudioAnalyticsInPage(
       return null;
     };
 
-    const rows: Array<{ videoId: string; impressions: number | null; impressionsCtr: number | null; views: number; watchHours: number; avgPctViewed: number | null }> = [];
+    // Studio sends money as USD x1000 in the `earnings` holder (TOTAL_ESTIMATED_EARNINGS
+    // 1000110 = $1,000.11, CPM 16501 = $16.50; checked against Studio's own UI 2026-10-21).
+    // A row Studio lists in undefinedValueIndices (CPM where no ads ran) arrives here as null.
+    const toUsd = (v: any): number | null => {
+      const n = toNum(v);
+      return n === null ? null : n / 1000;
+    };
+
+    const rows: Array<{
+      videoId: string; impressions: number | null; impressionsCtr: number | null; views: number; watchHours: number; avgPctViewed: number | null;
+      engagedViews: number; estimatedEarnings: number | null; cpm: number | null;
+      likes: number | null; comments: number | null; shares: number | null; subsGained: number | null; subsLost: number | null;
+    }> = [];
 
     for (let page = 0; page < MAX_PAGES; page++) {
       const pageOffset = page * PAGE;
@@ -988,32 +1208,52 @@ export async function collectStudioAnalyticsInPage(
       const rowCount = ids.length;
       const metricCols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
 
-      // Match a required metric column by .metric.type (never by index) and
-      // return its parallel numeric array. Returns { __err } on any shape break.
-      const seriesOf = (metricType: string, kinds: string[]): any => {
+      // Match a metric column by .metric.type (never by index), read its NAMED value holder,
+      // and return the parallel array with null at every undefined index. Returns { __err }
+      // on any shape break.
+      // In the new-format response a metric column may carry, beside its value holder,
+      // `undefinedValueIndices` (rows where Studio has NO value; the value array still holds 0
+      // there). Measured live 2026-10-21 on a 3,057-row per-video table: CPM 798 such rows,
+      // TOTAL_ESTIMATED_EARNINGS 503, VTR 9, views/engaged views 1. Those rows are null — not
+      // captured, never a real-looking 0. A required metric's null still fails as MISSING_VALUE.
+      // `columnAnomalies` is informational and ignored.
+      const seriesOf = (metricType: string, holderName: string): any => {
         const column = metricCols.find((c) => c && c.metric && c.metric.type === metricType);
         if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + metricType + ' is absent from the response.') };
-        for (const kind of kinds) {
-          const holder = column[kind];
-          const arr = holder && holder.values;
-          if (Array.isArray(arr)) {
-            if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' length ' + arr.length + ' != row count ' + rowCount + '.') };
-            return arr;
-          }
+        const arr = column[holderName] && column[holderName].values;
+        if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has no ' + holderName + '.values array (keys: ' + Object.keys(column).join(', ') + ').') };
+        if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' length ' + arr.length + ' != row count ' + rowCount + '.') };
+        const undef = column.undefinedValueIndices;
+        if (undef === undefined) return arr;
+        if (!Array.isArray(undef) || undef.some((i: any) => !Number.isInteger(i) || i < 0 || i >= rowCount)) {
+          return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has an unreadable undefinedValueIndices (' + JSON.stringify(undef).slice(0, 80) + ').') };
         }
-        return { __err: fail('MISSING_COLUMN', 'Metric column ' + metricType + ' has none of the expected value arrays (' + kinds.join('/') + ').') };
+        const out = arr.slice();
+        for (const i of undef) out[i] = null;
+        return out;
       };
 
-      const impArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS', ['counts']);
+      const impArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS', 'counts');
       if (impArr && impArr.__err) return impArr.__err;
-      const vtrArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', ['percentages']);
+      const vtrArr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages');
       if (vtrArr && vtrArr.__err) return vtrArr.__err;
-      const viewsArr = seriesOf('EXTERNAL_VIEWS', ['counts']);
+      const viewsArr = seriesOf('EXTERNAL_VIEWS', 'counts');
       if (viewsArr && viewsArr.__err) return viewsArr.__err;
-      const watchArr = seriesOf('EXTERNAL_WATCH_TIME', ['milliseconds']);
+      const watchArr = seriesOf('EXTERNAL_WATCH_TIME', 'milliseconds');
       if (watchArr && watchArr.__err) return watchArr.__err;
-      const avgArr = seriesOf('AVERAGE_WATCH_PERCENTAGE', ['percentages']);
+      const avgArr = seriesOf('AVERAGE_WATCH_PERCENTAGE', 'percentages');
       if (avgArr && avgArr.__err) return avgArr.__err;
+
+      // The 0.2.11 metrics; holders verified live 2026-10-21 (Fireside): counts, and
+      // `earnings` for the two money metrics.
+      const engagedArr = seriesOf('ENGAGED_VIEWS', 'counts'); if (engagedArr.__err) return engagedArr.__err;
+      const earnArr = seriesOf('TOTAL_ESTIMATED_EARNINGS', 'earnings'); if (earnArr.__err) return earnArr.__err;
+      const cpmArr = seriesOf('CPM', 'earnings'); if (cpmArr.__err) return cpmArr.__err;
+      const likesArr = seriesOf('RATINGS_LIKES', 'counts'); if (likesArr.__err) return likesArr.__err;
+      const commentsArr = seriesOf('COMMENTS', 'counts'); if (commentsArr.__err) return commentsArr.__err;
+      const sharesArr = seriesOf('SHARINGS', 'counts'); if (sharesArr.__err) return sharesArr.__err;
+      const gainedArr = seriesOf('SUBSCRIBERS_GAINED', 'counts'); if (gainedArr.__err) return gainedArr.__err;
+      const lostArr = seriesOf('SUBSCRIBERS_LOST', 'counts'); if (lostArr.__err) return lostArr.__err;
 
       for (let i = 0; i < rowCount; i++) {
         const videoId = ids[i];
@@ -1022,8 +1262,11 @@ export async function collectStudioAnalyticsInPage(
         // EXTERNAL_WATCH_TIME comes back in MILLISECONDS (holder `milliseconds`) —
         // verified live against Studio 2026-07-22; convert to hours for the Snapshot.
         const watchMs = toNum(watchArr[i]);
-        if (views === null || watchMs === null) {
-          return fail('MISSING_VALUE', 'Row ' + i + ' (video ' + videoId + ') is missing a required numeric views/watch-time value.');
+        // Engaged views are what ContentStudio compares videos on (raw views include Home-feed
+        // autoplay previews from 2026-08-27), so they are required like views.
+        const engagedViews = toNum(engagedArr[i]);
+        if (views === null || watchMs === null || engagedViews === null) {
+          return fail('MISSING_VALUE', 'Row ' + i + ' (video ' + videoId + ') is missing a required numeric views/engaged-views/watch-time value.');
         }
         const watchHours = watchMs / 3600000;
         rows.push({
@@ -1033,6 +1276,14 @@ export async function collectStudioAnalyticsInPage(
           views: views,
           watchHours: watchHours,
           avgPctViewed: toNum(avgArr[i]),
+          engagedViews: engagedViews,
+          estimatedEarnings: toUsd(earnArr[i]),
+          cpm: toUsd(cpmArr[i]),
+          likes: toNum(likesArr[i]),
+          comments: toNum(commentsArr[i]),
+          shares: toNum(sharesArr[i]),
+          subsGained: toNum(gainedArr[i]),
+          subsLost: toNum(lostArr[i]),
         });
       }
 
@@ -1046,14 +1297,13 @@ export async function collectStudioAnalyticsInPage(
 
     const capturedAt = new Date().toISOString();
     const snapshots = rows.map((r) => ({
-      schemaVersion: 1,
+      schemaVersion: 2,
       videoId: r.videoId,
       channelId: channelId,
       capturedAt: capturedAt,
       source: 'studio-extension',
-      // -1 = publishedAt unknown in v1 (VideoRecord metadata deferred). The store
-      // accepts any finite number and its firstWeek cohort (168h +/-48h) excludes
-      // -1, so this sentinel never pollutes age-matched math. See TODO(v1-metadata).
+      // -1 = age unknown HERE: this page function has no publish dates. collectChannel
+      // replaces it from the catalogue (withVideoAges) for every video that has one.
       videoAgeHours: -1,
       impressions: r.impressions,
       impressionsCtr: r.impressionsCtr,
@@ -1065,10 +1315,17 @@ export async function collectStudioAnalyticsInPage(
       trafficShare: null,   // TODO(v2): dimension TRAFFIC_SOURCE_TYPE -> trafficShare + ctrBySource
       ctrBySource: null,    // TODO(v2): VTR of the browse/search/suggested source rows
       topSearchTerms: null, // TODO(v2): dimension TRAFFIC_SOURCE_DETAIL + restrict TRAFFIC_SOURCE_TYPE==YT_SEARCH
-      subsGained: null,     // owned by the analytics-API collector in v1
-      likes: null,
-      comments: null,
-      shares: null,
+      // Filled since 0.2.11. They were null with the note "owned by the analytics-API
+      // collector", but that collector (electron api-collector.service) last ran 2026-07-23;
+      // nothing has filled them since.
+      subsGained: r.subsGained,
+      likes: r.likes,
+      comments: r.comments,
+      shares: r.shares,
+      engagedViews: r.engagedViews,
+      estimatedEarnings: r.estimatedEarnings,
+      cpm: r.cpm,
+      subsLost: r.subsLost,
     }));
 
     // VideoRecords are DEFERRED in v1 (see the module header TODO(v1-metadata)).
@@ -1105,7 +1362,9 @@ export async function collectChannelDaysInPage(
 ): Promise<any> {
   const ORIGIN = 'https://studio.youtube.com';
   const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/yta_web/join?alt=json';
-  const PAGE = 5000;
+  // The endpoint's page cap (10,000 accepted, 15,000 rejected; see PAGE_SIZE). A 400-day
+  // window by ~13 traffic sources is ~5,200 rows, over the 5,000 this used to ask for.
+  const PAGE = 10000;
 
   const fail = (code: string, message: string, extra?: any): any => Object.assign({ ok: false, code, message }, extra || {});
 
@@ -1228,6 +1487,8 @@ export async function collectChannelDaysInPage(
       return arr;
     };
     // A metric column by .metric.type and its parallel array, checked against the row count.
+    // Columns may list `undefinedValueIndices` beside the holder: those rows are null (see
+    // collectStudioAnalyticsInPage). A required metric's null still fails as MISSING_VALUE.
     const metricOf = (label: string, table: any, type: string, holder: string, rowCount: number): any => {
       const cols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
       const column = cols.find((c) => c && c.metric && c.metric.type === type);
@@ -1235,8 +1496,23 @@ export async function collectChannelDaysInPage(
       const arr = column[holder] && column[holder].values;
       if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has no ' + holder + '.values array.') };
       if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') length ' + arr.length + ' != row count ' + rowCount + '.') };
-      return arr;
+      const undef = column.undefinedValueIndices;
+      if (undef === undefined) return arr;
+      if (!Array.isArray(undef) || undef.some((n: any) => !Number.isInteger(n) || n < 0 || n >= rowCount)) {
+        return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has an unreadable undefinedValueIndices.') };
+      }
+      const out = arr.slice();
+      for (const n of undef) out[n] = null;
+      return out;
     };
+    // Money is USD x1000 in the `earnings` holder (TOTAL_ESTIMATED_EARNINGS 1000110 =
+    // $1,000.11, CPM 16501 = $16.50, checked against Studio's UI 2026-10-21). A row in the
+    // column's undefinedValueIndices (CPM where no ads ran) is null, never $0.
+    const toUsd = (v: any): number | null => {
+      const n = toNum(v);
+      return n === null ? null : n / 1000;
+    };
+
     // DAY comes back as integer date ids (20261019) in the `dateIds` holder.
     const dayKey = (id: any): string | null => {
       const n = toNum(id);
@@ -1249,6 +1525,8 @@ export async function collectChannelDaysInPage(
     const q1 = await runQuery('per-day', [{ type: 'DAY' }], [
       'VIDEO_THUMBNAIL_IMPRESSIONS', 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'EXTERNAL_VIEWS', 'EXTERNAL_WATCH_TIME',
       'NEW_VIEWERS', 'RETURNING_VIEWERS', 'SUBSCRIBERS_NET_CHANGE',
+      'ENGAGED_VIEWS', 'TOTAL_ESTIMATED_EARNINGS', 'CPM', 'RATINGS_LIKES', 'COMMENTS', 'SHARINGS',
+      'SUBSCRIBERS_GAINED', 'SUBSCRIBERS_LOST',
     ]);
     if (q1.__fail) return q1.__fail;
     const t1 = q1.table;
@@ -1263,9 +1541,18 @@ export async function collectChannelDaysInPage(
     const newV1 = metricOf('per-day', t1, 'NEW_VIEWERS', 'counts', n1); if (newV1.__err) return newV1.__err;
     const retV1 = metricOf('per-day', t1, 'RETURNING_VIEWERS', 'counts', n1); if (retV1.__err) return retV1.__err;
     const subs1 = metricOf('per-day', t1, 'SUBSCRIBERS_NET_CHANGE', 'counts', n1); if (subs1.__err) return subs1.__err;
+    const engaged1 = metricOf('per-day', t1, 'ENGAGED_VIEWS', 'counts', n1); if (engaged1.__err) return engaged1.__err;
+    const earn1 = metricOf('per-day', t1, 'TOTAL_ESTIMATED_EARNINGS', 'earnings', n1); if (earn1.__err) return earn1.__err;
+    const cpm1 = metricOf('per-day', t1, 'CPM', 'earnings', n1); if (cpm1.__err) return cpm1.__err;
+    const likes1 = metricOf('per-day', t1, 'RATINGS_LIKES', 'counts', n1); if (likes1.__err) return likes1.__err;
+    const comments1 = metricOf('per-day', t1, 'COMMENTS', 'counts', n1); if (comments1.__err) return comments1.__err;
+    const shares1 = metricOf('per-day', t1, 'SHARINGS', 'counts', n1); if (shares1.__err) return shares1.__err;
+    const gained1 = metricOf('per-day', t1, 'SUBSCRIBERS_GAINED', 'counts', n1); if (gained1.__err) return gained1.__err;
+    const lost1 = metricOf('per-day', t1, 'SUBSCRIBERS_LOST', 'counts', n1); if (lost1.__err) return lost1.__err;
 
     const capturedAt = new Date().toISOString();
     const emptySource = (): any => ({ impressions: null, impressionsCtr: null, views: 0 });
+    const emptyLocation = (): any => ({ views: 0, engagedViews: 0, watchHours: 0 });
     const byDay = new Map<string, any>();
     for (let i = 0; i < n1; i++) {
       const day = dayKey(days1[i]);
@@ -1273,7 +1560,8 @@ export async function collectChannelDaysInPage(
       if (byDay.has(day)) return fail('MISSING_VALUE', 'Per-day response carries day ' + day + ' twice.');
       const views = toNum(views1[i]);
       const watchMs = toNum(watch1[i]);
-      if (views === null || watchMs === null) return fail('MISSING_VALUE', 'Day ' + day + ' is missing a required numeric views/watch-time value.');
+      const engagedViews = toNum(engaged1[i]);
+      if (views === null || watchMs === null || engagedViews === null) return fail('MISSING_VALUE', 'Day ' + day + ' is missing a required numeric views/engaged-views/watch-time value.');
       let newViewers = toNum(newV1[i]);
       let returningViewers = toNum(retV1[i]);
       // Observed live 2026-10-21: for the most recent ~2 days Studio has not computed the
@@ -1285,7 +1573,7 @@ export async function collectChannelDaysInPage(
         returningViewers = null;
       }
       byDay.set(day, {
-        schemaVersion: 1,
+        schemaVersion: 2,
         channelId: channelId,
         day: day,
         capturedAt: capturedAt,
@@ -1304,6 +1592,19 @@ export async function collectChannelDaysInPage(
           shorts: emptySource(), endScreen: emptySource(), other: emptySource(),
         },
         otherSources: [],
+        engagedViews: engagedViews,
+        estimatedEarnings: toUsd(earn1[i]),
+        cpm: toUsd(cpm1[i]),
+        likes: toNum(likes1[i]),
+        comments: toNum(comments1[i]),
+        shares: toNum(shares1[i]),
+        subsGained: toNum(gained1[i]),
+        subsLost: toNum(lost1[i]),
+        byLocation: {
+          browse: emptyLocation(), watch: emptyLocation(), shortsFeed: emptyLocation(),
+          channel: emptyLocation(), embedded: emptyLocation(), other: emptyLocation(),
+        },
+        otherLocations: [],
       });
     }
 
@@ -1380,9 +1681,254 @@ export async function collectChannelDaysInPage(
         : null;
     }
 
+    // ======== Query 3: per day per playback location ========
+    // Where the view happened, as opposed to which surface sent the viewer. From 2026-08-27
+    // YouTube counts inline Home-feed autoplay previews as views: on the main channel BROWSE
+    // went from 181 views / 181 engaged on 08-26 to 5,276 views / 713 engaged on 08-27. This
+    // split is what shows that per day.
+    const q3 = await runQuery('per-day-per-location', [{ type: 'DAY' }, { type: 'PLAYBACK_LOCATION_TYPE' }], [
+      'EXTERNAL_VIEWS', 'ENGAGED_VIEWS', 'EXTERNAL_WATCH_TIME',
+    ]);
+    if (q3.__fail) return q3.__fail;
+    const t3 = q3.table;
+    const days3 = dimensionOf('per-day-per-location', t3, 'DAY', 'dateIds');
+    if (days3.__err) return days3.__err;
+    // Location names are in `enumValues`, like TRAFFIC_SOURCE_TYPE (verified live 2026-10-21).
+    const locations3 = dimensionOf('per-day-per-location', t3, 'PLAYBACK_LOCATION_TYPE', 'enumValues');
+    if (locations3.__err) return locations3.__err;
+    const n3 = days3.length;
+    if (locations3.length !== n3) return fail('MISSING_COLUMN', 'PLAYBACK_LOCATION_TYPE column length ' + locations3.length + ' != DAY column length ' + n3 + '.');
+    if (n3 >= PAGE) return fail('PAGE_CAP', 'Per-location query returned a full page of ' + PAGE + ' rows; offset paging is unsupported.');
+    const views3 = metricOf('per-day-per-location', t3, 'EXTERNAL_VIEWS', 'counts', n3); if (views3.__err) return views3.__err;
+    const engaged3 = metricOf('per-day-per-location', t3, 'ENGAGED_VIEWS', 'counts', n3); if (engaged3.__err) return engaged3.__err;
+    const watch3 = metricOf('per-day-per-location', t3, 'EXTERNAL_WATCH_TIME', 'milliseconds', n3); if (watch3.__err) return watch3.__err;
+
+    // Studio enum -> our key, as for traffic sources. Seen live over 400 days (2026-10-21):
+    // WATCH, BROWSE, SHORTS_FEED, EMBEDDED, IMMERSIVE_LIVE_FEED, CHANNEL. Anything else —
+    // IMMERSIVE_LIVE_FEED included, or a future enum — is summed into `other` and named in
+    // otherLocations.
+    const LOCATION_KEYS: Record<string, string> = {
+      BROWSE: 'browse',
+      WATCH: 'watch',
+      SHORTS_FEED: 'shortsFeed',
+      CHANNEL: 'channel',
+      EMBEDDED: 'embedded',
+    };
+    const seenLocation = new Set<string>();
+    const otherLocationNames = new Map<string, Set<string>>();
+    for (let i = 0; i < n3; i++) {
+      const day = dayKey(days3[i]);
+      if (day === null) return fail('MISSING_VALUE', 'Per-location row ' + i + ' has an unreadable DAY id (' + JSON.stringify(days3[i]) + ').');
+      const studioName = locations3[i];
+      if (typeof studioName !== 'string' || studioName.length === 0) return fail('MISSING_VALUE', 'Per-location row ' + i + ' (' + day + ') has no PLAYBACK_LOCATION_TYPE name.');
+      const row = byDay.get(day);
+      if (!row) return fail('MISSING_VALUE', 'Per-location response has day ' + day + ' (' + studioName + ') that the per-day response does not.');
+      const views = toNum(views3[i]);
+      const engagedViews = toNum(engaged3[i]);
+      const watchMs = toNum(watch3[i]);
+      if (views === null || engagedViews === null || watchMs === null) {
+        return fail('MISSING_VALUE', 'Day ' + day + ' location ' + studioName + ' is missing a numeric views/engaged-views/watch-time value.');
+      }
+      const key = LOCATION_KEYS[studioName] || 'other';
+      if (key !== 'other') {
+        if (seenLocation.has(day + '|' + key)) return fail('MISSING_VALUE', 'Per-location response carries ' + studioName + ' twice for day ' + day + '.');
+        seenLocation.add(day + '|' + key);
+      } else {
+        if (!otherLocationNames.has(day)) otherLocationNames.set(day, new Set<string>());
+        otherLocationNames.get(day)!.add(studioName);
+      }
+      const target = row.byLocation[key];
+      target.views += views;
+      target.engagedViews += engagedViews;
+      target.watchHours += watchMs / 3600000;
+    }
+    for (const [day, names] of otherLocationNames) {
+      byDay.get(day).otherLocations = Array.from(names).sort();
+    }
+
     const days = Array.from(byDay.values()).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
     return { ok: true, days: days };
   } catch (err: any) {
     return fail('INJECTION_EXCEPTION', 'Unexpected error in the injected channel-days collector: ' + (err && err.message ? err.message : String(err)));
+  }
+}
+
+/**
+ * Collect first-week totals: one VIDEO query per window, timeRange = the window's seven days
+ * [startDateId, endDateId), restricted to the channel only (the VIDEO dimension and the USER
+ * restrict are what the lifetime query already uses; no per-video restrict is needed), and
+ * the rows for the window's requested videos picked out by id. Returns
+ *   { ok: true, windows: [{ startDateId, rows: { [videoId]: {...} } }] }
+ *   { ok: false, code, message, status? }
+ * A requested video with no row is left out of `rows`; collectChannel reads that as no views
+ * that week. Self-contained like the other page functions. Standalone use:
+ *   await collectFirstWeeksInPage('UC…', { windows: [{ startDateId: 20261001, endDateId: 20261008, videoIds: ['…'] }] })
+ */
+export async function collectFirstWeeksInPage(
+  channelId: string,
+  config: { windows: Array<{ startDateId: number; endDateId: number; videoIds: string[] }> },
+): Promise<any> {
+  const ORIGIN = 'https://studio.youtube.com';
+  const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/yta_web/join?alt=json';
+  const PAGE = 10000;
+
+  const fail = (code: string, message: string, extra?: any): any => Object.assign({ ok: false, code, message }, extra || {});
+
+  try {
+    const windows = config && Array.isArray(config.windows) ? config.windows : null;
+    if (!windows) return fail('INJECTION_EXCEPTION', 'collectFirstWeeksInPage needs config.windows.');
+
+    // ---- auth + context, as collectStudioAnalyticsInPage ----
+    const readCookie = (name: string): string | null => {
+      const jar = document.cookie ? document.cookie.split('; ') : [];
+      for (const pair of jar) {
+        const eq = pair.indexOf('=');
+        const key = eq === -1 ? pair : pair.slice(0, eq);
+        if (key === name) return eq === -1 ? '' : decodeURIComponent(pair.slice(eq + 1));
+      }
+      return null;
+    };
+    const sapisid = readCookie('SAPISID') || readCookie('__Secure-3PAPISID');
+    if (!sapisid) return fail('NO_SAPISID', 'SAPISID cookie is not present on studio.youtube.com — the user is not signed in.');
+    const sha1Hex = async (input: string): Promise<string> => {
+      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(input)));
+      let hex = '';
+      for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    };
+    const ts = Math.floor(Date.now() / 1000);
+    const authorization = 'SAPISIDHASH ' + ts + '_' + (await sha1Hex(ts + ' ' + sapisid + ' ' + ORIGIN));
+    const cfg = (window as any).ytcfg;
+    if (!cfg || typeof cfg.get !== 'function') return fail('YTCFG_MISSING', 'window.ytcfg is not available — not a loaded Studio page.');
+    const innertube = cfg.get('INNERTUBE_CONTEXT');
+    const clientVersion = innertube && innertube.client && innertube.client.clientVersion;
+    if (!clientVersion) return fail('YTCFG_MISSING', 'ytcfg INNERTUBE_CONTEXT.client.clientVersion is missing.');
+    const activeChannel = cfg.get('CHANNEL_ID');
+    if (activeChannel !== channelId) return fail('CHANNEL_MISMATCH', 'ytcfg CHANNEL_ID (' + activeChannel + ') does not match requested channel (' + channelId + ').');
+    const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT');
+    if (!delegation) return fail('NO_DELEGATION', 'ytcfg INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT is missing — tab is not a signed-in channel context.');
+    const authUser = (cfg.get('SESSION_INDEX') != null) ? String(cfg.get('SESSION_INDEX')) : '0';
+    const visitorData = (innertube.client && innertube.client.visitorData) || null;
+    const context = {
+      client: { clientName: 62, clientVersion: clientVersion },
+      user: { serializedDelegationContext: delegation },
+    };
+
+    const toNum = (v: any): number | null => {
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+      if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v);
+      return null;
+    };
+
+    const out: any[] = [];
+    for (const w of windows) {
+      const label = 'first week from ' + w.startDateId;
+      const body = {
+        context,
+        nodes: [{
+          key: 'TABLE_QUERY',
+          value: {
+            query: {
+              dimensions: [{ type: 'VIDEO' }],
+              metrics: [
+                { type: 'EXTERNAL_VIEWS' }, { type: 'ENGAGED_VIEWS' }, { type: 'EXTERNAL_WATCH_TIME' },
+                { type: 'VIDEO_THUMBNAIL_IMPRESSIONS' }, { type: 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR' },
+                { type: 'AVERAGE_WATCH_PERCENTAGE' },
+              ],
+              restricts: [{ dimension: { type: 'USER' }, inValues: [channelId] }],
+              orders: [{ metric: { type: 'EXTERNAL_VIEWS' }, direction: 'ANALYTICS_ORDER_DIRECTION_DESC' }],
+              timeRange: { dateIdRange: { inclusiveStart: w.startDateId, exclusiveEnd: w.endDateId } },
+              limit: { pageSize: PAGE, pageOffset: 0 },
+              currency: 'USD',
+              returnDataInNewFormat: true,
+              limitedToBatchedData: false,
+            },
+          },
+        }],
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(ENDPOINT, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authorization,
+            'X-Origin': ORIGIN,
+            'X-Goog-AuthUser': authUser,
+            'X-YouTube-Delegation-Context': delegation,
+            'X-YouTube-Client-Name': '62',
+            'X-YouTube-Client-Version': clientVersion,
+            ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      } catch (netErr: any) {
+        return fail('NETWORK', 'Network error calling the Studio analytics endpoint (' + label + '): ' + (netErr && netErr.message ? netErr.message : String(netErr)));
+      }
+      if (resp.status === 401 || resp.status === 403) return fail('HTTP_AUTH', 'Studio analytics endpoint returned HTTP ' + resp.status + ' (' + label + ') — auth/delegation rejected.', { status: resp.status });
+      if (resp.status === 429) return fail('HTTP_RATELIMIT', 'Studio analytics endpoint returned HTTP 429 (' + label + ') — rate limited.', { status: 429 });
+      if (!resp.ok) return fail('HTTP_ERROR', 'Studio analytics endpoint returned HTTP ' + resp.status + ' (' + label + ').', { status: resp.status });
+      let data: any;
+      try { data = await resp.json(); } catch { return fail('BAD_JSON', 'Studio analytics response body (' + label + ') was not valid JSON.'); }
+      const results = data && data.results;
+      if (!Array.isArray(results)) return fail('NO_RESULT_TABLE', 'Response (' + label + ') had no results[] array.');
+      const node = results.find((r: any) => r && r.value && r.value.resultTable);
+      if (!node) return fail('NO_RESULT_TABLE', 'No results[] entry (' + label + ') carried a resultTable.');
+      const table = node.value.resultTable;
+
+      const dimCols: any[] = Array.isArray(table.dimensionColumns) ? table.dimensionColumns : [];
+      const videoCol = dimCols.find((c) => c && c.dimension && c.dimension.type === 'VIDEO');
+      const ids = videoCol && videoCol.strings && videoCol.strings.values;
+      if (!Array.isArray(ids)) return fail('MISSING_COLUMN', 'Dimension column VIDEO.strings.values is absent from the ' + label + ' response.');
+      const rowCount = ids.length;
+      if (rowCount >= PAGE) return fail('PAGE_CAP', 'First-week query (' + label + ') returned a full page of ' + PAGE + ' rows; offset paging is unsupported.');
+      const metricCols: any[] = Array.isArray(table.metricColumns) ? table.metricColumns : [];
+      // Named holder; rows in the column's undefinedValueIndices are null (see
+      // collectStudioAnalyticsInPage), and a required metric's null fails as MISSING_VALUE.
+      const series = (type: string, holder: string): any => {
+        const column = metricCols.find((c) => c && c.metric && c.metric.type === type);
+        if (!column) return { __err: fail('MISSING_COLUMN', 'Required metric column ' + type + ' is absent from the ' + label + ' response.') };
+        const arr = column[holder] && column[holder].values;
+        if (!Array.isArray(arr)) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has no ' + holder + '.values array.') };
+        if (arr.length !== rowCount) return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') length ' + arr.length + ' != row count ' + rowCount + '.') };
+        const undef = column.undefinedValueIndices;
+        if (undef === undefined) return arr;
+        if (!Array.isArray(undef) || undef.some((n: any) => !Number.isInteger(n) || n < 0 || n >= rowCount)) {
+          return { __err: fail('MISSING_COLUMN', 'Metric column ' + type + ' (' + label + ') has an unreadable undefinedValueIndices.') };
+        }
+        const out = arr.slice();
+        for (const n of undef) out[n] = null;
+        return out;
+      };
+      const views = series('EXTERNAL_VIEWS', 'counts'); if (views.__err) return views.__err;
+      const engaged = series('ENGAGED_VIEWS', 'counts'); if (engaged.__err) return engaged.__err;
+      const watch = series('EXTERNAL_WATCH_TIME', 'milliseconds'); if (watch.__err) return watch.__err;
+      const imp = series('VIDEO_THUMBNAIL_IMPRESSIONS', 'counts'); if (imp.__err) return imp.__err;
+      const vtr = series('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages'); if (vtr.__err) return vtr.__err;
+      const avg = series('AVERAGE_WATCH_PERCENTAGE', 'percentages'); if (avg.__err) return avg.__err;
+
+      const wanted = new Set(w.videoIds);
+      const rows: Record<string, any> = {};
+      for (let i = 0; i < rowCount; i++) {
+        const videoId = ids[i];
+        if (!wanted.has(videoId)) continue;
+        if (rows[videoId]) return fail('MISSING_VALUE', 'First-week response (' + label + ') carries video ' + videoId + ' twice.');
+        const v = toNum(views[i]);
+        const e = toNum(engaged[i]);
+        const ms = toNum(watch[i]);
+        if (v === null || e === null || ms === null) {
+          return fail('MISSING_VALUE', 'Video ' + videoId + ' (' + label + ') is missing a numeric views/engaged-views/watch-time value.');
+        }
+        rows[videoId] = {
+          views: v, engagedViews: e, watchHours: ms / 3600000,
+          impressions: toNum(imp[i]), impressionsCtr: toNum(vtr[i]), avgPctViewed: toNum(avg[i]),
+        };
+      }
+      out.push({ startDateId: w.startDateId, rows: rows });
+    }
+    return { ok: true, windows: out };
+  } catch (err: any) {
+    return fail('INJECTION_EXCEPTION', 'Unexpected error in the injected first-week collector: ' + (err && err.message ? err.message : String(err)));
   }
 }

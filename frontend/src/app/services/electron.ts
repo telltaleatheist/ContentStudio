@@ -286,6 +286,8 @@ export interface AnalyticsVerdictSummary {
   ctrPercentile: number | null;
   retention30s: number | null;
   views: number;
+  /** Absent on insights.json written before engaged views; null = not measured for that video. */
+  engagedViews?: number | null;
 }
 
 /**
@@ -314,6 +316,8 @@ export interface AnalyticsChannelInsights {
     medianAvgPctViewed: number | null;
     medianRetention30s: number | null;
     medianFirstWeekViews: number | null;
+    /** Absent on insights.json written before engaged views; the next distillation adds it. */
+    medianFirstWeekEngagedViews?: number | null;
   };
   topPackaging: AnalyticsVerdictSummary[];
   bottomPackaging: AnalyticsVerdictSummary[];
@@ -327,7 +331,7 @@ export interface AnalyticsChannelInsights {
 export interface AnalyticsCrossChannelInsights {
   computedAt: string;
   channelIds: string[];
-  recentOverperformers: Array<{ channelId: string; title: string; packagingScore: number; views: number }>;
+  recentOverperformers: Array<{ channelId: string; title: string; packagingScore: number; views: number; engagedViews?: number | null }>;
   risingSearchTerms: Array<{ term: string; views: number; trendVsPriorPeriod: number }>;
   aiBrief: string | null;
 }
@@ -344,8 +348,41 @@ export interface AnalyticsSourceDay {
  * electron/services/analytics/analytics-types.ts. null = not captured; newViewers and
  * returningViewers are null while Studio has not computed the cohort yet (~2 most recent days).
  */
-export interface AnalyticsChannelDay {
+/** One PLAYBACK_LOCATION_TYPE's share of a channel day — mirror of LocationDay. */
+export interface AnalyticsLocationDay {
+  views: number;
+  engagedViews: number;
+  watchHours: number;
+}
+
+/**
+ * Mirror of ChannelDay: v1 rows (extension 0.2.10) carry no engaged views, money or
+ * locations; v2 rows (0.2.11+) do. Read a v2 field only after checking schemaVersion.
+ */
+export type AnalyticsChannelDay = AnalyticsChannelDayV1 | AnalyticsChannelDayV2;
+
+export interface AnalyticsChannelDayV1 extends AnalyticsChannelDayFields {
   schemaVersion: 1;
+}
+
+export interface AnalyticsChannelDayV2 extends AnalyticsChannelDayFields {
+  schemaVersion: 2;
+  engagedViews: number;
+  estimatedEarnings: number | null;
+  cpm: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  subsGained: number | null;
+  subsLost: number | null;
+  byLocation: {
+    browse: AnalyticsLocationDay; watch: AnalyticsLocationDay; shortsFeed: AnalyticsLocationDay;
+    channel: AnalyticsLocationDay; embedded: AnalyticsLocationDay; other: AnalyticsLocationDay;
+  };
+  otherLocations: string[];
+}
+
+interface AnalyticsChannelDayFields {
   channelId: string;
   day: string;
   capturedAt: string;

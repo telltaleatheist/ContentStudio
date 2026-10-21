@@ -29,13 +29,39 @@ function pctl(value: number | null): string {
   return value === null ? 'n/a' : `p${Math.round(value)}`;
 }
 
+/**
+ * "12,345 engaged views" / "engaged views not measured". Every view count the render compares
+ * is engaged views (see VIEWS_MEASURE_LINE); a summary without one says so rather than
+ * showing raw views, which doubled from 2026-08-27 and would read as a jump in performance.
+ */
+export function engagedViewsText(value: number | null | undefined, what: string): string {
+  if (value === undefined) {
+    throw new Error(`[InsightsPrompt] ${what} has no engagedViews field (insights from before engaged views); re-run distillation`);
+  }
+  return value === null ? 'engaged views not measured' : `${Math.round(value).toLocaleString('en-US')} engaged views`;
+}
+
+/** Stated once, under the heading, so every number below reads as what it is. */
+export const VIEWS_MEASURE_LINE =
+  '(Every view count below is ENGAGED views. From 2026-08-27 YouTube also counts Home-feed autoplay previews as views, ' +
+  'which roughly doubled raw views on every channel; engaged views leave those out and compare across that date.)';
+
 function summaryLine(item: VideoVerdictSummary): string {
-  return `- "${item.title}" — published ${item.publishedAt.slice(0, 10)}, CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), 30s retention ${pct(item.retention30s)}, ${item.views.toLocaleString('en-US')} views`;
+  return `- "${item.title}" — published ${item.publishedAt.slice(0, 10)}, CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), 30s retention ${pct(item.retention30s)}, ${engagedViewsText(item.engagedViews, `"${item.title}"`)} (lifetime)`;
 }
 
 function recentLine(item: VideoVerdictSummary): string {
-  const basis = item.basis === 'first-week' ? 'first week' : 'lifetime';
-  return `- "${item.title}" — published ${item.publishedAt.slice(0, 10)}, CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), avg % viewed ${pct(item.avgPctViewed)}, ${item.views.toLocaleString('en-US')} views (${basis})`;
+  const basis = item.basis === 'first-week' ? 'first 7 days' : 'lifetime';
+  return `- "${item.title}" — published ${item.publishedAt.slice(0, 10)}, CTR ${pct(item.ctr)} (${pctl(item.ctrPercentile)}), avg % viewed ${pct(item.avgPctViewed)}, ${engagedViewsText(item.engagedViews, `"${item.title}"`)} (${basis})`;
+}
+
+/** The baselines' views part, shared with the compact block generation carries. */
+export function baselineEngagedViewsText(baselines: ChannelInsights['baselines'], channelId: string): string {
+  if (baselines.medianFirstWeekEngagedViews === undefined) {
+    throw new Error(`[InsightsPrompt] channel ${channelId} has insights from before engaged views; re-run distillation`);
+  }
+  const v = baselines.medianFirstWeekEngagedViews;
+  return `engaged views in the first 7 days ${v === null ? 'n/a' : Math.round(v).toLocaleString('en-US')}`;
 }
 
 /**
@@ -71,11 +97,12 @@ export function buildInsightsBlock(
   const lines: string[] = [];
   lines.push(`CHANNEL PERFORMANCE DATA (as of ${channelInsights.computedAt.slice(0, 10)})`);
   lines.push(`(Real audience data for this channel, ${channelInsights.videoCount} videos analyzed. Emulate the framing patterns of overperformers; avoid patterns of underperformers; this data outranks generic best practices.)`);
+  lines.push(VIEWS_MEASURE_LINE);
   lines.push('');
 
   const b = channelInsights.baselines;
   lines.push('Channel baselines (first-week medians):');
-  lines.push(`- CTR ${pct(b.medianCtrFirstWeek)} | avg % viewed ${pct(b.medianAvgPctViewed)} | 30s retention ${pct(b.medianRetention30s)} | views ${b.medianFirstWeekViews === null ? 'n/a' : Math.round(b.medianFirstWeekViews).toLocaleString('en-US')}`);
+  lines.push(`- CTR ${pct(b.medianCtrFirstWeek)} | avg % viewed ${pct(b.medianAvgPctViewed)} | 30s retention ${pct(b.medianRetention30s)} | ${baselineEngagedViewsText(b, channelInsights.channelId)}`);
 
   if (channelInsights.topPackaging.length > 0) {
     lines.push('');
@@ -147,7 +174,7 @@ export function buildInsightsBlock(
       lines.push('');
       lines.push('Recent overperformers across all channels (last 90 days):');
       for (const op of crossChannelInsights.recentOverperformers) {
-        lines.push(`- "${op.title}" — packaging score ${Math.round(op.packagingScore)}, ${op.views.toLocaleString('en-US')} views`);
+        lines.push(`- "${op.title}" — packaging score ${Math.round(op.packagingScore)}, ${engagedViewsText(op.engagedViews, `"${op.title}"`)} (lifetime)`);
       }
     }
   }

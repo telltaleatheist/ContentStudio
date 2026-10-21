@@ -52,7 +52,7 @@ import * as log from 'electron-log';
 import { ChannelGuidelines, ChannelInsights, CrossChannelInsights } from './analytics-types';
 import { TITLE_PATTERN_COUNT, type TitlePattern } from '../metadata/pattern-titles';
 import { AnalyticsStoreService } from './analytics-store.service';
-import { buildInsightsBlock } from './insights-prompt';
+import { baselineEngagedViewsText, buildInsightsBlock } from './insights-prompt';
 import { renderAbTitleRulesBlock } from './ab-title-rules';
 import { promptAssets } from '../metadata/prompt-assets';
 import { formatPrompt } from '../metadata/system-prompts';
@@ -159,7 +159,7 @@ export function prepareChannelInsightsFromData(
     baselinesLine:
       `Channel baselines (first-week medians): CTR ${pct(b.medianCtrFirstWeek)} | ` +
       `avg % viewed ${pct(b.medianAvgPctViewed)} | 30s retention ${pct(b.medianRetention30s)} | ` +
-      `views ${b.medianFirstWeekViews === null ? 'n/a' : Math.round(b.medianFirstWeekViews).toLocaleString('en-US')}`,
+      baselineEngagedViewsText(b, channel.channelId),
     abRulesBlock: renderAbTitleRulesBlock(insights.abTitleRules, { exemplars: false }),
     save: (guidelines) => store.saveChannelGuidelines(channel.channelId, guidelines),
   };

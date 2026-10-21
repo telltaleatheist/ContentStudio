@@ -228,3 +228,83 @@ VIDEO_THUMBNAIL_IMPRESSIONS_VTR, EXTERNAL_VIEWS.
 - A (day, source) pair with no row = 0 views for that source that day. Impressions are present
   only on some sources' rows (SUBSCRIBER/YT_RELATED/YT_CHANNEL/YT_SEARCH carry them; EXT_URL and
   NOTIFICATION rows may not) — a missing impressions value is `null` for that source, never 0.
+
+## Engaged views, money, playback locations, first weeks — verified live 2026-10-21 (extension 0.2.11)
+
+### Why: views changed meaning on 2026-08-27
+From 2026-08-27 YouTube counts inline Home-feed autoplay previews as views. `EXTERNAL_VIEWS`
+(what the collector stores as `views`) equalled `ENGAGED_VIEWS` on every channel through
+2026-08-26 and runs ~2-2.5x it since. By `PLAYBACK_LOCATION_TYPE`, main channel: 08-26 BROWSE
+181 views / 181 engaged, avg 1.0 min; 08-27 BROWSE 5,276 views / 713 engaged, avg 0.2 min; WATCH
+also gained some non-engaged views. Any comparison of raw views across 2026-08-27 is wrong;
+ContentStudio compares on engaged views.
+
+### Names verified (200 on both DAY and VIDEO, all three channels)
+Metrics: `ENGAGED_VIEWS`, `CPM` (USD x1000: 16501 = $16.50; undefined where no ads ran, see below),
+`TOTAL_ESTIMATED_EARNINGS` (USD x1000: 1000110 = $1,000.11, matches Studio's UI),
+`RATINGS_LIKES`, `RATINGS_DISLIKES`, `COMMENTS`, `SHARINGS`, `SUBSCRIBERS_GAINED`,
+`SUBSCRIBERS_LOST`, `SUBSCRIBERS_NET_CHANGE`, `AVERAGE_WATCH_TIME` (ms),
+`AVERAGE_WATCH_PERCENTAGE`, `PLAYLIST_STARTS`, `SHORTS_FEED_IMPRESSIONS`. `VIEWS` exists but
+equals `ENGAGED_VIEWS` — do not use it. Revenue metrics need channel-owner access (they worked
+on all three channels). Brand channels need the delegation in the body AND the headers, as above.
+
+Dimensions: `DAY`, `VIDEO`, `MONTH`, `TRAFFIC_SOURCE_TYPE`, `CREATOR_CONTENT_TYPE`
+(VIDEO_ON_DEMAND | SHORTS | LIVE_STREAM | CREATOR_CONTENT_TYPE_UNSPECIFIED),
+`PLAYBACK_LOCATION_TYPE` (BROWSE | WATCH | SHORTS_FEED | CHANNEL | EMBEDDED | ...), `COUNTRY`
+(ISO codes), `SHARING_SERVICE`; the two-dimension `DAY` x `PLAYBACK_LOCATION_TYPE` works.
+
+Rejected (HTTP 400): `RPM`, `ESTIMATED_REVENUE`, `AD_IMPRESSIONS`, `MONETIZED_PLAYBACKS`,
+`PLAYBACK_BASED_CPM`, `UNIQUE_VIEWERS*`, card / end-screen clicks, `DEVICE_TYPE`, `AGE_GROUP`,
+`GENDER`, `SUBSCRIBED_STATUS`.
+
+### Value holders — verified live on Fireside (brand channel), 2026-10-21
+`counts`: ENGAGED_VIEWS, EXTERNAL_VIEWS, VIDEO_THUMBNAIL_IMPRESSIONS, RATINGS_LIKES, COMMENTS,
+SHARINGS, SUBSCRIBERS_GAINED, SUBSCRIBERS_LOST, SUBSCRIBERS_NET_CHANGE, NEW_VIEWERS,
+RETURNING_VIEWERS. `earnings` (USD x1000; per-day CPM 12219 = $12.22, earnings 384195 = $384.20):
+TOTAL_ESTIMATED_EARNINGS, CPM. `milliseconds`: EXTERNAL_WATCH_TIME. `percentages`:
+VIDEO_THUMBNAIL_IMPRESSIONS_VTR, AVERAGE_WATCH_PERCENTAGE. Dimensions: DAY → `dateIds`,
+TRAFFIC_SOURCE_TYPE and PLAYBACK_LOCATION_TYPE → `enumValues`, VIDEO → `strings`. The collector
+reads each by its name and fails `MISSING_COLUMN` on anything else.
+
+All five query shapes (per-video 13 metrics; per-day 15 metrics over 399 days; DAY x
+TRAFFIC_SOURCE_TYPE; DAY x PLAYBACK_LOCATION_TYPE; the 7-day first-week VIDEO query) returned
+200 as written, on Fireside, 2026-10-21.
+
+### `undefinedValueIndices` — rows with NO value
+In the new-format response a metric column can carry, beside its value holder,
+`undefinedValueIndices: number[]` (row indices where Studio has no value) and
+`columnAnomalies: {ids: [...]}`. The value array stays full length and holds **0** at each
+undefined index. Measured on a 3,057-row per-video table: CPM 798 undefined rows,
+TOTAL_ESTIMATED_EARNINGS 503, VIDEO_THUMBNAIL_IMPRESSIONS_VTR 9, ENGAGED_VIEWS / EXTERNAL_VIEWS 1
+(a video with 0 views). Rule, in every reader (per-video, per-day, per-source, per-location,
+first weeks): a value at an undefined index is **null** (not captured), never the 0 in the
+array; for a required metric (views, engaged views, watch time) that null fails `MISSING_VALUE`.
+An index that is not an integer within the rows fails `MISSING_COLUMN`. `columnAnomalies` is
+informational and ignored. Over 399 per-day rows and the first-week tables every column's list
+was empty, so this matters mostly for the per-video table.
+
+### PLAYBACK_LOCATION_TYPE values seen over 400 days
+WATCH, BROWSE, SHORTS_FEED, EMBEDDED, IMMERSIVE_LIVE_FEED, CHANNEL. IMMERSIVE_LIVE_FEED (and any
+future value) folds into `byLocation.other` and is listed in `otherLocations`.
+
+### What 0.2.11 collects
+- **Per-video lifetime query** gains ENGAGED_VIEWS (required, like views),
+  TOTAL_ESTIMATED_EARNINGS, CPM, RATINGS_LIKES, COMMENTS, SHARINGS, SUBSCRIBERS_GAINED,
+  SUBSCRIBERS_LOST → Snapshot **schemaVersion 2** (`engagedViews`, `estimatedEarnings`, `cpm`,
+  `subsLost`; `likes`/`comments`/`shares`/`subsGained` filled — they were always null before).
+  Snapshots now carry their real `videoAgeHours` from the catalogue (it was -1 on every
+  extension snapshot), so cadence tiering works; the cadence state moved to a new key so every
+  video gets one v2 snapshot on the first cycle.
+- **Per-day query** gains the same metrics → ChannelDay **schemaVersion 2** (`engagedViews`,
+  `estimatedEarnings`, `cpm`, `likes`, `comments`, `shares`, `subsGained`, `subsLost`), and a
+  third request, `DAY` x `PLAYBACK_LOCATION_TYPE` × {EXTERNAL_VIEWS, ENGAGED_VIEWS,
+  EXTERNAL_WATCH_TIME} → `byLocation` {browse, watch, shortsFeed, channel, embedded, other} with
+  unknown names folded into `other` and listed in `otherLocations`; a (day, location) with no
+  row is zeros. Window 400 days (was 35), page size 10,000 (DAY x TRAFFIC_SOURCE_TYPE alone is
+  ~400 x 13 rows).
+- **First weeks**: for each long/live upload published within 200 days whose first seven local
+  days ended 3+ days ago and was not sent before, one `VIDEO` query per publish day with
+  `timeRange` = those seven days (USER restrict only) × {EXTERNAL_VIEWS, ENGAGED_VIEWS,
+  EXTERNAL_WATCH_TIME, impressions, CTR, AVERAGE_WATCH_PERCENTAGE}; the requested videos' rows
+  become `VideoFirstWeek` records (a requested video with no row = 0 views that week), POST
+  `/analytics/first-weeks`. At most 30 windows a cycle, newest first; the first run backfills.

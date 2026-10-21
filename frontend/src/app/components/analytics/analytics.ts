@@ -24,8 +24,10 @@ import {
   compareSevenDays,
   dayTableRows,
   localDayKey,
+  weeklyRows,
   type DayTableRow,
   type SevenDayComparison,
+  type WeekRow,
 } from './channel-days-compare';
 
 interface PromptSetListItem {
@@ -40,13 +42,19 @@ interface ChannelDaysEntry {
   dayCount: number;
   comparison: SevenDayComparison | null;
   rows: DayTableRow[];
+  /** Full weeks, newest first, over the longer stored series. */
+  weeks: WeekRow[];
   /** Set when the days could not be read; the card shows it instead of numbers. */
   error: string | null;
 }
 
-/** The card's window, and how many of those days the table lists. */
-const HOME_FEED_DAYS = 28;
+/**
+ * How many stored days the card reads (26 full weeks plus today and a margin), how many the
+ * daily table lists, and how many weeks the weekly table lists. The extension stores 400.
+ */
+const HOME_FEED_DAYS = 190;
 const HOME_FEED_TABLE_ROWS = 14;
+const HOME_FEED_WEEKS = 26;
 
 interface ChannelInsightsEntry {
   channelId: string;
@@ -212,7 +220,7 @@ export class Analytics implements OnInit, OnDestroy {
       if (!result.success || !result.days) {
         return {
           channelId: channel.channelId, name: channel.name, dayCount: 0,
-          comparison: null, rows: [], error: result.error || 'Could not read the stored days',
+          comparison: null, rows: [], weeks: [], error: result.error || 'Could not read the stored days',
         };
       }
       if (result.days.length === 0) return null;
@@ -222,6 +230,7 @@ export class Analytics implements OnInit, OnDestroy {
         dayCount: result.days.length,
         comparison: compareSevenDays(result.days, today),
         rows: dayTableRows(result.days, today, HOME_FEED_TABLE_ROWS),
+        weeks: weeklyRows(result.days, today, HOME_FEED_WEEKS),
         error: null,
       };
     }));
@@ -476,6 +485,13 @@ export class Analytics implements OnInit, OnDestroy {
   fmtNum(value: number | null | undefined): string {
     if (value === null || value === undefined) return 'n/a';
     return Math.round(value).toLocaleString('en-US');
+  }
+
+  /** "$1,234" / "$3.21" / "n/a": whole dollars from $100 up, cents below. */
+  fmtUsd(value: number | null | undefined): string {
+    if (value === null || value === undefined) return 'n/a';
+    const digits = Math.abs(value) >= 100 ? 0 : 2;
+    return '$' + value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
   }
 
   /** "+12%" / "-3%" / "n/a" for a relative change from compareSevenDays. */

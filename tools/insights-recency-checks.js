@@ -58,7 +58,8 @@ function addVideo(id, ageDays, format, extra = {}) {
   verdicts.push({
     videoId: id, channelId: CH, publishedAt, titles: [`title ${id}`],
     firstWeek: extra.firstWeek ?? null,
-    lifetime: { impressions: 50000, ctr: 4 + ageDays / 100, views: 1000 * ageDays, watchHours: 1, subsGained: null },
+    firstSevenDays: extra.firstSevenDays ?? null,
+    lifetime: { impressions: 50000, ctr: 4 + ageDays / 100, views: 1000 * ageDays, watchHours: 1, subsGained: null, engagedViews: 400 * ageDays },
     ctrPercentile: 50, retentionPercentile: null, packagingScore: 50 + (ageDays % 7), outcome: 'typical',
     abTest: null, topSearchTerms: [],
   });
@@ -66,7 +67,10 @@ function addVideo(id, ageDays, format, extra = {}) {
 for (let d = 1; d <= 45; d++) {
   const id = `v${String(d).padStart(3, '0')}`;
   const extra = d === 1
-    ? { firstWeek: { impressions: 9000, ctr: 6.1, views: 800, avgPctViewed: 33.3, retention30s: 70, dominantSource: 'browse' } }
+    ? {
+        firstWeek: { impressions: 9000, ctr: 6.1, views: 800, avgPctViewed: 33.3, retention30s: 70, dominantSource: 'browse' },
+        firstSevenDays: { firstDay: '2026-10-01', views: 800, engagedViews: 350, impressions: 9000, ctr: 6.1, avgPctViewed: 33.3 },
+      }
     : d === 2
       ? { firstWeek: { impressions: null, ctr: null, views: 0, avgPctViewed: null, retention30s: null, dominantSource: 'unknown' } }
       : {};
@@ -120,10 +124,11 @@ check('recent uploads: last 90 days, long + live only, newest first', () => {
   eq(times.every((t, i) => i === 0 || times[i - 1] >= t), true, 'sorted newest first:');
 });
 
-check('recent uploads: first-week basis only with a first-week CTR; lifetime avg % viewed from snapshots', () => {
+check('recent uploads: first-week basis only with the first seven days collected; lifetime avg % viewed from snapshots', () => {
   const byId = Object.fromEntries(insights.recentUploads.map((s) => [s.title.replace('title ', ''), s]));
-  eq([byId.v001.basis, byId.v001.ctr, byId.v001.avgPctViewed, byId.v001.views], ['first-week', 6.1, 33.3, 800], 'v001:');
-  eq([byId.v002.basis, byId.v002.views], ['lifetime', 2000], 'v002 (first week without CTR):');
+  eq([byId.v001.basis, byId.v001.ctr, byId.v001.avgPctViewed, byId.v001.views, byId.v001.engagedViews, byId.v001.retention30s],
+    ['first-week', 6.1, 33.3, 800, 350, 70], 'v001:');
+  eq([byId.v002.basis, byId.v002.views, byId.v002.engagedViews], ['lifetime', 2000, 800], 'v002 (a first-week snapshot but no seven-day record):');
   eq([byId.v003.basis, byId.v003.avgPctViewed], ['lifetime', 41.5], 'v003 latest non-null:');
   eq(byId.v004.avgPctViewed, null, 'v004 never captured:');
 });
@@ -142,7 +147,7 @@ check('render: recent uploads capped at 40, newest kept, cut stated', () => {
   for (let i = start + 1; lines[i] && lines[i].startsWith('- '); i++) body.push(lines[i]);
   eq(body.length, 40, 'listed lines:');
   eq(body[0].startsWith('- "title v001" — published '), true, 'first line is the newest:');
-  eq(/CTR 6\.1% \(p50\), avg % viewed 33\.3%, 800 views \(first week\)$/.test(body[0]), true, `first-week line "${body[0]}":`);
+  eq(/CTR 6\.1% \(p50\), avg % viewed 33\.3%, 350 engaged views \(first 7 days\)$/.test(body[0]), true, `first-week line "${body[0]}":`);
   eq(/\(lifetime\)$/.test(body[1]), true, 'lifetime line says so:');
   eq(body.some((l) => l.includes('"title v045"') || l.includes('"title v044"')), false, 'oldest two cut:');
   eq(lines[start + 41], '(6 older upload(s) from the window not shown; the newest 40 are listed.)', 'cut line:');

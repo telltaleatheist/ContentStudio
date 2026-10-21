@@ -5,15 +5,18 @@
 // cycle or when the user presses "Sync now". Entries are only removed after a
 // successful POST.
 
-import type { ChannelDay, Snapshot, VideoRecord } from './types';
+import type { ChannelDay, Snapshot, VideoFirstWeek, VideoRecord } from './types';
 import type { AbTestRecord } from './catalogue';
-import { IngestError, pushAbTests, pushChannelDays, pushSnapshots, pushVideos, type IngestFailureKind } from './ingest-client';
+import {
+  IngestError, pushAbTests, pushChannelDays, pushFirstWeeks, pushSnapshots, pushVideos, type IngestFailureKind,
+} from './ingest-client';
 
 export type OutboxEntry =
   | { id: string; queuedAt: string; kind: 'videos'; videos: VideoRecord[] }
   | { id: string; queuedAt: string; kind: 'snapshots'; snapshots: Snapshot[] }
   | { id: string; queuedAt: string; kind: 'ab-tests'; tests: AbTestRecord[] }
-  | { id: string; queuedAt: string; kind: 'channel-days'; days: ChannelDay[] };
+  | { id: string; queuedAt: string; kind: 'channel-days'; days: ChannelDay[] }
+  | { id: string; queuedAt: string; kind: 'first-weeks'; firstWeeks: VideoFirstWeek[] };
 
 const OUTBOX_KEY = 'outbox';
 
@@ -62,10 +65,35 @@ export async function enqueueSnapshots(snapshots: Snapshot[]): Promise<void> {
   await setOutbox(entries);
 }
 
-/** A channel's per-day series. Queued so a closed ContentStudio receives it on the next flush. */
+/**
+ * A channel's per-day series. Queued so a closed ContentStudio receives it on the next flush.
+ *
+ * The series is the whole 400-day window every cycle (~0.7 MB a channel), so a newer fetch
+ * for a channel supersedes any still-queued one, as enqueueVideos does for catalogues;
+ * otherwise four cycles a day of three channels would fill chrome.storage.local's 10 MB in
+ * about a day with the app closed. The superseded entry's days that the new fetch does not
+ * carry (the ones that slid out of the window while it waited) are kept in the new entry, so
+ * nothing a flush could have delivered is lost; every day the new fetch carries is newer.
+ */
 export async function enqueueChannelDays(days: ChannelDay[]): Promise<void> {
+  const channelIds = new Set(days.map((d) => d.channelId));
+  const incoming = new Set(days.map((d) => `${d.channelId}|${d.day}`));
+  const carried: ChannelDay[] = [];
+  const entries = (await getOutbox()).filter((entry) => {
+    if (entry.kind !== 'channel-days' || entry.days.length === 0 || !entry.days.every((d) => channelIds.has(d.channelId))) {
+      return true;
+    }
+    for (const d of entry.days) if (!incoming.has(`${d.channelId}|${d.day}`)) carried.push(d);
+    return false;
+  });
+  entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'channel-days', days: [...carried, ...days] });
+  await setOutbox(entries);
+}
+
+/** First-week totals for uploads whose first week just closed. Small; queued like snapshots. */
+export async function enqueueFirstWeeks(firstWeeks: VideoFirstWeek[]): Promise<void> {
   const entries = await getOutbox();
-  entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'channel-days', days });
+  entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'first-weeks', firstWeeks });
   await setOutbox(entries);
 }
 
@@ -94,6 +122,8 @@ async function sendEntry(entry: OutboxEntry): Promise<void> {
     await pushVideos(entry.videos);
   } else if (entry.kind === 'channel-days') {
     await pushChannelDays(entry.days);
+  } else if (entry.kind === 'first-weeks') {
+    await pushFirstWeeks(entry.firstWeeks);
   } else {
     await pushSnapshots(entry.snapshots);
   }

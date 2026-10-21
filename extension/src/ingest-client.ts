@@ -7,6 +7,7 @@
 //   POST /analytics/ingest   -> body { snapshots: Snapshot[] }
 //   POST /analytics/ab-tests -> body { tests: AbTestRecord[] }
 //   POST /analytics/days     -> body { days: ChannelDay[] }
+//   POST /analytics/first-weeks -> body { firstWeeks: VideoFirstWeek[] }
 //
 // No auth: the server is localhost-bound and requires no token. As a CSRF guard
 // it rejects cross-origin web requests (Origin: http(s)://…) with 403; this
@@ -18,7 +19,7 @@
 //   Nothing in this module retries, degrades, or swallows errors.
 
 import type { AbTestRecord } from './catalogue';
-import type { ChannelDay, Snapshot, VideoRecord } from './types';
+import type { ChannelDay, Snapshot, VideoFirstWeek, VideoRecord } from './types';
 import { getSettings, type ChannelConfig } from './settings';
 
 export type IngestFailureKind =
@@ -221,6 +222,11 @@ export async function postChannelDays(days: ChannelDay[]): Promise<void> {
 
 /** The outbox's name for postChannelDays, matching pushVideos/pushSnapshots/pushAbTests. */
 export const pushChannelDays = postChannelDays;
+
+/** POST /analytics/first-weeks — upsert first-week totals by video. Throws IngestError on any failure. */
+export async function pushFirstWeeks(firstWeeks: VideoFirstWeek[]): Promise<void> {
+  await post('/analytics/first-weeks', { firstWeeks });
+}
 
 /** POST /analytics/ingest — append metric snapshots. Throws IngestError on any failure. */
 export async function pushSnapshots(snapshots: Snapshot[]): Promise<void> {

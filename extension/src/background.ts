@@ -39,7 +39,7 @@ import {
 import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
 import { isNavMessage } from './publish/nav-messages';
 import { NavSourceError, fetchNavListForTab } from './nav-source';
-import { enqueueAbTests, enqueueChannelDays, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
+import { enqueueAbTests, enqueueChannelDays, enqueueFirstWeeks, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
 import { DEFAULT_SETTINGS, saveSettings } from './settings';
 import { recordChannelAttempt, setLastCycle, type CycleSummary } from './status';
@@ -182,6 +182,11 @@ async function collectAllChannels(
       // The channel's per-day series — shown on the Analytics page's Home feed card only.
       if (result.days.length > 0) {
         await enqueueChannelDays(result.days);
+      }
+      // First-week totals (engaged views and the rest) for uploads whose first week closed —
+      // what the distiller compares uploads on.
+      if (result.firstWeeks.length > 0) {
+        await enqueueFirstWeeks(result.firstWeeks);
       }
       await recordChannelAttempt(channel.channelId, attemptAt, null, result.snapshots.length);
     } catch (err) {
