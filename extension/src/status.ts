@@ -15,6 +15,12 @@ export interface ChannelStatus {
   lastSuccess: string | null;
   /** Snapshots collected on the most recent successful attempt, or null if never succeeded. */
   lastSnapshotCount: number | null;
+  /**
+   * Videos Studio listed without a views/engaged-views/watch-time value on the most recent
+   * successful attempt (no snapshot or first-week record for them; see
+   * ChannelCollectionResult.unvalued). Null if never succeeded.
+   */
+  lastUnvalued: string[] | null;
 }
 
 export interface CycleSummary {
@@ -45,6 +51,7 @@ export async function recordChannelAttempt(
   attemptAt: string,
   error: { name: string; message: string } | null,
   snapshotCount?: number,
+  unvalued?: string[],
 ): Promise<void> {
   const statuses = await getChannelStatuses();
   const previous = statuses[channelId];
@@ -55,6 +62,7 @@ export async function recordChannelAttempt(
     lastError: error ? error.message : null,
     lastSuccess: error ? (previous?.lastSuccess ?? null) : attemptAt,
     lastSnapshotCount: error ? (previous?.lastSnapshotCount ?? null) : (snapshotCount ?? null),
+    lastUnvalued: error ? (previous?.lastUnvalued ?? null) : (unvalued ?? null),
   };
   await chrome.storage.local.set({ [CHANNEL_STATUS_KEY]: statuses });
 }

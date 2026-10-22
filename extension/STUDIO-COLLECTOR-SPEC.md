@@ -278,8 +278,16 @@ undefined index. Measured on a 3,057-row per-video table: CPM 798 undefined rows
 TOTAL_ESTIMATED_EARNINGS 503, VIDEO_THUMBNAIL_IMPRESSIONS_VTR 9, ENGAGED_VIEWS / EXTERNAL_VIEWS 1
 (a video with 0 views). Rule, in every reader (per-video, per-day, per-source, per-location,
 first weeks): a value at an undefined index is **null** (not captured), never the 0 in the
-array; for a required metric (views, engaged views, watch time) that null fails `MISSING_VALUE`.
-An index that is not an integer within the rows fails `MISSING_COLUMN`. `columnAnomalies` is
+array. A VIDEO row whose views, engaged views or watch time is undefined is a video Studio has
+no number for: since 0.2.12 it gets **no snapshot / no first-week record** and its id travels
+out as `unvalued` (popup: "N videos without a views value in Studio, not snapshotted"), because
+0.2.11 failed a whole channel on that one row (Fireside's 6YgtZwpngvY, 2020, four impressions,
+live 2026-10-22: "Row 3055 ... is missing a required numeric views/engaged-views/watch-time
+value"). A first-week video so skipped is marked asked, or it would be re-planned every cycle
+and hold a slot the older backfill needs. A non-numeric required value that is NOT listed as
+undefined is still a shape break (`MISSING_VALUE`); a per-day / per-source / per-location row
+with an undefined required value still fails `MISSING_VALUE` (never seen live). An index that
+is not an integer within the rows fails `MISSING_COLUMN`. `columnAnomalies` is
 informational and ignored. Over 399 per-day rows and the first-week tables every column's list
 was empty, so this matters mostly for the per-video table.
 

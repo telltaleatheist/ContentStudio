@@ -121,6 +121,14 @@ async function renderChannels(): Promise<void> {
         : ` · ${count} snapshot${count === 1 ? '' : 's'}`;
       ok.textContent = `Last success: ${formatTimestamp(status.lastSuccess)}${snaps}`;
       row.appendChild(ok);
+      // Videos Studio lists with no views value: no snapshot for them, said rather than hidden.
+      const unvalued = status.lastUnvalued ?? [];
+      if (unvalued.length > 0) {
+        const note = document.createElement('div');
+        note.className = 'channel-meta';
+        note.textContent = `${unvalued.length} video${unvalued.length === 1 ? '' : 's'} without a views value in Studio, not snapshotted: ${unvalued.join(', ')}`;
+        row.appendChild(note);
+      }
     }
 
     list.appendChild(row);

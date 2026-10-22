@@ -188,7 +188,7 @@ async function collectAllChannels(
       if (result.firstWeeks.length > 0) {
         await enqueueFirstWeeks(result.firstWeeks);
       }
-      await recordChannelAttempt(channel.channelId, attemptAt, null, result.snapshots.length);
+      await recordChannelAttempt(channel.channelId, attemptAt, null, result.snapshots.length, result.unvalued);
     } catch (err) {
       // Every failure is recorded with its distinct error name so the popup
       // can tell "collector pending" apart from a real collection failure.

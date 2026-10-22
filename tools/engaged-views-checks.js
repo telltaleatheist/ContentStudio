@@ -157,12 +157,23 @@ check('per-video: undefinedValueIndices make optional values null and old metric
   eq(result.snapshots.map((s) => s.likes), [30, 2, 0], 'an empty list changes nothing');
 });
 
-check('per-video: an undefined required value, a missing column, a wrong holder, bad indices are named failures', async () => {
+check('per-video: a video Studio lists with no views/engaged/watch-time value gets no snapshot and is named in unvalued; the rest are kept', async () => {
+  // Live 2026-10-22: Fireside's 6YgtZwpngvY (2020, four impressions) sits in the lifetime
+  // table with EXTERNAL_VIEWS and ENGAGED_VIEWS undefined; 0.2.11 failed the whole channel on it.
   const undefEngaged = (await runVideos({ patch: { ENGAGED_VIEWS: { values: [400, 0, 10], undef: [1] } } })).result;
-  eq([undefEngaged.ok, undefEngaged.code], [false, 'MISSING_VALUE'], 'undefined engaged views');
-  includes(undefEngaged.message, 'vidB', 'names the video');
-  const undefViews = (await runVideos({ patch: { EXTERNAL_VIEWS: { undef: [2] } } })).result;
-  eq([undefViews.ok, undefViews.code], [false, 'MISSING_VALUE'], 'undefined views');
+  eq(undefEngaged.ok, true, 'ok');
+  eq(undefEngaged.snapshots.map((s) => s.videoId), ['vidA', 'vidC'], 'vidB skipped');
+  eq(undefEngaged.unvalued, ['vidB'], 'named');
+  const undefViews = (await runVideos({ patch: { EXTERNAL_VIEWS: { undef: [2] }, EXTERNAL_WATCH_TIME: { undef: [0] } } })).result;
+  eq([undefViews.ok, undefViews.snapshots.map((s) => s.videoId), undefViews.unvalued], [true, ['vidB'], ['vidA', 'vidC']], 'views and watch time, in row order');
+  const none = (await runVideos()).result;
+  eq(none.unvalued, [], 'no such row -> empty');
+});
+
+check('per-video: a non-numeric required value NOT listed as undefined, a missing column, a wrong holder, bad indices are named failures', async () => {
+  const strayText = (await runVideos({ patch: { ENGAGED_VIEWS: { values: [400, 'n/a', 10] } } })).result;
+  eq([strayText.ok, strayText.code], [false, 'MISSING_VALUE'], 'a value that is neither a number nor declared undefined');
+  includes(strayText.message, 'vidB', 'names the video');
   const missing = (await runVideos({ omit: 'ENGAGED_VIEWS' })).result;
   eq([missing.ok, missing.code], [false, 'MISSING_COLUMN'], 'missing');
   includes(missing.message, 'ENGAGED_VIEWS', 'message names the column');
@@ -397,14 +408,36 @@ check('first weeks: one VIDEO query per window over exactly its seven days; only
   eq(result.ok, true, 'ok');
   eq([requests.length, requests[0].dimensions, requests[0].timeRange.dateIdRange, requests[0].restricts],
     [1, [{ type: 'VIDEO' }], { inclusiveStart: 20261011, exclusiveEnd: 20261018 }, [{ dimension: { type: 'USER' }, inValues: [CH] }]], 'request');
-  eq(Object.keys(result.windows[0].rows), ['due1'], 'only wanted rows');
+  eq([Object.keys(result.windows[0].rows), result.windows[0].unvalued], [['due1'], []], 'only wanted rows, none unvalued');
   const plan = [{ firstDay: '2026-10-11', lastDay: '2026-10-17', startDateId: 20261011, endDateId: 20261018,
     videos: [{ videoId: 'due1', publishedAt: '2026-10-11T16:00:00.000Z' }, { videoId: 'due2', publishedAt: '2026-10-11T20:00:00.000Z' }] }];
-  const records = collector.toFirstWeeks(plan, result.windows, CH, '2026-10-21T12:00:00.000Z');
+  const { firstWeeks: records, unvalued } = collector.toFirstWeeks(plan, result.windows, CH, '2026-10-21T12:00:00.000Z');
   eq(records.map((r) => [r.videoId, r.views, r.engagedViews, r.watchHours, r.impressionsCtr, r.avgPctViewed]),
     [['due1', 800, 350, 2, 6.1, 35], ['due2', 0, 0, 0, null, null]], 'records');
+  eq(unvalued, [], 'none unvalued');
   for (const r of records) eq(validateVideoFirstWeek(r), [], `validator ${r.videoId}`);
   await throwsLike(() => collector.toFirstWeeks(plan, [], CH, 'x'), /no window starting 2026-10-11/, 'missing window');
+});
+
+check('first weeks: a wanted video Studio lists with no views value gets no record, is returned as unvalued (so it is marked asked), the others are unaffected', async () => {
+  const windows = [{ startDateId: 20261011, endDateId: 20261018, videoIds: ['due1', 'due2'] }];
+  const { result } = await inPage(collector.collectFirstWeeksInPage, [CH, { windows }], () => table(
+    [{ type: 'VIDEO', holder: 'strings', values: ['due2', 'due1'] }],
+    [
+      { type: 'AVERAGE_WATCH_PERCENTAGE', holder: 'percentages', values: [0, 35] },
+      { type: 'EXTERNAL_VIEWS', holder: 'counts', values: [0, 800], undef: [0] },
+      { type: 'ENGAGED_VIEWS', holder: 'counts', values: [0, 350], undef: [0] },
+      { type: 'EXTERNAL_WATCH_TIME', holder: 'milliseconds', values: [0, 7200000] },
+      { type: 'VIDEO_THUMBNAIL_IMPRESSIONS', holder: 'counts', values: [4, 9000] },
+      { type: 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR', holder: 'percentages', values: [0, 6.1] },
+    ],
+  ));
+  eq(result.ok, true, 'ok');
+  eq([Object.keys(result.windows[0].rows), result.windows[0].unvalued], [['due1'], ['due2']], 'rows and unvalued');
+  const plan = [{ firstDay: '2026-10-11', lastDay: '2026-10-17', startDateId: 20261011, endDateId: 20261018,
+    videos: [{ videoId: 'due1', publishedAt: '2026-10-11T16:00:00.000Z' }, { videoId: 'due2', publishedAt: '2026-10-11T20:00:00.000Z' }] }];
+  const joined = collector.toFirstWeeks(plan, result.windows, CH, '2026-10-21T12:00:00.000Z');
+  eq([joined.firstWeeks.map((r) => r.videoId), joined.unvalued], [['due1'], ['due2']], 'no record for due2, not a zero week');
 });
 
 check('POST /analytics/first-weeks upserts by video, refuses a bad record with details, and re-distills', async () => {

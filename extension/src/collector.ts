@@ -93,6 +93,14 @@ export interface ChannelCollectionResult {
   days: ChannelDay[];
   /** First-week totals for uploads whose first week closed since the last cycle (see collectFirstWeeksInPage). */
   firstWeeks: VideoFirstWeek[];
+  /**
+   * Videos Studio listed in this cycle's lifetime table with NO views, engaged-views or
+   * watch-time value (rows in those columns' undefinedValueIndices). They got no snapshot:
+   * a number Studio does not have is not captured, and one such video (Fireside's
+   * 6YgtZwpngvY, 2020, four impressions, views undefined, live 2026-10-22) must not cost the
+   * channel its whole collection. Shown in the popup by id.
+   */
+  unvalued: string[];
 }
 
 // ============================================================================
@@ -256,10 +264,13 @@ export async function collectChannel(
     maxWindows: FIRST_WEEK_MAX_REQUESTS_PER_CYCLE,
   });
   let firstWeeks: VideoFirstWeek[] = [];
+  let firstWeekUnvalued: string[] = [];
   if (windows.length > 0) {
     const firstWeekResult = await runInjectedFirstWeeks(tabId, channelId, windows);
     if (!firstWeekResult.ok) throw mapInjectedError(firstWeekResult, channelId);
-    firstWeeks = toFirstWeeks(windows, firstWeekResult.windows, channelId, new Date().toISOString());
+    const joined = toFirstWeeks(windows, firstWeekResult.windows, channelId, new Date().toISOString());
+    firstWeeks = joined.firstWeeks;
+    firstWeekUnvalued = joined.unvalued;
   }
 
   // Cadence tiering (SW-side, where the last-capture state lives): keep only the
@@ -284,9 +295,12 @@ export async function collectChannel(
   await recordSnapshotTimes(channelId, dueSnapshots.map((s) => ({ videoId: s.videoId, capturedAt: s.capturedAt })));
   // Recorded at collection time, like the snapshot times: the records go into the durable
   // outbox right after this returns, and a refused one stays queued there, not lost.
-  await recordFirstWeeks(channelId, firstWeeks.map((f) => f.videoId), FIRST_WEEK_LOOKBACK_DAYS + 30);
+  // A video Studio had no first-week value for is marked asked too: there is no record to
+  // send, and asking again next cycle would return the same nothing.
+  await recordFirstWeeks(channelId, [...firstWeeks.map((f) => f.videoId), ...firstWeekUnvalued], FIRST_WEEK_LOOKBACK_DAYS + 30);
 
-  return { videos, snapshots: dueSnapshots, abTests, days, firstWeeks };
+  const unvalued = Array.from(new Set([...injected.unvalued, ...firstWeekUnvalued]));
+  return { videos, snapshots: dueSnapshots, abTests, days, firstWeeks, unvalued };
 }
 
 /** Set each snapshot's videoAgeHours from the catalogue's publish date (see collectChannel). */
@@ -372,28 +386,36 @@ export interface FirstWeekRows {
     views: number; engagedViews: number; watchHours: number;
     impressions: number | null; impressionsCtr: number | null; avgPctViewed: number | null;
   }>;
+  /** Wanted videos Studio listed with no views/engaged/watch-time value: no row, no record. */
+  unvalued: string[];
 }
 
 /**
  * Join the planned windows with Studio's answer. A requested video with no row in its week had
  * no views that week (the query returns every video with activity in the range), so it is 0
  * views / 0 engaged / 0 hours with impressions, CTR and avg % viewed null — not reported.
- * A window Studio's answer does not carry is a shape failure, never an empty week.
+ * A video Studio listed WITHOUT a value gets no record at all and is returned in `unvalued`
+ * so the caller can mark it asked (it would otherwise be re-planned every cycle and, newest
+ * first, hold a slot the older backfill needs). A window Studio's answer does not carry is a
+ * shape failure, never an empty week.
  */
 export function toFirstWeeks(
   windows: FirstWeekWindow[],
   answered: FirstWeekRows[],
   channelId: string,
   capturedAt: string,
-): VideoFirstWeek[] {
+): { firstWeeks: VideoFirstWeek[]; unvalued: string[] } {
   const byStart = new Map(answered.map((a) => [a.startDateId, a]));
   const out: VideoFirstWeek[] = [];
+  const unvalued: string[] = [];
   for (const window of windows) {
     const answer = byStart.get(window.startDateId);
     if (!answer) {
       throw new StudioShapeError(channelId, 'MISSING_VALUE', `First-week answer has no window starting ${window.firstDay}.`);
     }
+    const skipped = new Set(answer.unvalued);
     for (const v of window.videos) {
+      if (skipped.has(v.videoId)) { unvalued.push(v.videoId); continue; }
       const row = answer.rows[v.videoId];
       out.push({
         schemaVersion: 1,
@@ -413,7 +435,7 @@ export function toFirstWeeks(
       });
     }
   }
-  return out;
+  return { firstWeeks: out, unvalued };
 }
 
 /** Injected catalogue fetch — MAIN world, same as the analytics collector. */
@@ -867,7 +889,7 @@ async function domSuffix(tabId: number): Promise<string> {
 // Inject the collection and map its discriminated result to typed errors
 // ============================================================================
 
-type InjectedOk = { ok: true; videos: VideoRecord[]; snapshots: Snapshot[] };
+type InjectedOk = { ok: true; videos: VideoRecord[]; snapshots: Snapshot[]; unvalued: string[] };
 type InjectedErr = { ok: false; code: string; message: string; status?: number };
 type InjectedResult = InjectedOk | InjectedErr;
 
@@ -1161,6 +1183,7 @@ export async function collectStudioAnalyticsInPage(
       return n === null ? null : n / 1000;
     };
 
+    const unvalued: string[] = [];
     const rows: Array<{
       videoId: string; impressions: number | null; impressionsCtr: number | null; views: number; watchHours: number; avgPctViewed: number | null;
       engagedViews: number; estimatedEarnings: number | null; cpm: number | null;
@@ -1255,9 +1278,21 @@ export async function collectStudioAnalyticsInPage(
       const gainedArr = seriesOf('SUBSCRIBERS_GAINED', 'counts'); if (gainedArr.__err) return gainedArr.__err;
       const lostArr = seriesOf('SUBSCRIBERS_LOST', 'counts'); if (lostArr.__err) return lostArr.__err;
 
+      // Rows where Studio has NO value for a required metric (listed in that column's
+      // undefinedValueIndices; seriesOf validated the lists above). Such a video gets no
+      // snapshot and is named in `unvalued`: the number does not exist, so it is not
+      // captured, and the rest of the channel is. A non-numeric value that is NOT listed as
+      // undefined is still a shape break (MISSING_VALUE) below.
+      const unvaluedRows = new Set<number>();
+      for (const type of ['EXTERNAL_VIEWS', 'ENGAGED_VIEWS', 'EXTERNAL_WATCH_TIME']) {
+        const column = metricCols.find((c) => c && c.metric && c.metric.type === type);
+        for (const n of (column && Array.isArray(column.undefinedValueIndices) ? column.undefinedValueIndices : [])) unvaluedRows.add(n);
+      }
+
       for (let i = 0; i < rowCount; i++) {
         const videoId = ids[i];
         if (typeof videoId !== 'string' || videoId.length === 0) return fail('MISSING_COLUMN', 'videoId at row ' + i + ' is not a non-empty string.');
+        if (unvaluedRows.has(i)) { unvalued.push(videoId); continue; }
         const views = toNum(viewsArr[i]);
         // EXTERNAL_WATCH_TIME comes back in MILLISECONDS (holder `milliseconds`) —
         // verified live against Studio 2026-07-22; convert to hours for the Snapshot.
@@ -1331,7 +1366,7 @@ export async function collectStudioAnalyticsInPage(
     // VideoRecords are DEFERRED in v1 (see the module header TODO(v1-metadata)).
     const videos: any[] = [];
 
-    return { ok: true, videos: videos, snapshots: snapshots };
+    return { ok: true, videos: videos, snapshots: snapshots, unvalued: unvalued };
   } catch (err: any) {
     return fail('INJECTION_EXCEPTION', 'Unexpected error in the injected collector: ' + (err && err.message ? err.message : String(err)));
   }
@@ -1908,12 +1943,22 @@ export async function collectFirstWeeksInPage(
       const vtr = series('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', 'percentages'); if (vtr.__err) return vtr.__err;
       const avg = series('AVERAGE_WATCH_PERCENTAGE', 'percentages'); if (avg.__err) return avg.__err;
 
+      // A wanted video Studio lists with no views/engaged/watch-time value gets no row and is
+      // named in `unvalued` (as collectStudioAnalyticsInPage does for the lifetime table).
+      const unvaluedRows = new Set<number>();
+      for (const type of ['EXTERNAL_VIEWS', 'ENGAGED_VIEWS', 'EXTERNAL_WATCH_TIME']) {
+        const column = metricCols.find((c) => c && c.metric && c.metric.type === type);
+        for (const n of (column && Array.isArray(column.undefinedValueIndices) ? column.undefinedValueIndices : [])) unvaluedRows.add(n);
+      }
+      const unvalued: string[] = [];
+
       const wanted = new Set(w.videoIds);
       const rows: Record<string, any> = {};
       for (let i = 0; i < rowCount; i++) {
         const videoId = ids[i];
         if (!wanted.has(videoId)) continue;
-        if (rows[videoId]) return fail('MISSING_VALUE', 'First-week response (' + label + ') carries video ' + videoId + ' twice.');
+        if (rows[videoId] || unvalued.indexOf(videoId) !== -1) return fail('MISSING_VALUE', 'First-week response (' + label + ') carries video ' + videoId + ' twice.');
+        if (unvaluedRows.has(i)) { unvalued.push(videoId); continue; }
         const v = toNum(views[i]);
         const e = toNum(engaged[i]);
         const ms = toNum(watch[i]);
@@ -1925,7 +1970,7 @@ export async function collectFirstWeeksInPage(
           impressions: toNum(imp[i]), impressionsCtr: toNum(vtr[i]), avgPctViewed: toNum(avg[i]),
         };
       }
-      out.push({ startDateId: w.startDateId, rows: rows });
+      out.push({ startDateId: w.startDateId, rows: rows, unvalued: unvalued });
     }
     return { ok: true, windows: out };
   } catch (err: any) {
