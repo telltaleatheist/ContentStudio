@@ -75,10 +75,22 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
     .sec-head > .hint, .why { display: none; }
     .cards { max-width: 720px; gap: 10px; margin: 0 auto; }
     .card { padding: 5px; gap: 4px; }
-    .card-lines, .card-acts, .role { display: none; }
+    .card-lines, .card-acts, .role, .title-rows { display: none; }
   }
 }
 .save { font-size: 14px; padding: 0 20px; height: 38px; }
+/* The picked titles at a glance: one row per pick, title k and the thumbnail that goes with it. */
+.title-rows { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; }
+.title-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px;
+  .t { font-weight: 600; }
+  .goes { padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border-color); background: var(--bg-primary); }
+  .phrase { font-weight: 600; color: var(--primary-orange); }
+}
+.slot {
+  display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--primary-orange); color: #1a1a1a; font-weight: 700; font-size: 12px;
+}
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .card {
   display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; cursor: pointer;
@@ -159,6 +171,7 @@ section { border-top: 1px solid var(--border-color); padding-top: 10px; margin-t
 .group-head {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 4px;
   .for { font-weight: 600; }
+  .for.unpicked { color: var(--text-secondary); font-weight: 500; }
   .small { font-size: 12px; line-height: 28px; height: 30px; padding: 0 10px; }
 }
 .earlier {

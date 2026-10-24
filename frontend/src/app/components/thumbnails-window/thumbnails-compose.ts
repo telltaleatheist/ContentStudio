@@ -118,6 +118,12 @@ export interface TextGroup {
   title: string;
   current: TextOption[];
   earlier: TextOption[];
+  /**
+   * Which of the report's chosen titles this is (1-3: the thumbnail saved as pick k goes with it),
+   * or null: a title not picked on the report. Set by `groupsForTitles`; `textGroups` alone leaves
+   * it null.
+   */
+  slot: number | null;
 }
 
 /**
@@ -128,16 +134,68 @@ export interface TextGroup {
 export function textGroups(pairs: readonly StoredPair[], earlier: readonly EarlierWords[] = []): TextGroup[] {
   const seen = new Set<string>();
   const sorted = [...pairs].sort((a, b) => a.pair - b.pair);
-  const groups: TextGroup[] = sorted.map((p) => ({ pair: p.pair, title: p.title, current: linesOf(p.words, p.title, p.pair, seen), earlier: [] }));
+  const groups: TextGroup[] = sorted.map((p) => ({ pair: p.pair, title: p.title, current: linesOf(p.words, p.title, p.pair, seen), earlier: [], slot: null }));
   for (const e of earlier) {
     let g = groups.find((x) => x.title === e.title);
     if (g === undefined) {
-      g = { pair: null, title: e.title, current: [], earlier: [] };
+      g = { pair: null, title: e.title, current: [], earlier: [], slot: null };
       groups.push(g);
     }
     g.earlier.push(...linesOf(e, e.title, null, seen));
   }
   return groups.filter((g) => g.current.length > 0 || g.earlier.length > 0 || g.pair !== null);
+}
+
+/**
+ * THE TEXT TRAY BY HIS PICKED TITLES (Owen, 2026-10-23: "i just need to be able to see at a glance
+ * what was picked in the thumbnail section"). Nothing new is written: the groups are `textGroups`'
+ * groups, each marked with the chosen title it is (`slot` k: the thumbnail saved as pick k goes
+ * with it), the chosen titles' groups first in the report's order, the others after them. A chosen
+ * title no words were written for still gets a group, empty (its header says so), so every picked
+ * title is on the tray. With no titles picked the groups are as they were.
+ */
+export function groupsForTitles(groups: readonly TextGroup[], chosen: readonly string[]): TextGroup[] {
+  const picked: TextGroup[] = chosen.map((title, i) => {
+    const g = groups.find((x) => x.title === title);
+    return g === undefined ? { pair: null, title, current: [], earlier: [], slot: i + 1 } : { ...g, slot: i + 1 };
+  });
+  const rest = groups.filter((g) => !chosen.includes(g.title)).map((g) => ({ ...g, slot: null }));
+  return [...picked, ...rest];
+}
+
+/** One row of the window's picked-titles strip: chosen title k, the thumbnail saved as pick k, its words. */
+export interface TitleRow {
+  k: number;
+  /** The report's chosen title k; null: not picked there yet. */
+  title: string | null;
+  /** The card saved as pick k (`planCards`' position k), or null: no thumbnail goes with it yet. */
+  card: number | null;
+  /** The words on that card (null: his own finished image, or no text on it). */
+  text: string | null;
+  /** The title that card's words were written for, when it is not this title; else null. */
+  writtenFor: string | null;
+}
+
+/**
+ * THE PICKED-TITLES STRIP above the cards (Owen, 2026-10-23): one row per pick k, for every chosen
+ * title and every card that would be saved, so he sees at a glance which thumbnail goes with which
+ * title and with what words on it. Pick k goes with chosen title k (the saved cards in order), as
+ * `titleOf` has it; a row whose title is not picked, or whose thumbnail is not there yet, says so.
+ * Empty when nothing is picked and no card has a frame.
+ */
+export function titleRows(chosen: readonly string[], plans: readonly CardPlan[], cards: readonly Card[]): TitleRow[] {
+  const positions = plans.map((p) => p.position ?? 0);
+  const count = Math.min(CARD_COUNT, Math.max(chosen.length, ...positions, 0));
+  const rows: TitleRow[] = [];
+  for (let k = 1; k <= count; k++) {
+    const title = chosen[k - 1] ?? null;
+    const plan = plans.find((p) => p.position === k);
+    const card = plan === undefined ? null : cards.find((c) => c.n === plan.n) ?? null;
+    const text = card === null || card.own !== null ? null : card.text?.phrase ?? null;
+    const writtenFor = card === null || title === null ? null : wordsMismatch(card, { title, chosen: true });
+    rows.push({ k, title, card: plan?.n ?? null, text, writtenFor });
+  }
+  return rows;
 }
 
 /** Words Owen typed. Refused when empty. */

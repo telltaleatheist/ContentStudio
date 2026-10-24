@@ -972,3 +972,20 @@ choose, too. it shouldnt lock me into 3."
 - **Not verified**: nobody has opened a subject report's window. Try: open Make thumbnails… on a
   subject report, drop an image on a card, type words, pick a photo, Save thumbnails with one card;
   the report's Thumbnails block should show one pick.
+
+## The picked titles at a glance (2026-10-23, LEDGER #324)
+
+Owen: "i just need to be able to see at a glance what was picked in the thumbnail section". Nothing
+new is written and the run is unchanged (three per-title words calls, the pairs as before). The
+window reads the report's chosen titles (`publish.chosenTitles()`, pick k with title k, as the
+saved picks already pair) and shows them in two places:
+
+- **A strip above the cards** (`titleRows`, thumbnails-compose.ts): one row per pick k with the
+  chosen title k (or "not picked on the report yet"), the card that is saved as pick k (the k-th
+  card with a frame, in card order, `planCards`' position) or "no thumbnail for it yet", the words
+  on that card, and "its text was written for “…”" when they were written for another title. No
+  row at all when nothing is picked and no card has a frame.
+- **The Text tray by chosen title** (`groupsForTitles`): the chosen titles' groups first, in the
+  report's order, each with its pick number on an orange badge; a chosen title no words were
+  written for (a pattern title, say) still gets an empty group whose header says so; the unpicked
+  titles' groups follow, marked "not picked on the report".

@@ -92,6 +92,25 @@
     @if (saveWhy(); as why) {
       @if (busy() === null) { <p class="why">{{ why }}</p> }
     }
+    <!-- The picked titles at a glance (Owen, 2026-10-23): title k from the report, the thumbnail saved as pick k, its words. -->
+    <div class="title-rows">
+      @if (titleRows().length === 0) {
+        <span class="hint">No titles picked on the report yet. Pick them there, and this shows which thumbnail goes with each.</span>
+      }
+      @for (r of titleRows(); track r.k) {
+        <div class="title-row">
+          <span class="slot">{{ r.k }}</span>
+          @if (r.title; as t) { <span class="t">“{{ t }}”</span> } @else { <span class="hint">Title {{ r.k }} is not picked on the report yet.</span> }
+          @if (r.card; as c) {
+            <span class="goes">Thumbnail {{ c }}</span>
+            @if (r.text; as x) { <span class="phrase">{{ x }}</span> } @else { <span class="hint">no text on it</span> }
+            @if (r.writtenFor; as w) { <span class="warn">its text was written for “{{ w }}”</span> }
+          } @else {
+            <span class="hint">no thumbnail for it yet</span>
+          }
+        </div>
+      }
+    </div>
     <div class="cards">
       @for (n of CARD_NUMBERS; track n) {
         <div class="card" [class.active]="active() === n" [class.drop-on]="dropOver() === n" (click)="selectCard(n)" role="button" [attr.aria-pressed]="active() === n"
@@ -194,12 +213,16 @@
       @for (g of textGroups(); track g.title) {
         <div class="words-group">
           <div class="group-head">
-            <span class="for">For “{{ g.title }}”</span>
+            @if (g.slot; as k) { <span class="slot" title="Picked on the report as title {{ k }}: the thumbnail saved as pick {{ k }} goes with it">{{ k }}</span> }
+            <span class="for" [class.unpicked]="g.slot === null && chosenTitles().length > 0">For “{{ g.title }}”</span>
+            @if (g.slot === null && chosenTitles().length > 0) { <span class="hint">not picked on the report</span> }
             @if (g.pair !== null) {
               <button mat-stroked-button class="small" (click)="writeWords(g, 'new')" [disabled]="rewriteBlocked() !== null"
                       [title]="rewriteBlocked() ?? 'A fresh set of suggestions for this title, listed first; the ones here now stay below (the words model, about a minute)'">New options</button>
               <button mat-stroked-button class="small" (click)="writeWords(g, 'more')" [disabled]="rewriteBlocked() !== null"
                       [title]="rewriteBlocked() ?? 'More suggestions for this title, added to these; none of them twice (the words model, about a minute)'">More options</button>
+            } @else if (g.slot !== null) {
+              <span class="hint">No text was written for this title. Use “Rewrite words for this title” on the thumbnail that goes with it, or put any text here on it.</span>
             } @else {
               <span class="hint">No thumbnail goes with this title now.</span>
             }

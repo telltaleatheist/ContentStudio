@@ -1599,4 +1599,42 @@ check('the tab is gone and nothing dangles: no route, sidebar entry, component, 
   assert.ok(!/'thumbnails:frames'|thumbnailsFrames\b/.test(preload + ipc + bridge), 'no frames channel (Show more is gone)');
 });
 
+check('the picked titles at a glance (Owen, 2026-10-23): the Text tray lists his chosen titles first with their pick number (a chosen title with no words still listed, empty), the rest after; the strip has one row per pick with the thumbnail saved as pick k and its words, a mismatch named; nothing picked and nothing filled is no row; nothing new is written', () => {
+  const words = (claim) => ({ claim, stakes: [], reaction: [], warnings: [], model: 'm' });
+  const dflt = { frameId: null, scene: null, kind: null, phrase: null, photo: null, draw: null, logo: false, render: { ok: false, reason: 'Not drawn yet.' } };
+  const pairs = [
+    { pair: 1, title: 'Title one', words: words(['ONE A', 'ONE B']), photos: [], default: dflt, lines: [] },
+    { pair: 2, title: 'Title two', words: words(['TWO A']), photos: [], default: dflt, lines: [] },
+    { pair: 3, title: 'Title three', words: words(['THREE A']), photos: [], default: dflt, lines: [] },
+  ];
+  const plain = compose.textGroups(pairs);
+  assert.deepStrictEqual(plain.map((g) => [g.title, g.slot]), [['Title one', null], ['Title two', null], ['Title three', null]], 'textGroups alone marks no slot');
+  // He picked title three first, then a title no words were written for (a pattern title, say), then title one.
+  const chosen = ['Title three', 'Title nine', 'Title one'];
+  const groups = compose.groupsForTitles(plain, chosen);
+  assert.deepStrictEqual(groups.map((g) => [g.title, g.slot, g.pair, g.current.length]),
+    [['Title three', 1, 3, 1], ['Title nine', 2, null, 0], ['Title one', 3, 1, 2], ['Title two', null, 2, 1]], 'chosen first in his order, the unwritten one empty, the unpicked after');
+  assert.deepStrictEqual(compose.groupsForTitles(plain, []).map((g) => [g.title, g.slot]), plain.map((g) => [g.title, null]), 'nothing picked: as they were');
+  // The strip: card 2 has a frame and title one's words, card 3 a frame and no text; card 1 empty. Saved order: card 2 is pick 1, card 3 pick 2.
+  let cards = compose.toggleFrame(compose.emptyCards(), 2, 'f1');
+  cards = compose.toggleText(cards, 2, compose.generatedText(compose.textOptions(pairs), 'claim', 'ONE A', 'Title one', 1));
+  cards = compose.toggleFrame(cards, 3, 'f2');
+  const plans = compose.planCards(cards, pairs);
+  assert.deepStrictEqual(plans.map((p) => [p.n, p.position]), [[1, null], [2, 1], [3, 2]]);
+  const rows = compose.titleRows(chosen, plans, cards);
+  assert.deepStrictEqual(rows.map((r) => [r.k, r.title, r.card, r.text, r.writtenFor]), [
+    [1, 'Title three', 2, 'ONE A', 'Title one'],
+    [2, 'Title nine', 3, null, null],
+    [3, 'Title one', null, null, null],
+  ], 'pick k with chosen title k: the words on pick 1 were written for another title (said); pick 2 has no text; title 3 has no thumbnail yet');
+  assert.deepStrictEqual(compose.titleRows([], plans, cards).map((r) => [r.k, r.title, r.card]), [[1, null, 2], [2, null, 3]], 'no titles picked: the filled cards still show, titles said missing');
+  assert.deepStrictEqual(compose.titleRows([], compose.planCards(compose.emptyCards(), pairs), compose.emptyCards()), [], 'nothing picked, nothing filled: no row');
+  assert.deepStrictEqual(compose.titleRows(['A', 'B', 'C', 'D'], compose.planCards(compose.emptyCards(), pairs), compose.emptyCards()).map((r) => r.k), [1, 2, 3], 'never more rows than cards');
+  // Nothing is written for this: no new channel, no prompt change, no generation change.
+  const win = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.ts'), 'utf8');
+  assert.ok(/groupsForTitles\(textGroups\(/.test(win) && /titleRows\(this\.chosenTitles\(\), this\.plans\(\), this\.cards\(\)\)/.test(win), 'the window reads both off the chosen titles');
+  const html = fs.readFileSync(path.join(REPO, 'frontend/src/app/components/thumbnails-window/thumbnails-window.html'), 'utf8');
+  assert.ok(/class="title-rows"/.test(html) && /g\.slot/.test(html), 'the strip and the group marks are in the template');
+});
+
 run('thumbnails in the metadata run and the reports page\'s window: the story link, stage order and the grid, words per title, no story, failures, off, storage, Save thumbnails, card edits, the preview\'s pieces, own image, rewrite for a title, no story, delete, finish, the card rules, the window\'s shape, the border, the tab, the judge and the frame scoring gone');

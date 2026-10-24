@@ -38,6 +38,9 @@ import {
   type CardPlan,
   type TextGroup,
   type TextOption,
+  groupsForTitles,
+  titleRows,
+  type TitleRow,
 } from './thumbnails-compose';
 import type { StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
 
@@ -248,9 +251,12 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
    * written for this report (made from a subject), a title with no lines has nothing to show.
    */
   readonly textGroups = computed<TextGroup[]>(() => {
-    const groups = textGroups(this.pairs(), this.earlierWords());
+    // His picked titles' groups first, each marked with its pick number; a picked title with no words still listed.
+    const groups = groupsForTitles(textGroups(this.pairs(), this.earlierWords()), this.chosenTitles());
     return this.wordsBlocked() === null ? groups : groups.filter((g) => g.current.length + g.earlier.length > 0);
   });
+  /** The strip above the cards: chosen title k, the thumbnail saved as pick k, its words. */
+  readonly titleRows = computed<TitleRow[]>(() => titleRows(this.chosenTitles(), this.plans(), this.cards()));
   /** Why no text can be written for this report (made from a subject: no transcript), or null. */
   readonly wordsBlocked = computed(() => this.view()?.wordsBlocked ?? null);
   /**
