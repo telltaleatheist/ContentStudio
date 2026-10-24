@@ -315,3 +315,21 @@ export function readinessOf(facts: ReadinessFacts): Readiness {
   if (shipped || facts.status === 'published') return 'done';
   return missingFor(facts).length === 0 ? 'ready' : 'incomplete';
 }
+
+// ---------------------------------------------------------------- the part marker
+
+/**
+ * The part a title ends in, so the board shows it however short the chip (Owen, 2026-10-23:
+ * "parts will always be marked with | P[x]. or | Ch [x]. i just need to see the end of the video
+ * title so i know which part it is"). A title's last ` | P3`, ` | Ch 12`, ` | Part 3` or
+ * ` | Chapter 12` (any case, an optional dot after the word, an optional letter after the number)
+ * comes off the end and is shown as its own badge that never truncates: `rest` is the title
+ * without it, `part` the marker as written, with one space between word and number. A title
+ * with no such ending is returned whole with `part` null; a marker in the middle of a title is
+ * not a part marker.
+ */
+export function partOf(title: string): { rest: string; part: string | null } {
+  const m = /^(.*?)\s*\|\s*(P|Pt|Part|Ch|Chapter)\.?\s*(\d+[A-Za-z]?)\s*$/i.exec(title);
+  if (m === null || m[1].trim() === '') return { rest: title, part: null };
+  return { rest: m[1].trim(), part: `${m[2]} ${m[3]}` };
+}

@@ -1622,6 +1622,43 @@ check('the runtime is stated in the words the band language uses', () => {
   eq(chapters.runtimePhrase(2 * 3600 + 30 * 60), '2 hours 30 minutes');
 });
 
+check('calendar: a title\'s part marker (| P3, | Ch 12) comes off the end as its own badge; the drag lights only the dragged channel\'s cadence slots (no drop-weak)', () => {
+  const fs = require('fs');
+  const ts = require('typescript');
+  const src = path.join(__dirname, '..', 'frontend/src/app/components/publish-calendar/calendar-states.ts');
+  const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }, fileName: src });
+  const mod = { exports: {} };
+  const req = (name) => (name.endsWith('publish.types') ? { SPREAKER_DESTINATION: 'spreaker' } : require(name));
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, req);
+  const assert = require('assert');
+  const { partOf } = mod.exports;
+  const cases = [
+    ['Jim Bakker sells the apocalypse | P3', 'Jim Bakker sells the apocalypse', 'P 3'],
+    ['Killing America | Ch 12', 'Killing America', 'Ch 12'],
+    ['Killing America | ch. 12', 'Killing America', 'ch 12'],
+    ['The ark again | Part 2', 'The ark again', 'Part 2'],
+    ['The ark again |P2b', 'The ark again', 'P 2b'],
+    ['No marker here', 'No marker here', null],
+    ['A | P3 in the middle of a title', 'A | P3 in the middle of a title', null],
+    ['| P3', '| P3', null],
+    ['Pipes | and words | Ch 4', 'Pipes | and words', 'Ch 4'],
+  ];
+  for (const [title, rest, part] of cases) {
+    assert.deepStrictEqual(partOf(title), { rest, part }, `partOf(${JSON.stringify(title)})`);
+  }
+  const dir = path.join(__dirname, '..', 'frontend/src/app/components/publish-calendar');
+  const html = fs.readFileSync(path.join(dir, 'publish-calendar.html'), 'utf8');
+  const comp = fs.readFileSync(path.join(dir, 'publish-calendar.ts'), 'utf8');
+  const scss = fs.readFileSync(path.join(dir, 'publish-calendar.scss'), 'utf8');
+  assert.ok(!/drop-weak/.test(html + comp + scss), 'the other lane no longer lights faintly: slots not for this channel look as they were');
+  assert.ok(/draggingCadence/.test(comp) && /isCadenceSlot\(cadence, new Date\(slot\.atMs\)\)/.test(comp), 'the drag lights the dragged item\'s channel cadence slots');
+  assert.ok(!/'other'/.test(comp.slice(comp.indexOf('dropAffinity(slot: SlotCell)'), comp.indexOf('dropAffinity(slot: SlotCell)') + 600)), 'no third affinity');
+  for (const row of ['chip.title', 'item.title', 'm.title', 'e.title']) {
+    assert.ok(html.includes(`partOf(${row}).rest`) && html.includes(`partOf(${row}).part`), `${row} shows its part as a badge`);
+  }
+  assert.ok(/\.part-badge\s*\{[^}]*flex-shrink:\s*0/.test(scss), 'the badge never truncates');
+});
+
 check('the cadence rung is the one the prompt body states for that runtime', () => {
   eq(chapters.cadenceBandFor(9 * 60 + 59), 'under-10-minutes');
   eq(chapters.cadenceBandFor(10 * 60), '10-to-30-minutes');

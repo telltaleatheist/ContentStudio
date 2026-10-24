@@ -476,7 +476,10 @@
              (dragend)="onDragEnd()">
           <span class="bar" [style.background]="item.hue"></span>
           <div class="tray-body" (click)="openReport(item.itemId)">
-            <div class="tray-title" [title]="item.title">{{ item.title }}</div>
+            <div class="tray-title-row">
+              <div class="tray-title" [title]="item.title">{{ partOf(item.title).rest }}</div>
+              @if (partOf(item.title).part; as part) { <span class="part-badge" [title]="item.title">{{ part }}</span> }
+            </div>
             <div class="tray-meta">
               <span class="pip" [class]="'pip ' + item.readiness"
                     [title]="item.readiness === 'incomplete'
@@ -556,16 +559,15 @@
             }
 
             @for (slot of row.slots; track slot.time) {
-              <!-- drop-ready is the item's own lane; drop-weak is the other one. Both take
-                   the drop — a cross-lane drop is the operator's call — but only one of
-                   them is offered as the obvious answer. -->
+              <!-- drop-ready: a slot the dragged item's channel releases in (its cadence; the
+                   5 AM lane for a podcast). Every other slot stays exactly as it was and still
+                   takes the drop — a drop elsewhere is the operator's call. -->
               <div class="slot"
                    [class.lane-spreaker]="slot.destination === 'spreaker'"
                    [class.past]="slot.isPast"
                    [class.taken]="slot.mirrors.length > 0 || slot.episodes.length > 0"
                    [class.cadence]="slot.isCadence"
                    [class.drop-ready]="dropAffinity(slot) === 'match'"
-                   [class.drop-weak]="dropAffinity(slot) === 'other'"
                    [class.drop-over]="dragOverKey() === slot.key"
                    [matTooltip]="slotTooltip(slot)"
                    (dragover)="onSlotDragOver(slot, $event)"
@@ -726,7 +728,8 @@
       @if (chip.destination === 'spreaker') {
         <mat-icon class="podcast-glyph" matTooltip="Goes to Spreaker, not YouTube">mic</mat-icon>
       }
-      <span class="chip-title">{{ chip.title }}</span>
+      <span class="chip-title">{{ partOf(chip.title).rest }}</span>
+      @if (partOf(chip.title).part; as part) { <span class="part-badge" [title]="chip.title">{{ part }}</span> }
       @if (chip.abPending) { <span class="ab-badge">A/B</span> }
       @if (chip.state === 'published') { <mat-icon class="lock">lock</mat-icon> }
     </span>
@@ -772,7 +775,8 @@
     <span class="episode-bar"></span>
     <span class="episode-body">
       <mat-icon class="sp-glyph">podcasts</mat-icon>
-      <span class="episode-title">{{ e.title }}</span>
+      <span class="episode-title">{{ partOf(e.title).rest }}</span>
+      @if (partOf(e.title).part; as part) { <span class="part-badge" [title]="e.title">{{ part }}</span> }
     </span>
     @if (e.itemId) {
       <button mat-icon-button class="open-report" (click)="openReport(e.itemId)"
@@ -798,7 +802,8 @@
     <span class="mirror-body">
       <mat-icon class="yt-glyph">smart_display</mat-icon>
       <span class="mirror-tag">{{ m.channelTag }}</span>
-      <span class="mirror-title">{{ m.title }}</span>
+      <span class="mirror-title">{{ partOf(m.title).rest }}</span>
+      @if (partOf(m.title).part; as part) { <span class="part-badge" [title]="m.title">{{ part }}</span> }
     </span>
     @if (m.itemId) {
       <button mat-icon-button class="open-report" (click)="openReport(m.itemId)"

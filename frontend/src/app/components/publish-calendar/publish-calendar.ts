@@ -66,7 +66,7 @@ import {
   SPREAKER_DESTINATION_LABEL,
 } from '../../features/publish/publish.types';
 import { splitPublishAt } from '../../features/publish/publish-schedule';
-import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot } from '../../features/publish/publish-slots';
+import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot, type CadenceKey } from '../../features/publish/publish-slots';
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
 import {
   CHANNEL_GROUPS,
@@ -87,6 +87,7 @@ import {
   missingFor,
   readinessOf,
   rowGroupOf,
+  partOf,
 } from './calendar-states';
 
 /**
@@ -371,6 +372,8 @@ export interface SlotCell {
   isPast: boolean;
   /** The active channel normally releases here. A hint, never a restriction. */
   isCadence: boolean;
+  /** The slot's local moment, epoch ms: what a drag's cadence is tested against (`dropAffinity`). */
+  atMs: number;
   chips: CalendarChip[];
   /** What YouTube already has here. Read-only, and the reason a slot can look full. */
   mirrors: MirrorChip[];
@@ -1305,6 +1308,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           // day at 5 AM, and an unmarked lane says that more honestly than a wrong mark.
           isCadence:
             slot.destination === 'youtube' && cadence !== null && isCadenceSlot(cadence.key, at),
+          atMs: at.getTime(),
           chips: chips.filter((chip) => chip.time === slot.time),
           mirrors: mirrors.filter((chip) => chip.time === slot.time),
           episodes: episodes.filter((chip) => chip.time === slot.time),
@@ -1606,6 +1610,21 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const facts = this.factsOf(itemId);
     if (facts === null) return null;
     return destinationOf(facts);
+  });
+
+  /**
+   * The release cadence of the channel the dragged item is routed to, or null: nothing is
+   * being dragged, the item has no channel, or this app has no cadence for it (Little Goose).
+   * Read from the item's own channel, not the tab's, so a Fireside chip dragged on the
+   * Telltale tab lights Fireside's slots.
+   */
+  readonly draggingCadence = computed<CadenceKey | null>(() => {
+    const itemId = this.draggingItemId();
+    if (itemId === null) return null;
+    const facts = this.factsOf(itemId);
+    if (facts === null || facts.channelId === null) return null;
+    const channel = this.channelRoster().find((c) => c.channelId === facts.channelId);
+    return channel === undefined ? null : cadenceKeyFor(channel.name);
   });
 
   /** Items whose selection record could not be read. Shown, never dropped. */
@@ -2013,22 +2032,34 @@ export class PublishCalendar implements OnInit, OnDestroy {
   }
 
   /**
-   * How strongly this slot should offer itself to the drag in flight.
+   * Whether this slot lights up for the drag in flight (Owen, 2026-10-23: "it shouldnt light
+   * up all the slots. it should keep them exactly as they were, only the ones i should drag
+   * them to should light up so i can see where the slots are for that channel").
    *
-   * `match` — the slot's lane is the item's lane. This is the obvious target.
-   * `other` — a real target that will take the drop, drawn back so it is plainly the
-   *           second answer. NOT refused: the app reports and does not enforce, and a
-   *           podcast dropped at 2 PM or a video at 5 AM is the operator's decision to
-   *           make. Refusing it would be this page inventing a rule the writer does not
-   *           have.
-   * `none`  — nothing is being dragged, or the slot is inside the writer's lead and is
-   *           inert anyway.
+   * `match` — a slot the dragged item's CHANNEL releases in: a YouTube item's cadence slots
+   *           (Telltale Sun/Thu 1 PM, Fireside 1 PM and 2 PM Sun/Thu, Unfiltered 4 PM); a
+   *           podcast's 5 AM lane; and, for a YouTube channel this app has no cadence for
+   *           (Little Goose), its lane, the only answer there is.
+   * `none`  — every other slot, drawn exactly as it was. STILL A TARGET: nothing here refuses
+   *           a drop (the app reports and does not enforce, LEDGER), it just is not lit.
+   *           Also nothing being dragged, or a slot inside the writer's lead, which is inert.
+   *
+   * Until 2026-10-23 every slot of the item's lane lit, and the other lane lit faintly, so a
+   * drag lit the whole board.
    */
-  dropAffinity(slot: SlotCell): 'match' | 'other' | 'none' {
+  dropAffinity(slot: SlotCell): 'match' | 'none' {
     if (slot.isPast) return 'none';
     const dragging = this.draggingDestination();
-    if (dragging === null) return 'none';
-    return dragging === slot.destination ? 'match' : 'other';
+    if (dragging === null || dragging !== slot.destination) return 'none';
+    if (dragging === 'spreaker') return 'match';
+    const cadence = this.draggingCadence();
+    if (cadence === null) return 'match';
+    return isCadenceSlot(cadence, new Date(slot.atMs)) ? 'match' : 'none';
+  }
+
+  /** The title's part marker as its own badge, and the title without it (calendar-states partOf). */
+  partOf(title: string): { rest: string; part: string | null } {
+    return partOf(title);
   }
 
   // ---------------------------------------------------------------- drag and drop

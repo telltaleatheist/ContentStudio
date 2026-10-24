@@ -282,6 +282,26 @@
   color: var(--text-secondary);
 }
 
+/* The part a title ends in (| P3, | Ch 12): its own badge, never truncated, so the part is
+   readable however short the row (Owen, 2026-10-23). The full title is one hover away. */
+.part-badge {
+  flex-shrink: 0;
+  border: 1px solid var(--primary-orange);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--primary-orange);
+  white-space: nowrap;
+}
+.tray-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
 .podcast-glyph {
   font-size: 14px;
   width: 14px;
@@ -578,17 +598,12 @@
     }
   }
 
+  /* A slot the dragged item's channel releases in. Every other slot keeps its look while a
+     drag is in flight (Owen, 2026-10-23); it still takes the drop. */
   &.drop-ready {
     border-style: dashed;
     border-color: var(--primary-orange);
-  }
-
-  /* The OTHER lane's slot, while a drag is in flight. It will take the drop — nothing here
-     refuses one — but it offers itself faintly, so the obvious target is the right one and
-     a cross-lane drop has to be aimed at deliberately. */
-  &.drop-weak {
-    border-style: dashed;
-    border-color: color-mix(in srgb, var(--primary-orange) 30%, var(--border-color));
+    background: color-mix(in srgb, var(--primary-orange) 7%, var(--bg-secondary));
   }
 
   &.drop-over {
