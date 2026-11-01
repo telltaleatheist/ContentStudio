@@ -101,6 +101,12 @@ export interface ChannelCollectionResult {
    * channel its whole collection. Shown in the popup by id.
    */
   unvalued: string[];
+  /**
+   * A/B tests whose resultState this build does not recognise: skipped (never recorded, so
+   * never a winner) and shown in the popup by id and state. A channel where NO test's state is
+   * recognised fails instead (see fetchExperimentsInPage).
+   */
+  abUnrecognized: { videoId: string; state: string }[];
 }
 
 // ============================================================================
@@ -238,6 +244,7 @@ export async function collectChannel(
   );
   if (!experimentResult.ok) throw mapCatalogueError(experimentResult, channelId);
   const abTests: AbTestRecord[] = experimentResult.tests;
+  const abUnrecognized: { videoId: string; state: string }[] = experimentResult.unrecognized;
 
   // The channel's per-day series (Home feed card). Two cheap requests; a failure here is
   // the channel's failure like every other call above — nothing half-collected is kept.
@@ -300,7 +307,7 @@ export async function collectChannel(
   await recordFirstWeeks(channelId, [...firstWeeks.map((f) => f.videoId), ...firstWeekUnvalued], FIRST_WEEK_LOOKBACK_DAYS + 30);
 
   const unvalued = Array.from(new Set([...injected.unvalued, ...firstWeekUnvalued]));
-  return { videos, snapshots: dueSnapshots, abTests, days, firstWeeks, unvalued };
+  return { videos, snapshots: dueSnapshots, abTests, days, firstWeeks, unvalued, abUnrecognized };
 }
 
 /** Set each snapshot's videoAgeHours from the catalogue's publish date (see collectChannel). */

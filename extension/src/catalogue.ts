@@ -321,8 +321,10 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
 
   const armIndex = (arm: string): number => Number(String(arm || '').match(/ARM_(\d+)$/)?.[1] || 0);
   const tests: any[] = [];
-  /** Distinct `resultState` values this run did not recognise. Non-empty means we stop. */
-  const unrecognized = new Set<string>();
+  /** Tests whose `resultState` this build does not recognise: skipped, and named in the popup. */
+  const unrecognized: { videoId: string; state: string }[] = [];
+  /** Tests whose `resultState` this build DID recognise, decided or not. */
+  let recognized = 0;
 
   for (let i = 0; i < videoIds.length; i += BATCH) {
     const chunk = videoIds.slice(i, i + BATCH);
@@ -409,7 +411,8 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
       // "Winner: <title>" is the highest-leverage text in the system and a lean is not a win.
       //
       // UNSPECIFIED joined on 2026-11-01, caught live by the guard below on Fireside: the
-      // protobuf default, i.e. Studio has an experiment on the video but has set no result yet.
+      // protobuf default, i.e. Studio has an experiment on the video but has set no result —
+      // what a test Owen CANCELLED looks like (he cancelled one on a demonetized video).
       // No result is no winner — skipped, never recorded.
       if (
         state === 'NO_WINNER' ||
@@ -417,11 +420,12 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
         state === 'NOT_ENOUGH_DATA' ||
         state === 'PREFERRED' ||
         state === 'UNSPECIFIED'
-      ) continue;
+      ) { recognized++; continue; }
       if (state !== 'WINNER') {
-        unrecognized.add(String(result.resultState));
+        unrecognized.push({ videoId: v.videoId, state: String(result.resultState) });
         continue;
       }
+      recognized++;
       const winnerIdx = armIndex(result.winnerArm);
       // Kept as fail-loud backstops behind the state check, not as the decision itself.
       if (winnerIdx < 1 || !variants[winnerIdx - 1] || shares.length !== variants.length) continue;
@@ -445,33 +449,31 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
     }
   }
 
-  // An enum this build does not recognise FAILS THE RUN rather than being skipped quietly.
+  // A test whose state this build does not recognise is SKIPPED AND NAMED, not the channel's
+  // failure — unless no test on the channel was recognised at all.
   //
-  // This is the deliberate choice and it costs something, so it is written down: failing here
-  // aborts the whole collection pass, not just the A/B half, because the caller treats a
-  // non-ok result as fatal. The alternative — return the tests we did understand and mention
-  // the rest — is worse in the case that actually matters. If the live enum turns out to be
-  // prefixed, EVERY test is unrecognised, `tests` is empty, and "collected 0 A/B tests, all
-  // fine" is indistinguishable from "this channel ran no tests". The loop would go quiet and
-  // nobody would know why, which is the failure this guard exists to prevent, arriving by a
-  // different door.
-  //
-  // Loud and total is recoverable in one Studio visit. Silent and partial is not recoverable
-  // at all, because nothing would ever say it happened.
-  if (unrecognized.size > 0) {
+  // Until 2026-11-01 any unknown value failed the whole pass (views, days, first weeks and
+  // all), because the case that matters is Studio changing the enum's FORMAT: then every test
+  // is unrecognised, `tests` is empty, and "0 A/B tests" would be indistinguishable from "this
+  // channel ran no tests". That case still fails, loudly. But one odd video — Fireside's
+  // cancelled test, whose UNSPECIFIED state blocked the channel for a week — must not cost the
+  // channel its collection: it is left out (never recorded, so never a win) and its id and
+  // state go to the popup, the same treatment #323 gives a video with no views value.
+  if (unrecognized.length > 0 && recognized === 0) {
+    const states = [...new Set(unrecognized.map((u) => u.state))];
     return fail(
       'unrecognized-result-state',
-      `get_creator_videos returned resultState value(s) this build does not recognise: ` +
-      `${[...unrecognized].map((s) => JSON.stringify(s)).join(', ')}. Known values (with or ` +
+      `get_creator_videos returned resultState value(s) this build does not recognise on every ` +
+      `test it saw: ${states.map((s) => JSON.stringify(s)).join(', ')}. Known values (with or ` +
       `without the CREATOR_EXPERIMENT_RESULT_STATE_ prefix, which is stripped before ` +
       `comparison): WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA, PREFERRED, UNSPECIFIED. ` +
       `No A/B results ` +
-      `were recorded from this pass — YouTube has grown a new state and ` +
-      `extension/src/catalogue.ts needs to learn what it means.`,
+      `were recorded from this pass — YouTube has changed the state's format or grown new ` +
+      `states, and extension/src/catalogue.ts needs to learn what they mean.`,
     );
   }
 
-  return { ok: true, tests };
+  return { ok: true, tests, unrecognized };
 }
 
 /**

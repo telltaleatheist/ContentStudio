@@ -129,6 +129,14 @@ async function renderChannels(): Promise<void> {
         note.textContent = `${unvalued.length} video${unvalued.length === 1 ? '' : 's'} without a views value in Studio, not snapshotted: ${unvalued.join(', ')}`;
         row.appendChild(note);
       }
+      // A/B tests in a state this build does not know: left out of the A/B results, said.
+      const abSkipped = status.lastAbUnrecognized ?? [];
+      if (abSkipped.length > 0) {
+        const note = document.createElement('div');
+        note.className = 'channel-meta';
+        note.textContent = `${abSkipped.length} A/B test${abSkipped.length === 1 ? '' : 's'} in a state this build does not know, left out: ${abSkipped.map((u) => `${u.videoId} (${u.state.replace(/^CREATOR_EXPERIMENT_RESULT_STATE_/, '')})`).join(', ')}`;
+        row.appendChild(note);
+      }
     }
 
     list.appendChild(row);
