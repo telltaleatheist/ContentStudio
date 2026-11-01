@@ -16,7 +16,8 @@
 //   videoCreatorExperiment.result.winnerArm            which one won
 //   videoCreatorExperiment.result.resultState          CREATOR_EXPERIMENT_RESULT_STATE_*
 //                                                      (WINNER | NO_WINNER | PREFERRED |
-//                                                       NOT_CONCLUSIVE_YET | NOT_ENOUGH_DATA
+//                                                       NOT_CONCLUSIVE_YET | NOT_ENOUGH_DATA |
+//                                                       UNSPECIFIED
 //                                                       — wire format captured 2026-08-23)
 //
 // which is exactly the shape VideoVerdict.abTest has been waiting for since the analytics
@@ -406,11 +407,16 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
       // exactly these undecided tests; admitting PREFERRED as a WINNER would reintroduce the
       // bug the state check was written to kill, one enum later. Skipped, not recorded:
       // "Winner: <title>" is the highest-leverage text in the system and a lean is not a win.
+      //
+      // UNSPECIFIED joined on 2026-11-01, caught live by the guard below on Fireside: the
+      // protobuf default, i.e. Studio has an experiment on the video but has set no result yet.
+      // No result is no winner — skipped, never recorded.
       if (
         state === 'NO_WINNER' ||
         state === 'NOT_CONCLUSIVE_YET' ||
         state === 'NOT_ENOUGH_DATA' ||
-        state === 'PREFERRED'
+        state === 'PREFERRED' ||
+        state === 'UNSPECIFIED'
       ) continue;
       if (state !== 'WINNER') {
         unrecognized.add(String(result.resultState));
@@ -458,7 +464,7 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
       `get_creator_videos returned resultState value(s) this build does not recognise: ` +
       `${[...unrecognized].map((s) => JSON.stringify(s)).join(', ')}. Known values (with or ` +
       `without the CREATOR_EXPERIMENT_RESULT_STATE_ prefix, which is stripped before ` +
-      `comparison): WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA, PREFERRED. ` +
+      `comparison): WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA, PREFERRED, UNSPECIFIED. ` +
       `No A/B results ` +
       `were recorded from this pass — YouTube has grown a new state and ` +
       `extension/src/catalogue.ts needs to learn what it means.`,
