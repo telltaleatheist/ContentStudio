@@ -1,0 +1,29 @@
+{
+  "video": "/Volumes/Callisto/Movies/FCPX/2026-10-25/complete/u1 - marching to zion.mov",
+  "transcript": "/Volumes/Callisto/Movies/FCPX/2026-10-25/complete/.contentstudio/transcripts/u1 - marching to zion.mov.json",
+  "duration": "38:47",
+  "marked_by": "Claude (Opus 5.5), reading the whole transcript, 2026-11-01, at Owen's request: the chapters a careful reader finds, not the report's",
+  "detailed": [
+    { "start": "0:00", "first_words": "This is Stephen Anderson.", "title": "Who Steven Anderson is" },
+    { "start": "0:37", "first_words": "Framing the world presents", "title": "The film's Bible history, Abraham to the kingdom of Judah", "note": "Patreon plug 2:49-3:08 inside it" },
+    { "start": "5:44", "first_words": "After three and a half years of ministry", "title": "Who crucified Jesus, AD 70 and 1948: \"darker forces\"" },
+    { "start": "8:02", "first_words": "If we lose the midterms", "title": "The film's opening: was Hitler a hero?" },
+    { "start": "10:13", "first_words": "So in order to understand the founding", "title": "Rabbinic Judaism: the end of sacrifices, Pharisees as a Catholic Church" },
+    { "start": "13:40", "first_words": "The Talmud is the holy book of the Jews.", "title": "What the Talmud is, and the interviewee's words changed" },
+    { "start": "16:54", "first_words": "Judaism, the oral law", "title": "Oral law over the Torah? A quote that isn't in the Talmud" },
+    { "start": "21:14", "first_words": "The Jews have always known throughout history", "title": "\"If Christians knew what was in the Talmud\": a book advertised three times" },
+    { "start": "23:38", "first_words": "Okay, I've done some reading here.", "title": "What the Talmud actually says about Jesus, and why it was censored", "note": "a song plays 22:31-23:37 while Owen researches; it belongs to this break, not a chapter" },
+    { "start": "28:36", "first_words": "is head of the Judaic Studies at Princeton University.", "title": "The film's \"hateful, blasphemous\" Talmud claims" },
+    { "start": "30:59", "first_words": "Does the Talmud talk about the Jews killing Jesus?", "title": "The interview cut down to \"maybe he deserved to die\"" },
+    { "start": "32:10", "first_words": "The Talmud actually glotes about Jesus dying young.", "title": "Balaam and the Peter Schäfer quote, checked: he isn't Jewish" },
+    { "start": "35:53", "first_words": "Schaefer said in an article", "title": "Paul, Thessalonians and Mel Gibson: lies all the way down" }
+  ],
+  "merged_to_rule_259": [
+    { "start": "0:00", "title": "Steven Anderson retells Israel's history from the Bible" },
+    { "start": "5:44", "title": "Who killed Jesus, 1948, and the film's Hitler opening" },
+    { "start": "10:13", "title": "Rabbinic Judaism and the Talmud, explained wrong" },
+    { "start": "16:54", "title": "Oral law over the Torah? A quote that isn't there" },
+    { "start": "21:14", "title": "Jesus in the Talmud: what it says and why it was censored" },
+    { "start": "28:36", "title": "The film's Talmud quotes, cut and invented" }
+  ]
+}
