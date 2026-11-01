@@ -44,6 +44,11 @@ import {
 } from './thumbnails-compose';
 import type { StoredFrame, StoredPair, ThumbnailsView } from './thumbnails.types';
 
+/** A key pressed in a text field belongs to the field. */
+function isTyping(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
+}
+
 export interface ThumbnailsWindowData {
   jobId: string;
   itemId: string;
@@ -53,7 +58,7 @@ export interface ThumbnailsWindowData {
  * THE THUMBNAILS WINDOW: THE CARD EDITOR (2026-09-29, Owen: "maybe i select the thumbnail card i
  * want to fill. then i select the frame, the text, and the image of myself to use in it. then i
  * click a different card and do the same ... as soon as i click something, it adds it to the frame.
- * if i unclick it, it removes it from the frame").
+ * if i unclick it, it removes it from the frame"). Backspace or Delete clears the active card.
  *
  *   - THREE CARDS across the top, each a LIVE preview drawn here with the final render's own layout
  *     and drawing (thumbnail-preview.ts), with the title it goes with under it. One card is ACTIVE
@@ -72,7 +77,7 @@ export interface ThumbnailsWindowData {
  *
  *   - HIS OWN IMAGES AS FRAMES (2026-09-29, Owen: "lets make it so i can drag/drop them into the
  *     slot"): an image file dropped from Finder on a card becomes that card's frame at once (cut to
- *     fill 16:9; Edit zooms or moves it), dropped on the Frames tray or chosen with "Add an image…"
+ *     fill 16:9, or a portrait one centred on a blurred copy of itself; Edit zooms or moves it), dropped on the Frames tray or chosen with "Add an image…"
  *     it joins the tray. They are kept in the report, listed first.
  *   - A REPORT WITH NO STORY (2026-09-30, Owen, a report made from a subject for a video not
  *     recorded yet: "it should let me type it and pick the thumbnail background and foreground
@@ -216,6 +221,12 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     this.ref.backdropClick().subscribe(() => this.requestClose());
     this.ref.keydownEvents().subscribe((event) => {
       if (event.key === 'Escape') this.requestClose();
+      // Backspace or Delete clears the active card, as its Clear does (2026-11-01, Owen: "highlight
+      // a thumbnail slot and hit backspace or delete and itll clear it"); never while typing.
+      else if ((event.key === 'Backspace' || event.key === 'Delete') && !this.closeAsked() && !isTyping(event.target)) {
+        event.preventDefault();
+        this.cards.set(clearCard(this.cards(), this.active()));
+      }
     });
     // Each card redraws when it, the look or its surface changes; the rest are left as they are.
     effect(() => {
