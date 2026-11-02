@@ -573,6 +573,37 @@
                 <a class="fact-go" routerLink="/publish-calendar">set in the calendar</a>
               </div>
 
+              <!-- ── HOW IT GOES PUBLIC ── next to the schedule (VISIBILITY-SCHEDULER-PLAN.md,
+                   Owen 2026-11-02, the sponsor case): private with YouTube's own publish time,
+                   or "Unlisted now, then public at…", which uploads / pushes unlisted with no
+                   publishAt and creates a change to public on the visibility scheduler. Once
+                   that change exists its time is the scheduler's (Visibility changes, Video row). -->
+              @if (!publish.isPodcast() && publish.releaseMode(); as mode) {
+                <div class="fact static release-mode">
+                  <span class="dot" [class]="'dot ' + (mode === 'unlisted-then-public' ? 'set' : 'unset')"></span>
+                  <span class="fact-l">Goes public</span>
+                  <span class="fact-v release-choice">
+                    <button class="ghost" [class.primary-ghost]="mode === 'youtube-schedule'"
+                            [disabled]="publish.saving() || publish.releaseLocked()"
+                            (click)="publish.setReleaseMode('youtube-schedule')">Private until then (YouTube's schedule)</button>
+                    <button class="ghost" [class.primary-ghost]="mode === 'unlisted-then-public'"
+                            [disabled]="publish.saving() || publish.releaseLocked()"
+                            (click)="publish.setReleaseMode('unlisted-then-public')">Unlisted now, then public at…</button>
+                  </span>
+                </div>
+                @if (mode === 'unlisted-then-public') {
+                  <p class="why release-why">
+                    @if (publish.releaseLocked()) {
+                      Its change to public is on the visibility scheduler. Edit or cancel it in the Video row's
+                      Visibility changes; this item's time follows it.
+                    } @else {
+                      Upload or Push makes the video unlisted with no YouTube publish time, then creates a change
+                      to public at the scheduled time on the visibility scheduler (Settings → Visibility scheduler).
+                    }
+                  </p>
+                }
+              }
+
               <!-- ── THUMBNAIL ── The image is decoded and downscaled in the main process;
                    the renderer never reads the file, so webSecurity stays on. The image,
                    the name and the measurements are one row and the buttons are the next,
@@ -852,6 +883,12 @@
                                 [disabled]="publish.saving()"
                                 (click)="publish.unlinkVideo()">Unlink</button>
                       </div>
+                      <!-- Visibility changes for this video (VISIBILITY-SCHEDULER-PLAN.md):
+                           read from the scheduler when this row opens, add / edit / cancel. -->
+                      <app-visibility-changes [videoId]="videoId"
+                                              [itemId]="publish.selection()?.itemId ?? null"
+                                              [record]="publish.selection()"
+                                              (recordChanged)="publish.adoptSelection($event)" />
                     } @else {
                       <div class="fld">
                         <span class="why">Not linked to a YouTube upload yet.</span>

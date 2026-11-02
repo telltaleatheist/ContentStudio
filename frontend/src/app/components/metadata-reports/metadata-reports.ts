@@ -10,6 +10,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { VisibilityChanges } from '../visibility-changes/visibility-changes';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
@@ -474,6 +475,7 @@ interface ParsedMetadata {
     MatMenuModule,
     MatDialogModule,
     RouterLink,
+    VisibilityChanges,
   ],
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'

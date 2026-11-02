@@ -1399,3 +1399,43 @@
   font-weight: 600;
   margin-top: 0;
 }
+
+/* Visibility-scheduler changes (VISIBILITY-SCHEDULER-PLAN.md): a pending one is a small
+   quiet badge on its day, a failed one red. */
+.vis-badge {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  &.failed {
+    color: var(--danger-text);
+    border-color: var(--danger-text);
+    background: var(--danger-bg);
+  }
+}
+.vis-failures {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0.5rem 0;
+  font-size: 0.8rem;
+  color: var(--danger-text);
+  mat-icon { font-size: 16px; width: 16px; height: 16px; }
+}
+.vis-error {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.unlisted-note {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}

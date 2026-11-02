@@ -10,6 +10,7 @@ import type {
   ChosenMetadata,
   FindDraftResult,
   PublishResult,
+  ReleaseMode,
   PushOutcome,
   ReportIndexResponse,
   ScheduledSweep,
@@ -29,6 +30,18 @@ import type {
   UploadProgress,
   VideoSource,
 } from '../features/publish/publish.types';
+import type {
+  NewSchedulerJob,
+  SchedulerChannel,
+  SchedulerHealth,
+  SchedulerJob,
+  SchedulerJobFilter,
+  SchedulerJobPatch,
+  SchedulerJobWithWarnings,
+  SchedulerStatus,
+  SchedulerTestResult,
+  SchedulerVideo,
+} from '../features/scheduler/scheduler.types';
 import type {
   LookAddPhotos,
   LookLogo,
@@ -142,6 +155,11 @@ export interface PublishFields {
   channelId?: string | null;
   /** ISO-8601 with an explicit zone, ≥15 min out, ≤2 years out. null clears. */
   publishAt?: string | null;
+  /**
+   * How it goes public at publishAt: YouTube's own schedule, or unlisted now and a
+   * visibility-scheduler change to public. Refused while the item's change exists.
+   */
+  releaseMode?: ReleaseMode;
   /** Strictly boolean — a string here is refused, not coerced. */
   isPodcast?: boolean;
   /**
@@ -1005,6 +1023,20 @@ declare global {
       spreakerExchangeCode: (input: { code: string }) => Promise<PublishResult<SpreakerStatus>>;
       spreakerRefreshToken: () => Promise<PublishResult<SpreakerStatus>>;
       spreakerListScheduled: () => Promise<PublishResult<SpreakerSweep>>;
+
+      // The visibility scheduler (VISIBILITY-SCHEDULER-PLAN.md)
+      schedulerGetStatus: () => Promise<PublishResult<SchedulerStatus>>;
+      schedulerSaveKey: (key: string) => Promise<PublishResult<SchedulerStatus>>;
+      schedulerTest: () => Promise<PublishResult<SchedulerTestResult>>;
+      schedulerHealth: () => Promise<PublishResult<SchedulerHealth>>;
+      schedulerChannels: () => Promise<PublishResult<SchedulerChannel[]>>;
+      schedulerVideo: (videoId: string) => Promise<PublishResult<SchedulerVideo>>;
+      schedulerListJobs: (filter: SchedulerJobFilter) => Promise<PublishResult<SchedulerJob[]>>;
+      schedulerCreateJob: (input: NewSchedulerJob) => Promise<PublishResult<SchedulerJobWithWarnings>>;
+      schedulerPatchJob: (id: string, patch: SchedulerJobPatch) => Promise<PublishResult<SchedulerJobWithWarnings>>;
+      schedulerCancelJob: (id: string) => Promise<PublishResult<SchedulerJob>>;
+      publishCreateReleaseChange: (itemId: string) => Promise<PublishResult<{ selection: ChosenMetadata; warnings: string[] }>>;
+      publishFollowReleaseChange: (itemId: string, job: SchedulerJob) => Promise<PublishResult<ChosenMetadata>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
       hasSavedTranscript: (videoPath: string) => Promise<SavedTranscriptCheck>;
@@ -2186,6 +2218,78 @@ export class ElectronService {
   async spreakerListScheduled(): Promise<PublishResult<SpreakerSweep>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.spreakerListScheduled();
+  }
+
+  // ------------------------------------------------------ the visibility scheduler
+  //
+  // Any visibility to any other at a set time, run on Triton (VISIBILITY-SCHEDULER-PLAN.md).
+  // The device key never reaches this window: status says whether one is saved. Every
+  // refusal is the scheduler's own words.
+
+  /** Is a device key saved, and at what address? */
+  async schedulerGetStatus(): Promise<PublishResult<SchedulerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerGetStatus();
+  }
+
+  /** Save or replace the device key (written to scheduler.json, mode 600). */
+  async schedulerSaveKey(key: string): Promise<PublishResult<SchedulerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerSaveKey(key);
+  }
+
+  /** /health and /channels, for Settings' Test button. */
+  async schedulerTest(): Promise<PublishResult<SchedulerTestResult>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerTest();
+  }
+
+  async schedulerHealth(): Promise<PublishResult<SchedulerHealth>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerHealth();
+  }
+
+  async schedulerChannels(): Promise<PublishResult<SchedulerChannel[]>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerChannels();
+  }
+
+  /** The video's visibility and YouTube publishAt right now, as the scheduler's channel token sees it. */
+  async schedulerVideo(videoId: string): Promise<PublishResult<SchedulerVideo>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerVideo(videoId);
+  }
+
+  async schedulerListJobs(filter: SchedulerJobFilter): Promise<PublishResult<SchedulerJob[]>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerListJobs(filter);
+  }
+
+  async schedulerCreateJob(input: NewSchedulerJob): Promise<PublishResult<SchedulerJobWithWarnings>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerCreateJob(input);
+  }
+
+  async schedulerPatchJob(id: string, patch: SchedulerJobPatch): Promise<PublishResult<SchedulerJobWithWarnings>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerPatchJob(id, patch);
+  }
+
+  async schedulerCancelJob(id: string): Promise<PublishResult<SchedulerJob>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.schedulerCancelJob(id);
+  }
+
+  /** "Create the change": the change to public for an 'unlisted-then-public' item that has none. */
+  async publishCreateReleaseChange(itemId: string): Promise<PublishResult<{ selection: ChosenMetadata; warnings: string[] }>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishCreateReleaseChange(itemId);
+  }
+
+  /** Bring the item along after its change was edited or cancelled in Visibility changes. */
+  async publishFollowReleaseChange(itemId: string, job: SchedulerJob): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishFollowReleaseChange(itemId, job);
   }
 
   async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {

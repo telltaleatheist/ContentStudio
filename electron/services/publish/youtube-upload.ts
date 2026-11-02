@@ -31,6 +31,8 @@
  *     so a bad file stops the run instead of surfacing after a gigabyte went up.
  *   - an updated video (LEDGER #316) that is gone or has changed since it was chosen, and an
  *     edited description that still carries chapter lines while one is set.
+ *   - an 'unlisted-then-public' item with no time to go public, a time too close or past,
+ *     or no saved scheduler key (release-change.ts) — checked before a byte goes up.
  *
  * ── Structure ────────────────────────────────────────────────────────────────────────
  *
@@ -54,6 +56,7 @@ import { ChosenMetadata, UploadReceipt, youtubeDescriptionProblem } from './publ
 import { firstLineOf, splitTags } from './youtube-push';
 import { LYRICS_CAPTION_TRACK, requireProfileRead, type ChannelPublishProfile } from './youtube-profile';
 import { requireUpdatedVideoFile, updatedVideoDescriptionProblem, type StatFn } from './updated-video';
+import { createReleaseChange, isUnlistedFirst, releaseFailureMessage, requireReleaseReady, type ReleaseSchedulerApi } from './release-change';
 
 /** The file at a path as it is now, or null when nothing is there. */
 export const statOnDisk: StatFn = (p) => {
@@ -97,7 +100,8 @@ export interface YouTubeUploadApi {
 export interface VideoInsertBody {
   snippet: { title: string; description: string; tags: string[]; categoryId: string };
   status: {
-    privacyStatus: 'private';
+    /** 'unlisted' only for an 'unlisted-then-public' item, and then with no publishAt (release-change.ts). */
+    privacyStatus: 'private' | 'unlisted';
     publishAt?: string;
     /**
      * False for Owen's channels: adult commentary; the browser flow declares the same thing on
@@ -180,6 +184,10 @@ export function planVideoInsert(input: UploadPlanInput): UploadPlan {
     );
   }
 
+  // "Unlisted now, then public at…" (Owen, 2026-11-02): unlisted with NO publishAt — YouTube
+  // only schedules private → public, so the time to go public is the scheduler's, not this
+  // insert's. The caller has already refused such an item without a time (requireReleaseReady).
+  const unlistedFirst = isUnlistedFirst(record);
   const body: VideoInsertBody = {
     snippet: {
       title: resolved.title,
@@ -188,8 +196,8 @@ export function planVideoInsert(input: UploadPlanInput): UploadPlan {
       categoryId,
     },
     status: {
-      privacyStatus: 'private',
-      ...(record.publishAt ? { publishAt: record.publishAt } : {}),
+      privacyStatus: unlistedFirst ? 'unlisted' : 'private',
+      ...(record.publishAt && !unlistedFirst ? { publishAt: record.publishAt } : {}),
       selfDeclaredMadeForKids: flags !== null ? flags.madeForKids : false,
       ...(flags !== null ? { containsSyntheticMedia: flags.containsSyntheticMedia } : {}),
     },
@@ -209,6 +217,11 @@ export interface UploadDeps {
    * out is one that will be.
    */
   listRecentUploads: (channelId: string) => Promise<UploadStatusEntry[]>;
+  /**
+   * The visibility scheduler, for an 'unlisted-then-public' item: checked for a key before the
+   * upload, and asked for the change to public after it. Not read for any other item.
+   */
+  scheduler: ReleaseSchedulerApi;
   onProgress?: (sentBytes: number, totalBytes: number) => void;
   signal?: AbortSignal;
   now?: () => Date;
@@ -293,6 +306,10 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     }
     if (record.channelId) api.requireCaptionScope(record.channelId);
   }
+
+  // Unlisted now, public later: everything about the release that can be refused is refused
+  // here, before the upload, so a missing scheduler key never leaves an unlisted video behind.
+  const releaseAt = isUnlistedFirst(record) ? requireReleaseReady(record, deps.scheduler, now(), 'uploaded') : null;
 
   const resolved = resolveChosenMetadata(record, generated);
   // The category: the channel profile's declared one, or the channel's latest upload's as before.
@@ -409,6 +426,7 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     },
     tags: { count: plan.body.snippet.tags.length },
     ...(plan.body.status.publishAt ? { publishAt: plan.body.status.publishAt } : {}),
+    privacyStatus: plan.body.status.privacyStatus,
     ...(thumbnail ? { thumbnail: thumbnail.path } : {}),
     ...(plan.body.status.containsSyntheticMedia !== undefined
       ? { audience: { madeForKids: plan.body.status.selfDeclaredMadeForKids, containsSyntheticMedia: plan.body.status.containsSyntheticMedia } }
@@ -418,10 +436,19 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     lockedPrivatePendingAudit: true,
   };
 
-  const selection = await store.update(itemId, generated, {
+  let selection = await store.update(itemId, generated, {
     pushedAt: receipt.uploadedAt,
     uploadReceipt: receipt,
   });
+
+  // The change to public, AFTER the video exists and its receipt is stored. A refusal is
+  // written onto the record first and then thrown: the video stays unlisted, and the item
+  // says so until a change is created (release-change.ts).
+  if (releaseAt !== null) {
+    const outcome = await createReleaseChange(deps.scheduler, { itemId, videoId, runAt: releaseAt, title: plan.body.snippet.title }, now());
+    selection = await store.update(itemId, generated, { releaseChange: outcome.link });
+    if (outcome.failure !== null) throw new Error(releaseFailureMessage(videoId, releaseAt, 'uploaded', outcome.failure));
+  }
 
   return { selection, receipt };
 }

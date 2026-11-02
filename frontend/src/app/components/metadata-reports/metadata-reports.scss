@@ -1753,3 +1753,13 @@ a.ghost.link {
   margin: 8px 0;
   align-items: flex-start;
 }
+
+/* "Goes public": the two release choices beside the schedule (visibility scheduler). */
+.release-mode .release-choice {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  white-space: normal;
+  overflow: visible;
+}
+.release-why { padding: 0 14px 0 33px; }

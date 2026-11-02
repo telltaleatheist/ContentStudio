@@ -1,0 +1,85 @@
+<!-- Visibility scheduler (VISIBILITY-SCHEDULER-PLAN.md): the address is read-only, the key
+     box is always empty on load (the stored key never comes back out), and Test calls
+     /health and /channels. Its own Save, not part of the page's Save Settings. -->
+<mat-card class="settings-card scheduler-card" id="scheduler-section">
+  <mat-card-header>
+    <mat-card-title>Visibility scheduler</mat-card-title>
+    <mat-card-subtitle>Changes a video's visibility at a set time (unlisted → public, public → unlisted, anything to anything), run on Triton</mat-card-subtitle>
+  </mat-card-header>
+  <mat-card-content>
+    @if (statusError(); as err) {
+      <p class="sch-warn">{{ err }}</p>
+    }
+    @if (status(); as s) {
+      <div class="sch-row">
+        <span class="sch-label">Address</span>
+        <span class="sch-value mono">{{ s.baseUrl ?? '—' }}</span>
+      </div>
+      <div class="sch-row">
+        <span class="sch-label">Device key</span>
+        @if (s.configured) {
+          <span class="sch-value">saved on this machine ({{ s.configPath }})</span>
+        } @else {
+          <span class="sch-value sch-warn-text">not set up</span>
+        }
+      </div>
+      @if (!s.configured && s.reason) {
+        <p class="sch-hint">{{ s.reason }}</p>
+      }
+    } @else if (!statusError()) {
+      <p class="sch-hint">Reading the scheduler settings…</p>
+    }
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>{{ status()?.configured ? 'Replace the device key' : 'Device key' }}</mat-label>
+      <input matInput type="password" autocomplete="off" spellcheck="false"
+             [ngModel]="key()" (ngModelChange)="key.set($event); saved.set(false)"
+             [placeholder]="status()?.configured ? 'A key is saved — paste a new one to replace it' : 'csk_…'">
+      <mat-hint>Made on the setup page behind your Google login, shown there once. Never displayed after saving.</mat-hint>
+    </mat-form-field>
+
+    <div class="sch-actions">
+      <button mat-flat-button color="primary" [disabled]="saving() || !key().trim()" (click)="save()">
+        {{ saving() ? 'Saving…' : 'Save key' }}
+      </button>
+      <button mat-stroked-button [disabled]="testing() || !status()?.configured" (click)="runTest()">
+        {{ testing() ? 'Testing…' : 'Test' }}
+      </button>
+      <button mat-button (click)="openSetupPage()">
+        <mat-icon>open_in_new</mat-icon> Make a key
+      </button>
+    </div>
+    @if (saved()) { <p class="sch-ok">Key saved.</p> }
+    @if (saveError(); as err) { <p class="sch-warn">{{ err }}</p> }
+    @if (openError(); as err) { <p class="sch-warn">{{ err }}</p> }
+    @if (testError(); as err) { <p class="sch-warn">{{ err }}</p> }
+
+    @if (test(); as t) {
+      <div class="sch-test">
+        @if (t.health.ok) {
+          <p class="sch-ok">
+            Connected as "{{ t.health.caller }}". The run loop is alive (last tick {{ t.health.lastTick }}).
+            @if (t.health.nextDue) { Next change due {{ t.health.nextDue }}. }
+          </p>
+        } @else {
+          <p class="sch-warn">
+            Connected as "{{ t.health.caller }}", but the run loop has not ticked in the last two minutes
+            (last tick {{ t.health.lastTick ?? 'never' }}): changes will not run until it does.
+          </p>
+        }
+        @if (t.channels.length === 0) {
+          <p class="sch-warn">No channels are connected on the setup page.</p>
+        } @else {
+          <ul class="sch-channels">
+            @for (c of t.channels; track c.channelId) {
+              <li [class.sch-warn-text]="c.state !== 'ok'">
+                {{ c.title }} — {{ c.state === 'ok' ? 'connected' : c.state }}
+                @if (c.lastError) { ({{ c.lastError }}) }
+              </li>
+            }
+          </ul>
+        }
+      </div>
+    }
+  </mat-card-content>
+</mat-card>

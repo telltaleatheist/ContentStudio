@@ -206,6 +206,8 @@ export interface PushReceipt {
     tags: { count: number };
     /** Present only when status.publishAt was set by this push. */
     publishAt?: string;
+    /** Present only when this push made a private video unlisted ('unlisted-then-public'). */
+    privacyStatus?: 'unlisted';
     /** Present only when a thumbnail was uploaded; the absolute path of the file sent. */
     thumbnail?: string;
     /** Present only when the channel's profile declares an audience (LEDGER #308): what status carried. */
@@ -248,6 +250,30 @@ export interface UpdatedVideo {
   replacesPath: string;
 }
 
+/** See ChosenMetadata.releaseMode. */
+export type ReleaseMode = 'youtube-schedule' | 'unlisted-then-public';
+export const RELEASE_MODES: readonly ReleaseMode[] = ['youtube-schedule', 'unlisted-then-public'];
+
+/**
+ * The scheduler change behind an 'unlisted-then-public' item, as far as this record knows.
+ * The scheduler is the only store of changes; this is the item's link to its one change and
+ * the account of a failed attempt, never a copy of the change's state.
+ */
+export interface ReleaseChange {
+  /** The video the change is for. */
+  videoId: string;
+  /** The moment it was asked for (the record's publishAt then), ISO with an explicit zone. */
+  runAt: string;
+  /** ISO. When the create was attempted. */
+  attemptedAt: string;
+  /** The scheduler's id for the change; null exactly when `error` is set. */
+  jobId: string | null;
+  /** Why the change could not be created, verbatim; null exactly when `jobId` is set. */
+  error: string | null;
+  /** The scheduler's warnings when it was created (e.g. YouTube's own schedule will be cancelled). */
+  warnings: string[];
+}
+
 /** What one API upload (videos.insert) created. Written by youtube-upload.ts only. */
 export interface UploadReceipt {
   videoId: string;
@@ -260,6 +286,8 @@ export interface UploadReceipt {
   tags: { count: number };
   /** Present exactly when a schedule was sent with the insert. */
   publishAt?: string;
+  /** The visibility the insert asked for. Absent on receipts written before 'unlisted-then-public' (all private). */
+  privacyStatus?: 'private' | 'unlisted';
   /** Present exactly when a thumbnail was set after the insert. */
   thumbnail?: string;
   /** The audience and disclosure sent, exactly when the channel's profile declares them (LEDGER #308). */
@@ -502,6 +530,27 @@ export interface ChosenMetadata {
    * shrug.
    */
   publishAtSetAt: string | null;
+
+  /**
+   * HOW the item goes public at `publishAt` (VISIBILITY-SCHEDULER-PLAN.md, Owen 2026-11-02:
+   * the sponsor case, "they review the real video before release").
+   *
+   *   'youtube-schedule'     — private, with YouTube's own publishAt. What every item did
+   *                            before the scheduler existed.
+   *   'unlisted-then-public' — uploaded / pushed as UNLISTED with no publishAt, and a change
+   *                            to public at `publishAt` created on the visibility scheduler.
+   *
+   * Strictly present, never absent (upgradeStoredMetadata fills 'youtube-schedule').
+   */
+  releaseMode: ReleaseMode;
+
+  /**
+   * What creating the scheduler change for 'unlisted-then-public' last came to, or null for
+   * never tried. A FAILURE STAYS HERE, in red on the item, until a change is created for it:
+   * the video was already made unlisted, and the upload is not undone (plan, "ContentStudio").
+   * Cleared when the item forgets its video (unlink, mark unpublished).
+   */
+  releaseChange: ReleaseChange | null;
 
   /**
    * Absolute path to the thumbnail image, or null for none.
@@ -964,6 +1013,8 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     // record` is always true, so "absent" never has to be given a meaning.
     publishAt: null,
     publishAtSetAt: null,
+    releaseMode: 'youtube-schedule',
+    releaseChange: null,
     thumbnailPath: null,
     thumbnailMeta: null,
     // null, not 'manual'. A brand-new record has had no thumbnail decision made about it,
@@ -1032,6 +1083,9 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('chapterDrops' in stored)) upgraded.chapterDrops = [];
   if (!('publishAt' in stored)) upgraded.publishAt = null;
   if (!('publishAtSetAt' in stored)) upgraded.publishAtSetAt = null;
+  // The visibility scheduler (2026-11-02). Before it, YouTube's own schedule was the only way.
+  if (!('releaseMode' in stored)) upgraded.releaseMode = 'youtube-schedule';
+  if (!('releaseChange' in stored)) upgraded.releaseChange = null;
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
   if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
   // Provenance for a record written before there was any such thing as auto-discovery.

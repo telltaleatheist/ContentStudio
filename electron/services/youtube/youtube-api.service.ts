@@ -546,7 +546,7 @@ export class YouTubeApiService {
     filePath: string,
     body: {
       snippet: { title: string; description: string; tags: string[]; categoryId: string };
-      status: { privacyStatus: 'private'; publishAt?: string; selfDeclaredMadeForKids: boolean; containsSyntheticMedia?: boolean };
+      status: { privacyStatus: 'private' | 'unlisted'; publishAt?: string; selfDeclaredMadeForKids: boolean; containsSyntheticMedia?: boolean };
     },
     onProgress?: (sentBytes: number, totalBytes: number) => void,
     signal?: AbortSignal

@@ -14,7 +14,7 @@
  */
 
 import { RoutableChannel, findChannelById } from './channel-routing';
-import { ChosenMetadata, MAX_TITLE_LENGTH, validatePublishAt } from './publish-types';
+import { ChosenMetadata, MAX_TITLE_LENGTH, RELEASE_MODES, ReleaseMode, validatePublishAt } from './publish-types';
 
 /** A short, safe rendering of whatever the caller actually sent. */
 export function describeValue(value: unknown): string {
@@ -233,6 +233,18 @@ const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => Fi
     const error = validatePublishAt(value, ctx.now);
     if (error) throw new Error(error);
     return { publishAt: value.trim(), publishAtSetAt: setAt };
+  },
+
+  /**
+   * How the item goes public at publishAt: YouTube's own schedule (private until then), or
+   * unlisted now and a visibility-scheduler change to public then. One of the two names,
+   * exactly; see ChosenMetadata.releaseMode.
+   */
+  releaseMode(value) {
+    if (typeof value !== 'string' || !(RELEASE_MODES as readonly string[]).includes(value)) {
+      throw new Error(`releaseMode must be one of ${RELEASE_MODES.join(', ')}; got ${describeValue(value)}.`);
+    }
+    return { releaseMode: value as ReleaseMode };
   },
 
   /**

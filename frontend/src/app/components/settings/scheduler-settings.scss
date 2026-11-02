@@ -1,0 +1,67 @@
+// Settings › Visibility scheduler. The page's own tokens only (styles.scss); the frame is the
+// other Settings cards' (crucible-servers.scss does the same).
+
+:host { display: block; }
+
+.scheduler-card {
+  background-color: var(--bg-card) !important;
+  box-shadow: var(--shadow-sm) !important;
+
+  mat-card-header { margin-bottom: 1rem; }
+  mat-card-title { color: var(--text-primary); font-size: 1.2rem; font-weight: 600; }
+  mat-card-subtitle { color: var(--text-secondary) !important; }
+
+  mat-card-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .full-width { width: 100%; }
+}
+
+.sch-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 0.9rem;
+}
+
+.sch-label {
+  min-width: 7rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sch-value { color: var(--text-primary); word-break: break-all; }
+.mono { font-family: var(--font-mono); }
+
+.sch-hint, .sch-ok, .sch-warn {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.sch-hint { color: var(--text-secondary); }
+.sch-ok { color: var(--success-text); }
+.sch-warn, .sch-warn-text { color: var(--danger-text); }
+
+.sch-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.sch-test {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.sch-channels {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}

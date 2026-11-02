@@ -1,0 +1,110 @@
+// Visibility changes, inside the reports page's Video row. Uses the reports page's own --rp-*
+// tokens, which inherit into this component; the .ghost button rule is repeated here because
+// component styles do not reach across the boundary.
+
+:host { display: block; margin-top: 10px; }
+
+.vc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rp-line-soft, var(--rp-line));
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-2);
+}
+
+.vc-head, .vc-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.vc-title { font-weight: 600; color: var(--rp-ink); }
+.vc-spacer { flex: 1; }
+
+.ghost {
+  font: 500 var(--rp-fs-cap) / 1 var(--font-family);
+  color: var(--rp-ink-2);
+  background: transparent;
+  border: 1px solid var(--rp-line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  &:hover:not(:disabled) { color: var(--rp-ink); background: var(--rp-hover); }
+  &:disabled { color: var(--rp-ink-3); border-color: var(--rp-line-soft, var(--rp-line)); cursor: not-allowed; }
+}
+.primary-ghost { color: var(--rp-ok); border-color: var(--rp-ok); }
+
+.vc-fail, .vc-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  line-height: 1.5;
+  mat-icon { flex: none; font-size: 15px; width: 15px; height: 15px; }
+}
+.vc-fail {
+  background: var(--rp-stop-bg);
+  border: 1px solid var(--rp-stop-line, var(--rp-stop));
+  color: var(--rp-stop);
+  mat-icon { color: var(--rp-stop); }
+}
+.vc-fail-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  b { font-weight: 600; }
+}
+.vc-warn {
+  background: var(--rp-warn-bg);
+  border: 1px solid var(--rp-warn-line, var(--rp-warn));
+  mat-icon { color: var(--rp-warn); }
+}
+
+.vc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--rp-line);
+  border-radius: 7px;
+}
+.vc-form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.vc-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  span { color: var(--rp-ink-3); }
+}
+.vc-form select, .vc-form input {
+  font: inherit;
+  color: var(--rp-ink);
+  background: transparent;
+  border: 1px solid var(--rp-line);
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+.vc-note input { width: 100%; box-sizing: border-box; }
+.vc-form-actions { display: flex; gap: 6px; }
+
+.vc-empty { margin: 0; color: var(--rp-ink-3); }
+
+.vc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.vc-item {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--rp-line-soft, var(--rp-line));
+  &[data-tone='done'], &[data-tone='cancelled'] { color: var(--rp-ink-3); }
+  &[data-tone='failed'] { border-color: var(--rp-stop); }
+}
+.vc-target { font-weight: 600; color: var(--rp-ink); }
+.vc-item[data-tone='failed'] .vc-target, .vc-item[data-tone='failed'] .vc-state { color: var(--rp-stop); }
+.vc-when { font-variant-numeric: tabular-nums; }
+.vc-state { color: var(--rp-ink-3); }
+.vc-ask { color: var(--rp-ink); }
+.vc-sub { color: var(--rp-ink-3); margin-top: 2px; }
+.vc-err { color: var(--rp-stop); margin-top: 2px; }

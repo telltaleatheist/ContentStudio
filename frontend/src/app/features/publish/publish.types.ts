@@ -340,6 +340,8 @@ export interface PushReceipt {
     tags: { count: number };
     /** Present only when this push set a schedule. */
     publishAt?: string;
+    /** Present only when this push made a private video unlisted ('unlisted-then-public'). */
+    privacyStatus?: 'unlisted';
     /** Present only when a thumbnail was uploaded; the file that was sent. */
     thumbnail?: string;
   };
@@ -440,6 +442,8 @@ export interface UploadReceipt {
   tags: { count: number };
   /** Present exactly when a schedule was sent with the insert. */
   publishAt?: string;
+  /** The visibility asked for; absent on receipts from before 'unlisted-then-public'. */
+  privacyStatus?: 'private' | 'unlisted';
   /** Present exactly when a thumbnail was set after the insert. */
   thumbnail?: string;
   skipped: { thumbnail?: string };
@@ -458,6 +462,24 @@ export interface UploadProgress {
   itemId: string;
   sentBytes: number;
   totalBytes: number;
+}
+
+/**
+ * How an item goes public at its publishAt (VISIBILITY-SCHEDULER-PLAN.md, Owen 2026-11-02):
+ * private with YouTube's own schedule, or unlisted now and a visibility-scheduler change to
+ * public then (the sponsor case). Mirrors publish-types.ReleaseMode.
+ */
+export type ReleaseMode = 'youtube-schedule' | 'unlisted-then-public';
+
+/** Mirrors publish-types.ReleaseChange: the item's link to its one change, or why it could not be made. */
+export interface ReleaseChange {
+  videoId: string;
+  runAt: string;
+  attemptedAt: string;
+  /** null exactly when `error` is set. */
+  jobId: string | null;
+  error: string | null;
+  warnings: string[];
 }
 
 export interface ChosenMetadata {
@@ -497,6 +519,10 @@ export interface ChosenMetadata {
   publishAt: string | null;
   /** ISO. When publishAt was last set — including the set that cleared it. */
   publishAtSetAt: string | null;
+  /** How it goes public at publishAt. Mirrors publish-types.ChosenMetadata.releaseMode. */
+  releaseMode: ReleaseMode;
+  /** The scheduler change behind 'unlisted-then-public', or the failure to create it; null for never tried. */
+  releaseChange: ReleaseChange | null;
   /** Absolute path to an accepted PNG/JPEG, or null. Re-validated at use time. */
   thumbnailPath: string | null;
   /** What that file measured when accepted. null exactly when thumbnailPath is. */
@@ -691,6 +717,8 @@ export interface PublishFacts {
   status: PublishStatus;
   videoId: string | null;
   isPodcast: boolean;
+  /** YouTube's own schedule, or unlisted first via the visibility scheduler. */
+  releaseMode: ReleaseMode;
   pushedAt: string | null;
   filledAt: string | null;
   hasThumbnail: boolean;

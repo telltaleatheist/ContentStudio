@@ -188,6 +188,21 @@
     }
   </div>
 
+  <!-- Visibility changes that failed on a day before today (no day row of their own), and a
+       scheduler that could not be read. The badges on the days below are the rest. -->
+  @if (pastVisibilityFailures().length > 0) {
+    <div class="vis-failures">
+      <mat-icon>error_outline</mat-icon>
+      <span>Visibility change{{ pastVisibilityFailures().length === 1 ? '' : 's' }} that failed:</span>
+      @for (b of pastVisibilityFailures(); track b.jobId) {
+        <span class="vis-badge failed" [matTooltip]="b.title">{{ b.text }}</span>
+      }
+    </div>
+  }
+  @if (visibilityError(); as err) {
+    <div class="vis-error">Visibility changes could not be read: {{ err }}</div>
+  }
+
   <!-- The board and YouTube disagree, and YouTube can still be told. This is the whole
        difference between a calendar that plans and one that schedules. -->
   @if (activeDestination() === 'youtube' && needsSchedulePush().length > 0 && pushRun() === null) {
@@ -551,10 +566,12 @@
               <div class="day-date" #todayRow>
                 <span class="day-label">{{ row.label }}</span>
                 <span class="today-dot">today</span>
+                <ng-container [ngTemplateOutlet]="visBadges" [ngTemplateOutletContext]="{ key: row.dateKey }"></ng-container>
               </div>
             } @else {
               <div class="day-date">
                 <span class="day-label">{{ row.label }}</span>
+                <ng-container [ngTemplateOutlet]="visBadges" [ngTemplateOutletContext]="{ key: row.dateKey }"></ng-container>
               </div>
             }
 
@@ -748,6 +765,9 @@
   @if (chip.needsSchedulePush && !chip.mirrorDivergence) {
     <div class="pending-push-note">⇡ this time not sent to YouTube yet</div>
   }
+  @if (chip.unlistedFirst) {
+    <div class="unlisted-note">unlisted first, then public by the visibility scheduler</div>
+  }
   @if (chip.liveNote) {
     <div class="live-note">● {{ chip.liveNote }}</div>
   }
@@ -762,6 +782,14 @@
   }
   @if (chip.unknownChannel) {
     <div class="unrouted-note">{{ chip.channelName }}</div>
+  }
+</ng-template>
+
+<!-- Visibility-scheduler changes on one day: pending in the quiet badge style, failed in red.
+     Hover says which video, the note, and for a failure why. -->
+<ng-template #visBadges let-key="key">
+  @for (b of visibilityBadgesFor(key); track b.jobId) {
+    <span class="vis-badge" [class.failed]="b.failed" [matTooltip]="b.title">{{ b.text }}</span>
   }
 </ng-template>
 

@@ -27,6 +27,7 @@ import {
   MAX_TITLE_LENGTH,
   youtubeDescriptionProblem,
   PushReceipt,
+  ReleaseMode,
   ResolvedMetadata,
   SPREAKER_DESTINATION,
   SPREAKER_MAX_TITLE_LENGTH,
@@ -367,6 +368,18 @@ export class PublishState {
 
   /** The video this item is linked to, or null when nothing is linked yet. */
   readonly videoId = computed(() => this._selection()?.videoId ?? null);
+  /**
+   * How the item goes public at its schedule (VISIBILITY-SCHEDULER-PLAN.md): YouTube's own
+   * schedule, or unlisted now and a scheduler change to public. null with no record open.
+   */
+  readonly releaseMode = computed(() => this._selection()?.releaseMode ?? null);
+  /** The scheduler change behind 'unlisted-then-public', or why it could not be created. */
+  readonly releaseChange = computed(() => this._selection()?.releaseChange ?? null);
+  /** True once the item's change to public exists: its time is then the scheduler's. */
+  readonly releaseLocked = computed(() => {
+    const r = this._selection();
+    return !!r && !!r.releaseChange?.jobId && r.releaseChange.videoId === r.videoId;
+  });
   /** The re-render published instead of the report's video (LEDGER #316); chapters are left out while set. */
   readonly updatedVideo = computed(() => this._selection()?.updatedVideo ?? null);
 
@@ -1447,6 +1460,19 @@ export class PublishState {
     await this.setFields({ publishAt: iso });
   }
 
+  /** "Unlisted now, then public at…" or YouTube's own schedule. Main refuses it once the change exists. */
+  async setReleaseMode(mode: ReleaseMode): Promise<void> {
+    await this.setFields({ releaseMode: mode });
+  }
+
+  /**
+   * Take a record the main process returned for THIS item from somewhere other than this
+   * state's own writes (Visibility changes following its change). Another item's is ignored.
+   */
+  adoptSelection(record: ChosenMetadata): void {
+    if (record && record.itemId === this._itemId()) this._selection.set(record);
+  }
+
   /** Drop the schedule. The record still records when it was dropped. */
   async clearPublishAt(): Promise<void> {
     await this.setFields({ publishAt: null });
@@ -1770,7 +1796,10 @@ export class PublishState {
    * Nothing is decided here. The main process reads the video, refuses what has to be
    * refused (no chosen title, a video on another channel, a published video that cannot
    * be scheduled, a thumbnail that no longer validates) and its message is shown as it
-   * came. A failure means NOTHING was written — the refusals all happen before the write.
+   * came. A failure means NOTHING was written — the refusals all happen before the write —
+   * with one exception: an 'unlisted-then-public' item whose change to public could not be
+   * created AFTER the video was made unlisted. That failure is on the record, so the record is
+   * read back and the Video row says so (release-change.ts).
    */
   async pushToYouTube(): Promise<PushReceipt | null> {
     const t = this.target('push to YouTube');
@@ -1790,6 +1819,7 @@ export class PublishState {
       if (this._itemId() !== t) return null;
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'The push failed and the main process gave no reason.');
+        await this.rereadSelection(t);
         return null;
       }
       this._selection.set(res.data.selection);
@@ -1798,6 +1828,16 @@ export class PublishState {
     } finally {
       this._pushing.set(false);
     }
+  }
+
+  /**
+   * Read the record back after a failed upload or push: one that failed after its YouTube
+   * write (an 'unlisted-then-public' change the scheduler refused) has changed on disk.
+   */
+  private async rereadSelection(itemId: string): Promise<void> {
+    const res = await this.electron.publishGetSelection(itemId);
+    if (this._itemId() !== itemId) return;
+    if (res.success && res.data) this._selection.set(res.data);
   }
 
   /** Put the receipt away. It stays on the record; this only closes the panel's copy. */
@@ -1838,6 +1878,7 @@ export class PublishState {
       if (this._itemId() !== t) return null;
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'The upload failed and the main process gave no reason.');
+        await this.rereadSelection(t);
         return null;
       }
       this._selection.set(res.data.selection);
