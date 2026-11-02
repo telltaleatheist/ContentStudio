@@ -29,7 +29,9 @@ const JOB_STATES: JobState[] = ['pending', 'done', 'failed', 'cancelled'];
 const BASE_HEADERS: Record<string, string> = {
   'X-Robots-Tag': 'noindex, nofollow, noarchive',
   'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'no-referrer',
+  // same-origin, not no-referrer: under no-referrer Chrome sends `Origin: null` on the
+  // page's own form posts, which the same-origin check below then refuses.
+  'Referrer-Policy': 'same-origin',
   'Cache-Control': 'no-store',
 };
 const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
@@ -75,7 +77,7 @@ export function startServer(config: Config, db: DB, runtime: Runtime): Server {
   const prefix = base.pathname; // "/scheduler"
 
   /** A browser POST must come from the setup page itself. */
-  const sameOrigin = (req: IncomingMessage) => req.headers.origin === base.origin;
+  const sameOrigin = (req: IncomingMessage) => req.headers.origin === base.origin || req.headers['sec-fetch-site'] === 'same-origin';
 
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', base.origin);
