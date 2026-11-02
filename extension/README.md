@@ -76,6 +76,45 @@ build copies it into `dist/`. Paths inside it (`background.js`, `popup.html`,
 5. Open the popup: the connection row should show
    **Connected to ContentStudio** while the app is running.
 
+## Visibility scheduler (0.3.0)
+
+The Studio shelf's **This video** tab has a **Visibility** section whenever a
+video is open. It reads and schedules visibility changes (public / unlisted /
+private at a set time) on the scheduler at
+`https://contentstudio.owenmorgan.com/scheduler` (server code in
+`server/visibility-scheduler/`, plan in `VISIBILITY-SCHEDULER-PLAN.md`). It
+talks to Triton only, so it works with the ContentStudio desktop app closed.
+
+- **Permission:** `host_permissions` includes
+  `https://contentstudio.owenmorgan.com/*` for these calls.
+- **Key:** make a device key on the setup page (Device keys), paste it into
+  Options → Visibility scheduler → **Save key**. **Test** calls `/health` and
+  `/channels` with the key in the field and lists the connected channels, or
+  shows the server's error. Stored in `chrome.storage.local` under
+  `schedulerKey`; sent only to the scheduler as `Authorization: Bearer`.
+- **Transport:** the content script never fetches the scheduler itself
+  (Studio's CORS); it messages the service worker (`scheduler-*` messages,
+  `src/scheduler/scheduler-messages.ts`), which calls the API
+  (`src/scheduler/scheduler-client.ts`). Server errors (`{error}`) reach the
+  shelf verbatim.
+- **What the section shows:** the video's visibility now, and "YouTube will
+  publish at …" when YouTube's own schedule is set; pending changes soonest
+  first (Edit / Cancel), history newest first (failed in red with the
+  server's message; done as before → after, "ran N min late" past two
+  minutes, "cancelled YouTube’s own schedule"); **+ Schedule a change**
+  (visibility, local date and time, optional note). Times are sent as ISO with
+  this computer's offset for that date; a time the clocks skip or repeat is
+  refused. Warnings the server returns on save are shown under the list.
+- **States:** no key → says so with an **Open Options** link; a video no
+  connected channel owns → says so, with the server's message; any other
+  failure → a red box with the message.
+- **Reads are lazy:** the video is read only when the section is on screen
+  (expanded shelf, This video tab), because each read is a YouTube API call on
+  the scheduler's quota. The shelf's ⟳ re-reads it. No background polling.
+
+The pure helpers (runAt with offset, row text, ordering) are checked by
+`node tools/visibility-format-checks.js` (part of the root `check:pure`).
+
 ## Popup status reference
 
 | Row | Meaning |
@@ -122,6 +161,8 @@ extension/
 │   ├── collector.ts     CONTRACT ONLY — throws until Studio recon is done
 │   ├── background.ts    service worker: alarms, collection cycle, sync-now
 │   ├── popup.ts         status view logic
-│   └── options.ts       settings editor logic
+│   ├── options.ts       settings editor logic (port, scheduler key)
+│   ├── publish/         the Studio shelf (visibility-panel.ts = its Visibility section)
+│   └── scheduler/       visibility scheduler client, messages, pure formatting
 └── dist/                build output = the loadable extension (git-ignored)
 ```

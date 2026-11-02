@@ -40,3 +40,26 @@ export async function getSettings(): Promise<Settings> {
 export async function saveSettings(settings: Settings): Promise<void> {
   await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
 }
+
+// ---- visibility scheduler device key ------------------------------------------------------
+//
+// Kept under its own storage key rather than inside `settings`: the options page saves the
+// port by writing the whole Settings object, and a key folded into it would be one missed
+// field away from being wiped by a port change. Made on the scheduler's setup page
+// (contentstudio.owenmorgan.com/scheduler/), pasted into Options, sent only to the
+// scheduler (scheduler/scheduler-client.ts) and never logged.
+
+const SCHEDULER_KEY = 'schedulerKey';
+
+/** The scheduler device key, or null when none is set. */
+export async function getSchedulerKey(): Promise<string | null> {
+  const stored = await chrome.storage.local.get(SCHEDULER_KEY);
+  const raw = stored[SCHEDULER_KEY];
+  return typeof raw === 'string' && raw !== '' ? raw : null;
+}
+
+/** Store the key; null removes it. */
+export async function saveSchedulerKey(key: string | null): Promise<void> {
+  if (key === null) await chrome.storage.local.remove(SCHEDULER_KEY);
+  else await chrome.storage.local.set({ [SCHEDULER_KEY]: key });
+}

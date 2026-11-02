@@ -21,6 +21,11 @@
 //
 // Rendered inside a shadow root so Studio's stylesheet can't reach in and ours can't leak
 // out. Two tabs: the video currently open, and the report browser.
+//
+// Under "This video", whenever a video is open, sits the Visibility section
+// (visibility-panel.ts): scheduled visibility changes from the scheduler on Triton. It is
+// drawn whether or not a report is loaded or ContentStudio is running, because it needs
+// neither.
 
 import {
   fillersForSurfaces,
@@ -33,6 +38,7 @@ import { linkageOf } from './linkage';
 import type { BrowsePage, BrowseRow, ItemDetail, PublishThumbnail, ResolveAlternate } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
+import { VISIBILITY_CSS, type VisibilityPanel } from './visibility-panel';
 
 const HOST_ID = 'contentstudio-publish-shelf';
 
@@ -295,7 +301,11 @@ export class PublishShelf {
   private scrollTop = 0;
   private browseError: string | null = null;
 
-  constructor(private callbacks: ShelfCallbacks) {
+  constructor(
+    private callbacks: ShelfCallbacks,
+    /** Owned by the content script, which feeds it the open video; the shelf only places it. */
+    private visibility: VisibilityPanel,
+  ) {
     document.getElementById(HOST_ID)?.remove();
 
     this.host = document.createElement('div');
@@ -303,7 +313,7 @@ export class PublishShelf {
     this.root = this.host.attachShadow({ mode: 'open' });
 
     const style = document.createElement('style');
-    style.textContent = CSS;
+    style.textContent = CSS + VISIBILITY_CSS;
     this.root.append(style);
   }
 
@@ -413,6 +423,12 @@ export class PublishShelf {
   // -------------------------------------------------------------------- render
 
   private render(): void {
+    // The Visibility section's element survives this rebuild (it is re-attached, not
+    // re-made), but detaching it drops focus; an operator typing a note there would lose
+    // the caret to every navigation tick. Remembered here, restored below.
+    const focused = this.root.activeElement;
+    const refocus = focused instanceof HTMLElement && this.visibility.el.contains(focused) ? focused : null;
+
     const existing = this.root.querySelector('.shell');
     existing?.remove();
 
@@ -439,6 +455,7 @@ export class PublishShelf {
 
     if (this.tab === 'current') this.renderCurrent();
     else this.renderBrowser();
+    if (refocus?.isConnected) refocus.focus();
   }
 
   private buildPill(): HTMLElement {
@@ -543,6 +560,7 @@ export class PublishShelf {
         this.render();
       });
       this.body.appendChild(browse);
+      this.appendVisibility();
       return;
     }
 
@@ -584,6 +602,14 @@ export class PublishShelf {
       }
       this.body.appendChild(log);
     }
+    this.appendVisibility();
+  }
+
+  /** The Visibility section, for any page with a video open. See visibility-panel.ts. */
+  private appendVisibility(): void {
+    if (!this.page.videoId) return;
+    this.body.appendChild(this.visibility.el);
+    this.visibility.shown();
   }
 
   /**

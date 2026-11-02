@@ -56,8 +56,28 @@ import {
 } from './publish/page';
 import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetization';
 import { waitFor } from './publish/dom';
+// The Visibility section talks to the scheduler on Triton, never to ContentStudio, so it
+// keeps working with the app closed. Through the worker too, for Studio's CORS.
+import { VisibilityPanel } from './publish/visibility-panel';
+import {
+  requestCancelSchedulerJob,
+  requestCreateSchedulerJob,
+  requestEditSchedulerJob,
+  requestOpenOptions,
+  requestSchedulerJobs,
+  requestSchedulerVideo,
+} from './scheduler/scheduler-messages';
 
 let shelf: PublishShelf | null = null;
+/** The shelf's Visibility section; follows the URL's video id on every navigation. */
+const visibility = new VisibilityPanel({
+  video: requestSchedulerVideo,
+  jobs: requestSchedulerJobs,
+  create: requestCreateSchedulerJob,
+  edit: requestEditSchedulerJob,
+  cancel: requestCancelSchedulerJob,
+  openOptions: requestOpenOptions,
+});
 /** The right-edge video navigator. Mounted on /video/<id>/edit and /video/<id>/monetization
  *  (Details and Earn) — see syncNavStrip. */
 let navStrip: NavStrip | null = null;
@@ -552,6 +572,8 @@ function callbacks() {
       // since then reaches the strip only by dropping it, which is exactly what the
       // strip's "not in the list" state tells the operator to press.
       dropNavList();
+      // And the Visibility section's: its own calls, which never wait on ContentStudio.
+      visibility.reload();
       await Promise.all([resolveCurrentVideo(), syncNavStrip()]);
     },
 
@@ -608,6 +630,10 @@ function callbacks() {
 
 async function onNavigation(): Promise<void> {
   const videoId = videoIdFromUrl();
+  // The Visibility section follows the URL, ahead of the manual-pick return below (a
+  // report picked by hand says nothing about which video's visibility is on screen), and
+  // before the shelf repaints, since that repaint is what has it read the new video.
+  visibility.setVideo(videoId);
   shelf?.setPageContext(pageContext());
 
   // The strip follows the URL and nothing else — it has no report to resolve and no
@@ -701,7 +727,7 @@ async function start(): Promise<void> {
   listenForReveal();
 
   try {
-    const created = new PublishShelf(callbacks());
+    const created = new PublishShelf(callbacks(), visibility);
     await created.mount();
     shelf = created;
   } catch (error) {

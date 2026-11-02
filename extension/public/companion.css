@@ -254,6 +254,21 @@ input:focus {
 
 .feedback-ok { color: var(--ok); }
 .feedback-error { color: var(--err); }
+.feedback-warn { color: var(--warn); }
+
+.hint a {
+  color: var(--accent);
+}
+
+/* --- visibility scheduler test result (options) --- */
+
+#scheduler-result {
+  margin-top: 8px;
+}
+
+.channel-row.channel-reconnect {
+  border-color: rgba(224, 82, 82, 0.5);
+}
 
 /* --- layout --- */
 

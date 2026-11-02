@@ -19,6 +19,9 @@
 //     chrome.storage.local.
 //   - Flushes the outbox after every cycle (and on manual "Sync now").
 //   - onInstalled: initializes default settings and the alarm.
+//   - Answers the Studio content script's calls: ContentStudio's publish routes
+//     (localhost), Studio's own video list, and the visibility scheduler on Triton
+//     (scheduler/scheduler-client.ts), none of which a content script may fetch itself.
 //
 // No fallbacks: if the channel list can't be fetched (ContentStudio down) the
 // cycle records that as its channelSourceError and stops — it never collects
@@ -38,6 +41,17 @@ import {
 } from './publish/publish-client';
 import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
 import { isNavMessage } from './publish/nav-messages';
+import { isSchedulerMessage, type SchedulerMessage } from './scheduler/scheduler-messages';
+import {
+  SchedulerError,
+  cancelSchedulerJob,
+  createSchedulerJob,
+  fetchSchedulerChannels,
+  fetchSchedulerHealth,
+  fetchSchedulerJobs,
+  fetchSchedulerVideo,
+  patchSchedulerJob,
+} from './scheduler/scheduler-client';
 import { NavSourceError, fetchNavListForTab } from './nav-source';
 import { enqueueAbTests, enqueueChannelDays, enqueueFirstWeeks, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
@@ -283,8 +297,48 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return true;
   }
 
+  // The shelf's Visibility section. Same reason as the publish calls for coming through
+  // here — a content-script fetch is bound by Studio's CORS — but a different server: the
+  // scheduler on Triton, which works with the ContentStudio app closed.
+  if (isSchedulerMessage(message)) {
+    handleSchedulerMessage(message).then(
+      (data) => sendResponse({ ok: true, data }),
+      (err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        sendResponse({
+          ok: false,
+          error: error.message,
+          kind: error instanceof SchedulerError ? error.kind : 'unknown',
+        });
+      },
+    );
+    return true;
+  }
+
   return false;
 });
+
+async function handleSchedulerMessage(message: SchedulerMessage): Promise<unknown> {
+  switch (message.type) {
+    case 'scheduler-health':
+      return fetchSchedulerHealth();
+    case 'scheduler-channels':
+      return fetchSchedulerChannels();
+    case 'scheduler-video':
+      return fetchSchedulerVideo(message.videoId);
+    case 'scheduler-jobs':
+      return fetchSchedulerJobs(message.videoId);
+    case 'scheduler-create':
+      return createSchedulerJob(message.job);
+    case 'scheduler-edit':
+      return patchSchedulerJob(message.jobId, message.patch);
+    case 'scheduler-cancel':
+      return cancelSchedulerJob(message.jobId);
+    case 'scheduler-open-options':
+      await chrome.runtime.openOptionsPage();
+      return null;
+  }
+}
 
 async function handlePublishMessage(message: PublishMessage): Promise<unknown> {
   switch (message.type) {

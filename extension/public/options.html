@@ -35,6 +35,21 @@
     </div>
   </section>
 
+  <section>
+    <h2>Visibility scheduler</h2>
+    <div class="field">
+      <label for="scheduler-key">Scheduler key</label>
+      <input id="scheduler-key" type="password" autocomplete="off" spellcheck="false" placeholder="csk_…">
+      <div class="hint">A device key made on the scheduler's setup page, <a id="scheduler-setup-link" target="_blank" rel="noopener"></a> (Device keys). It is what the Visibility section of the Studio shelf uses to read and schedule visibility changes; that section talks to the scheduler directly and works with ContentStudio closed. Save an empty field to remove the key. Open Studio tabs pick up a new key on the shelf's refresh button.</div>
+    </div>
+    <div class="actions">
+      <button id="scheduler-save" type="button">Save key</button>
+      <button id="scheduler-test" type="button" class="secondary">Test</button>
+    </div>
+    <div id="scheduler-feedback" class="feedback"></div>
+    <div id="scheduler-result"></div>
+  </section>
+
   <script type="module" src="options.js"></script>
 </body>
 </html>
