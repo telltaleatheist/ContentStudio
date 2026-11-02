@@ -1,0 +1,103 @@
+<!-- Visibility changes for one video (VISIBILITY-SCHEDULER-PLAN.md). The scheduler on Triton is
+     the only store of changes; this reads the list when it opens and after each action. -->
+<div class="vc">
+  <div class="vc-head">
+    <span class="vc-title">Visibility changes</span>
+    <span class="vc-spacer"></span>
+    <button class="ghost" [disabled]="loading() || busy()" (click)="load()">{{ loading() ? 'Reading…' : 'Reload' }}</button>
+    <button class="ghost" [disabled]="busy() || formFor() !== null" (click)="openAdd()">Add a change</button>
+  </div>
+
+  @if (releaseProblem(); as problem) {
+    <div class="vc-fail">
+      <mat-icon>error_outline</mat-icon>
+      <div class="vc-fail-text">
+        <b>Not going public</b>
+        <span>{{ problem }}</span>
+        @if (itemId()) {
+          <button class="ghost" [disabled]="busy()" (click)="createReleaseChange()">Create the change</button>
+        }
+      </div>
+    </div>
+  }
+
+  @if (loadError(); as err) {
+    <div class="vc-fail"><mat-icon>error_outline</mat-icon><span>{{ err }}</span></div>
+  }
+
+  @if (formFor() !== null) {
+    <div class="vc-form">
+      @if (formFor() === 'saved') {
+        <!-- Saved, with something the scheduler wants known before it runs. -->
+        @for (w of warnings(); track w) {
+          <div class="vc-warn"><mat-icon>warning_amber</mat-icon><span>{{ w }}</span></div>
+        }
+        <div class="vc-form-actions">
+          <button class="ghost" (click)="closeForm()">Done</button>
+        </div>
+      } @else {
+        <div class="vc-form-row">
+          <label>
+            <span>Make it</span>
+            <select [ngModel]="form().target" (ngModelChange)="setForm({ target: $event })">
+              @for (v of visibilities; track v) { <option [value]="v">{{ v }}</option> }
+            </select>
+          </label>
+          <label>
+            <span>On</span>
+            <input type="date" [ngModel]="form().date" (ngModelChange)="setForm({ date: $event })">
+          </label>
+          <label>
+            <span>At (local time)</span>
+            <input type="time" [ngModel]="form().time" (ngModelChange)="setForm({ time: $event })">
+          </label>
+        </div>
+        <label class="vc-note">
+          <span>Note</span>
+          <input type="text" maxlength="200" placeholder="e.g. Sponsor: X review" [ngModel]="form().note" (ngModelChange)="setForm({ note: $event })">
+        </label>
+        <div class="vc-form-actions">
+          <button class="ghost primary-ghost" [disabled]="busy()" (click)="saveForm()">
+            {{ busy() ? 'Saving…' : (formFor() === 'add' ? 'Add' : 'Save') }}
+          </button>
+          <button class="ghost" [disabled]="busy()" (click)="closeForm()">Close</button>
+        </div>
+      }
+    </div>
+  }
+
+  @if (actionError(); as err) {
+    <div class="vc-fail"><mat-icon>error_outline</mat-icon><span>{{ err }}</span></div>
+  }
+
+  @if (jobs(); as list) {
+    @if (list.length === 0) {
+      <p class="vc-empty">No changes for this video.</p>
+    }
+    <ul class="vc-list">
+      @for (row of views(); track row.job.id) {
+        <li class="vc-item" [attr.data-tone]="row.view.tone">
+          <div class="vc-line">
+            <span class="vc-target">{{ row.view.target }}</span>
+            <span class="vc-when">{{ row.view.when }}</span>
+            <span class="vc-state">{{ row.view.state }}</span>
+            <span class="vc-spacer"></span>
+            @if (row.view.editable) {
+              @if (confirmCancel() === row.job.id) {
+                <span class="vc-ask">Cancel it?</span>
+                <button class="ghost" [disabled]="busy()" (click)="cancelChange(row.job)">Yes, cancel</button>
+                <button class="ghost" [disabled]="busy()" (click)="confirmCancel.set(null)">No</button>
+              } @else {
+                <button class="ghost" [disabled]="busy() || formFor() !== null" (click)="openEdit(row.job)">Edit</button>
+                <button class="ghost" [disabled]="busy()" (click)="confirmCancel.set(row.job.id)">Cancel</button>
+              }
+            }
+          </div>
+          @if (row.view.note) { <div class="vc-sub">{{ row.view.note }}</div> }
+          @for (line of row.view.lines; track $index) { <div class="vc-sub">{{ line }}</div> }
+          @if (row.view.error) { <div class="vc-err">{{ row.view.error }}</div> }
+        </li>
+      }
+    </ul>
+  }
+</div>

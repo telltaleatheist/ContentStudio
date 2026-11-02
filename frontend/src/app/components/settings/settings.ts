@@ -11,6 +11,7 @@ import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { CrucibleServers } from './crucible-servers';
+import { SchedulerSettings } from './scheduler-settings';
 import { ActivatedRoute, Router } from '@angular/router';
 import type { Subscription } from 'rxjs';
 import type { SpreakerStatus } from '../../features/publish/publish.types';
@@ -32,7 +33,8 @@ interface DownloadComponent {
     MatSelectModule,
     FormsModule,
     MatDialogModule,
-    CrucibleServers
+    CrucibleServers,
+    SchedulerSettings
   ],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',

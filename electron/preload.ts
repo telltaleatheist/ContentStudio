@@ -256,6 +256,9 @@ const api = {
       tagsOverride?: string | null;
       channelId?: string | null;
       publishAt?: string | null;
+      // How it goes public at publishAt: YouTube's own schedule, or unlisted first and a
+      // visibility-scheduler change to public.
+      releaseMode?: 'youtube-schedule' | 'unlisted-then-public';
       isPodcast?: boolean;
       // ONLY true. Monetization is on for every video and stopped being a per-item choice
       // on 2026-08-23; the main process refuses false and null by name. Left on the type
@@ -441,6 +444,29 @@ const api = {
   // true the moment it is edited on Spreaker's own site — so the release dates on the
   // board come from here rather than from what was intended locally.
   spreakerListScheduled: () => ipcRenderer.invoke('spreaker-list-scheduled'),
+
+  // The visibility scheduler on Triton (VISIBILITY-SCHEDULER-PLAN.md): any visibility to any
+  // other at a set time. The device key goes IN on save and never comes back out; status says
+  // whether one is stored and at what address. Every other call is one API route, answered
+  // with the server's own words on a refusal. Read when the panel or calendar asks; no polling.
+  schedulerGetStatus: () => ipcRenderer.invoke('scheduler-get-status'),
+  schedulerSaveKey: (key: string) => ipcRenderer.invoke('scheduler-save-key', key),
+  schedulerTest: () => ipcRenderer.invoke('scheduler-test'),
+  schedulerHealth: () => ipcRenderer.invoke('scheduler-health'),
+  schedulerChannels: () => ipcRenderer.invoke('scheduler-channels'),
+  schedulerVideo: (videoId: string) => ipcRenderer.invoke('scheduler-video', videoId),
+  schedulerListJobs: (filter: { videoId?: string; channelId?: string; state?: string; from?: string; to?: string }) =>
+    ipcRenderer.invoke('scheduler-list-jobs', filter),
+  schedulerCreateJob: (input: { videoId: string; target: string; runAt: string; note: string }) =>
+    ipcRenderer.invoke('scheduler-create-job', input),
+  schedulerPatchJob: (id: string, patch: { target?: string; runAt?: string; note?: string }) =>
+    ipcRenderer.invoke('scheduler-patch-job', id, patch),
+  schedulerCancelJob: (id: string) => ipcRenderer.invoke('scheduler-cancel-job', id),
+  // "Unlisted now, then public at…": create the change for an item whose create failed, and
+  // bring an item along after its change was edited or cancelled in Visibility changes.
+  publishCreateReleaseChange: (itemId: string) => ipcRenderer.invoke('publish-create-release-change', itemId),
+  publishFollowReleaseChange: (itemId: string, job: unknown) =>
+    ipcRenderer.invoke('publish-follow-release-change', itemId, job),
 
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`

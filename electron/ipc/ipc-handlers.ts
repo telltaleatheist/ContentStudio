@@ -112,6 +112,8 @@ import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
 import { SpreakerApiService } from '../services/spreaker/spreaker-api.service';
 import { setupSpreakerIpc } from '../services/spreaker/spreaker-ipc';
+import { SchedulerClient } from '../services/scheduler/scheduler-client';
+import { setupSchedulerIpc } from '../services/scheduler/scheduler-ipc';
 import { FfprobeBridge, getRuntimePaths } from '../lib/bridges';
 import { PublishBridge } from '../services/publish/publish-bridge';
 import { setupEditorIpc } from '../services/editor/editor-ipc';
@@ -3930,6 +3932,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     requireCredentials: () => analytics.spreakerConfig.requireFreshCredentials(),
   });
 
+  // The visibility scheduler on Triton (VISIBILITY-SCHEDULER-PLAN.md), ONE client for the
+  // publish flow ("unlisted now, then public at…") and the scheduler-* channels. It reads
+  // <userData>/scheduler.json fresh on every call, so a key saved in Settings works at once.
+  const scheduler = new SchedulerClient({ userDataPath: app.getPath('userData') });
+
   setupPublishIpc({
     store: analytics.publishStore,
     readGenerated: readGeneratedForPublish,
@@ -4016,7 +4023,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         audioCodec: info.audioCodec ?? null,
       };
     },
+    // Only the two calls the publish flow makes; the key stays inside the client.
+    scheduler: {
+      requireConfigured: () => scheduler.requireConfigured(),
+      createJob: (input) => scheduler.createJob(input),
+    },
   });
+
+  // Settings' key and test, and the Visibility changes panel / calendar reads and writes.
+  setupSchedulerIpc(scheduler);
 
   // The Spreaker credentials themselves: read by the settings page and by the publish
   // panel (which shows "not configured" with the file path rather than a dead button).

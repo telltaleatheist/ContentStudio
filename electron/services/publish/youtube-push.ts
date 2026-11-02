@@ -44,6 +44,8 @@
  *   - a push that would CLEAR a description or a tag set the video already has. Emptiness
  *     is a legitimate state, but silently wiping finished work is the exact class of bug
  *     read-modify-write exists to prevent.
+ *   - an 'unlisted-then-public' item (release-change.ts) whose video is already PUBLIC with
+ *     no change of this app's behind it, or that has no time / no scheduler key.
  *
  * ── Structure ────────────────────────────────────────────────────────────────────────
  *
@@ -59,6 +61,14 @@ import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from '.
 import { fitThumbnailFile } from './thumbnail-validate';
 import { requireProfileRead, type ChannelPublishProfile, type ChannelUploadFlags } from './youtube-profile';
 import { updatedVideoDescriptionProblem } from './updated-video';
+import {
+  createReleaseChange,
+  hasReleaseChange,
+  isUnlistedFirst,
+  releaseFailureMessage,
+  requireReleaseReady,
+  type ReleaseSchedulerApi,
+} from './release-change';
 import {
   ChosenMetadata,
   MAX_TITLE_LENGTH,
@@ -98,6 +108,11 @@ export interface PushDeps {
   /** The generated titles/description/tags for one item, or null when it is gone. */
   readGenerated: (itemId: string) => GeneratedFallback | null;
   api: YouTubePushApi;
+  /**
+   * The visibility scheduler, for an 'unlisted-then-public' item: checked for a key before the
+   * write, and asked for the change to public after it. Not read for any other item.
+   */
+  scheduler: ReleaseSchedulerApi;
   /** "Now", so the receipt's timestamp is testable. */
   now?: () => Date;
 }
@@ -116,6 +131,13 @@ export interface VideoUpdatePlan {
   publishAt: string | null;
   /** Why no schedule was sent. Null exactly when publishAt is set. */
   publishAtSkipped: string | null;
+  /** True when this push makes a private video unlisted ('unlisted-then-public'). */
+  madeUnlisted: boolean;
+  /**
+   * True when the change to public still has to be created after this write: an
+   * 'unlisted-then-public' item with no change for its video yet, on a video not yet public.
+   */
+  needsReleaseChange: boolean;
 }
 
 /** What a successful push returns: the updated record and the receipt stored on it. */
@@ -273,8 +295,49 @@ export function planVideoUpdate(input: {
   // ---- the schedule ------------------------------------------------------------
   let publishAt: string | null = null;
   let publishAtSkipped: string | null = null;
+  let madeUnlisted = false;
+  let needsReleaseChange = false;
 
-  if (record.publishAt) {
+  if (isUnlistedFirst(record)) {
+    // "Unlisted now, then public at…" (Owen, 2026-11-02). YouTube's own publishAt is never
+    // sent: the time to go public is the scheduler's (release-change.ts). The caller has
+    // already refused an item with no time.
+    const privacy = video.status?.privacyStatus;
+    if (typeof privacy !== 'string' || !privacy) {
+      throw new Error(
+        `Video ${videoId} came back with no status.privacyStatus, so whether it can be made ` +
+        `unlisted cannot be determined. Nothing was sent.`
+      );
+    }
+    const linked = hasReleaseChange(record);
+    if (privacy === 'public' && !linked) {
+      throw new Error(
+        `Item ${item} is set to go unlisted now and public at ${record.publishAt}, but video ` +
+        `${videoId} is already PUBLIC. Making it unlisted would take a released video down. ` +
+        `Switch the item back to YouTube's own schedule to push the metadata alone.`
+      );
+    }
+    if (privacy === 'private') {
+      // Whole status back, privacyStatus replaced and YouTube's own publishAt LEFT OUT: only
+      // a private video can carry one, and leaving it in would be refused (the scheduler's
+      // rules.ts buildStatusUpdate removes it the same way).
+      const status: Record<string, any> = { ...video.status, privacyStatus: 'unlisted', ...audienceOf(flags) };
+      delete status.publishAt;
+      body.status = status;
+      parts.push('status');
+      madeUnlisted = true;
+      publishAtSkipped = `This item goes public through the visibility scheduler, so YouTube was given no publish time; the video was made unlisted.`;
+    } else {
+      if (flags !== null) {
+        body.status = { ...video.status, ...audienceOf(flags) };
+        parts.push('status');
+      }
+      publishAtSkipped = linked
+        ? `This item goes public through the visibility scheduler, and its change already exists; status was left as it is (${privacy}).`
+        : `This item goes public through the visibility scheduler; the video is already ${privacy}.`;
+    }
+    needsReleaseChange = !linked;
+  } else if (record.publishAt) {
     const privacy = video.status?.privacyStatus;
     if (typeof privacy !== 'string' || !privacy) {
       throw new Error(
@@ -326,6 +389,8 @@ export function planVideoUpdate(input: {
     tags,
     publishAt,
     publishAtSkipped,
+    madeUnlisted,
+    needsReleaseChange,
   };
 }
 
@@ -356,6 +421,9 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
       `and no linked video. There is nothing to push.`
     );
   }
+
+  // Unlisted now, public later: the time and the scheduler key are checked before any write.
+  const releaseAt = isUnlistedFirst(record) ? requireReleaseReady(record, deps.scheduler, now(), 'pushed') : null;
 
   const resolved = resolveChosenMetadata(record, generated);
   const profile = requireProfileRead(generated, itemId);
@@ -393,6 +461,7 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
       description: { chars: plan.description.length, firstLine: firstLineOf(plan.description) },
       tags: { count: plan.tags.length },
       ...(plan.publishAt ? { publishAt: plan.publishAt } : {}),
+      ...(plan.madeUnlisted ? { privacyStatus: 'unlisted' as const } : {}),
       ...(thumbnail ? { thumbnail: thumbnail.path } : {}),
       ...(profile?.upload
         ? { audience: { madeForKids: profile.upload.madeForKids, containsSyntheticMedia: profile.upload.containsSyntheticMedia, categoryId: profile.upload.categoryId } }
@@ -407,10 +476,18 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
   // Status is NOT advanced to 'published'. This push put metadata on a video; whether
   // that video is live is YouTube's fact, not ours, and claiming it here would make the
   // panel state a thing nobody observed.
-  const selection = await store.update(itemId, generated, {
+  let selection = await store.update(itemId, generated, {
     pushedAt: receipt.pushedAt,
     pushReceipt: receipt,
   });
+
+  // The change to public, after the write and its receipt. A refusal goes onto the record and
+  // is then thrown; the video stays unlisted (release-change.ts).
+  if (releaseAt !== null && plan.needsReleaseChange) {
+    const outcome = await createReleaseChange(deps.scheduler, { itemId, videoId: plan.videoId, runAt: releaseAt, title: plan.title }, now());
+    selection = await store.update(itemId, generated, { releaseChange: outcome.link });
+    if (outcome.failure !== null) throw new Error(releaseFailureMessage(plan.videoId, releaseAt, plan.madeUnlisted ? 'made unlisted' : 'pushed', outcome.failure));
+  }
 
   return { selection, receipt };
 }
@@ -509,6 +586,14 @@ export function planScheduleUpdate(input: {
       `Video ${videoId} belongs to channel ${actualChannel}, but item ${item} is routed to ` +
       `channel ${channelId}. Refusing to schedule one channel's video from another ` +
       `channel's record — fix the link or the routing.`
+    );
+  }
+
+  if (isUnlistedFirst(record)) {
+    throw new Error(
+      `Item ${item} goes unlisted now and public through the visibility scheduler, so YouTube ` +
+      `is given no publish time. Its change to public is moved in the Video row's Visibility ` +
+      `changes. Nothing was sent.`
     );
   }
 

@@ -39,7 +39,7 @@
  * with nothing to show.
  */
 
-import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
@@ -66,6 +66,8 @@ import {
   SPREAKER_DESTINATION_LABEL,
 } from '../../features/publish/publish.types';
 import { splitPublishAt } from '../../features/publish/publish-schedule';
+import type { SchedulerJob } from '../../features/scheduler/scheduler.types';
+import { badgesByDay, rangeForDays, type DayBadge } from '../../features/scheduler/visibility-changes';
 import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot, type CadenceKey } from '../../features/publish/publish-slots';
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
 import {
@@ -146,6 +148,8 @@ const SLOTS: ReadonlyArray<{
 
 /** Four weeks, today inclusive — the window the work actually happens in. */
 const INITIAL_HORIZON_DAYS = 28;
+/** How far back the visibility-scheduler read reaches, so a recent failure stays on the page. */
+const VISIBILITY_LOOKBACK_DAYS = 14;
 /** What one press of Load more days adds. */
 const HORIZON_STEP_DAYS = 14;
 
@@ -246,6 +250,11 @@ export interface CalendarChip {
    * record moves immediately, and nothing has told YouTube yet.
    */
   needsSchedulePush: boolean;
+  /**
+   * "Unlisted now, then public at…" (visibility scheduler): YouTube gets no publish time, so
+   * the chip says so rather than offering to send one.
+   */
+  unlistedFirst: boolean;
   /** For a stale row: when it was due and when the intent was recorded. */
   staleNote: string | null;
   /**
@@ -505,6 +514,56 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   /** How many days the rolling list covers, today inclusive. Grows, never shrinks. */
   readonly horizonDays = signal(INITIAL_HORIZON_DAYS);
+
+  // ------------------------------------------------- visibility scheduler badges
+  //
+  // Pending changes show as a small badge on their day ("→ public 10:00"), failed ones in red
+  // (VISIBILITY-SCHEDULER-PLAN.md, "ContentStudio"). Read for the visible range when the page
+  // loads and when the range grows; no polling. The range reaches back VISIBILITY_LOOKBACK_DAYS
+  // so a change that failed in the last fortnight is still on the page, above the board.
+
+  /** The scheduler's changes for the range, or null before the first read. */
+  readonly visibilityJobs = signal<SchedulerJob[] | null>(null);
+  /** Why the range could not be read: the scheduler's own words, or the fix-it for no key. */
+  readonly visibilityError = signal<string | null>(null);
+  readonly visibilityBadges = computed(() => badgesByDay(this.visibilityJobs() ?? []));
+  /** Failed changes on days before today, which have no day row of their own. */
+  readonly pastVisibilityFailures = computed<DayBadge[]>(() => {
+    const today = dateKeyOf(this.now());
+    const out: DayBadge[] = [];
+    for (const [key, badges] of this.visibilityBadges()) {
+      if (key < today) out.push(...badges.filter((b) => b.failed));
+    }
+    return out;
+  });
+  /** `from|to` as one string, so the read below re-runs only when the range really moves. */
+  private readonly visibilityRange = computed(() => {
+    const now = this.now();
+    const first = new Date(now.getFullYear(), now.getMonth(), now.getDate() - VISIBILITY_LOOKBACK_DAYS);
+    const last = new Date(now.getFullYear(), now.getMonth(), now.getDate() + this.horizonDays() - 1);
+    const range = rangeForDays(dateKeyOf(first), dateKeyOf(last));
+    return `${range.from}|${range.to}`;
+  });
+  private readonly visibilityReader = effect(() => {
+    const range = this.visibilityRange();
+    untracked(() => void this.refreshVisibility(range));
+  });
+
+  visibilityBadgesFor(dateKey: string): DayBadge[] {
+    return this.visibilityBadges().get(dateKey) ?? [];
+  }
+
+  async refreshVisibility(range: string = this.visibilityRange()): Promise<void> {
+    const [from, to] = range.split('|');
+    const res = await this.electron.schedulerListJobs({ from, to });
+    if (range !== this.visibilityRange()) return;
+    if (!res.success || !res.data) {
+      this.visibilityError.set(res.error ?? 'The visibility scheduler gave no list and no reason.');
+      return;
+    }
+    this.visibilityError.set(null);
+    this.visibilityJobs.set(res.data);
+  }
 
   /**
    * Which tab is in force: a channel id, or `spreaker`. Null only before the first load
@@ -2378,8 +2437,11 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // time with the older one recorded here" is not a housekeeping nudge — with a lapsed
     // local date it would publish the video on the spot. A moved date renders as the
     // divergence note instead, and YouTube's time stands unless the operator re-drags.
+    // An 'unlisted-then-public' item never gets a YouTube publish time: its push makes it
+    // unlisted and the scheduler makes it public, so "send this time to YouTube" is not its fix.
+    const unlistedFirst = facts.releaseMode === 'unlisted-then-public';
     const needsSchedulePush =
-      remote !== null && remote.privacyStatus === 'private' && remote.publishAt === null;
+      !unlistedFirst && remote !== null && remote.privacyStatus === 'private' && remote.publishAt === null;
 
     return {
       itemId: entry.itemId,
@@ -2427,6 +2489,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       readiness: readinessOf(facts),
       missing: missingFor(facts),
       needsSchedulePush,
+      unlistedFirst,
       liveNote:
         live !== null
           ? `live on YouTube since ${new Date(live.publishedAt).toLocaleDateString([], {

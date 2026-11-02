@@ -60,6 +60,17 @@ import { AutoDecision } from './auto-config';
 import { findAndAttachThumbnail } from './thumbnail-attach';
 import { buildFieldPatch, describeValue } from './field-validators';
 import {
+  createReleaseChange,
+  hasReleaseChange,
+  isUnlistedFirst,
+  releaseFailureMessage,
+  releaseLockProblem,
+  releasePatchForJob,
+  requireReleaseReady,
+  type ReleaseSchedulerApi,
+} from './release-change';
+import type { SchedulerJob } from '../scheduler/scheduler-client';
+import {
   CarriedRefResolution,
   applyCarryForward,
   findCarryForward,
@@ -76,6 +87,7 @@ import {
   emptyChosenMetadata,
   isItemId,
   validateChosenTitles,
+  type ReleaseMode,
 } from './publish-types';
 import * as fs from 'fs';
 
@@ -100,6 +112,8 @@ export interface PublishFacts {
   videoId: string | null;
   /** Strict boolean; never absent (upgradeStoredMetadata fills it on read). */
   isPodcast: boolean;
+  /** How the item goes public at publishAt: YouTube's own schedule, or unlisted first via the scheduler. */
+  releaseMode: ReleaseMode;
   /** ISO. When metadata was last pushed to the linked video, or null for never. */
   pushedAt: string | null;
   /** ISO. When the extension last filled Studio's form, or null for never. */
@@ -410,6 +424,12 @@ export interface PublishIpcDeps {
    * publish/ owns the rules about what the answer has to say.
    */
   probeAudio: (file: string) => Promise<AudioProbe>;
+  /**
+   * The visibility scheduler (VISIBILITY-SCHEDULER-PLAN.md): the upload and the push create an
+   * 'unlisted-then-public' item's change to public through it, and "Create the change" retries
+   * one that failed. The key stays inside it; publish/ never sees it.
+   */
+  scheduler: ReleaseSchedulerApi;
 }
 
 /** Uniform envelope so the renderer can branch on success without try/catch everywhere. */
@@ -545,7 +565,15 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     spreakerApi,
     requireSpreakerTarget,
     probeAudio,
+    scheduler,
   } = deps;
+
+  if (!scheduler || typeof scheduler.createJob !== 'function' || typeof scheduler.requireConfigured !== 'function') {
+    throw new Error(
+      'setupPublishIpc requires scheduler with requireConfigured and createJob: an ' +
+      '"unlisted, then public" upload makes the video unlisted and has to create its change to public.'
+    );
+  }
 
   if (typeof listChannels !== 'function') {
     throw new Error('setupPublishIpc requires listChannels: channel routing cannot be faked.');
@@ -729,6 +757,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
                 status: record.status,
                 videoId: record.videoId,
                 isPodcast: record.isPodcast,
+                releaseMode: record.releaseMode,
                 pushedAt: record.pushedAt,
                 filledAt: record.filledAt,
                 hasThumbnail: record.thumbnailPath !== null,
@@ -909,6 +938,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       try {
         const id = requireItemId(itemId, 'itemId');
         const patch = buildFieldPatch(fields, { listChannels, now: new Date() });
+        // Once the change to public exists, its time is the scheduler's (release-change.ts).
+        const locked = releaseLockProblem(store.get(id), fields);
+        if (locked) throw new Error(locked);
         const generated = requireGenerated(id);
         return ok(await store.update(id, generated, patch));
       } catch (err: any) {
@@ -973,6 +1005,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
           pushReceipt: null,
           filledAt: null,
           retiredUploads: retired,
+          // The change (if any) stays on the scheduler for that video; this item no longer has it.
+          releaseChange: null,
         })
       );
     } catch (err: any) {
@@ -1693,7 +1727,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     try {
       const id = requireItemId(itemId, 'itemId');
       const generated = requireGenerated(id);
-      return ok(await store.update(id, generated, { videoId: null, status: 'ready' }));
+      // The change to public (if any) belongs to the video, not the item: it stays on the
+      // scheduler and is no longer this record's link.
+      return ok(await store.update(id, generated, { videoId: null, status: 'ready', releaseChange: null }));
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -1715,7 +1751,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     try {
       const id = requireItemId(itemId, 'itemId');
       requirePrimarySet(id, 'pushed to YouTube');
-      const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi });
+      const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi, scheduler });
       return ok(outcome);
     } catch (err: any) {
       return fail(err?.message || String(err));
@@ -1778,6 +1814,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
           // The already-on-the-channel check. Same call the Fill flow uses, so both
           // answer "is this video up there?" from the same list.
           listRecentUploads,
+          // "Unlisted now, then public at…": the change to public is created after the upload.
+          scheduler,
           signal: controller.signal,
           onProgress: (sentBytes, totalBytes) => {
             const nowMs = Date.now();
@@ -1798,6 +1836,58 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       // panel — which is gone once the page is left (2026-09-26: a run's missing items
       // could not be explained from the log because nothing here wrote one).
       log.warn(`[Publish] YouTube upload of ${String(itemId)}: failed: ${err?.message || String(err)}`);
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Create the change to public for an 'unlisted-then-public' item whose video is on YouTube
+   * but has no change: the upload or push made it unlisted and the scheduler refused, or the
+   * upload stopped after the insert. "Create the change" on the Video row. The outcome goes
+   * onto the record either way; a refusal is returned verbatim and stays on the item.
+   */
+  ipcMain.handle('publish-create-release-change', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+      const record = store.get(id);
+      if (!record) throw new Error(`Nothing has been saved for item ${id}, so it has no video to release.`);
+      if (!isUnlistedFirst(record)) {
+        throw new Error(`Item ${id} goes public on YouTube's own schedule, not through the visibility scheduler. Nothing was created.`);
+      }
+      if (!record.videoId) throw new Error(`Item ${id} is not linked to a YouTube video yet, so there is nothing to make public. Nothing was created.`);
+      if (hasReleaseChange(record)) {
+        throw new Error(`Item ${id} already has its change to public (${record.releaseChange!.jobId}). Edit it in Visibility changes.`);
+      }
+      const now = new Date();
+      const runAt = requireReleaseReady(record, scheduler, now, 'created');
+      const outcome = await createReleaseChange(scheduler, { itemId: id, videoId: record.videoId, runAt, title: record.chosenTitles[0] ?? null }, now);
+      const selection = await store.update(id, generated, { releaseChange: outcome.link });
+      log.info(`[Publish] ${id}: change to public at ${runAt} ${outcome.failure === null ? `created (${outcome.link.jobId})` : `refused: ${outcome.failure}`}`);
+      if (outcome.failure !== null) return fail(releaseFailureMessage(record.videoId, runAt, 'pushed', outcome.failure));
+      return ok({ selection, warnings: outcome.link.warnings });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * After Visibility changes edited or cancelled a change, bring the item that links to it
+   * along (release-change.ts releasePatchForJob). Returns the record, unchanged when the change
+   * is not this item's link.
+   */
+  ipcMain.handle('publish-follow-release-change', async (_e, itemId: string, job: SchedulerJob) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+      const record = store.get(id);
+      if (!record) throw new Error(`Nothing has been saved for item ${id}.`);
+      if (!job || typeof job !== 'object' || typeof job.id !== 'string') throw new Error(`publish-follow-release-change needs the change; got ${describeValue(job)}.`);
+      const patch = releasePatchForJob(record, job, new Date());
+      if (patch === null) return ok(record);
+      log.info(`[Publish] ${id}: follows change ${job.id} (${job.state}, ${job.target} at ${job.runAt})`);
+      return ok(await store.update(id, generated, patch));
+    } catch (err: any) {
       return fail(err?.message || String(err));
     }
   });
