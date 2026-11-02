@@ -1,6 +1,7 @@
 # Visibility scheduler: plan
 
-Status: plan, not built. Written 2026-11-02 from Owen's asks the same day.
+Status: phase 1 (server) built and deployed 2026-11-02, waiting for the Google Web client; phases 2-3 not built.
+Written 2026-11-02 from Owen's asks the same day. Server code: `server/visibility-scheduler/` (README there).
 
 ## What it is for
 
@@ -56,9 +57,9 @@ both always show the same list.
 
 ### Code location
 
-`server/visibility-scheduler/` in this repo (TypeScript, Hono, `node:sqlite`, which is built
-into Node 24 — no database server). `deploy.sh` builds on the Mac, rsyncs to
-`/home/owenmorgan/apps/visibility-scheduler/`, `npm ci --omit=dev`, `pm2 restart`. Data in
+`server/visibility-scheduler/` in this repo (TypeScript, no runtime dependencies: `node:http`,
+`node:sqlite` and `fetch`, all built into Node 24 — no database server, no framework). `deploy.sh` builds on the Mac, rsyncs to
+`/home/owenmorgan/apps/visibility-scheduler/`, and starts or reloads the pm2 app. Data in
 `/home/owenmorgan/apps/visibility-scheduler-data/` (mode 700), outside every web root.
 
 ### The subdomain
@@ -99,7 +100,7 @@ that keeps trying.
 
 | Client | How |
 |---|---|
-| Setup page | Google Identity Services "Sign in with Google" → ID token → server verifies it (`google-auth-library` `verifyIdToken`: audience = the web client ID, `email_verified`, email in the allowlist) → session cookie (HttpOnly, Secure, SameSite=Strict, host-only on `contentstudio.owenmorgan.com`, path `/scheduler`, 30 days, stored server-side). Before sign-in the page shows only the button. |
+| Setup page | "Sign in with Google" is the standard OAuth redirect (scope `openid email`, PKCE, a state bound to the browser by a cookie) → the ID token comes straight from Google's token endpoint → server checks issuer, audience = the web client ID, expiry, `email_verified`, email = the allowed one → session cookie (HttpOnly, Secure, SameSite=Lax so it survives the redirect back from Google; every POST also needs the page's own Origin; host-only on `contentstudio.owenmorgan.com`, path `/scheduler`, 30 days, stored server-side). Before sign-in the page shows only the button. |
 | ContentStudio | A **device key** made on the settings page, pasted in once. `Authorization: Bearer <key>`. |
 | Extension | Its own device key, same way. |
 
@@ -115,8 +116,8 @@ and the extension calls from its service worker under a host permission.
 ## YouTube access
 
 - A **Web** OAuth client in ContentStudio's existing Google Cloud project (Production), redirect
-  `https://contentstudio.owenmorgan.com/scheduler/oauth/callback` (and the subdomain as an
-  authorised JavaScript origin for the sign-in button), scope `youtube`, `access_type=offline`,
+  `https://contentstudio.owenmorgan.com/scheduler/oauth/callback` (the only redirect URI;
+  no JavaScript origin is needed, the page has no scripts), scope `youtube`, `access_type=offline`,
   `prompt=consent`. Owen connects each of the three channels once from the settings page;
   `channels.list(mine=true)` says which brand channel was picked. The page shows each
   channel's state, and a channel whose token Google refuses is shown as "reconnect".
@@ -161,10 +162,12 @@ An in-process loop checks every 30 s for pending changes whose runAt has passed:
    `license`, `publicStatsViewable`, `selfDeclaredMadeForKids` to defaults.
 5. Read back; `after` must equal the target or the change is `failed`.
 
-Errors: a network error or 5xx is retried (same action, no other path) at 1, 2, 5 and 10
-minutes, every attempt logged; after the last one it is `failed`. A refused token or a 4xx is
-`failed` at once, with Google's message. A failed change emails Owen (exim on Triton) with
-the video, the target and the error; the clients show it in red.
+Errors: a network error, 5xx or 429 is retried (same action, no other path) at 1, 2, 5 and 10
+minutes, every attempt logged; after the last one it is `failed`. A refused token or another 4xx
+is `failed` at once, with Google's message. A change waiting out a retry holds back later
+changes for the same video, so they never run out of order. **No email** (Owen 2026-11-02, "i
+dont think we need email for this to work"): failures show in red on the setup page and in the
+clients. (Gmail refuses all direct mail from Triton's IP anyway; see LEDGER #331.)
 
 Late changes: if the service was down at runAt, the change runs when it comes back and
 records `lateByMs`; the clients say "ran N minutes late". Never skipped.
@@ -226,7 +229,6 @@ One LEDGER entry per phase.
 
 ## Open questions for Owen
 
-- Failure notices: email from Triton (suggested), or a push service.
 - Backups of the jobs file: does Triton have DigitalOcean backups on, or should the Mac pull
   a nightly copy into `/Volumes/Callisto/backups`?
 - Known risk: whether YouTube gives a video made public from unlisted the same subscriber

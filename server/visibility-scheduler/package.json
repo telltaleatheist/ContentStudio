@@ -1,0 +1,16 @@
+{
+  "name": "contentstudio-visibility-scheduler",
+  "private": true,
+  "type": "module",
+  "description": "Changes a YouTube video's visibility at a set time. Runs on Triton. See VISIBILITY-SCHEDULER-PLAN.md.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p .",
+    "test": "npm run build && node --test dist/test/",
+    "start": "node dist/src/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.8.3"
+  }
+}

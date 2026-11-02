@@ -1,0 +1,13 @@
+# 20 refused requests in 10 minutes bans the address from the web ports for a day.
+# The threshold is high on purpose: Owen's home address is not fixed, and a mistyped key
+# must not ban him. The tailnet is never banned. Repeat offenders go on to recidive.
+# Source: ContentStudio repo, server/visibility-scheduler/ops/.
+[contentstudio]
+enabled  = true
+filter   = contentstudio
+action   = hestia[name=WEB]
+logpath  = /var/log/apache2/domains/contentstudio.owenmorgan.com.log
+maxretry = 20
+findtime = 600
+bantime  = 86400
+ignoreip = 127.0.0.1/8 100.64.0.0/10
