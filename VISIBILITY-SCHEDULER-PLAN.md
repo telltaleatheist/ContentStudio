@@ -15,7 +15,10 @@ the sponsor case (they review the real video before release); public → unliste
   service. **Not a WordPress plugin**: WordPress's cron only runs on page loads, and its
   attack surface should never sit next to tokens that can change every video.
 - **No home-made login.** Everything is behind a Google login (his account only).
-- The settings page lives on owenmorgan.com and is hidden from bots.
+- **Its own subdomain, `contentstudio.owenmorgan.com`**; the scheduler is one section of
+  it (`/scheduler`), and the root can link to it later. It is used programmatically by
+  ContentStudio (and the extension); the only page is for one-time setup. Bots finding it
+  would not matter, but it should still be kept from being scanned and indexed.
 - **ContentStudio and the extension can both create, see and cancel changes.**
 - A change is **any visibility → any visibility**.
 
@@ -30,7 +33,12 @@ the sponsor case (they review the real video before release); public → unliste
   `/etc/nginx/conf.d/` (`fireside-upstream.conf`).
 - `owenmorgan.com/contentstudio/` holds the privacy and terms pages for ContentStudio's
   Google Cloud project, whose consent screen is in Production (refresh tokens have lasted
-  months).
+  months). They stay where they are: the consent screen points at them.
+- Hestia runs DNS for owenmorgan.com (named on Triton, ns1/ns2.owenmorgan.com; no wildcard
+  record), so adding a Hestia web domain adds its A record. A CAA record exists.
+- Hestia custom proxy templates are already in use (`headscale.tpl/.stpl` sends the whole
+  `headscale.owenmorgan.com` domain to a local port).
+- fail2ban runs (7 jails: ssh, exim, dovecot, hestia, recidive, …).
 - exim4 runs (can send mail). Triton, the Mac Studio, `blip` and `owens-pc` are on the
   Headscale tailnet (Triton hosts Headscale).
 
@@ -38,8 +46,8 @@ the sponsor case (they review the real video before release); public → unliste
 
 ```
  ContentStudio (Mac) ──┐  device key
- Extension (Studio) ───┼──────────────►  owenmorgan.com/scheduler/api  ──► YouTube Data API
- Settings page ────────┘  Google login        (Triton, pm2, :8430)          (per-channel token)
+ Extension (Studio) ───┼──────────►  contentstudio.owenmorgan.com/scheduler/api  ──► YouTube
+ Setup page ───────────┘  Google login        (Triton, pm2, :8430)              Data API
 ```
 
 Triton is the **only** store of changes. ContentStudio and the extension each talk to it
@@ -53,21 +61,45 @@ into Node 24 — no database server). `deploy.sh` builds on the Mac, rsyncs to
 `/home/owenmorgan/apps/visibility-scheduler/`, `npm ci --omit=dev`, `pm2 restart`. Data in
 `/home/owenmorgan/apps/visibility-scheduler-data/` (mode 700), outside every web root.
 
-### nginx
+### The subdomain
 
-- `/home/owenmorgan/conf/web/owenmorgan.com/nginx.ssl.conf_scheduler`:
-  `location ^~ /scheduler/ { proxy_pass http://127.0.0.1:8430/; … }`.
-  **`^~` is required**: the vhost has a regex location for static extensions (css, js, png…)
-  that would otherwise serve `/scheduler/app.js` from WordPress's public_html.
-  Adds `X-Robots-Tag: noindex, nofollow` and `limit_req`.
-- `/etc/nginx/conf.d/scheduler-ratelimit.conf`: the `limit_req_zone` (http context).
+- `v-add-web-domain owenmorgan contentstudio.owenmorgan.com` (adds the A record in
+  Hestia's zone), then `v-add-letsencrypt-domain` and force-SSL.
+- A Hestia proxy template `contentstudio.tpl/.stpl`, modelled on `headscale.tpl`, sends the
+  **whole domain** to `127.0.0.1:8430`. No Apache, no WordPress, no static-file rules on
+  this domain; Node answers everything. Selected with `v-change-web-domain-proxy-tpl`, so a
+  Hestia rebuild regenerates it from the template rather than overwriting a hand edit.
+- `/etc/nginx/conf.d/contentstudio-ratelimit.conf`: the `limit_req_zone` (http context);
+  the template applies it.
 - The service binds 127.0.0.1 only. `nginx -t` before every reload.
+- Layout: `/scheduler/…` is the scheduler (setup page and `/scheduler/api`); `/` is reserved
+  for a future ContentStudio landing page that can link to it.
+
+### Keeping it from being scanned
+
+Honest limit: issuing the Let's Encrypt certificate publishes the name in Certificate
+Transparency logs, and scanners watch those, so the name will be probed within hours of
+going live. It cannot be hidden; it can be made to give a scanner nothing and to ban one
+that keeps trying.
+
+- `/robots.txt` is `Disallow: /`; every response carries `X-Robots-Tag: noindex, nofollow,
+  noarchive`.
+- `/` and every unknown path: a bare `404` with no body worth reading, no server or
+  framework name in the headers (`server_tokens off`, no `X-Powered-By`).
+- The API without a valid key or session: a bare `401`, the same for a wrong key and a
+  missing one.
+- The setup page at `/scheduler/` shows only "Sign in with Google" until signed in.
+- nginx `limit_req` on the whole domain (generous for real use, e.g. 10 r/s burst 20).
+- A fail2ban jail on the domain's nginx log: 20 × 401/404 in 10 minutes bans the IP for a
+  day (feeds `recidive` for repeat offenders). The tailnet range `100.64.0.0/10` is in
+  `ignoreip`; Owen's home IP is not fixed, so the threshold is set high enough that a
+  mistyped key cannot ban him.
 
 ## Who gets in
 
 | Client | How |
 |---|---|
-| Settings page | Google Identity Services "Sign in with Google" → ID token → server verifies it (`google-auth-library` `verifyIdToken`: audience = the web client ID, `email_verified`, email in the allowlist) → session cookie (HttpOnly, Secure, SameSite=Strict, path `/scheduler`, 30 days, stored server-side). Before sign-in the page shows only the button. |
+| Setup page | Google Identity Services "Sign in with Google" → ID token → server verifies it (`google-auth-library` `verifyIdToken`: audience = the web client ID, `email_verified`, email in the allowlist) → session cookie (HttpOnly, Secure, SameSite=Strict, host-only on `contentstudio.owenmorgan.com`, path `/scheduler`, 30 days, stored server-side). Before sign-in the page shows only the button. |
 | ContentStudio | A **device key** made on the settings page, pasted in once. `Authorization: Bearer <key>`. |
 | Extension | Its own device key, same way. |
 
@@ -83,7 +115,8 @@ and the extension calls from its service worker under a host permission.
 ## YouTube access
 
 - A **Web** OAuth client in ContentStudio's existing Google Cloud project (Production), redirect
-  `https://owenmorgan.com/scheduler/oauth/callback`, scope `youtube`, `access_type=offline`,
+  `https://contentstudio.owenmorgan.com/scheduler/oauth/callback` (and the subdomain as an
+  authorised JavaScript origin for the sign-in button), scope `youtube`, `access_type=offline`,
   `prompt=consent`. Owen connects each of the three channels once from the settings page;
   `channels.list(mine=true)` says which brand channel was picked. The page shows each
   channel's state, and a channel whose token Google refuses is shown as "reconnect".
@@ -148,11 +181,13 @@ GET    /video/:videoId                 current visibility + YouTube publishAt (f
 GET    /health                         loop alive, last tick, next due
 ```
 
-## Settings page (`owenmorgan.com/scheduler/`)
+## Setup page (`contentstudio.owenmorgan.com/scheduler/`)
 
-Sign in; connected channels (connect / reconnect); device keys (make, name, revoke); every
-change as a list (pending first, by time; history below, failures marked), with the same
-create / edit / cancel as the clients.
+Day-to-day use is ContentStudio and the extension. The page exists because two things need
+a browser and Google once: connecting the channels and making device keys. It has: sign in;
+connected channels (connect / reconnect); device keys (make, name, revoke); and a read-only
+list of every change (pending first, by time; history below, failures marked), so there is
+somewhere to look when the Mac is off. Creating and editing changes is the clients' job.
 
 ## ContentStudio
 
@@ -168,7 +203,8 @@ create / edit / cancel as the clients.
 
 ## Extension (next minor version, 0.3.0)
 
-- `host_permissions` gains `https://owenmorgan.com/scheduler/*`; Options gains the device key.
+- `host_permissions` gains `https://contentstudio.owenmorgan.com/*`; Options gains the device
+  key.
 - The Studio shelf gets a **Visibility** section for the open video: its current visibility,
   its pending changes, add (visibility + date/time in local time + note), edit, cancel.
 - Calls go through the service worker (content scripts are bound by Studio's CORS), the same
@@ -178,8 +214,8 @@ create / edit / cancel as the clients.
 
 ## Phases
 
-1. **Server** — jobs, loop, YouTube calls, Google sign-in, device keys, settings page, nginx
-   include, deploy. Owen connects the three channels. Checks: pure tests for the job rules
+1. **Server** — subdomain, certificate, proxy template, fail2ban jail; jobs, loop, YouTube
+   calls, Google sign-in, device keys, setup page; deploy. Owen connects the three channels. Checks: pure tests for the job rules
    and the status-object merge. Live check (Owen's go-ahead first): a throwaway unlisted
    video, change to public then back to unlisted a few minutes apart; also a private video
    with a YouTube publishAt, to settle step 3.
@@ -190,8 +226,6 @@ One LEDGER entry per phase.
 
 ## Open questions for Owen
 
-- Address: `owenmorgan.com/scheduler` (suggested; uses the site's certificate) or a
-  subdomain.
 - Failure notices: email from Triton (suggested), or a push service.
 - Backups of the jobs file: does Triton have DigitalOcean backups on, or should the Mac pull
   a nightly copy into `/Volumes/Callisto/backups`?
