@@ -173,6 +173,11 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
   ipcMain.handle('thumbnails:running', (_e, jobId: string, itemId: string) => answer('reading what is running', () => report.running(jobId, itemId)));
   ipcMain.handle('thumbnails:add-frames', (event, jobId: string, itemId: string, files: unknown) => {
     progressTo = event.sender;
+    // A file dropped from Finder leaves Finder the active app, so the next Backspace or Cmd+V
+    // went to Finder, not the card (2026-11-02, Owen: "can we fix it?"): the window is brought
+    // forward as the image is taken.
+    app.focus({ steal: true });
+    BrowserWindow.fromWebContents(event.sender)?.focus();
     return answer('adding your images', () => report.addFrames(jobId, itemId, files));
   });
   ipcMain.handle('thumbnails:finish', (event, jobId: string, itemId: string) => {
