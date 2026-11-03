@@ -741,6 +741,7 @@ const api = {
   thumbnailsRunning: (jobId: string, itemId: string) => ipcRenderer.invoke('thumbnails:running', jobId, itemId),
   thumbnailsAddFrames: (jobId: string, itemId: string, files: string[]) => ipcRenderer.invoke('thumbnails:add-frames', jobId, itemId, files),
   thumbnailsChooseFrames: () => ipcRenderer.invoke('thumbnails:choose-frames'),
+  thumbnailsClipboardImages: () => ipcRenderer.invoke('thumbnails:clipboard-images'),
   thumbnailsClosed: () => ipcRenderer.invoke('thumbnails:closed'),
   thumbnailsShowFolder: (folder: string) => ipcRenderer.invoke('thumbnails:show-folder', folder),
   thumbnailsGetStyle: () => ipcRenderer.invoke('thumbnails:get-style'),

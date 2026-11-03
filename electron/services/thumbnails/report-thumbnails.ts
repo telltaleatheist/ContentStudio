@@ -1046,7 +1046,7 @@ export class ReportThumbnails {
    * IMAGES OWEN ADDS AS FRAMES (2026-09-29, Owen: "it didnt come up with any good screenshots for
    * one of my videos... lets make it so i can drag/drop them into the slot ... it should just fit to
    * fill the whole thing. if it needs to be adjusted, i can edit it already"). Each file (absolute,
-   * on disk, PNG or JPEG) becomes a new candidate frame `addedN`: cut to fill 16:9 around its centre
+   * on disk, PNG or JPEG) becomes a new candidate frame `addedN`: another shape than 16:9 centred whole on a blurred copy of itself (2026-11-02)
    * and written at 1920x1080 into `<folder>/full/<id>.png` (prepareStill, its line logged and kept
    * on the record), with the grid's two JPEGs beside the sampler's in `<folder>/added/`. His file is
    * only read. They are listed first in the Frames tray; the words, photo, logo and border go on top

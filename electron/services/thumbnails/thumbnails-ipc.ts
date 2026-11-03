@@ -11,7 +11,7 @@
  * make for it (a frame at full size and its faces, a photo trimmed, the logo at its drawn size, the
  * border) comes from `previewPieces` below, with the render's own readers.
  */
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
@@ -101,6 +101,27 @@ async function chooseFiles(event: Electron.IpcMainInvokeEvent, multi: boolean): 
   return picked.canceled || picked.filePaths.length === 0 ? null : picked.filePaths;
 }
 
+/**
+ * What Cmd+V puts on the active card (2026-11-02, Owen: "i thought we made it so i could backspace
+ * or cmd+v with a slot selected"): files copied in Finder as their paths, else a copied picture (a
+ * screenshot, an image copied from a browser) written as a PNG in the app's temp folder, else none. Finder's names come first: a copied file also puts its icon on the clipboard.
+ */
+function clipboardImages(): string[] {
+  const list = clipboard.read('NSFilenamesPboardType');
+  const many = [...list.matchAll(/<string>([^<]+)<\/string>/g)].map((m) => m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
+  if (many.length > 0) return many;
+  const url = clipboard.read('public.file-url');
+  if (url.startsWith('file://')) return [decodeURIComponent(new URL(url).pathname)];
+  const image = clipboard.readImage();
+  if (image.isEmpty()) return [];
+  const folder = path.join(app.getPath('temp'), 'contentstudio-pasted');
+  fs.mkdirSync(folder, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const file = path.join(folder, `pasted-${stamp}.png`);
+  fs.writeFileSync(file, image.toPNG());
+  return [file];
+}
+
 export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext, userDataPath: string): void {
   const paths = getRuntimePaths();
   const look = new ThumbnailLook({ store: { get: (key) => store.get(key), set: (key, value) => store.set(key, value) }, userDataPath });
@@ -159,6 +180,7 @@ export function setupThumbnailsIpc(store: Store<any>, crucible: CrucibleContext,
     return answer('preparing the frames and text', () => report.finish(jobId, itemId));
   });
   ipcMain.handle('thumbnails:choose-frames', (event) => answer('choosing images', () => chooseFiles(event, true)));
+  ipcMain.handle('thumbnails:clipboard-images', () => answer('reading the clipboard', async () => clipboardImages()));
   ipcMain.handle('thumbnails:closed', () => answer('closing the Thumbnails window', () => report.closed()));
   ipcMain.handle('thumbnails:show-folder', (_e, folder: string) =>
     answer('opening the folder', async () => {

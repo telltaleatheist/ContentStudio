@@ -58,7 +58,7 @@ export interface ThumbnailsWindowData {
  * THE THUMBNAILS WINDOW: THE CARD EDITOR (2026-09-29, Owen: "maybe i select the thumbnail card i
  * want to fill. then i select the frame, the text, and the image of myself to use in it. then i
  * click a different card and do the same ... as soon as i click something, it adds it to the frame.
- * if i unclick it, it removes it from the frame"). Backspace or Delete clears the active card.
+ * if i unclick it, it removes it from the frame"). Backspace or Delete clears the active card; ⌘V puts a copied image on it.
  *
  *   - THREE CARDS across the top, each a LIVE preview drawn here with the final render's own layout
  *     and drawing (thumbnail-preview.ts), with the title it goes with under it. One card is ACTIVE
@@ -76,8 +76,8 @@ export interface ThumbnailsWindowData {
  *     not saved asks first, in the window.
  *
  *   - HIS OWN IMAGES AS FRAMES (2026-09-29, Owen: "lets make it so i can drag/drop them into the
- *     slot"): an image file dropped from Finder on a card becomes that card's frame at once (cut to
- *     fill 16:9, or a portrait one centred on a blurred copy of itself; Edit zooms or moves it), dropped on the Frames tray or chosen with "Add an image…"
+ *     slot"): an image file dropped from Finder on a card (or pasted on the active one with ⌘V) becomes
+ *     that card's frame at once (another shape than 16:9 centred whole on a blurred copy of itself; Edit zooms or moves it), dropped on the Frames tray or chosen with "Add an image…"
  *     it joins the tray. They are kept in the report, listed first.
  *   - A REPORT WITH NO STORY (2026-09-30, Owen, a report made from a subject for a video not
  *     recorded yet: "it should let me type it and pick the thumbnail background and foreground
@@ -226,6 +226,12 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
       else if ((event.key === 'Backspace' || event.key === 'Delete') && !this.closeAsked() && !isTyping(event.target)) {
         event.preventDefault();
         this.cards.set(clearCard(this.cards(), this.active()));
+      }
+      // Cmd+V puts the copied image on the active card, as dropping it there does (2026-11-02, Owen:
+      // "i thought we made it so i could backspace or cmd+v with a slot selected"); never while typing.
+      else if (event.metaKey && event.key.toLowerCase() === 'v' && !this.closeAsked() && !isTyping(event.target)) {
+        event.preventDefault();
+        void this.pasteOnActive();
       }
     });
     // Each card redraws when it, the look or its surface changes; the rest are left as they are.
@@ -657,8 +663,21 @@ export class ThumbnailsWindow implements OnInit, OnDestroy {
     if (files !== null && files.length > 0) await this.addImages(files, null);
   }
 
+  /** Cmd+V: the clipboard's images, the first on the active card, any others in the Frames tray. */
+  private async pasteOnActive(): Promise<void> {
+    this.failure.set(null);
+    const card = this.active();
+    const files = await this.runner.run('Reading the clipboard', () => this.electron.thumbnailsClipboardImages());
+    if (files === null) return;
+    if (files.length === 0) {
+      this.notice.set('The clipboard holds no image. Copy an image file in Finder, or copy a picture, then press ⌘V.');
+      return;
+    }
+    await this.addImages(files, card);
+  }
+
   /**
-   * His image files added to the report as frames (each cut to fill 16:9, said); with `card`, the
+   * His image files added to the report as frames (another shape than 16:9 centred on a blurred copy of itself, said); with `card`, the
    * first is put on that card (the rest stay in the tray).
    */
   private async addImages(files: string[], card: number | null): Promise<void> {

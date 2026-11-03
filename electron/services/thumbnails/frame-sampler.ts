@@ -342,8 +342,8 @@ export const STILL_SIZE = { w: 1920, h: 1080 } as const;
 
 /**
  * One of Owen's screenshots as a thumbnail background (a report with no story, phase 2), or an
- * image he added as a frame (2026-09-29, "it should just fit to fill the whole thing"): cut to
- * 16:9 around its centre when it is another shape (a portrait one is centred on blurred bars), scaled to STILL_SIZE, written as PNG. What was
+ * image he added as a frame (2026-09-29): another shape than 16:9 is centred whole on a blurred
+ * copy of itself (2026-11-02), scaled to STILL_SIZE, written as PNG. What was
  * done comes back as a plain line, so the window can say it (Law 8). His file is only read.
  */
 export async function prepareStill(ffmpeg: string, ffprobe: string, image: string, outPng: string): Promise<{ line: string }> {
@@ -353,16 +353,16 @@ export async function prepareStill(ffmpeg: string, ffprobe: string, image: strin
   if (!stream || !stream.width || !stream.height) throw new Error(`ffprobe found no picture in ${image}.`);
   const { width, height } = stream;
   const ratio = width / height;
-  const cut = Math.abs(ratio - 16 / 9) > 0.01;
-  // A portrait image (taller than wide, a phone's 9:16) is not cut: it is fitted whole in the
-  // middle, the bars either side filled with a blurred, darkened copy of itself cut to fill
-  // (2026-11-01, Owen: "it adds blurred bars on the sides and centers it for me").
-  const portrait = ratio < 1;
+  // Any shape other than 16:9 is not cut: it is fitted whole in the middle, the bars around it
+  // (sides for a tall one, top and bottom for a wide one) filled with a blurred, darkened copy of
+  // itself cut to fill (2026-11-01, Owen: "it adds blurred bars on the sides and centers it for
+  // me"; 2026-11-02, for every shape: "add blurred sides if an image dragged in isnt 16:9").
+  const fitted = Math.abs(ratio - 16 / 9) > 0.01;
   const { w, h } = STILL_SIZE;
-  const filter = portrait
+  const filter = fitted
     ? `[0:v]split=2[bg][fg];[bg]crop=min(iw\\,ih*16/9):min(ih\\,iw*9/16),scale=${w / 4}:${h / 4},boxblur=20:3,eq=brightness=-0.08,scale=${w}:${h},setsar=1[back];` +
-      `[fg]scale=-2:${h},setsar=1[front];[back][front]overlay=(W-w)/2:0`
-    : `[0:v]crop=min(iw\\,ih*16/9):min(ih\\,iw*9/16),scale=${w}:${h},setsar=1`;
+      `[fg]scale=${w}:${h}:force_original_aspect_ratio=decrease,setsar=1[front];[back][front]overlay=(W-w)/2:(H-h)/2`
+    : `[0:v]scale=${w}:${h},setsar=1`;
   fs.mkdirSync(path.dirname(outPng), { recursive: true });
   await run(ffmpeg, [
     '-hide_banner', '-nostdin', '-v', 'error', '-i', image,
@@ -371,12 +371,11 @@ export async function prepareStill(ffmpeg: string, ffprobe: string, image: strin
   ]);
   if (!fs.existsSync(outPng) || fs.statSync(outPng).size === 0) throw new Error(`ffmpeg wrote no picture from ${path.basename(image)}.`);
   const name = path.basename(image);
-  const small = (portrait ? height < STILL_SIZE.h * 0.66 : width < STILL_SIZE.w * 0.66) ? ` It is small, so it was enlarged and may look soft.` : '';
+  // Enlarged by more than half again (the fitted picture is set by its longer side).
+  const small = Math.min(w / width, h / height) > 1 / 0.66 ? ` It is small, so it was enlarged and may look soft.` : '';
   return {
-    line: portrait
-      ? `${name} is ${width}x${height}, taller than wide, so it was centred whole with blurred copies of itself filling the sides.${small}`
-      : cut
-      ? `${name} is ${width}x${height}, not 16:9, so its middle was cut to 16:9 (the ${ratio > 16 / 9 ? 'left and right' : 'top and bottom'} edges were left out).${small}`
+    line: fitted
+      ? `${name} is ${width}x${height}, not 16:9, so it was centred whole with a blurred copy of itself filling the ${ratio < 16 / 9 ? 'sides' : 'top and bottom'}.${small}`
       : `${name} (${width}x${height}) is used whole.${small}`,
   };
 }

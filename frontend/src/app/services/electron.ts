@@ -1232,6 +1232,7 @@ declare global {
       thumbnailsRunning: (jobId: string, itemId: string) => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsAddFrames: (jobId: string, itemId: string, files: string[]) => Promise<ThumbnailsAnswer<{ view: ThumbnailsView; added: string[]; lines: string[] }>>;
       thumbnailsChooseFrames: () => Promise<ThumbnailsAnswer<string[] | null>>;
+      thumbnailsClipboardImages: () => Promise<ThumbnailsAnswer<string[]>>;
       thumbnailsClosed: () => Promise<ThumbnailsAnswer<string | null>>;
       thumbnailsShowFolder: (folder: string) => Promise<ThumbnailsAnswer<void>>;
       thumbnailsGetStyle: () => Promise<ThumbnailsAnswer<{ style: LookStyle; stored: boolean; line: string | null }>>;
@@ -2836,11 +2837,13 @@ export class ElectronService {
   }
   /** What is running for this item now (a step started from an earlier window), or null. */
   thumbnailsRunning(jobId: string, itemId: string): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsRunning(jobId, itemId)); }
-  /** His image files added as frames (cut to fill 16:9): the view and the new frames' ids in order. */
+  /** His image files added as frames (another shape than 16:9 centred on a blurred copy of itself): the view and the new frames' ids in order. */
   thumbnailsAddFrames(jobId: string, itemId: string, files: string[]): Promise<{ view: ThumbnailsView; added: string[]; lines: string[] }> {
     return this.thumbnails(this.thumbnailsBridge.thumbnailsAddFrames(jobId, itemId, files));
   }
   thumbnailsChooseFrames(): Promise<string[] | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsChooseFrames()); }
+  /** The clipboard's images as files (Finder's copied files, or a copied picture written as a PNG); none when it holds no image. */
+  thumbnailsClipboardImages(): Promise<string[]> { return this.thumbnails(this.thumbnailsBridge.thumbnailsClipboardImages()); }
   thumbnailsClosed(): Promise<string | null> { return this.thumbnails(this.thumbnailsBridge.thumbnailsClosed()); }
   thumbnailsShowFolder(folder: string): Promise<void> { return this.thumbnails(this.thumbnailsBridge.thumbnailsShowFolder(folder)); }
   thumbnailsGetStyle(): Promise<{ style: LookStyle; stored: boolean; line: string | null }> { return this.thumbnails(this.thumbnailsBridge.thumbnailsGetStyle()); }
