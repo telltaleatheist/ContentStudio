@@ -259,6 +259,13 @@ const MATCHING_RULES: string[] = [
   // Excluding them cedes those files to the SMB client, which is already maintaining
   // them. Nothing of the projects themselves lives there.
   '--exclude=._*',
+  // Syncthing's in-flight copies. FCPX is a Syncthing folder, so a week can be receiving new
+  // footage while it is pushed. Each file arrives as `.syncthing.<name>.tmp` and is renamed
+  // when complete, so a listed one either vanishes before rsync reaches it (exit 24, measured
+  // 2026-11-04 on the 2026-11-01 week) or lands half-written on the server, where nothing
+  // would ever remove it because a push does not delete. The finished file has its real name
+  // and goes up with a later push.
+  '--exclude=.syncthing.*',
   // ── Final Cut library internals that cannot cross to the server ──────────
   //
   // A Final Cut library keeps two pointer entries, `.fcpcache` (a SELF-referential
