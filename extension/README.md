@@ -76,7 +76,11 @@ build copies it into `dist/`. Paths inside it (`background.js`, `popup.html`,
 5. Open the popup: the connection row should show
    **Connected to ContentStudio** while the app is running.
 
-## Visibility scheduler (0.3.0)
+## Visibility scheduler (0.3.0; in Studio's dialog since 0.4.0)
+
+Click a video's visibility, on the Content list or its Details page, and Studio's dialog has
+a **Change visibility later** box under **Schedule**: pick the visibility and time, press
+**Schedule change**. It is saved then and there; Studio's own buttons do not affect it.
 
 The Studio shelf's **This video** tab has a **Visibility** section whenever a
 video is open. It reads and schedules visibility changes (public / unlisted /

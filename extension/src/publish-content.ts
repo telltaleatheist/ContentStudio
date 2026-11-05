@@ -58,7 +58,8 @@ import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetizat
 import { waitFor } from './publish/dom';
 // The Visibility section talks to the scheduler on Triton, never to ContentStudio, so it
 // keeps working with the app closed. Through the worker too, for Studio's CORS.
-import { VisibilityPanel } from './publish/visibility-panel';
+import { VisibilityDialog } from './publish/visibility-dialog';
+import { VisibilityPanel, type VisibilityTransport } from './publish/visibility-panel';
 import {
   requestCancelSchedulerJob,
   requestCreateSchedulerJob,
@@ -69,15 +70,16 @@ import {
 } from './scheduler/scheduler-messages';
 
 let shelf: PublishShelf | null = null;
-/** The shelf's Visibility section; follows the URL's video id on every navigation. */
-const visibility = new VisibilityPanel({
+const schedulerTransport: VisibilityTransport = {
   video: requestSchedulerVideo,
   jobs: requestSchedulerJobs,
   create: requestCreateSchedulerJob,
   edit: requestEditSchedulerJob,
   cancel: requestCancelSchedulerJob,
   openOptions: requestOpenOptions,
-});
+};
+/** The shelf's Visibility section; follows the URL's video id on every navigation. */
+const visibility = new VisibilityPanel(schedulerTransport);
 /** The right-edge video navigator. Mounted on /video/<id>/edit and /video/<id>/monetization
  *  (Details and Earn) — see syncNavStrip. */
 let navStrip: NavStrip | null = null;
@@ -725,6 +727,8 @@ async function start(): Promise<void> {
   // The reveal listener is registered FIRST and unconditionally, so that a shelf which
   // failed to mount can still explain itself when the operator clicks the toolbar button.
   listenForReveal();
+  // Not the shelf's, so a shelf that fails to mount does not take this with it.
+  new VisibilityDialog(schedulerTransport).start();
 
   try {
     const created = new PublishShelf(callbacks(), visibility);
