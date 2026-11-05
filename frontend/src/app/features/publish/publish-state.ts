@@ -1508,6 +1508,11 @@ export class PublishState {
     return await this.writeFieldsOn(itemId, { publishAt: iso });
   }
 
+  /** Record the moment YouTube holds for another item's video, exactly as YouTube spells it. */
+  async adoptPublishAtOn(itemId: string, publishAt: string): Promise<ChosenMetadata> {
+    return await this.writeFieldsOn(itemId, { publishAt });
+  }
+
   /** Drop another item's schedule. Same channel, same record of when it was dropped. */
   async clearPublishAtOn(itemId: string): Promise<ChosenMetadata> {
     return await this.writeFieldsOn(itemId, { publishAt: null });

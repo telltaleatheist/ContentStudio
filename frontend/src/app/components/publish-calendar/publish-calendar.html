@@ -4,7 +4,7 @@
     <div class="header-left">
       <h2>Publish Calendar</h2>
       <p class="subtitle"
-         title="Chips this app still owns. A video already uploaded whose YouTube date matches the one here is drawn as a mirror row instead and is not in this count; when the two dates disagree, the chip stays alongside the mirror.">
+         title="Chips this app still owns. A video already uploaded with a date on YouTube is drawn as a mirror row on that date instead and is not in this count.">
         {{ scheduledCount() }} scheduled here · {{ tray().length }} unscheduled
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
@@ -249,17 +249,6 @@
     </div>
   }
 
-  @if (activeDestination() === 'youtube' && divergentCount() > 0) {
-    <div class="divergence-banner">
-      <mat-icon>sync_problem</mat-icon>
-      <span>
-        {{ divergentCount() }} scheduled item{{ divergentCount() === 1 ? '' : 's' }}
-        {{ divergentCount() === 1 ? 'is' : 'are' }} set to a different time on YouTube than
-        this calendar says. YouTube's time is what will happen.
-      </span>
-    </div>
-  }
-
   <!-- Nothing is created until this list has been read. Grouped by the channel each
        upload authorizes against, because that is the mistake that cannot be taken back. -->
   @if (uploadConfirm(); as pending) {
@@ -492,8 +481,8 @@
           <span class="bar" [style.background]="item.hue"></span>
           <div class="tray-body" (click)="openReport(item.itemId)">
             <div class="tray-title-row">
-              <div class="tray-title" [title]="item.title">{{ partOf(item.title).rest }}</div>
-              @if (partOf(item.title).part; as part) { <span class="part-badge" [title]="item.title">{{ part }}</span> }
+              <div class="tray-title" [title]="item.videoTitle">{{ item.title }}</div>
+              @if (item.part; as part) { <span class="part-badge" [title]="item.videoTitle">{{ part }}</span> }
             </div>
             <div class="tray-meta">
               <span class="pip" [class]="'pip ' + item.readiness"
@@ -745,8 +734,8 @@
       @if (chip.destination === 'spreaker') {
         <mat-icon class="podcast-glyph" matTooltip="Goes to Spreaker, not YouTube">mic</mat-icon>
       }
-      <span class="chip-title">{{ partOf(chip.title).rest }}</span>
-      @if (partOf(chip.title).part; as part) { <span class="part-badge" [title]="chip.title">{{ part }}</span> }
+      <span class="chip-title">{{ chip.title }}</span>
+      @if (chip.part; as part) { <span class="part-badge" [title]="chip.videoTitle">{{ part }}</span> }
       @if (chip.abPending) { <span class="ab-badge">A/B</span> }
       @if (chip.state === 'published') { <mat-icon class="lock">lock</mat-icon> }
     </span>
@@ -759,10 +748,7 @@
   @if (chip.state === 'stale') {
     <div class="stale-note">⚠ {{ chip.staleNote }}</div>
   }
-  @if (chip.mirrorDivergence) {
-    <div class="divergence-note">⇄ {{ chip.mirrorDivergence }}</div>
-  }
-  @if (chip.needsSchedulePush && !chip.mirrorDivergence) {
+  @if (chip.needsSchedulePush) {
     <div class="pending-push-note">⇡ this time not sent to YouTube yet</div>
   }
   @if (chip.unlistedFirst) {
@@ -799,12 +785,12 @@
      Where the last episode actually landed is the fact the next one gets placed against. -->
 <ng-template #episodeRow let-e="e">
   <div class="episode-mirror"
-       [matTooltip]="'Scheduled on Spreaker · episode ' + e.episodeId + ' · not yet released'">
+       [matTooltip]="e.videoTitle + ' · Scheduled on Spreaker · episode ' + e.episodeId + ' · not yet released'">
     <span class="episode-bar"></span>
     <span class="episode-body">
       <mat-icon class="sp-glyph">podcasts</mat-icon>
-      <span class="episode-title">{{ partOf(e.title).rest }}</span>
-      @if (partOf(e.title).part; as part) { <span class="part-badge" [title]="e.title">{{ part }}</span> }
+      <span class="episode-title">{{ e.title }}</span>
+      @if (e.part; as part) { <span class="part-badge" [title]="e.videoTitle">{{ part }}</span> }
     </span>
     @if (e.itemId) {
       <button mat-icon-button class="open-report" (click)="openReport(e.itemId)"
@@ -825,13 +811,13 @@
   <div class="mirror"
        [class.dimmed]="m.dimmed"
        [class.out]="!m.pending"
-       [matTooltip]="m.channelName + (m.pending ? ' · scheduled on YouTube · private until release' : ' · already released on YouTube (' + m.privacyStatus + ')')">
+       [matTooltip]="m.videoTitle + ' · ' + m.channelName + (m.pending ? ' · scheduled on YouTube · private until release' : ' · already released on YouTube (' + m.privacyStatus + ')')">
     <span class="mirror-bar" [style.background]="m.hue"></span>
     <span class="mirror-body">
       <mat-icon class="yt-glyph">smart_display</mat-icon>
       <span class="mirror-tag">{{ m.channelTag }}</span>
-      <span class="mirror-title">{{ partOf(m.title).rest }}</span>
-      @if (partOf(m.title).part; as part) { <span class="part-badge" [title]="m.title">{{ part }}</span> }
+      <span class="mirror-title">{{ m.title }}</span>
+      @if (m.part; as part) { <span class="part-badge" [title]="m.videoTitle">{{ part }}</span> }
     </span>
     @if (m.itemId) {
       <button mat-icon-button class="open-report" (click)="openReport(m.itemId)"

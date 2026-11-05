@@ -89,7 +89,8 @@ import {
   missingFor,
   readinessOf,
   rowGroupOf,
-  partOf,
+  calendarLabel,
+  schedulesToAdopt,
 } from './calendar-states';
 
 /**
@@ -186,8 +187,12 @@ const CHANNEL_GROUP_KEY = 'publish-calendar.channel-group';
 /** What a slot cell or the before-today strip renders for one scheduled item. */
 export interface CalendarChip {
   itemId: string;
-  /** The video's title (variant 1), else the item's own label. Never invented. */
+  /** The source file's name, else the video's title. See calendarLabel. */
   title: string;
+  /** The title's part marker, shown as its own badge. */
+  part: string | null;
+  /** The video's title (variant 1), else the item's own label. Never invented. Hover text. */
+  videoTitle: string;
   /** Local wall time of the schedule, `HH:MM`. */
   time: string;
   /** ISO instant, as stored. */
@@ -257,14 +262,6 @@ export interface CalendarChip {
   unlistedFirst: boolean;
   /** For a stale row: when it was due and when the intent was recorded. */
   staleNote: string | null;
-  /**
-   * Set when YouTube holds a DIFFERENT moment for this same video.
-   *
-   * YouTube's is what will actually happen; this record is only what was intended. The
-   * two are shown together rather than reconciled — silently preferring either one would
-   * hide the fact that they disagree, and that fact is the whole warning.
-   */
-  mirrorDivergence: string | null;
   status: string;
   videoId: string | null;
 }
@@ -273,6 +270,8 @@ export interface CalendarChip {
 export interface TrayItem {
   itemId: string;
   title: string;
+  part: string | null;
+  videoTitle: string;
   createdAt: string;
   channelId: string | null;
   channelName: string;
@@ -299,12 +298,15 @@ export interface TrayItem {
  * It is here so a slot that is already taken looks taken — including by videos scheduled
  * by hand in Studio, which is the case the operator cannot otherwise see at all.
  *
- * A mirror whose videoId belongs to a local record is NOT built: that item is already on
- * the board as its own chip, and drawing both would read as two releases.
+ * A video with a date on YouTube is always one of these, record or no record: YouTube's date
+ * is the one that will happen, so this row is where the video sits (LEDGER #339).
  */
 export interface MirrorChip {
   videoId: string;
+  /** The source file's name when this app has a record of it, else the title. See calendarLabel. */
   title: string;
+  part: string | null;
+  videoTitle: string;
   /** Local wall time, `HH:MM`. */
   time: string;
   dateKey: string;
@@ -342,7 +344,10 @@ export interface MirrorChip {
  */
 export interface EpisodeMirrorChip {
   episodeId: number;
+  /** The source file's name when this app has a record of it, else the title. See calendarLabel. */
   title: string;
+  part: string | null;
+  videoTitle: string;
   /** Local wall time, `HH:MM`. */
   time: string;
   dateKey: string;
@@ -775,8 +780,8 @@ export class PublishCalendar implements OnInit, OnDestroy {
   /**
    * YouTube's schedule for the videos this app already knows by id, keyed by video id.
    *
-   * Used for two different things and built once: the divergence warning on a local chip,
-   * and knowing which mirrored videos are duplicates of a chip already on the board.
+   * Used for two different things and built once: whether a chip's video is already out or
+   * dated on YouTube, and what the chip's push banner needs to know.
    */
   /** Every linked video's YouTube-side status, by video id. */
   private readonly linkedByVideoId = computed(() => {
@@ -816,18 +821,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
     // Already out. Nothing left to decide, and nothing YouTube would accept anyway.
     if (remote.privacyStatus !== 'private') return false;
-    // Uploaded AND YouTube is holding a date.
-    //
-    // The same date: the plan became a fact, the chip gives way to the mirror. A MOVED
-    // date keeps its chip — the disagreement the divergence note exists to show must not
-    // be silently resolved in YouTube's favour (the Spreaker lane's rule) — but only
-    // while the plan here is still ahead: a local date already in the past is a dead
-    // plan, and a chip for it would sit in the before-today strip forever saying "was
-    // due 2 months ago" about a video YouTube is handling on its own schedule.
-    if (remote.publishAt !== null) {
-      if (sameMoment(remote.publishAt, facts.publishAt as string)) return false;
-      return dateKeyOf(new Date(facts.publishAt as string)) >= dateKeyOf(this.now());
-    }
+    // Uploaded AND YouTube is holding a date. YouTube's date is what will happen, so the
+    // video is drawn there by the mirror, whatever the record says (Owen, 2026-11-05: "it
+    // shows a message instead of moving it to the right slot on the calendar").
+    if (remote.publishAt !== null) return false;
 
     // Uploaded, private, and YouTube has NO date. This is the browser-upload case, where
     // a release was made outside the app and linked afterwards, and it is the one state
@@ -880,25 +877,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const swept = this.sweep();
     if (!swept) return [];
 
-    // Suppressed only when the local record actually DRAWS a chip for this video, which
-    // means it has a date of its own. A record that names a video but carries no date
-    // renders nothing anywhere — it is not on a day and it is out of the tray — so
-    // dropping its mirror too would leave a genuinely occupied slot looking empty. That
-    // is not hypothetical: the backlog mark-as-published pass sets a status and a video
-    // id without ever setting a publishAt.
-    const openAtByVideo = new Map<string, string>();
-    const itemByVideo = new Map<string, string>();
+    // A chip is only ever drawn for a video YouTube holds no date for, so nothing mirrored
+    // here can duplicate one. A record that names a video but carries no date is mirrored
+    // too: the backlog mark-as-published pass sets a status and a video id and no publishAt.
+    const entryByVideo = new Map<string, ReportIndexEntry>();
     for (const entry of this.entries()) {
-      const facts = entry.publish;
-      if (!facts?.videoId) continue;
-      itemByVideo.set(facts.videoId, entry.itemId);
-      // A chip is drawn for this video. Its mirror is suppressed only when the two would
-      // say the same moment — when they DISAGREE, both rows belong on the board: the chip
-      // where the plan here put it, the mirror where YouTube will actually publish, with
-      // the chip's divergence note tying them together. (The Spreaker lane's rule.)
-      if (this.isOpenWork(facts, this.linkedByVideoId())) {
-        openAtByVideo.set(facts.videoId, facts.publishAt as string);
-      }
+      if (entry.publish?.videoId) entryByVideo.set(entry.publish.videoId, entry);
     }
 
     const active = this.activeTabId();
@@ -908,10 +892,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
       // its marked published, it shouldnt be in the calendar"). Only private, still-waiting
       // videos are mirrored.
       .filter((video) => video.privacyStatus === 'private')
-      .filter((video) => {
-        const localAt = openAtByVideo.get(video.videoId);
-        return localAt === undefined || !sameMoment(video.publishAt, localAt);
-      })
       .map((video) => {
         const at = new Date(video.publishAt);
         if (Number.isNaN(at.getTime())) {
@@ -921,9 +901,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
           );
         }
         const channel = this.channelOf(video.channelId);
+        const entry = entryByVideo.get(video.videoId) ?? null;
         return {
           videoId: video.videoId,
-          title: video.title,
+          ...calendarLabel(entry?.sourceFilename ?? null, video.title),
           time: splitPublishAt(video.publishAt).time,
           dateKey: dateKeyOf(at),
           publishAt: video.publishAt,
@@ -936,7 +917,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
             { destination: 'youtube', channelId: video.channelId, promptSet: null },
             this.groupByChannel()
           ),
-          itemId: itemByVideo.get(video.videoId) ?? null,
+          itemId: entry?.itemId ?? null,
           pending: video.privacyStatus === 'private',
           privacyStatus: video.privacyStatus,
         };
@@ -979,11 +960,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
     return map;
   });
-
-  /** How many local chips YouTube holds a different moment for. Drives the warning line. */
-  readonly divergentCount = computed(
-    () => this.scheduledChips().filter((chip) => chip.mirrorDivergence !== null).length
-  );
 
   /** When the mirror was last read, for the line that says how fresh it is. */
   readonly sweptLabel = computed(() => {
@@ -1461,7 +1437,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // draws nothing cannot be the row this one would be duplicating.
     const recordByEpisode = new Map<
       number,
-      { itemId: string; publishAt: string | null; draws: boolean }
+      { itemId: string; publishAt: string | null; draws: boolean; sourceFilename: string | null }
     >();
     for (const entry of this.entries()) {
       const facts = entry.publish;
@@ -1470,6 +1446,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         itemId: entry.itemId,
         publishAt: facts.publishAt,
         draws: this.isOpenWork(facts, this.linkedByVideoId()),
+        sourceFilename: entry.sourceFilename,
       });
     }
 
@@ -1494,7 +1471,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         const local = record?.publishAt ?? null;
         return {
           episodeId: episode.episodeId,
-          title: episode.title,
+          ...calendarLabel(record?.sourceFilename ?? null, episode.title),
           time: splitPublishAt(episode.publishAt).time,
           dateKey: dateKeyOf(at),
           publishAt: episode.publishAt,
@@ -1611,7 +1588,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         const destination = destinationOf(facts);
         return {
           itemId: entry.itemId,
-          title: facts.mainTitle ?? entry.displayTitle,
+          ...calendarLabel(entry.sourceFilename, facts.mainTitle ?? entry.displayTitle),
           createdAt: entry.dateIso,
           channelId: facts.channelId,
           channelName: channel.name,
@@ -1697,6 +1674,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   async ngOnInit(): Promise<void> {
     this.clock = setInterval(() => this.now.set(new Date()), 60_000);
+    window.addEventListener('focus', this.onWindowFocus);
     // The upload progress tick is NOT subscribed here any more. It belongs to the run,
     // and the run outlives this page — a listener torn down in ngOnDestroy would stop the
     // byte counter the moment the operator looked at another tab, which is exactly the
@@ -1714,7 +1692,18 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.clock) clearInterval(this.clock);
+    window.removeEventListener('focus', this.onWindowFocus);
   }
+
+  /**
+   * Coming back to the app is when a date changed in Studio needs to show. At most once a
+   * minute: a sweep is about a dozen API calls per channel, and switching windows is cheap.
+   */
+  private lastSweepStartMs = 0;
+  private readonly onWindowFocus = (): void => {
+    if (this.sweeping() || Date.now() - this.lastSweepStartMs < 60_000) return;
+    void this.refreshSweep();
+  };
 
   /**
    * Re-read the board whenever a run finishes, whoever started it.
@@ -1859,6 +1848,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * place — it is still the last thing YouTube said — and says that it failed.
    */
   async refreshSweep(): Promise<void> {
+    this.lastSweepStartMs = Date.now();
     this.sweeping.set(true);
     try {
       const res = await this.electron.publishListScheduled();
@@ -1877,12 +1867,31 @@ export class PublishCalendar implements OnInit, OnDestroy {
         // a joined string makes neither of them actionable.
         this.notify.warning(`${problem.channelName} — schedule not read`, problem.message);
       }
+      await this.adoptYouTubeSchedules(res.data.linked);
     } catch (err: any) {
       this.sweepFailed.set(true);
       this.notify.warning('YouTube schedule not read', err?.message || String(err));
     } finally {
       this.sweeping.set(false);
     }
+  }
+
+  /**
+   * Bring the records of videos moved on YouTube up to YouTube's date.
+   *
+   * The board no longer needs this; the REPORT does. It shows the record's date, and a metadata
+   * push sends that date, so a stale one would put the video back where it was.
+   */
+  private async adoptYouTubeSchedules(linked: LinkedVideo[]): Promise<void> {
+    const adopt = schedulesToAdopt(this.entries(), linked, this.now());
+    for (const { itemId, publishAt } of adopt) {
+      try {
+        await this.publish.adoptPublishAtOn(itemId, publishAt);
+      } catch (err: any) {
+        this.notify.warning('YouTube date not saved', err?.message || String(err));
+      }
+    }
+    if (adopt.length > 0) await this.reload();
   }
 
   /**
@@ -2075,7 +2084,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       chip.destination === 'spreaker'
         ? `${this.spreakerLabel} · routed via ${chip.channelName}`
         : chip.channelName;
-    return `${who} · ${stateWord}${chip.staleNote ? ' · ' + chip.staleNote : ''}`;
+    return `${chip.videoTitle} · ${who} · ${stateWord}${chip.staleNote ? ' · ' + chip.staleNote : ''}`;
   }
 
   slotTooltip(slot: SlotCell): string {
@@ -2114,11 +2123,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const cadence = this.draggingCadence();
     if (cadence === null) return 'match';
     return isCadenceSlot(cadence, new Date(slot.atMs)) ? 'match' : 'none';
-  }
-
-  /** The title's part marker as its own badge, and the title without it (calendar-states partOf). */
-  partOf(title: string): { rest: string; part: string | null } {
-    return partOf(title);
   }
 
   // ---------------------------------------------------------------- drag and drop
@@ -2435,8 +2439,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // date was MOVED on YouTube's side must never enter this set, because the banner
     // this flag feeds pushes every member in one click, and "overwrite YouTube's chosen
     // time with the older one recorded here" is not a housekeeping nudge — with a lapsed
-    // local date it would publish the video on the spot. A moved date renders as the
-    // divergence note instead, and YouTube's time stands unless the operator re-drags.
+    // local date it would publish the video on the spot.
     // An 'unlisted-then-public' item never gets a YouTube publish time: its push makes it
     // unlisted and the scheduler makes it public, so "send this time to YouTube" is not its fix.
     const unlistedFirst = facts.releaseMode === 'unlisted-then-public';
@@ -2445,7 +2448,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
     return {
       itemId: entry.itemId,
-      title: facts.mainTitle ?? entry.displayTitle,
+      ...calendarLabel(entry.sourceFilename, facts.mainTitle ?? entry.displayTitle),
       time: splitPublishAt(publishAt).time,
       publishAt,
       dateKey: dateKeyOf(at),
@@ -2472,18 +2475,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
         state === 'stale'
           ? `was due ${distance(at, now)}` +
             (facts.publishAtSetAt ? ` · set ${distance(new Date(facts.publishAtSetAt), now)}` : '')
-          : null,
-      mirrorDivergence:
-        remote !== null && remote.privacyStatus === 'private' && remote.publishAt !== null
-          ? new Date(remote.publishAt).getTime() === at.getTime()
-            ? null
-            : `YouTube has this at ${new Date(remote.publishAt).toLocaleString([], {
-                weekday: 'short',
-                month: 'short',
-                day: 'numeric',
-                hour: 'numeric',
-                minute: '2-digit',
-              })}`
           : null,
       destination,
       readiness: readinessOf(facts),

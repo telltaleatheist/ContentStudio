@@ -1631,7 +1631,19 @@ check('calendar: a title\'s part marker (| P3, | Ch 12) comes off the end as its
   const req = (name) => (name.endsWith('publish.types') ? { SPREAKER_DESTINATION: 'spreaker' } : require(name));
   new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, req);
   const assert = require('assert');
-  const { partOf } = mod.exports;
+  const { partOf, calendarLabel, schedulesToAdopt } = mod.exports;
+  assert.deepStrictEqual(calendarLabel('u1 - jesse watters.mov', 'A title | P3'), { title: 'u1 - jesse watters', part: 'P 3', videoTitle: 'A title | P3' });
+  assert.deepStrictEqual(calendarLabel(null, 'A title | P3'), { title: 'A title', part: 'P 3', videoTitle: 'A title | P3' });
+  const adoptNow = new Date('2026-11-05T12:00:00Z');
+  const facts = (over) => ({ publishAt: '2026-11-06T18:00:00Z', videoId: 'v', status: 'uploaded', isPodcast: false, releaseMode: 'youtube-schedule', ...over });
+  const moved = [{ videoId: 'v', publishAt: '2026-11-13T18:00:00Z', privacyStatus: 'private' }];
+  assert.deepStrictEqual(schedulesToAdopt([{ itemId: 'a', publish: facts({}) }], moved, adoptNow), [{ itemId: 'a', publishAt: '2026-11-13T18:00:00Z' }]);
+  for (const over of [{ publishAt: null }, { status: 'published' }, { isPodcast: true }, { releaseMode: 'unlisted-then-public' }, { videoId: 'other' }, { publishAt: '2026-11-13T13:00:00-05:00' }]) {
+    assert.deepStrictEqual(schedulesToAdopt([{ itemId: 'a', publish: facts(over) }], moved, adoptNow), [], JSON.stringify(over));
+  }
+  assert.deepStrictEqual(schedulesToAdopt([{ itemId: 'a', publish: facts({}) }], [{ ...moved[0], publishAt: null }], adoptNow), [], 'YouTube holds no date');
+  assert.deepStrictEqual(schedulesToAdopt([{ itemId: 'a', publish: facts({}) }], [{ ...moved[0], privacyStatus: 'public' }], adoptNow), [], 'already out');
+  assert.deepStrictEqual(schedulesToAdopt([{ itemId: 'a', publish: facts({}) }], [{ ...moved[0], publishAt: '2026-11-05T12:05:00Z' }], adoptNow), [], 'too soon for the validator');
   const cases = [
     ['Jim Bakker sells the apocalypse | P3', 'Jim Bakker sells the apocalypse', 'P 3'],
     ['Killing America | Ch 12', 'Killing America', 'Ch 12'],
@@ -1653,8 +1665,8 @@ check('calendar: a title\'s part marker (| P3, | Ch 12) comes off the end as its
   assert.ok(!/drop-weak/.test(html + comp + scss), 'the other lane no longer lights faintly: slots not for this channel look as they were');
   assert.ok(/draggingCadence/.test(comp) && /isCadenceSlot\(cadence, new Date\(slot\.atMs\)\)/.test(comp), 'the drag lights the dragged item\'s channel cadence slots');
   assert.ok(!/'other'/.test(comp.slice(comp.indexOf('dropAffinity(slot: SlotCell)'), comp.indexOf('dropAffinity(slot: SlotCell)') + 600)), 'no third affinity');
-  for (const row of ['chip.title', 'item.title', 'm.title', 'e.title']) {
-    assert.ok(html.includes(`partOf(${row}).rest`) && html.includes(`partOf(${row}).part`), `${row} shows its part as a badge`);
+  for (const row of ['chip', 'item', 'm', 'e']) {
+    assert.ok(html.includes(`@if (${row}.part; as part)`) && html.includes(`{{ ${row}.title }}`), `${row} shows its part as a badge`);
   }
   assert.ok(/\.part-badge\s*\{[^}]*flex-shrink:\s*0/.test(scss), 'the badge never truncates');
 });

@@ -333,3 +333,56 @@ export function partOf(title: string): { rest: string; part: string | null } {
   if (m === null || m[1].trim() === '') return { rest: title, part: null };
   return { rest: m[1].trim(), part: `${m[2]} ${m[3]}` };
 }
+
+/**
+ * What a row on the calendar is called: the source file's name, which is what tells videos apart
+ * at a glance (Owen, 2026-11-05: "the calendar should show the filenames rather than the titles").
+ * A video with no file known to this app, such as one scheduled in Studio, keeps its title.
+ *
+ * The part badge still comes off the title, the only place a part is written.
+ */
+export function calendarLabel(
+  sourceFilename: string | null,
+  videoTitle: string,
+): { title: string; part: string | null; videoTitle: string } {
+  const { rest, part } = partOf(videoTitle);
+  const title = sourceFilename ? sourceFilename.replace(/\.[A-Za-z0-9]{1,5}$/, '') : rest;
+  return { title, part, videoTitle };
+}
+
+/**
+ * The records whose date should become YouTube's, because the video was moved on YouTube.
+ *
+ * Left alone: a record with no date (a push sends none, so YouTube's stands), anything marked
+ * published, a podcast, an 'unlisted-then-public' item (the scheduler owns its time), and a date
+ * under 15 minutes away, which the record's validator refuses and which is about to be moot.
+ */
+export function schedulesToAdopt(
+  entries: ReadonlyArray<{
+    itemId: string;
+    publish: {
+      publishAt: string | null;
+      videoId: string | null;
+      status: string;
+      isPodcast: boolean;
+      releaseMode: string;
+    } | null;
+  }>,
+  linked: ReadonlyArray<{ videoId: string; publishAt: string | null; privacyStatus: string }>,
+  now: Date,
+): Array<{ itemId: string; publishAt: string }> {
+  const byVideo = new Map(linked.map((video) => [video.videoId, video]));
+  const earliest = now.getTime() + 15 * 60_000;
+  const out: Array<{ itemId: string; publishAt: string }> = [];
+  for (const { itemId, publish: facts } of entries) {
+    if (!facts || facts.publishAt === null || facts.videoId === null) continue;
+    if (facts.status === 'published' || facts.isPodcast) continue;
+    if (facts.releaseMode === 'unlisted-then-public') continue;
+    const remote = byVideo.get(facts.videoId);
+    if (!remote || remote.privacyStatus !== 'private' || remote.publishAt === null) continue;
+    const at = new Date(remote.publishAt).getTime();
+    if (at === new Date(facts.publishAt).getTime() || at < earliest) continue;
+    out.push({ itemId, publishAt: remote.publishAt });
+  }
+  return out;
+}
