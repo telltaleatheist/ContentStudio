@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Config } from './config.js';
 import type { DB } from './db.js';
 import {
+  AFTER_LOGIN_COOKIE,
   OAUTH_COOKIE,
   SESSION_COOKIE,
   cookieHeader,
@@ -20,7 +21,7 @@ import {
 } from './auth.js';
 import { GoogleError, authorizeUrl, emailFromIdToken, exchangeCode, forgetAccessToken, myChannel, newVerifier } from './google.js';
 import { RequestError, videoNotFound, cancelJob, createJob, findVideo, listJobs, patchJob, warningsFor, type JobFilter, type JobState } from './jobs.js';
-import { homePage, messagePage, newKeyPage, signInPage, type ChannelRow, type KeyRow } from './page.js';
+import { extensionConnectPage, extensionKeyPage, homePage, messagePage, newKeyPage, signInPage, type ChannelRow, type KeyRow } from './page.js';
 import { isVideoId, isVisibility, parseRunAt, type Visibility } from './rules.js';
 
 const BODY_LIMIT = 64 * 1024;
@@ -106,6 +107,10 @@ export function startServer(config: Config, db: DB, runtime: Runtime): Server {
       return html(res, 200, homePage(config, s.email, channels, keys, listJobs(db, {}), runtime.lastTick));
     }
     if (rest === '/login' && method === 'GET') return startOAuth(res, 'login', now);
+    if (rest === '/extension-connect' && method === 'GET') {
+      if (webSession(db, req, now)) return html(res, 200, extensionConnectPage(config));
+      return startOAuth(res, 'login', now, cookieHeader(AFTER_LOGIN_COOKIE, 'extension', 900, prefix));
+    }
     if (rest === '/connect' && method === 'GET') {
       if (!webSession(db, req, now)) return redirect(res, `${config.baseUrl}/`);
       return startOAuth(res, 'connect', now);
@@ -119,6 +124,10 @@ export function startServer(config: Config, db: DB, runtime: Runtime): Server {
       if (rest === '/logout') {
         endSession(db, req);
         return redirect(res, `${config.baseUrl}/`, { 'Set-Cookie': cookieHeader(SESSION_COOKIE, '', 0, prefix) });
+      }
+      if (rest === '/extension-key') {
+        const name = `Extension, connected ${new Date(now).toISOString().slice(0, 10)}`;
+        return html(res, 200, extensionKeyPage(createDeviceKey(db, name, now)));
       }
       if (rest === '/keys') {
         const name = (form.get('name') ?? '').trim().slice(0, 60);
@@ -142,13 +151,14 @@ export function startServer(config: Config, db: DB, runtime: Runtime): Server {
     return bare(res, 404);
   };
 
-  function startOAuth(res: ServerResponse, purpose: 'login' | 'connect', now: number) {
+  function startOAuth(res: ServerResponse, purpose: 'login' | 'connect', now: number, alsoSet?: string) {
     const state = randomToken();
     const browser = randomToken();
     const { verifier, challenge } = newVerifier();
     db.prepare('INSERT INTO oauth_states (state, purpose, verifier, browser, created_at) VALUES (?, ?, ?, ?, ?)').run(state, purpose, verifier, browser, now);
     // The browser cookie ties the callback to the browser that started it (no login CSRF).
-    return redirect(res, authorizeUrl(config, purpose, state, challenge), { 'Set-Cookie': cookieHeader(OAUTH_COOKIE, browser, 900, prefix) });
+    const oauthCookie = cookieHeader(OAUTH_COOKIE, browser, 900, prefix);
+    return redirect(res, authorizeUrl(config, purpose, state, challenge), { 'Set-Cookie': alsoSet ? [oauthCookie, alsoSet] : oauthCookie });
   }
 
   async function oauthCallback(url: URL, req: IncomingMessage, res: ServerResponse, now: number) {
@@ -175,7 +185,14 @@ export function startServer(config: Config, db: DB, runtime: Runtime): Server {
         }
         const session = createSession(db, email, now);
         console.log(`[auth] signed in: ${email}`);
-        return redirect(res, `${config.baseUrl}/`, { 'Set-Cookie': [clear, cookieHeader(SESSION_COOKIE, session.token, session.maxAgeSeconds, prefix)] });
+        const fromExtension = cookies(req)[AFTER_LOGIN_COOKIE] === 'extension';
+        return redirect(res, fromExtension ? `${config.baseUrl}/extension-connect` : `${config.baseUrl}/`, {
+          'Set-Cookie': [
+            clear,
+            cookieHeader(AFTER_LOGIN_COOKIE, '', 0, prefix),
+            cookieHeader(SESSION_COOKIE, session.token, session.maxAgeSeconds, prefix),
+          ],
+        });
       }
       // connect: only a signed-in session may add a channel
       if (!webSession(db, req, now)) return redirect(res, `${config.baseUrl}/`, { 'Set-Cookie': clear });

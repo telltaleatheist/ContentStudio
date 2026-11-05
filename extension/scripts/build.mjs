@@ -63,7 +63,7 @@ const options = {
 // output used for the service worker / pages would fail with an import error at runtime.
 /** @type {esbuild.BuildOptions} */
 const contentOptions = {
-  entryPoints: [path.join(extensionRoot, 'src/publish-content.ts')],
+  entryPoints: [path.join(extensionRoot, 'src/publish-content.ts'), path.join(extensionRoot, 'src/scheduler-connect.ts')],
   outdir: dist,
   bundle: true,
   format: 'iife',

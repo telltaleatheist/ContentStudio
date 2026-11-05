@@ -29,7 +29,6 @@ import {
   localDateOf,
   localInputsOf,
   pendingBadge,
-  suggestedTarget,
   runAtFromLocal,
   scheduleClashWarning,
   splitJobs,
@@ -43,14 +42,8 @@ export interface VisibilityTransport {
   create(job: NewSchedulerJob): Promise<SchedulerJobWithWarnings>;
   edit(jobId: string, patch: SchedulerJobPatch): Promise<SchedulerJobWithWarnings>;
   cancel(jobId: string): Promise<SchedulerJob>;
-  openOptions(): Promise<null>;
-}
-
-/** The words that differ between the shelf's section and the box in Studio's dialog. */
-export interface VisibilityPanelWords {
-  heading: string;
-  saveLabel: string;
-  formNote?: string;
+  /** Opens the one-time Google sign-in that gives this browser its device key. */
+  connect(): Promise<null>;
 }
 
 /** Past changes shown before "show all". */
@@ -166,10 +159,7 @@ export class VisibilityPanel {
   private confirmCancel: string | null = null;
   private showAllHistory = false;
 
-  constructor(
-    private transport: VisibilityTransport,
-    private words: VisibilityPanelWords = { heading: 'Visibility', saveLabel: 'Schedule' },
-  ) {
+  constructor(private transport: VisibilityTransport) {
     this.el = document.createElement('div');
     this.el.className = 'vis';
     // Typing a note must not reach Studio's own keyboard shortcuts on the page underneath.
@@ -280,7 +270,7 @@ export class VisibilityPanel {
     head.className = 'vhead';
     const title = document.createElement('span');
     title.className = 'vtitle';
-    title.textContent = this.words.heading;
+    title.textContent = 'Visibility';
     head.appendChild(title);
     const badge = this.jobs ? pendingBadge(this.jobs) : null;
     if (badge) head.appendChild(this.span('chip', badge));
@@ -292,13 +282,13 @@ export class VisibilityPanel {
     const add = (node: Node) => this.el.appendChild(node);
 
     if (this.noKey) {
-      const line = this.div('muted', 'No scheduler key is set, so scheduled visibility changes cannot be shown or made. ');
+      const line = this.div('muted', 'Sign in once so the scheduler can make changes while this computer is off. ');
       const link = document.createElement('button');
       link.className = 'vlink';
-      link.textContent = 'Open Options';
+      link.textContent = 'Sign in with Google';
       link.addEventListener('click', () => {
-        this.transport.openOptions().catch((error: unknown) => {
-          this.actionError = `Could not open Options: ${messageOf(error)}`;
+        this.transport.connect().catch((error: unknown) => {
+          this.actionError = `Could not open the sign-in: ${messageOf(error)}`;
           this.render();
         });
       });
@@ -416,9 +406,9 @@ export class VisibilityPanel {
       const at = localInputsOf(mode.job.runAt);
       this.draft = { target: mode.job.target, date: at.date, time: at.time, note: mode.job.note };
     } else {
-      // Today's date and the likely flip as a starting point; the time is left for the
+      // Today's date as a starting point; the time and the visibility are left for the
       // operator to choose, so nothing is scheduled at a time nobody typed.
-      this.draft = { target: this.video ? suggestedTarget(this.video.privacyStatus) : '', date: localDateOf(new Date()), time: '', note: '' };
+      this.draft = { target: '', date: localDateOf(new Date()), time: '', note: '' };
     }
     this.render();
   }
@@ -462,14 +452,12 @@ export class VisibilityPanel {
 
     form.appendChild(this.div('vdet', `Times are in this computer's time zone (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`));
 
-    if (this.words.formNote) form.appendChild(this.div('vdet', this.words.formNote));
-
     const clash = scheduleClashWarning(this.video?.publishAt ?? null, this.draft.target || null, (iso) => formatLocal(iso));
     if (clash) form.appendChild(this.div('note differ', clash));
     if (this.formError) form.appendChild(this.div('err', this.formError));
 
     const acts = this.div('vacts', '');
-    const save = this.button('vsave', this.busy ? 'Saving…' : mode.mode === 'add' ? this.words.saveLabel : 'Save changes', () => void this.save(mode));
+    const save = this.button('vsave', this.busy ? 'Saving…' : mode.mode === 'add' ? 'Schedule' : 'Save changes', () => void this.save(mode));
     const close = this.button('vclose', 'Close', () => {
       this.form = null;
       this.formError = null;

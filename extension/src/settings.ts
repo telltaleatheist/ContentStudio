@@ -49,7 +49,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
 // (contentstudio.owenmorgan.com/scheduler/), pasted into Options, sent only to the
 // scheduler (scheduler/scheduler-client.ts) and never logged.
 
-const SCHEDULER_KEY = 'schedulerKey';
+export const SCHEDULER_KEY = 'schedulerKey';
 
 /** The scheduler device key, or null when none is set. */
 export async function getSchedulerKey(): Promise<string | null> {

@@ -43,6 +43,7 @@ import { isPublishMessage, type PublishMessage } from './publish/publish-message
 import { isNavMessage } from './publish/nav-messages';
 import { isSchedulerMessage, type SchedulerMessage } from './scheduler/scheduler-messages';
 import {
+  SCHEDULER_BASE_URL,
   SchedulerError,
   cancelSchedulerJob,
   createSchedulerJob,
@@ -55,7 +56,7 @@ import {
 import { NavSourceError, fetchNavListForTab } from './nav-source';
 import { enqueueAbTests, enqueueChannelDays, enqueueFirstWeeks, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
-import { DEFAULT_SETTINGS, saveSettings } from './settings';
+import { DEFAULT_SETTINGS, saveSchedulerKey, saveSettings } from './settings';
 import { recordChannelAttempt, setLastCycle, type CycleSummary } from './status';
 
 const CYCLE_ALARM = 'contentstudio-collection-cycle';
@@ -301,7 +302,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   // here — a content-script fetch is bound by Studio's CORS — but a different server: the
   // scheduler on Triton, which works with the ContentStudio app closed.
   if (isSchedulerMessage(message)) {
-    handleSchedulerMessage(message).then(
+    handleSchedulerMessage(message, sender).then(
       (data) => sendResponse({ ok: true, data }),
       (err: unknown) => {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -318,7 +319,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   return false;
 });
 
-async function handleSchedulerMessage(message: SchedulerMessage): Promise<unknown> {
+async function handleSchedulerMessage(message: SchedulerMessage, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (message.type) {
     case 'scheduler-health':
       return fetchSchedulerHealth();
@@ -334,8 +335,12 @@ async function handleSchedulerMessage(message: SchedulerMessage): Promise<unknow
       return patchSchedulerJob(message.jobId, message.patch);
     case 'scheduler-cancel':
       return cancelSchedulerJob(message.jobId);
-    case 'scheduler-open-options':
-      await chrome.runtime.openOptionsPage();
+    case 'scheduler-connect':
+      await chrome.tabs.create({ url: `${SCHEDULER_BASE_URL}/extension-connect` });
+      return null;
+    case 'scheduler-save-key':
+      await saveSchedulerKey(message.key);
+      if (sender.tab?.id !== undefined) await chrome.tabs.remove(sender.tab.id);
       return null;
   }
 }

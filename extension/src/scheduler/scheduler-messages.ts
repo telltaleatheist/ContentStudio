@@ -26,8 +26,10 @@ export type SchedulerMessage =
   | { type: 'scheduler-create'; job: NewSchedulerJob }
   | { type: 'scheduler-edit'; jobId: string; patch: SchedulerJobPatch }
   | { type: 'scheduler-cancel'; jobId: string }
-  /** A content script cannot open the options page itself; the worker can. */
-  | { type: 'scheduler-open-options' };
+  /** Opens the sign-in page that gives this browser its key. */
+  | { type: 'scheduler-connect' }
+  /** From the scheduler's page: store the key it just made, and close that tab. */
+  | { type: 'scheduler-save-key'; key: string };
 
 /** Listed explicitly, like PUBLISH_MESSAGE_TYPES, so a typo is refused rather than routed. */
 const SCHEDULER_MESSAGE_TYPES: ReadonlySet<string> = new Set<SchedulerMessage['type']>([
@@ -38,7 +40,8 @@ const SCHEDULER_MESSAGE_TYPES: ReadonlySet<string> = new Set<SchedulerMessage['t
   'scheduler-create',
   'scheduler-edit',
   'scheduler-cancel',
-  'scheduler-open-options',
+  'scheduler-connect',
+  'scheduler-save-key',
 ]);
 
 export function isSchedulerMessage(message: unknown): message is SchedulerMessage {
@@ -75,6 +78,10 @@ export function requestCancelSchedulerJob(jobId: string): Promise<SchedulerJob> 
   return sendToWorker<SchedulerJob>({ type: 'scheduler-cancel', jobId });
 }
 
-export function requestOpenOptions(): Promise<null> {
-  return sendToWorker<null>({ type: 'scheduler-open-options' });
+export function requestConnectScheduler(): Promise<null> {
+  return sendToWorker<null>({ type: 'scheduler-connect' });
+}
+
+export function requestSaveSchedulerKey(key: string): Promise<null> {
+  return sendToWorker<null>({ type: 'scheduler-save-key', key });
 }

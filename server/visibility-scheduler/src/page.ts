@@ -54,6 +54,25 @@ export function newKeyPage(config: Config, name: string, key: string): string {
   );
 }
 
+/** The extension submits this form itself; the button is for when it is not loaded here. */
+export function extensionConnectPage(config: Config): string {
+  return shell(
+    'Connect the extension',
+    `<h1>Connecting the extension…</h1>
+<form id="cs-extension-connect" method="post" action="${esc(config.baseUrl)}/extension-key"><button class="primary">Connect</button></form>`,
+  );
+}
+
+/** The extension reads the key from here, stores it and closes this tab. */
+export function extensionKeyPage(key: string): string {
+  return shell(
+    'Extension connected',
+    `<h1>Almost done</h1>
+<p>This tab closes by itself. If it stays open, ContentStudio Companion is not loaded in this browser: load it and try again from there.</p>
+<code id="cs-extension-key" class="key">${esc(key)}</code>`,
+  );
+}
+
 export interface ChannelRow {
   channel_id: string;
   title: string;

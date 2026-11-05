@@ -8,6 +8,8 @@ import type { DB } from './db.js';
 
 export const SESSION_COOKIE = 'cs_session';
 export const OAUTH_COOKIE = 'cs_oauth';
+/** Set when a sign-in started from the extension, so it goes back there rather than home. */
+export const AFTER_LOGIN_COOKIE = 'cs_after_login';
 const SESSION_MS = 30 * 24 * 3600_000;
 const KEY_PREFIX = 'csk_';
 

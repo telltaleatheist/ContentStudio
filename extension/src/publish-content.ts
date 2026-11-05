@@ -58,13 +58,14 @@ import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetizat
 import { waitFor } from './publish/dom';
 // The Visibility section talks to the scheduler on Triton, never to ContentStudio, so it
 // keeps working with the app closed. Through the worker too, for Studio's CORS.
+import { SCHEDULER_KEY } from './settings';
 import { VisibilityDialog } from './publish/visibility-dialog';
 import { VisibilityPanel, type VisibilityTransport } from './publish/visibility-panel';
 import {
   requestCancelSchedulerJob,
   requestCreateSchedulerJob,
   requestEditSchedulerJob,
-  requestOpenOptions,
+  requestConnectScheduler,
   requestSchedulerJobs,
   requestSchedulerVideo,
 } from './scheduler/scheduler-messages';
@@ -76,7 +77,7 @@ const schedulerTransport: VisibilityTransport = {
   create: requestCreateSchedulerJob,
   edit: requestEditSchedulerJob,
   cancel: requestCancelSchedulerJob,
-  openOptions: requestOpenOptions,
+  connect: requestConnectScheduler,
 };
 /** The shelf's Visibility section; follows the URL's video id on every navigation. */
 const visibility = new VisibilityPanel(schedulerTransport);
@@ -728,7 +729,14 @@ async function start(): Promise<void> {
   // failed to mount can still explain itself when the operator clicks the toolbar button.
   listenForReveal();
   // Not the shelf's, so a shelf that fails to mount does not take this with it.
-  new VisibilityDialog(schedulerTransport).start();
+  const dialog = new VisibilityDialog(schedulerTransport);
+  dialog.start();
+  // Signing in happens in another tab; whatever was asking for it reads again when it lands.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !(SCHEDULER_KEY in changes)) return;
+    dialog.reload();
+    visibility.reload();
+  });
 
   try {
     const created = new PublishShelf(callbacks(), visibility);

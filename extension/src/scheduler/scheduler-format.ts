@@ -15,11 +15,6 @@ export function visibilityLabel(value: string): string {
   return value;
 }
 
-/** The change most likely wanted: a public video comes down, anything else goes public. */
-export function suggestedTarget(current: string): Visibility {
-  return current === 'public' ? 'unlisted' : 'public';
-}
-
 const pad = (n: number, width = 2) => String(Math.abs(n)).padStart(width, '0');
 
 /**

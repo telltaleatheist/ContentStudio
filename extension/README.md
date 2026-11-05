@@ -76,11 +76,12 @@ build copies it into `dist/`. Paths inside it (`background.js`, `popup.html`,
 5. Open the popup: the connection row should show
    **Connected to ContentStudio** while the app is running.
 
-## Visibility scheduler (0.3.0; in Studio's dialog since 0.4.0)
+## Visibility scheduler (0.3.0; in Studio's dialog since 0.5.0)
 
 Click a video's visibility, on the Content list or its Details page, and Studio's dialog has
-a **Change visibility later** box under **Schedule**: pick the visibility and time, press
-**Schedule change**. It is saved then and there; Studio's own buttons do not affect it.
+a **Schedule change** box under **Schedule**. Each line is what the video will be and when, and
+**+** adds another line. **Schedule** saves them; Studio's own buttons do not affect it. The
+first time, **Sign in with Google** makes this browser its key, with nothing to paste.
 
 The Studio shelf's **This video** tab has a **Visibility** section whenever a
 video is open. It reads and schedules visibility changes (public / unlisted /

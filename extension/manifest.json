@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ContentStudio Companion",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Collects YouTube Studio analytics the public API does not expose (impressions, CTR) and pushes them to the ContentStudio desktop app over localhost.",
   "permissions": [
     "alarms",
@@ -25,6 +25,15 @@
       ],
       "js": [
         "publish-content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://contentstudio.owenmorgan.com/scheduler/extension-*"
+      ],
+      "js": [
+        "scheduler-connect.js"
       ],
       "run_at": "document_idle"
     }

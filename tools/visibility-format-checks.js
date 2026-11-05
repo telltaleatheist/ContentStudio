@@ -194,10 +194,6 @@ check("YouTube's own schedule is warned about before saving, except for a change
   eq(f.scheduleClashWarning('2026-11-05T17:00:00Z', null, when), null, 'no target yet');
 });
 
-check('the suggested change: a public video comes down, anything else goes public', () => {
-  eq(['public', 'unlisted', 'private'].map(f.suggestedTarget), ['unlisted', 'public', 'public'], 'suggested');
-});
-
 check('visibility labels; an unknown status from YouTube is shown as it came', () => {
   eq(['public', 'unlisted', 'private', 'scheduled?'].map(f.visibilityLabel), ['Public', 'Unlisted', 'Private', 'scheduled?'], 'labels');
 });
