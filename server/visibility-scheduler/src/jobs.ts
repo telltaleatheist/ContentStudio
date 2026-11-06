@@ -206,6 +206,9 @@ function finish(db: DB, job: Job, state: 'done' | 'failed', result: JobResult, a
   else console.error(`[run] ${line}`);
 }
 
+/** YouTube can go on reporting a removed publishAt for a while after accepting the update (seen 2026-11-05). */
+const READ_BACK_WAITS_MS = [5, 10, 15, 30].map((s) => s * 1000);
+
 export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
   const started = Date.now();
   const attempts = [...job.attempts];
@@ -221,7 +224,12 @@ export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
     }
     const update = buildStatusUpdate(video.status, job.target);
     await updateStatus(token, job.videoId, update.status);
-    const check = await getVideo(token, job.videoId);
+    let check = await getVideo(token, job.videoId);
+    for (const wait of READ_BACK_WAITS_MS) {
+      if (check && isAtTarget(check.status, job.target)) break;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      check = await getVideo(token, job.videoId);
+    }
     const after = check ? String(check.status.privacyStatus) : 'unknown';
     const result = { before, after, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: update.clearedYouTubeSchedule, message: null as string | null };
     if (after !== job.target) {
