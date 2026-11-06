@@ -153,14 +153,15 @@ finished changes stay in the history.
 An in-process loop checks every 30 s for pending changes whose runAt has passed:
 
 1. `videos.list(part=status)`, record `before`.
-2. If `before` already equals the target: `done`, result "already <target>, nothing changed".
+2. If `before` already equals the target and the video has no YouTube `publishAt`: `done`,
+   result "already <target>, nothing changed". A scheduled video is not already private.
 3. If the video has a YouTube `publishAt`: remove it in the same update and set
    `clearedYouTubeSchedule`. (Exactly how the API wants a schedule removed is checked
    against a test video in phase 1, not assumed.)
 4. `videos.update(part=status)` with **the whole status object read in step 1**, only
    `privacyStatus` changed. Sending only `privacyStatus` lets YouTube reset `embeddable`,
    `license`, `publicStatsViewable`, `selfDeclaredMadeForKids` to defaults.
-5. Read back; `after` must equal the target or the change is `failed`.
+5. Read back; `after` must equal the target with no `publishAt` left, or the change is `failed`.
 
 Errors: a network error, 5xx or 429 is retried (same action, no other path) at 1, 2, 5 and 10
 minutes, every attempt logged; after the last one it is `failed`. A refused token or another 4xx

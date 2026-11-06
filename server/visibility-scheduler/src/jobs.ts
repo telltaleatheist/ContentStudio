@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { Config } from './config.js';
 import type { DB } from './db.js';
 import { GoogleError, accessTokenFor, getVideo, updateStatus, type VideoInfo } from './google.js';
-import { buildStatusUpdate, retryDelay, scheduleProblem, type Visibility } from './rules.js';
+import { buildStatusUpdate, hasYouTubeSchedule, isAtTarget, retryDelay, scheduleProblem, type Visibility } from './rules.js';
 
 export type JobState = 'pending' | 'done' | 'failed' | 'cancelled';
 
@@ -157,9 +157,8 @@ export function createJob(db: DB, n: NewJob, now: number): { job: Job; warnings:
 /** What the person making a change should know before it runs. */
 export function warningsFor(video: VideoInfo, target: Visibility): string[] {
   const out: string[] = [];
-  const publishAt = video.status.publishAt;
-  if (typeof publishAt === 'string' && publishAt !== '' && target !== 'private') {
-    out.push(`YouTube itself is set to publish this video at ${publishAt}; this change will cancel that schedule when it runs.`);
+  if (hasYouTubeSchedule(video.status)) {
+    out.push(`YouTube itself is set to publish this video at ${String(video.status.publishAt)}; this change will cancel that schedule when it runs.`);
   }
   return out;
 }
@@ -217,9 +216,8 @@ export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
     const video = await getVideo(token, job.videoId);
     if (!video) throw new GoogleError(`video ${job.videoId} is not visible to channel ${job.channelId} any more (deleted, or moved?)`, 404);
     before = String(video.status.privacyStatus);
-    if (before === job.target) {
-      const kept = job.target === 'private' && typeof video.status.publishAt === 'string' ? `; YouTube's own schedule for ${video.status.publishAt} is left in place` : '';
-      return finish(db, job, 'done', { before, after: before, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: false, message: `already ${before}, nothing changed${kept}` }, attempts, Date.now());
+    if (isAtTarget(video.status, job.target)) {
+      return finish(db, job, 'done', { before, after: before, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: false, message: `already ${before}, nothing changed` }, attempts, Date.now());
     }
     const update = buildStatusUpdate(video.status, job.target);
     await updateStatus(token, job.videoId, update.status);
@@ -228,6 +226,11 @@ export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
     const result = { before, after, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: update.clearedYouTubeSchedule, message: null as string | null };
     if (after !== job.target) {
       result.message = `YouTube accepted the change but reports ${after} afterwards`;
+      return finish(db, job, 'failed', result, attempts, Date.now());
+    }
+    if (check && hasYouTubeSchedule(check.status)) {
+      result.clearedYouTubeSchedule = false;
+      result.message = `YouTube accepted the change but is still set to publish at ${String(check.status.publishAt)}`;
       return finish(db, job, 'failed', result, attempts, Date.now());
     }
     return finish(db, job, 'done', result, attempts, Date.now());

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildStatusUpdate, isTransientStatus, isVideoId, isVisibility, parseRunAt, retryDelay, scheduleProblem } from '../src/rules.js';
+import { buildStatusUpdate, isAtTarget, isTransientStatus, isVideoId, isVisibility, parseRunAt, retryDelay, scheduleProblem } from '../src/rules.js';
 
 const NOW = Date.parse('2026-11-02T12:00:00Z');
 
@@ -48,14 +48,22 @@ test('the update keeps every writable field and changes only privacyStatus', () 
   assert.ok(!('uploadStatus' in u.status) && !('madeForKids' in u.status), 'read-only fields are not sent');
 });
 
-test("a YouTube-native publishAt survives a change to private and is removed otherwise", () => {
+test('a YouTube-native publishAt is removed by a change to anything, private included', () => {
   const scheduled = { ...LIVE_STATUS, privacyStatus: 'private', publishAt: '2026-11-10T15:00:00Z' };
-  const toUnlisted = buildStatusUpdate(scheduled, 'unlisted');
-  assert.equal(toUnlisted.clearedYouTubeSchedule, true);
-  assert.ok(!('publishAt' in toUnlisted.status));
-  const toPrivate = buildStatusUpdate({ ...scheduled, privacyStatus: 'public' }, 'private');
-  assert.equal(toPrivate.status.publishAt, '2026-11-10T15:00:00Z');
-  assert.equal(toPrivate.clearedYouTubeSchedule, false);
+  for (const target of ['private', 'unlisted', 'public'] as const) {
+    const u = buildStatusUpdate(scheduled, target);
+    assert.equal(u.clearedYouTubeSchedule, true);
+    assert.ok(!('publishAt' in u.status));
+    assert.equal(u.status.privacyStatus, target);
+  }
+});
+
+test('a scheduled video is not already private; a plain private one is', () => {
+  const scheduled = { ...LIVE_STATUS, privacyStatus: 'private', publishAt: '2026-11-10T15:00:00Z' };
+  assert.equal(isAtTarget(scheduled, 'private'), false);
+  assert.equal(isAtTarget({ ...LIVE_STATUS, privacyStatus: 'private' }, 'private'), true);
+  assert.equal(isAtTarget({ ...LIVE_STATUS, privacyStatus: 'public' }, 'public'), true);
+  assert.equal(isAtTarget({ ...LIVE_STATUS, privacyStatus: 'public' }, 'unlisted'), false);
 });
 
 test('fields YouTube did not return are not invented', () => {

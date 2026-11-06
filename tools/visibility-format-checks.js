@@ -186,10 +186,10 @@ check('pending soonest first; history newest first; the badge counts pending onl
   eq(f.pendingBadge([jobs[0]]), null, 'no badge');
 });
 
-check("YouTube's own schedule is warned about before saving, except for a change to private (which keeps it)", () => {
+check("YouTube's own schedule is warned about before saving, for a change to anything", () => {
   eq(f.scheduleClashWarning('2026-11-05T17:00:00Z', 'public', when), 'YouTube itself is set to publish this video at <2026-11-05T17:00:00Z>; this change will cancel that schedule when it runs.', 'public');
   eq(f.scheduleClashWarning('2026-11-05T17:00:00Z', 'unlisted', when) !== null, true, 'unlisted');
-  eq(f.scheduleClashWarning('2026-11-05T17:00:00Z', 'private', when), null, 'private');
+  eq(f.scheduleClashWarning('2026-11-05T17:00:00Z', 'private', when) !== null, true, 'private');
   eq(f.scheduleClashWarning(null, 'public', when), null, 'no schedule');
   eq(f.scheduleClashWarning('2026-11-05T17:00:00Z', null, when), null, 'no target yet');
 });

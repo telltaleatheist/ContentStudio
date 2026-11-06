@@ -189,6 +189,6 @@ export function scheduleClashWarning(
   target: Visibility | null,
   when: (iso: string) => string,
 ): string | null {
-  if (!publishAt || !target || target === 'private') return null;
+  if (!publishAt || !target) return null;
   return `YouTube itself is set to publish this video at ${when(publishAt)}; this change will cancel that schedule when it runs.`;
 }

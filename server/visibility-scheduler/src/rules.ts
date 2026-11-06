@@ -59,8 +59,8 @@ export interface StatusUpdate {
  *
  * YouTube deletes any writable property of the part that the update leaves out, so the
  * current values are sent back unchanged and only privacyStatus differs. A YouTube-native
- * publishAt is kept when the target is private (the video stays scheduled, as it was) and
- * removed otherwise, because only a private video can carry one.
+ * publishAt is always removed: this service's change is what decides the video's visibility,
+ * and a video left carrying one would still go public on that date.
  */
 export function buildStatusUpdate(current: Record<string, unknown>, target: Visibility): StatusUpdate {
   const status: Record<string, unknown> = {};
@@ -68,13 +68,17 @@ export function buildStatusUpdate(current: Record<string, unknown>, target: Visi
     if (current[field] !== undefined) status[field] = current[field];
   }
   status.privacyStatus = target;
-  const publishAt = current.publishAt;
-  let clearedYouTubeSchedule = false;
-  if (typeof publishAt === 'string' && publishAt !== '') {
-    if (target === 'private') status.publishAt = publishAt;
-    else clearedYouTubeSchedule = true;
-  }
-  return { status, clearedYouTubeSchedule };
+  return { status, clearedYouTubeSchedule: hasYouTubeSchedule(current) };
+}
+
+/** Whether YouTube itself is set to publish this video on a date. */
+export function hasYouTubeSchedule(current: Record<string, unknown>): boolean {
+  return typeof current.publishAt === 'string' && current.publishAt !== '';
+}
+
+/** Whether the video is already what the change asks for. Scheduled is not private: it is private until a date. */
+export function isAtTarget(current: Record<string, unknown>, target: Visibility): boolean {
+  return current.privacyStatus === target && !hasYouTubeSchedule(current);
 }
 
 /** Delays before the retries of a change that hit a network error or a 5xx/429. */
