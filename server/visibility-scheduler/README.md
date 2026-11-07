@@ -39,11 +39,17 @@ The Google client is a **Web application** OAuth client in ContentStudio's Googl
 
 ## When something goes wrong
 
-| What | Who says so |
+Everything reaches Owen as a notification on the Mac, from `ops/mac-watch.sh` (launchd, every 5
+min), with a copy in `~/Library/Application Support/scheduler-watch/alerts.log`:
+
+| What | How the Mac knows |
 |---|---|
-| A change fails for good, or a channel needs reconnecting | Email to `allowedEmail` from the service (`src/alerts.ts`), through Triton's exim |
-| The service stops, pm2 gives up, or the loop sticks | Email from `ops/watchdog.sh` (cron, every 5 min, reads `<data>/heartbeat`), once, and once when it is back |
-| Triton is down, or the backup fails | Notification on the Mac from `ops/mac-watch.sh` (launchd, every 15 min) |
+| A change fails for good, or a channel needs reconnecting | `src/alerts.ts` appends a line to `<data>/alerts.log`; the Mac pulls new lines |
+| The service stops, pm2 gives up, or the loop sticks | `<data>/heartbeat`, written by each finished tick, is over 5 min old |
+| Triton is down, or the backup fails | ssh fails |
+
+Not email: Gmail refuses mail from Triton's address outright (550 5.7.1). Nothing reaches Owen
+away from the Mac.
 
 ## Backups
 
@@ -63,8 +69,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.owen.scheduler-watch
 
 ## Deploy
 
-`./deploy.sh` — tests, builds, rsyncs `dist/src`, `package.json`, `ecosystem.config.cjs` and the
-Triton scripts in `ops/`, adds the watchdog to cron if it is missing, then
+`./deploy.sh` — tests, builds, rsyncs `dist/src`, `package.json`, `ecosystem.config.cjs` and
+`ops/snapshot.sh`, then
 starts or reloads the pm2 app and saves the pm2 list. It deploys but does not start when
 `config.json` is missing.
 

@@ -1,7 +1,8 @@
 #!/bin/bash
-# Run by launchd on the Mac every 15 minutes (ops/com.owen.scheduler-watch.plist). Shows a
-# notification when Triton or the scheduler cannot be seen, which Triton could not email about
-# itself, and pulls one verified backup a day. Each problem notifies once, until it clears.
+# Run by launchd on the Mac every 5 minutes (ops/com.owen.scheduler-watch.plist). Everything the
+# scheduler has to say reaches Owen here, as a notification: the alerts it recorded, and Triton or
+# the scheduler having stopped. Also pulls one verified backup a day. A stopped-type problem
+# notifies once, until it clears.
 set -u
 
 HOST=triton
@@ -14,11 +15,16 @@ SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST")
 
 mkdir -p "$STATE"
 
+notify() { # text, passed as an argument because video titles reach it
+  echo "$(date) $1" >> "$STATE/alerts.log"
+  osascript -e 'on run argv' \
+    -e 'display notification (item 1 of argv) with title "ContentStudio scheduler" sound name "Basso"' \
+    -e 'end run' "${1:0:230}" >/dev/null
+}
 problem() { # name, text
   [ -e "$STATE/$1" ] && return
   touch "$STATE/$1"
-  echo "$(date) $1: $2" >&2
-  osascript -e "display notification \"$2\" with title \"ContentStudio scheduler\" sound name \"Basso\""
+  notify "$2"
 }
 cleared() { # name
   [ -e "$STATE/$1" ] && rm "$STATE/$1"
@@ -33,6 +39,15 @@ if [ "$code" -eq 255 ]; then
 fi
 cleared triton-unreachable
 if [ -n "$fresh" ]; then cleared scheduler-stopped; else problem scheduler-stopped "The scheduler on Triton has stopped. Scheduled changes will not run."; fi
+
+seen=$(cat "$STATE/alerts-seen" 2>/dev/null || echo 0)
+if new=$("${SSH[@]}" "touch $REMOTE_DATA/alerts.log; tail -n +$((seen + 1)) $REMOTE_DATA/alerts.log" 2>/dev/null) && [ -n "$new" ]; then
+  while IFS= read -r line; do
+    notify "${line#* }"
+    seen=$((seen + 1))
+  done <<< "$new"
+  echo "$seen" > "$STATE/alerts-seen"
+fi
 
 target="$BACKUPS/$(date +%F).tar.gz"
 [ -e "$target" ] && exit 0

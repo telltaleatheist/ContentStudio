@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { alertMessage } from '../src/alerts.js';
+import { alertLine } from '../src/alerts.js';
 import { buildStatusUpdate, isAtTarget, isTransientStatus, isVideoId, isVisibility, parseRunAt, retryDelay, scheduleProblem } from '../src/rules.js';
 
 const NOW = Date.parse('2026-11-02T12:00:00Z');
@@ -89,11 +89,7 @@ test('ids and visibilities', () => {
   assert.ok(!isVisibility('scheduled'));
 });
 
-test('a video title cannot add a line to an alert\'s headers', () => {
-  const message = alertMessage('a@example.com', 'Failed: "x\nBcc: b@example.com" did not go public', 'body');
-  const headers = message.split('\n\n')[0]!;
-  assert.ok(!headers.includes('Bcc:'), 'the subject is encoded, on one line');
-  assert.equal(headers.split('\n').length, 5);
-  assert.equal(Buffer.from(/=\?UTF-8\?B\?(.+)\?=/.exec(headers)![1]!, 'base64').toString(), 'Failed: "x Bcc: b@example.com" did not go public');
-  assert.ok(message.endsWith('\n\nbody\n'));
+test('an alert is one line whatever a title or error holds', () => {
+  const line = alertLine(new Date('2026-11-07T04:00:00Z'), '"x\ny" did not go public\r\n  Why: quota\n');
+  assert.equal(line, '2026-11-07T04:00:00.000Z "x y" did not go public Why: quota\n');
 });

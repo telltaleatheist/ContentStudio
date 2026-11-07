@@ -28,7 +28,7 @@ async function tick(): Promise<void> {
     await runJob(config, db, job);
   }
   runtime.lastTick = Date.now();
-  // ops/watchdog.sh and ops/mac-watch.sh read this: a stuck loop stops writing it, as a dead process does.
+  // ops/mac-watch.sh reads this: a stuck loop stops writing it, as a dead process does.
   writeFileSync(join(config.dataDir, 'heartbeat'), new Date(runtime.lastTick).toISOString());
 }
 

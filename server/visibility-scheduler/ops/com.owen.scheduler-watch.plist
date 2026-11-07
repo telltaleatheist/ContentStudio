@@ -10,7 +10,7 @@
 		<string>/Users/telltale/Library/Application Support/scheduler-watch/mac-watch.sh</string>
 	</array>
 	<key>StartInterval</key>
-	<integer>900</integer>
+	<integer>300</integer>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>

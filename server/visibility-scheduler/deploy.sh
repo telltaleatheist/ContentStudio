@@ -14,8 +14,7 @@ ssh "$HOST" "mkdir -p $APP/dist/src && mkdir -p -m 700 $DATA && chmod 700 $DATA"
 rsync -a --delete dist/src/ "$HOST:$APP/dist/src/"
 rsync -a package.json ecosystem.config.cjs "$HOST:$APP/"
 ssh "$HOST" "mkdir -p $APP/ops"
-rsync -a ops/watchdog.sh ops/snapshot.sh "$HOST:$APP/ops/"
-ssh "$HOST" "crontab -l | grep -qF '$APP/ops/watchdog.sh' || (crontab -l; echo '*/5 * * * * $APP/ops/watchdog.sh') | crontab -"
+rsync -a ops/snapshot.sh "$HOST:$APP/ops/"
 
 # No config, no start: the service refuses to run without real Google credentials.
 if ! ssh "$HOST" "test -f $DATA/config.json"; then
