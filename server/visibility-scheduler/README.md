@@ -46,19 +46,19 @@ min), with a copy in `~/Library/Application Support/scheduler-watch/alerts.log`:
 |---|---|
 | A change fails for good, or a channel needs reconnecting | `src/alerts.ts` appends a line to `<data>/alerts.log`; the Mac pulls new lines |
 | The service stops, pm2 gives up, or the loop sticks | `<data>/heartbeat`, written by each finished tick, is over 5 min old |
-| Triton is down, or the backup fails | ssh fails |
+| Triton is down | ssh fails |
 
 Not email: Gmail refuses mail from Triton's address outright (550 5.7.1). Nothing reaches Owen
 away from the Mac.
 
 ## Backups
 
-`ops/mac-watch.sh` pulls `ops/snapshot.sh` once a day to
-`/Volumes/Callisto/backups/contentstudio-scheduler-daily/<date>.tar.gz` (mode 600, last 30 kept):
-`scheduler.sqlite`, integrity-checked, and `config.json`. They hold live YouTube tokens and the
-client secret. To restore: stop the pm2 app, unpack into the data directory, start it.
+None of its own. Triton's weekly DigitalOcean snapshots cover it; worst case Owen reschedules by
+hand.
 
-The Mac half is installed by hand, from `ops/`:
+## Installing the Mac half
+
+By hand, from `ops/`:
 
 ```sh
 mkdir -p ~/Library/Application\ Support/scheduler-watch
@@ -69,8 +69,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.owen.scheduler-watch
 
 ## Deploy
 
-`./deploy.sh` — tests, builds, rsyncs `dist/src`, `package.json`, `ecosystem.config.cjs` and
-`ops/snapshot.sh`, then
+`./deploy.sh` — tests, builds, rsyncs `dist/src`, `package.json` and `ecosystem.config.cjs`, then
 starts or reloads the pm2 app and saves the pm2 list. It deploys but does not start when
 `config.json` is missing.
 

@@ -1,15 +1,11 @@
 #!/bin/bash
 # Run by launchd on the Mac every 5 minutes (ops/com.owen.scheduler-watch.plist). Everything the
 # scheduler has to say reaches Owen here, as a notification: the alerts it recorded, and Triton or
-# the scheduler having stopped. Also pulls one verified backup a day. A stopped-type problem
-# notifies once, until it clears.
+# the scheduler having stopped. A stopped-type problem notifies once, until it clears.
 set -u
 
 HOST=triton
 REMOTE_DATA=/home/owenmorgan/apps/visibility-scheduler-data
-REMOTE_APP=/home/owenmorgan/apps/visibility-scheduler
-BACKUPS=/Volumes/Callisto/backups/contentstudio-scheduler-daily
-KEEP=30
 STATE="$HOME/Library/Application Support/scheduler-watch"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST")
 
@@ -47,18 +43,4 @@ if new=$("${SSH[@]}" "touch $REMOTE_DATA/alerts.log; tail -n +$((seen + 1)) $REM
     seen=$((seen + 1))
   done <<< "$new"
   echo "$seen" > "$STATE/alerts-seen"
-fi
-
-target="$BACKUPS/$(date +%F).tar.gz"
-[ -e "$target" ] && exit 0
-mkdir -p -m 700 "$BACKUPS"
-partial="$target.partial"
-if "${SSH[@]}" "$REMOTE_APP/ops/snapshot.sh" > "$partial" 2>/dev/null \
-  && tar -tzf "$partial" 2>/dev/null | grep -qx scheduler.sqlite \
-  && chmod 600 "$partial" && mv "$partial" "$target"; then
-  cleared backup-failed
-  ls -1t "$BACKUPS"/*.tar.gz | tail -n +$((KEEP + 1)) | while read -r old; do rm "$old"; done
-else
-  rm -f "$partial"
-  problem backup-failed "The scheduler's daily backup failed; it will try again."
 fi
