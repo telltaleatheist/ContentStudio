@@ -1,6 +1,7 @@
 // Google OAuth and the three YouTube Data API calls this service makes, over plain fetch.
 
 import { createHash, randomBytes } from 'node:crypto';
+import { sendAlert } from './alerts.js';
 import type { Config } from './config.js';
 import type { DB } from './db.js';
 import { isTransientStatus } from './rules.js';
@@ -136,6 +137,7 @@ export async function accessTokenFor(config: Config, db: DB, channelId: string):
   } catch (err) {
     if (err instanceof GoogleError && err.needsReconnect) {
       db.prepare("UPDATE channels SET state = 'reconnect', last_error = ? WHERE channel_id = ?").run(err.message, channelId);
+      await sendAlert(config, `"${row.title}" needs reconnecting to the scheduler`, `Google refused the scheduler's sign-in for "${row.title}", so its changes will fail until it is reconnected.\n\nWhy: ${err.message}\n\nReconnect: ${config.baseUrl}/`);
       throw new GoogleError(`channel "${row.title}" needs reconnecting on the setup page (${err.message})`, 401, true);
     }
     throw err;

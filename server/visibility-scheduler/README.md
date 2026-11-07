@@ -37,9 +37,34 @@ The Google client is a **Web application** OAuth client in ContentStudio's Googl
 `https://contentstudio.owenmorgan.com/scheduler/oauth/callback`. Scopes used: `openid email`
 (sign-in) and `https://www.googleapis.com/auth/youtube` (channels).
 
+## When something goes wrong
+
+| What | Who says so |
+|---|---|
+| A change fails for good, or a channel needs reconnecting | Email to `allowedEmail` from the service (`src/alerts.ts`), through Triton's exim |
+| The service stops, pm2 gives up, or the loop sticks | Email from `ops/watchdog.sh` (cron, every 5 min, reads `<data>/heartbeat`), once, and once when it is back |
+| Triton is down, or the backup fails | Notification on the Mac from `ops/mac-watch.sh` (launchd, every 15 min) |
+
+## Backups
+
+`ops/mac-watch.sh` pulls `ops/snapshot.sh` once a day to
+`/Volumes/Callisto/backups/contentstudio-scheduler-daily/<date>.tar.gz` (mode 600, last 30 kept):
+`scheduler.sqlite`, integrity-checked, and `config.json`. They hold live YouTube tokens and the
+client secret. To restore: stop the pm2 app, unpack into the data directory, start it.
+
+The Mac half is installed by hand, from `ops/`:
+
+```sh
+mkdir -p ~/Library/Application\ Support/scheduler-watch
+cp ops/mac-watch.sh ~/Library/Application\ Support/scheduler-watch/
+cp ops/com.owen.scheduler-watch.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.owen.scheduler-watch.plist
+```
+
 ## Deploy
 
-`./deploy.sh` — tests, builds, rsyncs `dist/src`, `package.json`, `ecosystem.config.cjs`, then
+`./deploy.sh` — tests, builds, rsyncs `dist/src`, `package.json`, `ecosystem.config.cjs` and the
+Triton scripts in `ops/`, adds the watchdog to cron if it is missing, then
 starts or reloads the pm2 app and saves the pm2 list. It deploys but does not start when
 `config.json` is missing.
 

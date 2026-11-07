@@ -1,6 +1,8 @@
 // The visibility scheduler: changes a YouTube video's visibility (any -> any) at a set time.
 // See VISIBILITY-SCHEDULER-PLAN.md at the repo root.
 
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pruneExpired } from './auth.js';
 import { loadConfig } from './config.js';
 import { openDb } from './db.js';
@@ -26,6 +28,8 @@ async function tick(): Promise<void> {
     await runJob(config, db, job);
   }
   runtime.lastTick = Date.now();
+  // ops/watchdog.sh and ops/mac-watch.sh read this: a stuck loop stops writing it, as a dead process does.
+  writeFileSync(join(config.dataDir, 'heartbeat'), new Date(runtime.lastTick).toISOString());
 }
 
 function schedule(): void {

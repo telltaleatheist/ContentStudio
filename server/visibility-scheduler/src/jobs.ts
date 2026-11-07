@@ -1,6 +1,7 @@
 // Changes ("jobs"): storing them, and running the ones that are due.
 
 import { randomUUID } from 'node:crypto';
+import { sendAlert } from './alerts.js';
 import type { Config } from './config.js';
 import type { DB } from './db.js';
 import { GoogleError, accessTokenFor, getVideo, updateStatus, type VideoInfo } from './google.js';
@@ -193,7 +194,7 @@ export function cancelJob(db: DB, id: string, now: number): Job {
 
 // ---- running ----------------------------------------------------------------------------
 
-function finish(db: DB, job: Job, state: 'done' | 'failed', result: JobResult, attempts: Attempt[], now: number): void {
+async function finish(config: Config, db: DB, job: Job, state: 'done' | 'failed', result: JobResult, attempts: Attempt[], now: number): Promise<void> {
   db.prepare('UPDATE jobs SET state = ?, result = ?, attempts = ?, next_attempt_at = NULL, updated_at = ? WHERE id = ?').run(
     state,
     JSON.stringify(result),
@@ -202,8 +203,26 @@ function finish(db: DB, job: Job, state: 'done' | 'failed', result: JobResult, a
     job.id,
   );
   const line = `${job.videoId} "${job.videoTitle}" -> ${job.target}: ${state}${result.message ? ` (${result.message})` : ''}`;
-  if (state === 'done') console.log(`[run] ${line}`);
-  else console.error(`[run] ${line}`);
+  if (state === 'done') {
+    console.log(`[run] ${line}`);
+    return;
+  }
+  console.error(`[run] ${line}`);
+  const when = new Date(job.runAt).toLocaleString('en-US', { timeZone: config.displayTimeZone, dateStyle: 'medium', timeStyle: 'short' });
+  await sendAlert(
+    config,
+    `Failed: "${job.videoTitle}" did not go ${job.target}`,
+    [
+      `The change to ${job.target} set for ${when} failed.`,
+      '',
+      `Video: ${job.videoTitle}`,
+      `Now: ${result.after}`,
+      `Why: ${result.message ?? 'no reason recorded'}`,
+      '',
+      `Studio: https://studio.youtube.com/video/${job.videoId}/edit`,
+      `Scheduler: ${config.baseUrl}/`,
+    ].join('\n'),
+  );
 }
 
 /** YouTube can go on reporting a removed publishAt for a while after accepting the update (seen 2026-11-05). */
@@ -220,7 +239,7 @@ export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
     if (!video) throw new GoogleError(`video ${job.videoId} is not visible to channel ${job.channelId} any more (deleted, or moved?)`, 404);
     before = String(video.status.privacyStatus);
     if (isAtTarget(video.status, job.target)) {
-      return finish(db, job, 'done', { before, after: before, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: false, message: `already ${before}, nothing changed` }, attempts, Date.now());
+      return finish(config, db, job, 'done', { before, after: before, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: false, message: `already ${before}, nothing changed` }, attempts, Date.now());
     }
     const update = buildStatusUpdate(video.status, job.target);
     await updateStatus(token, job.videoId, update.status);
@@ -234,14 +253,14 @@ export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
     const result = { before, after, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: update.clearedYouTubeSchedule, message: null as string | null };
     if (after !== job.target) {
       result.message = `YouTube accepted the change but reports ${after} afterwards`;
-      return finish(db, job, 'failed', result, attempts, Date.now());
+      return finish(config, db, job, 'failed', result, attempts, Date.now());
     }
     if (check && hasYouTubeSchedule(check.status)) {
       result.clearedYouTubeSchedule = false;
       result.message = `YouTube accepted the change but is still set to publish at ${String(check.status.publishAt)}`;
-      return finish(db, job, 'failed', result, attempts, Date.now());
+      return finish(config, db, job, 'failed', result, attempts, Date.now());
     }
-    return finish(db, job, 'done', result, attempts, Date.now());
+    return finish(config, db, job, 'done', result, attempts, Date.now());
   } catch (err) {
     const message = (err as Error).message;
     attempts.push({ at: iso(started), error: message });
@@ -253,7 +272,7 @@ export async function runJob(config: Config, db: DB, job: Job): Promise<void> {
       return;
     }
     const why = transient ? `gave up after ${attempts.length} attempts: ${message}` : message;
-    finish(db, job, 'failed', { before, after: before, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: false, message: why }, attempts, Date.now());
+    await finish(config, db, job, 'failed', { before, after: before, ranAt: iso(started), lateByMs, clearedYouTubeSchedule: false, message: why }, attempts, Date.now());
   }
 }
 
