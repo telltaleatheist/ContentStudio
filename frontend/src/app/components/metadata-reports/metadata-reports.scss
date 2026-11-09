@@ -1754,11 +1754,9 @@ a.ghost.link {
   align-items: flex-start;
 }
 
-/* "Goes public": the two release choices beside the schedule (visibility scheduler). */
-.release-mode .release-choice {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+/* "Goes public": read-only, set at upload by the calendar's switch (2026-11-09). The sentence
+   wraps rather than being cut off, since its tail is the part that says which mode. */
+.release-mode .fact-v {
   white-space: normal;
   overflow: visible;
 }

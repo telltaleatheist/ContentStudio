@@ -26,8 +26,10 @@ import {
 } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
+import { UploadReleaseSwitchService } from '../../features/publish/upload-release-switch.service';
 import {
   MAX_AB_VARIANTS,
+  RELEASE_MODE_LABELS,
   SPREAKER_DESTINATION,
   SPREAKER_DESTINATION_LABEL,
   type PublishFacts,
@@ -506,6 +508,12 @@ export class MetadataReports implements OnInit, OnDestroy {
   // and the publish feature.
   readonly publish = inject(PublishState);
   readonly MAX_AB_VARIANTS = MAX_AB_VARIANTS;
+  /**
+   * The calendar's upload release switch (Owen, 2026-11-09), read here only to say what an
+   * unuploaded item will go up as. It is flipped on the calendar, never here.
+   */
+  readonly releaseSwitch = inject(UploadReleaseSwitchService);
+  readonly releaseModeLabels = RELEASE_MODE_LABELS;
   private readonly dialog = inject(MatDialog);
 
   // ------------------------------------------------------------ thumbnails (phase 2)
@@ -2553,6 +2561,8 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   async ngOnInit() {
     this.clockTimer = setInterval(() => this.clock.set(Date.now()), 30_000);
+    // Not awaited: it only labels the "Goes public" row, and the list does not wait on it.
+    void this.releaseSwitch.load();
     await this.loadReports();
 
     // The channels the list's tab strip is built from. Deliberately after the list: the

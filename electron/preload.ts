@@ -256,9 +256,6 @@ const api = {
       tagsOverride?: string | null;
       channelId?: string | null;
       publishAt?: string | null;
-      // How it goes public at publishAt: YouTube's own schedule, or unlisted first and a
-      // visibility-scheduler change to public.
-      releaseMode?: 'youtube-schedule' | 'unlisted-then-public';
       isPodcast?: boolean;
       // ONLY true. Monetization is on for every video and stopped being a per-item choice
       // on 2026-08-23; the main process refuses false and null by name. Left on the type
@@ -383,7 +380,14 @@ const api = {
   // scheduled") come back as text, verbatim.
   publishPushYouTube: (itemId: string) => ipcRenderer.invoke('publish-push-youtube', itemId),
   publishPushSchedule: (itemId: string) => ipcRenderer.invoke('publish-push-schedule', itemId),
-  publishUploadYouTube: (itemId: string) => ipcRenderer.invoke('publish-upload-youtube', itemId),
+  // The upload takes the mode the operator was shown (the calendar's upload switch); main
+  // refuses it if the switch has been flipped since (Owen, 2026-11-09).
+  publishUploadYouTube: (itemId: string, releaseMode: 'youtube-schedule' | 'unlisted-then-public') =>
+    ipcRenderer.invoke('publish-upload-youtube', itemId, releaseMode),
+  // The calendar's upload release switch: how the NEXT uploads go public. One for all videos.
+  publishGetUploadReleaseSwitch: () => ipcRenderer.invoke('publish-get-upload-release-switch'),
+  publishSetUploadReleaseSwitch: (mode: 'youtube-schedule' | 'unlisted-then-public') =>
+    ipcRenderer.invoke('publish-set-upload-release-switch', mode),
   publishUploadCancel: (itemId: string) => ipcRenderer.invoke('publish-upload-cancel', itemId),
   onPublishUploadProgress: (callback: (p: { itemId: string; sentBytes: number; totalBytes: number }) => void) => {
     const listener = (_event: any, p: any) => callback(p);

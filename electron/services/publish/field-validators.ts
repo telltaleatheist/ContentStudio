@@ -14,7 +14,7 @@
  */
 
 import { RoutableChannel, findChannelById } from './channel-routing';
-import { ChosenMetadata, MAX_TITLE_LENGTH, RELEASE_MODES, ReleaseMode, validatePublishAt } from './publish-types';
+import { ChosenMetadata, MAX_TITLE_LENGTH, validatePublishAt } from './publish-types';
 
 /** A short, safe rendering of whatever the caller actually sent. */
 export function describeValue(value: unknown): string {
@@ -236,15 +236,17 @@ const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => Fi
   },
 
   /**
-   * How the item goes public at publishAt: YouTube's own schedule (private until then), or
-   * unlisted now and a visibility-scheduler change to public then. One of the two names,
-   * exactly; see ChosenMetadata.releaseMode.
+   * How the item goes public: REFUSED, every value. Since Owen's ruling of 2026-11-09 the
+   * calendar's upload release switch decides it and the upload stamps it onto the record
+   * (upload-release-switch.ts, youtube-upload.ts); an uploaded item keeps the mode it went up
+   * with. Kept as an entry, as monetize is, so an old caller hears what changed instead of
+   * the generic "cannot write this field".
    */
   releaseMode(value) {
-    if (typeof value !== 'string' || !(RELEASE_MODES as readonly string[]).includes(value)) {
-      throw new Error(`releaseMode must be one of ${RELEASE_MODES.join(', ')}; got ${describeValue(value)}.`);
-    }
-    return { releaseMode: value as ReleaseMode };
+    throw new Error(
+      `releaseMode is not set per item any more: the calendar's upload switch decides it, and ` +
+        `the upload writes it onto the item. Got ${describeValue(value)}; nothing was saved.`
+    );
   },
 
   /**

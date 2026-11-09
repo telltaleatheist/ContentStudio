@@ -23,10 +23,17 @@
  *
  * ── After the change exists ──────────────────────────────────────────────────────────
  *
- * Its time and visibility are the scheduler's from then on. publishAt and releaseMode are
- * refused on the record while it is linked to a change (edit or cancel it in Visibility
- * changes, which writes the record back through `releasePatchForJob`), and a later push
- * never creates a second one.
+ * Its time and visibility are the scheduler's from then on. publishAt is refused on the
+ * record while it is linked to a change (edit or cancel it in Visibility changes, which
+ * writes the record back through `releasePatchForJob`), and a later push never creates a
+ * second one.
+ *
+ * ── Who decides the mode ─────────────────────────────────────────────────────────────
+ *
+ * Not the item. Since 2026-11-09 (Owen) the calendar's upload release switch decides it,
+ * and the upload stamps it onto the record (youtube-upload.ts, upload-release-switch.ts).
+ * No set-fields write can change releaseMode at all (field-validators.ts refuses it by
+ * name), so the lock below guards publishAt only.
  */
 
 import type { ChosenMetadata, ReleaseChange } from './publish-types';
@@ -61,7 +68,7 @@ export function requireReleaseReady(record: ChosenMetadata, api: ReleaseSchedule
   if (!record.publishAt) {
     throw new Error(
       `Item ${item} is set to go unlisted now and public later, but has no time to go public. ` +
-        `Give it a date on the calendar, or switch it back to YouTube's own schedule. Nothing was ${action}.`,
+        `Give it a date on the calendar${action === 'uploaded' ? ", or flip the calendar's upload switch to YouTube's schedule" : ''}. Nothing was ${action}.`,
     );
   }
   const at = Date.parse(record.publishAt);
@@ -166,15 +173,15 @@ export function releasePatchForJob(
 
 /**
  * Why a publish-set-fields write must be refused while the record is linked to a change, or
- * null. Only publishAt and releaseMode are the scheduler's once the change exists.
+ * null. Only publishAt is the scheduler's once the change exists (releaseMode is not a
+ * set-fields field at all since 2026-11-09).
  */
 export function releaseLockProblem(record: ChosenMetadata | null, fields: Record<string, unknown>): string | null {
   if (!record || !hasReleaseChange(record)) return null;
-  const touched = ['publishAt', 'releaseMode'].filter((k) => k in fields);
-  if (touched.length === 0) return null;
+  if (!('publishAt' in fields)) return null;
   return (
     `Item ${record.itemId}'s change to public is on the visibility scheduler (set for ${record.releaseChange!.runAt}), ` +
-    `so ${touched.join(' and ')} cannot be changed here. Edit or cancel the change in the Video row's Visibility changes; ` +
+    `so publishAt cannot be changed here. Edit or cancel the change in the Video row's Visibility changes; ` +
     `the item follows it.`
   );
 }

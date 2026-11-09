@@ -56,15 +56,18 @@ import { NotificationService } from '../../services/notification';
 import type {
   LinkedVideo,
   PublishFacts,
+  ReleaseMode,
   ReportIndexEntry,
   ScheduledSweep,
   ScheduledVideo,
   SpreakerSweep,
 } from '../../features/publish/publish.types';
 import {
+  RELEASE_MODE_LABELS,
   SPREAKER_DESTINATION,
   SPREAKER_DESTINATION_LABEL,
 } from '../../features/publish/publish.types';
+import { UploadReleaseSwitchService } from '../../features/publish/upload-release-switch.service';
 import { splitPublishAt } from '../../features/publish/publish-schedule';
 import type { SchedulerJob } from '../../features/scheduler/scheduler.types';
 import { badgesByDay, rangeForDays, type DayBadge } from '../../features/scheduler/visibility-changes';
@@ -661,6 +664,26 @@ export class PublishCalendar implements OnInit, OnDestroy {
   readonly uploadRun = this.runs.uploadRun;
   /** Results of the last run, kept until dismissed. Failures are the point of it. */
   readonly uploadResults = this.runs.uploadResults;
+
+  /**
+   * The upload release switch beside "Upload all ready" (Owen, 2026-11-09): how the NEXT
+   * uploads go public, one answer for all of them. Upload a group, flip it, upload the next
+   * group; each item keeps the mode it went up with. Locked while a run is going, so a batch
+   * goes up the way its confirm panel said.
+   */
+  readonly releaseSwitch = inject(UploadReleaseSwitchService);
+  readonly releaseModes: ReadonlyArray<{ mode: ReleaseMode; label: string }> = [
+    { mode: 'youtube-schedule', label: RELEASE_MODE_LABELS['youtube-schedule'] },
+    { mode: 'unlisted-then-public', label: RELEASE_MODE_LABELS['unlisted-then-public'] },
+  ];
+  readonly releaseModeLabels = RELEASE_MODE_LABELS;
+
+  async flipReleaseSwitch(mode: ReleaseMode): Promise<void> {
+    if (this.uploadRun() !== null || this.releaseSwitch.mode() === mode) return;
+    await this.releaseSwitch.set(mode);
+    const error = this.releaseSwitch.error();
+    if (error) this.report(error);
+  }
 
   // ------------------------------------------------------------ the Spreaker run
 
@@ -1679,6 +1702,9 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // and the run outlives this page — a listener torn down in ngOnDestroy would stop the
     // byte counter the moment the operator looked at another tab, which is exactly the
     // thing this page was asked to stop doing. PublishRunsService binds it once.
+    // The upload switch, read on every visit: it is a file the main process holds, and a bad
+    // one is shown on the toolbar as its refusal rather than as a position.
+    void this.releaseSwitch.load();
     await this.reload();
     this.warnLeftovers();
     // Not awaited: the board is already correct about this app's own records, and the
@@ -2269,13 +2295,21 @@ export class PublishCalendar implements OnInit, OnDestroy {
   async confirmUploadAll(): Promise<void> {
     const chips = this.uploadConfirm();
     if (!chips || chips.length === 0) return;
+    // The batch goes up the way the panel said. With the switch unread or unreadable the
+    // panel said no mode, so nothing is sent (the button is disabled too; this is the rule).
+    const mode = this.releaseSwitch.mode();
+    if (mode === null) {
+      this.report(this.releaseSwitch.error() ?? 'The upload switch has not been read yet, so nothing was uploaded.');
+      return;
+    }
     this.uploadConfirm.set(null);
     await this.runs.runYouTubeUpload(
       chips.map((chip) => ({
         itemId: chip.itemId,
         title: chip.title,
         channelName: chip.channelName,
-      }))
+      })),
+      mode
     );
   }
 

@@ -49,7 +49,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { SPREAKER_DESTINATION_LABEL } from './publish.types';
-import type { PublishFacts } from './publish.types';
+import type { PublishFacts, ReleaseMode } from './publish.types';
 import {
   destinationOf,
   missingFor,
@@ -231,8 +231,12 @@ export class PublishRunsService {
    * that item and the next one starts — stopping would leave the remaining items in an
    * unexplained limbo, whereas a run that finishes with three failures listed is a run
    * the operator can act on. Nothing is retried automatically.
+   *
+   * `releaseMode` is the calendar's upload switch as the confirm panel showed it (Owen,
+   * 2026-11-09). Every item in the run carries it to the main process, which refuses an item
+   * if the switch no longer says the same, so a whole batch goes up the way it was agreed.
    */
-  async runYouTubeUpload(chips: UploadCandidate[]): Promise<void> {
+  async runYouTubeUpload(chips: UploadCandidate[], releaseMode: ReleaseMode): Promise<void> {
     if (chips.length === 0 || this.uploadRun() !== null) return;
     this.bindProgress();
 
@@ -292,7 +296,7 @@ export class PublishRunsService {
       });
 
       try {
-        const res = await this.electron.publishUploadYouTube(chip.itemId);
+        const res = await this.electron.publishUploadYouTube(chip.itemId, releaseMode);
         if (!res.success || !res.data) {
           results.push({
             itemId: chip.itemId,

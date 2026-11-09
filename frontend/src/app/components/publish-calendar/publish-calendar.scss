@@ -1017,6 +1017,47 @@
   }
 }
 
+/* The upload release switch beside "Upload all ready" (Owen, 2026-11-09). Two options, one
+   lit; the lit one is how the next uploads go public. */
+.release-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  font-size: 0.72rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+
+  .rs-label {
+    padding: 0 0.5rem;
+    color: var(--text-secondary);
+  }
+
+  .rs-opt {
+    border: 0;
+    border-left: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    padding: 0.3rem 0.55rem;
+    cursor: pointer;
+
+    &.on {
+      background: color-mix(in srgb, var(--primary-orange) 18%, transparent);
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+    &:disabled { cursor: default; opacity: 0.6; }
+  }
+
+  &.rs-error {
+    padding: 0.3rem 0.55rem;
+    color: var(--danger-text);
+    border-color: var(--danger-text);
+  }
+}
+
 .upload-all mat-icon {
   margin-right: 0.3rem;
   font-size: 17px;
@@ -1252,6 +1293,16 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .uc-release {
+    margin: 0.3rem 0 0.4rem;
+    font-size: 0.74rem;
+    line-height: 1.4;
+    color: var(--text-secondary);
+
+    strong { color: var(--text-primary); }
+    &.uc-release-error { color: var(--danger-text); }
   }
 
   .uc-clash-note {

@@ -43,6 +43,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AutoConfigResult } from './auto-config';
 import { PrimarySetService } from './primary-set.service';
+import { UploadReleaseSwitch } from './upload-release-switch';
 import { DescriptionSections, composePublishedText } from './publish-types';
 import {
   ChosenMetadata,
@@ -330,6 +331,8 @@ export class PublishStoreService {
    * two to end up pointed at different directories.
    */
   private readonly primarySets: PrimarySetService;
+  /** The calendar's upload release switch (Owen, 2026-11-09), beside primary-sets.json. */
+  private readonly uploadReleaseSwitch: UploadReleaseSwitch;
 
   constructor(baseDir: string, autoConfigure: AutoConfigure) {
     if (typeof autoConfigure !== 'function') {
@@ -349,12 +352,18 @@ export class PublishStoreService {
       fs.mkdirSync(this.itemsDir, { recursive: true });
     }
     this.primarySets = new PrimarySetService(baseDir);
+    this.uploadReleaseSwitch = new UploadReleaseSwitch(baseDir);
     console.log('[PublishStore] Initialized:', this.baseDir);
   }
 
   /** The primary-set registry: one item per source_key. See primary-set.service.ts. */
   get primary(): PrimarySetService {
     return this.primarySets;
+  }
+
+  /** How the next uploads go public: one switch for all of them. See upload-release-switch.ts. */
+  get releaseSwitch(): UploadReleaseSwitch {
+    return this.uploadReleaseSwitch;
   }
 
   /** Where the per-item records live. The migration writes into this same directory. */

@@ -471,6 +471,23 @@ export interface UploadProgress {
  */
 export type ReleaseMode = 'youtube-schedule' | 'unlisted-then-public';
 
+/**
+ * The calendar's upload release switch (Owen, 2026-11-09): how the NEXT uploads go public.
+ * The upload copies it onto the item, which keeps it. Mirrors upload-release-switch.ts.
+ * setAt is null when it has never been flipped (mode is then 'youtube-schedule', what every
+ * upload did before the switch existed).
+ */
+export interface UploadReleaseSwitchState {
+  mode: ReleaseMode;
+  setAt: string | null;
+}
+
+/** The switch's two positions, in the words every surface shows them with. */
+export const RELEASE_MODE_LABELS: Record<ReleaseMode, string> = {
+  'youtube-schedule': "Private until its date — YouTube's schedule",
+  'unlisted-then-public': 'Unlisted now, public at its date',
+};
+
 /** Mirrors publish-types.ReleaseChange: the item's link to its one change, or why it could not be made. */
 export interface ReleaseChange {
   videoId: string;

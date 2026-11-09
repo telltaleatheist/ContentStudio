@@ -7,10 +7,13 @@
  * route, the query string, runAt refused without a zone, the server's {error} verbatim, a
  * bare 401 named as a refused key, an unreachable server); "unlisted now, then public at…"
  * (the release checks before any write, the create outcome on success and refusal, the record
- * following an edited or cancelled change, the publishAt/releaseMode lock); the insert body
+ * following an edited or cancelled change, the publishAt lock); the insert body
  * (unlisted, no publishAt), the push's status (private -> unlisted with publishAt left out,
- * unlisted untouched, public refused, schedule-only push refused); the releaseMode validator
- * and upgrade; and the renderer's pure helpers transpiled from their shipped source (badges,
+ * unlisted untouched, public refused, schedule-only push refused); releaseMode refused as a
+ * set-field and its upgrade; the calendar's upload release switch (Owen, 2026-11-09: never set
+ * reads youtube-schedule, a malformed file refused by name, the upload stamping it onto the
+ * record before the insert, a flipped-since-confirmed switch refused with nothing sent, the
+ * push never reading it); and the renderer's pure helpers transpiled from their shipped source (badges,
  * order, late note, state views, the create/patch requests across a DST change, the range).
  * Offline: no scheduler, no YouTube, no Electron; temp folder removed at the end.
  *
@@ -35,6 +38,8 @@ const push = require(path.join(ROOT, 'publish/youtube-push.js'));
 const upload = require(path.join(ROOT, 'publish/youtube-upload.js'));
 const types = require(path.join(ROOT, 'publish/publish-types.js'));
 const fields = require(path.join(ROOT, 'publish/field-validators.js'));
+const releaseSwitch = require(path.join(ROOT, 'publish/upload-release-switch.js'));
+const { PublishStoreService } = require(path.join(ROOT, 'publish/publish-store.service.js'));
 
 /** The renderer's helpers are not part of dist/main: transpiled from their own source. */
 function transpile(rel, stubs = {}) {
@@ -256,10 +261,9 @@ check('release: the record follows its edited change, and drops it when cancelle
   eq(release.releasePatchForJob(linked, job({ id: 'job-9', state: 'done' }), NOW), null, 'done changes nothing');
 });
 
-check('release: publishAt and releaseMode are locked while the change exists', () => {
+check('release: publishAt is locked while the change exists', () => {
   const linked = record({ releaseChange: { videoId: VIDEO, runAt: 'T', attemptedAt: 'x', jobId: 'job-9', error: null, warnings: [] } });
   ok(/publishAt cannot be changed here.*Visibility changes/.test(release.releaseLockProblem(linked, { publishAt: null })), 'publishAt');
-  ok(/releaseMode/.test(release.releaseLockProblem(linked, { releaseMode: 'youtube-schedule' })), 'releaseMode');
   eq(release.releaseLockProblem(linked, { tagsOverride: 'a' }), null, 'other fields free');
   eq(release.releaseLockProblem(record({ releaseChange: { ...linked.releaseChange, jobId: null, error: 'x' } }), { publishAt: null }), null, 'a failed create does not lock');
   eq(release.releaseLockProblem(record({ releaseChange: { ...linked.releaseChange, videoId: 'zzzzzzzzzzz' } }), { publishAt: null }), null, 'another video does not lock');
@@ -326,14 +330,115 @@ check('push: the change is created after the write; a refusal is stored on the r
   eq(writes, [], 'nothing written without a key');
 });
 
-check('fields: releaseMode takes the two names only; upgrade fills it', () => {
+check('fields: releaseMode is not a per-item field any more (every value refused); upgrade fills it', () => {
   const ctx = { listChannels: () => [], now: NOW };
-  eq(fields.buildFieldPatch({ releaseMode: 'unlisted-then-public' }, ctx), { releaseMode: 'unlisted-then-public' }, 'valid');
-  throwsLike(() => fields.buildFieldPatch({ releaseMode: 'unlisted' }, ctx), /releaseMode must be one of youtube-schedule, unlisted-then-public/, 'invalid');
+  for (const v of ['unlisted-then-public', 'youtube-schedule', 'unlisted']) {
+    throwsLike(() => fields.buildFieldPatch({ releaseMode: v }, ctx), /not set per item any more: the calendar's upload switch decides it/, `refused ${v}`);
+  }
   const old = { ...types.emptyChosenMetadata(ITEM, 'job-x') };
   delete old.releaseMode; delete old.releaseChange;
   const up = types.upgradeStoredMetadata(old);
   eq([up.releaseMode, up.releaseChange], ['youtube-schedule', null], 'upgraded');
+});
+
+// ---------------------------------------------------------------- the upload release switch
+
+function switchDir(content) {
+  const dir = path.join(TMP, `sw${dirN++}`);
+  fs.mkdirSync(dir);
+  if (content !== undefined) fs.writeFileSync(path.join(dir, releaseSwitch.UPLOAD_RELEASE_SWITCH_FILE), typeof content === 'string' ? content : JSON.stringify(content));
+  return dir;
+}
+
+check('switch: never set reads youtube-schedule; a flip round-trips; only the two names are written', () => {
+  const sw = new releaseSwitch.UploadReleaseSwitch(switchDir());
+  eq(sw.read(), { mode: 'youtube-schedule', setAt: null }, 'never set');
+  eq(sw.set('unlisted-then-public', NOW), { mode: 'unlisted-then-public', setAt: NOW.toISOString() }, 'set');
+  eq(new releaseSwitch.UploadReleaseSwitch(path.dirname(sw.filePath)).read().mode, 'unlisted-then-public', 'after a restart');
+  throwsLike(() => sw.set('unlisted', NOW), /must be one of youtube-schedule, unlisted-then-public; got "unlisted"/, 'bad name');
+  eq(sw.read().mode, 'unlisted-then-public', 'a refused flip leaves it');
+});
+
+check('switch: a malformed file is refused by name, never read as never-set', () => {
+  for (const [what, content, re] of [
+    ['not JSON', '{nope', /upload-release-switch\.json could not be read/],
+    ['an array', [], /does not contain the upload release switch/],
+    ['old version', { version: 0, mode: 'youtube-schedule', setAt: NOW.toISOString() }, /is version 0; this build reads version 1/],
+    ['a third mode', { version: 1, mode: 'unlisted', setAt: NOW.toISOString() }, /holds "unlisted" as the upload release mode/],
+    ['no setAt', { version: 1, mode: 'youtube-schedule' }, /has no valid setAt/],
+  ]) {
+    throwsLike(() => new releaseSwitch.UploadReleaseSwitch(switchDir(content)).read(), re, what);
+  }
+});
+
+/** A real store in its own folder, an item with a source file, and a fake YouTube that logs. */
+function uploadRig(over = {}) {
+  const dir = path.join(TMP, `up${dirN++}`);
+  const src = path.join(dir, 'clip.mov');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(src, Buffer.alloc(64, 1));
+  const store = new PublishStoreService(path.join(dir, 'publish'), () => ({ patch: {}, applied: [], refused: [], skipped: [] }));
+  const generated = {
+    jobId: 'job-x', titles: [], description: 'Body', descriptionWithoutChapters: 'Body', chapterBlock: '',
+    sections: { body: 'Body', chapters: [], links: '' }, tags: 'a, b', sourceFilename: 'clip.mov', sourcePath: src,
+    sourcePathDeclared: true, promptSet: null, sourceDurationSec: 100, publishProfile: null,
+  };
+  const log = [];
+  const api = {
+    insertVideo: async (channelId, filePath, body) => { log.push(['INSERT', body.status, store.get(ITEM).releaseMode]); return { videoId: VIDEO }; },
+    setThumbnail: async () => { throw new Error('no thumbnail expected'); },
+    getLatestCategoryId: async () => '22',
+    requireCaptionScope: () => {},
+    insertCaption: async () => { throw new Error('no captions expected'); },
+  };
+  const deps = (confirmed, scheduler = goodApi((i) => log.push(['CHANGE', i.runAt]))) => ({
+    store, readGenerated: () => generated, api, listRecentUploads: async () => [], scheduler,
+    releaseSwitch: store.releaseSwitch, confirmedReleaseMode: confirmed, now: () => NOW,
+  });
+  return { store, generated, log, deps, ready: () => store.update(ITEM, generated, { chosenTitles: ['The title'], channelId: CHANNEL, publishAt: '2026-11-10T10:00:00-08:00', ...over }) };
+}
+
+check('upload: the switch is stamped onto the record before the insert, and the item keeps it after a flip', async () => {
+  const rig = uploadRig();
+  await rig.ready();
+  eq(rig.store.get(ITEM).releaseMode, 'youtube-schedule', 'record before: the default');
+  rig.store.releaseSwitch.set('unlisted-then-public', NOW);
+  const out = await upload.uploadItemToYouTube(ITEM, rig.deps('unlisted-then-public'));
+  eq(rig.log, [['INSERT', { privacyStatus: 'unlisted', selfDeclaredMadeForKids: false }, 'unlisted-then-public'], ['CHANGE', '2026-11-10T10:00:00-08:00']], 'stamped before the insert; unlisted; change created');
+  eq([out.selection.releaseMode, out.selection.releaseChange.jobId, out.receipt.privacyStatus], ['unlisted-then-public', 'job-9', 'unlisted'], 'record and receipt');
+  rig.store.releaseSwitch.set('youtube-schedule', NOW);
+  eq(rig.store.get(ITEM).releaseMode, 'unlisted-then-public', 'a later flip leaves the uploaded item alone');
+  // And the other way: an item left unlisted-first from before goes up private when the switch says so.
+  const rig2 = uploadRig();
+  await rig2.ready();
+  const raw = path.join(path.dirname(rig2.store.releaseSwitch.filePath), 'selections', 'items', `${ITEM}.json`);
+  fs.writeFileSync(raw, JSON.stringify({ ...JSON.parse(fs.readFileSync(raw, 'utf8')), releaseMode: 'unlisted-then-public' }));
+  await upload.uploadItemToYouTube(ITEM, rig2.deps('youtube-schedule'));
+  eq(rig2.log, [['INSERT', { privacyStatus: 'private', publishAt: '2026-11-10T10:00:00-08:00', selfDeclaredMadeForKids: false }, 'youtube-schedule']], 'stamped youtube-schedule; private with its date; no change');
+});
+
+check('upload: a switch flipped since it was confirmed, or a malformed switch file, sends nothing and stamps nothing', async () => {
+  const rig = uploadRig();
+  await rig.ready();
+  rig.store.releaseSwitch.set('unlisted-then-public', NOW);
+  await rejectsLike(() => upload.uploadItemToYouTube(ITEM, rig.deps('youtube-schedule')), /switch now says "Unlisted now, public at its date", but this upload was confirmed as "Private until its date — YouTube's schedule".*was not\s+uploaded/s, 'flipped');
+  fs.writeFileSync(rig.store.releaseSwitch.filePath, '{broken');
+  await rejectsLike(() => upload.uploadItemToYouTube(ITEM, rig.deps('youtube-schedule')), /upload-release-switch\.json could not be read/, 'malformed');
+  await rejectsLike(() => upload.uploadItemToYouTube(ITEM, rig.deps(undefined)), /without the release mode it was confirmed as/, 'no confirmed mode');
+  eq([rig.log, rig.store.get(ITEM).releaseMode], [[], 'youtube-schedule'], 'nothing inserted, nothing stamped');
+});
+
+check('push: the switch is never read; a linked item keeps the mode it has', async () => {
+  const rig = uploadRig({ videoId: VIDEO, status: 'linked' });
+  await rig.ready();
+  rig.store.releaseSwitch.set('unlisted-then-public', NOW);
+  const sent = [];
+  const api = { async getVideoParts() { return video('private'); }, async updateVideo(_c, _v, body) { sent.push(body.status); return video('private'); }, async setThumbnail() {} };
+  await push.pushItemToYouTube(ITEM, { store: rig.store, readGenerated: () => rig.generated, api, scheduler: goodApi(() => { throw new Error('no change expected'); }), now: () => NOW });
+  eq([sent[0].privacyStatus, sent[0].publishAt, rig.store.get(ITEM).releaseMode], ['private', '2026-11-10T10:00:00-08:00', 'youtube-schedule'], 'pushed on YouTube\'s schedule; record unchanged');
+  // A linked item asked to upload is refused before anything is stamped.
+  await rejectsLike(() => upload.uploadItemToYouTube(ITEM, rig.deps('unlisted-then-public')), /already linked to video/, 'linked upload refused');
+  eq(rig.store.get(ITEM).releaseMode, 'youtube-schedule', 'not stamped');
 });
 
 // ---------------------------------------------------------------- the renderer's helpers

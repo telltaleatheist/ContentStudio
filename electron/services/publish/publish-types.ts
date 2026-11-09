@@ -541,6 +541,12 @@ export interface ChosenMetadata {
    *                            to public at `publishAt` created on the visibility scheduler.
    *
    * Strictly present, never absent (upgradeStoredMetadata fills 'youtube-schedule').
+   *
+   * WRITTEN AT UPLOAD ONLY (Owen, 2026-11-09: "any video uploaded while the switch is set to
+   * scheduled->public are set to that"). The upload copies the calendar's upload release
+   * switch (upload-release-switch.ts) onto the record before a byte goes up, and the value is
+   * the item's from then on: flipping the switch later, or pushing metadata again, never
+   * changes how an uploaded video releases. There is no per-item setter.
    */
   releaseMode: ReleaseMode;
 

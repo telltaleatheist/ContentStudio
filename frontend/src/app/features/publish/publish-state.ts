@@ -27,7 +27,6 @@ import {
   MAX_TITLE_LENGTH,
   youtubeDescriptionProblem,
   PushReceipt,
-  ReleaseMode,
   ResolvedMetadata,
   SPREAKER_DESTINATION,
   SPREAKER_MAX_TITLE_LENGTH,
@@ -42,6 +41,7 @@ import {
   VideoSource,
 } from './publish.types';
 import { composePublishAt } from './publish-schedule';
+import { UploadReleaseSwitchService } from './upload-release-switch.service';
 
 /**
  * How big a preview the main process renders. Wide enough to stay sharp in the panel on
@@ -52,6 +52,8 @@ const THUMBNAIL_PREVIEW_MAX_PX = 640;
 @Injectable({ providedIn: 'root' })
 export class PublishState {
   private electron = inject(ElectronService);
+  /** The calendar's upload release switch: a per-item upload goes up the way it says. */
+  private readonly releaseSwitch = inject(UploadReleaseSwitchService);
 
   private readonly _selection = signal<ChosenMetadata | null>(null);
   /**
@@ -1460,11 +1462,6 @@ export class PublishState {
     await this.setFields({ publishAt: iso });
   }
 
-  /** "Unlisted now, then public at…" or YouTube's own schedule. Main refuses it once the change exists. */
-  async setReleaseMode(mode: ReleaseMode): Promise<void> {
-    await this.setFields({ releaseMode: mode });
-  }
-
   /**
    * Take a record the main process returned for THIS item from somewhere other than this
    * state's own writes (Visibility changes following its change). Another item's is ignored.
@@ -1863,6 +1860,10 @@ export class PublishState {
    * disk, no categoryId derivable), and its message is shown as it came. Progress arrives
    * through the subscription in the constructor; both it and the flag are cleared when
    * the call settles, success or not.
+   *
+   * It goes up the way the calendar's upload switch says (Owen, 2026-11-09), read fresh here
+   * and passed as the mode this upload is for; the main process stamps it and refuses if the
+   * switch has moved since. No page calls this today: uploads start from the calendar.
    */
   async uploadToYouTube(): Promise<UploadReceipt | null> {
     const t = this.target('upload to YouTube');
@@ -1874,12 +1875,19 @@ export class PublishState {
       return null;
     }
 
+    await this.releaseSwitch.load();
+    const releaseMode = this.releaseSwitch.mode();
+    if (releaseMode === null) {
+      this._error.set(`Cannot upload: ${this.releaseSwitch.error() ?? 'the upload switch could not be read.'}`);
+      return null;
+    }
+
     this._uploadingYouTube.set(true);
     this._error.set(null);
     this._uploadReceipt.set(null);
     this._uploadProgress.set(null);
     try {
-      const res = await this.electron.publishUploadYouTube(t);
+      const res = await this.electron.publishUploadYouTube(t, releaseMode);
       if (this._itemId() !== t) return null;
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'The upload failed and the main process gave no reason.');

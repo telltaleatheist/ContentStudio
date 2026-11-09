@@ -87,8 +87,10 @@ import {
   emptyChosenMetadata,
   isItemId,
   validateChosenTitles,
+  RELEASE_MODES,
   type ReleaseMode,
 } from './publish-types';
+import { isReleaseMode } from './upload-release-switch';
 import * as fs from 'fs';
 
 export { buildFieldPatch };
@@ -1794,9 +1796,15 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    */
   const activeUploads = new Map<string, AbortController>();
 
-  ipcMain.handle('publish-upload-youtube', async (e, itemId: string) => {
+  ipcMain.handle('publish-upload-youtube', async (e, itemId: string, releaseMode: ReleaseMode) => {
     try {
       const id = requireItemId(itemId, 'itemId');
+      if (!isReleaseMode(releaseMode)) {
+        throw new Error(
+          `publish-upload-youtube needs the release mode the upload was confirmed as ` +
+            `(${RELEASE_MODES.join(' or ')}); got ${describeValue(releaseMode)}. Nothing was uploaded.`
+        );
+      }
       requirePrimarySet(id, 'uploaded to YouTube');
       if (activeUploads.has(id)) {
         throw new Error(`Item ${id} is already uploading. Cancel it first or wait for it to finish.`);
@@ -1816,6 +1824,10 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
           listRecentUploads,
           // "Unlisted now, then public at…": the change to public is created after the upload.
           scheduler,
+          // The calendar's switch decides how it goes public, stamped on the item before a
+          // byte goes up (Owen, 2026-11-09); the operator's confirmed mode must still match it.
+          releaseSwitch: store.releaseSwitch,
+          confirmedReleaseMode: releaseMode,
           signal: controller.signal,
           onProgress: (sentBytes, totalBytes) => {
             const nowMs = Date.now();
@@ -1836,6 +1848,31 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       // panel — which is gone once the page is left (2026-09-26: a run's missing items
       // could not be explained from the log because nothing here wrote one).
       log.warn(`[Publish] YouTube upload of ${String(itemId)}: failed: ${err?.message || String(err)}`);
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * The upload release switch (upload-release-switch.ts; Owen, 2026-11-09): ONE answer, for
+   * every video, to how the next uploads go public. Read by the calendar's toolbar and the
+   * reports page; flipped only from the calendar. A bad file comes back as its own refusal,
+   * never as the never-set answer. Uploaded items are not touched by a flip.
+   */
+  ipcMain.handle('publish-get-upload-release-switch', async () => {
+    try {
+      return ok(store.releaseSwitch.read());
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  ipcMain.handle('publish-set-upload-release-switch', async (_e, mode: unknown) => {
+    try {
+      const state = store.releaseSwitch.set(mode, new Date());
+      log.info(`[Publish] upload release switch set to ${state.mode}; uploads from now go that way, uploaded items keep theirs`);
+      return ok(state);
+    } catch (err: any) {
+      log.warn(`[Publish] upload release switch not set: ${err?.message || String(err)}`);
       return fail(err?.message || String(err));
     }
   });

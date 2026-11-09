@@ -33,6 +33,16 @@
  *     edited description that still carries chapter lines while one is set.
  *   - an 'unlisted-then-public' item with no time to go public, a time too close or past,
  *     or no saved scheduler key (release-change.ts) — checked before a byte goes up.
+ *   - an upload release switch (upload-release-switch.ts) that cannot be read, or that was
+ *     flipped since the operator confirmed the upload: he was told one mode, and an upload
+ *     that went the other way would be one he did not agree to.
+ *
+ * ── How it goes public: the switch, stamped once ─────────────────────────────────────
+ *
+ * The record's releaseMode is the calendar's switch AT UPLOAD (Owen, 2026-11-09), written
+ * through the store before the release checks and the insert, so those, the receipt and
+ * the change to public all read the same value. It is never written
+ * anywhere else: the push keeps whatever the upload stamped.
  *
  * ── Structure ────────────────────────────────────────────────────────────────────────
  *
@@ -52,7 +62,8 @@ import { matchDraft, toFillCandidates } from './video-matcher';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
 import { fitThumbnailFile } from './thumbnail-validate';
-import { ChosenMetadata, UploadReceipt, youtubeDescriptionProblem } from './publish-types';
+import { ChosenMetadata, RELEASE_MODES, type ReleaseMode, UploadReceipt, youtubeDescriptionProblem } from './publish-types';
+import { isReleaseMode } from './upload-release-switch';
 import { firstLineOf, splitTags } from './youtube-push';
 import { LYRICS_CAPTION_TRACK, requireProfileRead, type ChannelPublishProfile } from './youtube-profile';
 import { requireUpdatedVideoFile, updatedVideoDescriptionProblem, type StatFn } from './updated-video';
@@ -141,18 +152,20 @@ export interface UploadPlan {
   body: VideoInsertBody;
 }
 
+function alreadyLinkedError(record: ChosenMetadata): Error {
+  return new Error(
+    `Item ${record.itemId} is already linked to video ${record.videoId}. Uploading would ` +
+    `create a duplicate — use Push to update the existing video's metadata instead.`
+  );
+}
+
 /** Pure: everything checkable without a token or a disk, checked. */
 export function planVideoInsert(input: UploadPlanInput): UploadPlan {
   const { record, resolved, file, profile } = input;
   const flags = profile?.upload ?? null;
   const categoryId = flags !== null ? flags.categoryId : input.categoryId;
 
-  if (record.videoId) {
-    throw new Error(
-      `Item ${record.itemId} is already linked to video ${record.videoId}. Uploading would ` +
-      `create a duplicate — use Push to update the existing video's metadata instead.`
-    );
-  }
+  if (record.videoId) throw alreadyLinkedError(record);
   if (!record.channelId) {
     throw new Error(
       `Item ${record.itemId} has no channel, so an upload has no channel to authorize as. ` +
@@ -222,6 +235,16 @@ export interface UploadDeps {
    * upload, and asked for the change to public after it. Not read for any other item.
    */
   scheduler: ReleaseSchedulerApi;
+  /**
+   * The calendar's upload release switch, read at upload (upload-release-switch.ts). Throws
+   * on a bad file; the upload stops with that message.
+   */
+  releaseSwitch: { read(): { mode: ReleaseMode } };
+  /**
+   * The mode the operator was SHOWN when he agreed to this upload (the calendar's confirm
+   * panel). Must equal the switch as read here, or nothing goes up.
+   */
+  confirmedReleaseMode: ReleaseMode;
   onProgress?: (sentBytes: number, totalBytes: number) => void;
   signal?: AbortSignal;
   now?: () => Date;
@@ -264,7 +287,7 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
   if (!generated) {
     throw new Error(`No generated metadata for item ${itemId} — there is nothing to upload.`);
   }
-  const record = store.get(itemId);
+  let record = store.get(itemId);
   if (!record) {
     throw new Error(
       `Nothing has been saved for item ${itemId}, so it has no chosen title and no ` +
@@ -306,6 +329,31 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     }
     if (record.channelId) api.requireCaptionScope(record.channelId);
   }
+
+  // THE UPLOAD RELEASE SWITCH (Owen, 2026-11-09): the item goes up the way the calendar's
+  // switch says NOW, and keeps that from here on. Stamped onto the record through the store
+  // before the release checks and before a byte goes up, so everything below reads one value.
+  // A linked record is refused first: its mode is already fixed, and an upload would be a
+  // duplicate anyway.
+  if (!isReleaseMode(deps.confirmedReleaseMode)) {
+    throw new Error(
+      `Item ${itemId}'s upload was asked for without the release mode it was confirmed as ` +
+      `(got ${JSON.stringify(deps.confirmedReleaseMode)}; one of ${RELEASE_MODES.join(', ')}). Nothing was uploaded.`
+    );
+  }
+  const switchMode = deps.releaseSwitch.read().mode;
+  if (switchMode !== deps.confirmedReleaseMode) {
+    throw new Error(
+      `The calendar's upload switch now says ${releaseModeWords(switchMode)}, but this upload was confirmed as ` +
+      `${releaseModeWords(deps.confirmedReleaseMode)}. It was flipped after you agreed, so item ${itemId} was not ` +
+      `uploaded. Upload it again with the switch where you want it.`
+    );
+  }
+  if (record.videoId) throw alreadyLinkedError(record);
+  if (record.releaseMode !== switchMode) {
+    record = await store.update(itemId, generated, { releaseMode: switchMode });
+  }
+  console.log(`[Upload] ${itemId}: goes up as ${switchMode} (the calendar's upload switch)`);
 
   // Unlisted now, public later: everything about the release that can be refused is refused
   // here, before the upload, so a missing scheduler key never leaves an unlisted video behind.
@@ -453,3 +501,8 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
   return { selection, receipt };
 }
 
+
+/** The switch's two positions in the words the calendar shows them with. */
+function releaseModeWords(mode: ReleaseMode): string {
+  return mode === 'unlisted-then-public' ? '"Unlisted now, public at its date"' : '"Private until its date — YouTube\'s schedule"';
+}

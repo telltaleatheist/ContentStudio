@@ -11,6 +11,7 @@ import type {
   FindDraftResult,
   PublishResult,
   ReleaseMode,
+  UploadReleaseSwitchState,
   PushOutcome,
   ReportIndexResponse,
   ScheduledSweep,
@@ -155,11 +156,6 @@ export interface PublishFields {
   channelId?: string | null;
   /** ISO-8601 with an explicit zone, ≥15 min out, ≤2 years out. null clears. */
   publishAt?: string | null;
-  /**
-   * How it goes public at publishAt: YouTube's own schedule, or unlisted now and a
-   * visibility-scheduler change to public. Refused while the item's change exists.
-   */
-  releaseMode?: ReleaseMode;
   /** Strictly boolean — a string here is refused, not coerced. */
   isPodcast?: boolean;
   /**
@@ -998,7 +994,9 @@ declare global {
       ) => Promise<PublishResult<CarryReceipt>>;
       publishPushYouTube: (itemId: string) => Promise<PublishResult<PushOutcome>>;
       publishPushSchedule: (itemId: string) => Promise<PublishResult<SchedulePushOutcome>>;
-      publishUploadYouTube: (itemId: string) => Promise<PublishResult<UploadOutcome>>;
+      publishUploadYouTube: (itemId: string, releaseMode: ReleaseMode) => Promise<PublishResult<UploadOutcome>>;
+      publishGetUploadReleaseSwitch: () => Promise<PublishResult<UploadReleaseSwitchState>>;
+      publishSetUploadReleaseSwitch: (mode: ReleaseMode) => Promise<PublishResult<UploadReleaseSwitchState>>;
       publishUploadCancel: (itemId: string) => Promise<PublishResult<{ cancelled: boolean }>>;
       onPublishUploadProgress: (callback: (p: UploadProgress) => void) => () => void;
 
@@ -2075,9 +2073,25 @@ export class ElectronService {
     return await this.ipcRenderer.publishPushSchedule(itemId);
   }
 
-  async publishUploadYouTube(itemId: string): Promise<PublishResult<UploadOutcome>> {
+  /**
+   * Upload one item. `releaseMode` is the calendar's upload switch as the operator was shown
+   * it; the main process stamps the switch onto the item and refuses the upload when the two
+   * no longer agree (Owen, 2026-11-09).
+   */
+  async publishUploadYouTube(itemId: string, releaseMode: ReleaseMode): Promise<PublishResult<UploadOutcome>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishUploadYouTube(itemId);
+    return await this.ipcRenderer.publishUploadYouTube(itemId, releaseMode);
+  }
+
+  /** The calendar's upload release switch: how the next uploads go public. */
+  async publishGetUploadReleaseSwitch(): Promise<PublishResult<UploadReleaseSwitchState>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishGetUploadReleaseSwitch();
+  }
+
+  async publishSetUploadReleaseSwitch(mode: ReleaseMode): Promise<PublishResult<UploadReleaseSwitchState>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetUploadReleaseSwitch(mode);
   }
 
   /**

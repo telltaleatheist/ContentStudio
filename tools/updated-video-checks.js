@@ -86,6 +86,8 @@ function fakeApi(log) {
 }
 const uploadDeps = (log, uploads = []) => ({
   store, readGenerated: () => generated, api: fakeApi(log), listRecentUploads: async () => uploads,
+  // The calendar's upload switch, never flipped here: youtube-schedule, as confirmed.
+  releaseSwitch: store.releaseSwitch, confirmedReleaseMode: 'youtube-schedule',
   now: () => new Date('2026-10-18T13:00:00Z'),
 });
 

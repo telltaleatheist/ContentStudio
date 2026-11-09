@@ -70,9 +70,28 @@
            at was one more thing to misread. The readiness line names what the other lane
            has ready. Both run-guards stay on each button: two runs at once is never on. -->
       @if (activeDestination() === 'youtube') {
+        <!-- The upload release switch (Owen, 2026-11-09): how the NEXT uploads go public, for
+             every video. Each item takes it at upload and keeps it; flipping it later never
+             changes an uploaded one. Locked while a run is going. A switch file that cannot be
+             read shows its refusal here, not a position, and the upload button stays off. -->
+        @if (releaseSwitch.mode(); as current) {
+          <span class="release-switch" role="radiogroup" aria-label="How uploads go public"
+                matTooltip="How the next uploads go public. Each video keeps the mode it was uploaded with; flipping this never changes one already on YouTube.">
+            <span class="rs-label">Uploads go</span>
+            @for (opt of releaseModes; track opt.mode) {
+              <button type="button" class="rs-opt" role="radio"
+                      [class.on]="current === opt.mode"
+                      [attr.aria-checked]="current === opt.mode"
+                      [disabled]="releaseSwitch.saving() || uploadRun() !== null"
+                      (click)="flipReleaseSwitch(opt.mode)">{{ opt.label }}</button>
+            }
+          </span>
+        } @else if (releaseSwitch.error(); as switchError) {
+          <span class="release-switch rs-error" [matTooltip]="switchError">Upload switch unreadable</span>
+        }
         <button mat-flat-button color="primary" class="upload-all"
                 (click)="askUploadAll()"
-                [disabled]="uploadable().length === 0 || uploadRun() !== null || spreakerRun() !== null"
+                [disabled]="uploadable().length === 0 || uploadRun() !== null || spreakerRun() !== null || releaseSwitch.mode() === null"
                 matTooltip="Upload every ready scheduled video to its channel">
           <mat-icon>cloud_upload</mat-icon>
           Upload all ready ({{ uploadable().length }})
@@ -258,6 +277,25 @@
         Upload {{ pending.length }} video{{ pending.length === 1 ? '' : 's' }} to YouTube
       </div>
 
+      <!-- Which way this batch goes public: the switch as it stands now, which is what every
+           item in it is stamped with. Flipping the switch with this open changes this line. -->
+      @if (releaseSwitch.mode(); as current) {
+        <div class="uc-release" [class.unlisted]="current === 'unlisted-then-public'">
+          These upload as: <strong>{{ releaseModeLabels[current] }}</strong>.
+          @if (current === 'unlisted-then-public') {
+            Each is unlisted as soon as it is up, and a change to public at its date is created on
+            the visibility scheduler.
+          } @else {
+            Each is private, with its date sent to YouTube as the publish time.
+          }
+          They keep this mode after the switch is flipped.
+        </div>
+      } @else {
+        <div class="uc-release uc-release-error">
+          The upload switch could not be read{{ releaseSwitch.error() ? ': ' + releaseSwitch.error() : '' }}. Nothing will be uploaded until it is.
+        </div>
+      }
+
       @for (group of confirmByChannel(); track group.channelName) {
         <div class="uc-group">
           <div class="uc-channel">
@@ -303,7 +341,7 @@
 
       <div class="uc-actions">
         <button mat-stroked-button (click)="closeUploadConfirm()">Cancel</button>
-        <button mat-flat-button color="primary" (click)="confirmUploadAll()">
+        <button mat-flat-button color="primary" (click)="confirmUploadAll()" [disabled]="releaseSwitch.mode() === null">
           Upload {{ pending.length }} now
         </button>
       </div>
