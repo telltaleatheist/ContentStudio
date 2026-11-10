@@ -220,6 +220,18 @@ export function stripSlotPrefix(value: string): string {
 }
 
 /**
+ * A trailing bracketed tag: "(incogni)", "(sponsor)". Owen marks the sponsor on the EXPORT's
+ * file name only, so "2 - locke (incogni)" names the story "2 - locke" and was linked to
+ * nothing (2026-11-10). Only a tag at the very end is dropped; brackets mid-title stay.
+ */
+const TRAILING_TAG = /\s*\([^()]*\)\s*$/;
+
+/** The label two names are compared on: no slot prefix, no trailing tag. */
+export function storyLabel(value: string): string {
+  return stripSlotPrefix(value || '').replace(TRAILING_TAG, '');
+}
+
+/**
  * Why an input is running on the final export's own transcript.
  *
  * Linking is optional, so most video items arrive here without a link. That is a real
@@ -504,12 +516,12 @@ export function findCandidates(videoPath: string): CandidateScan {
   const { sessions, stories } = collectWeekStories(week, problems);
 
   const wantTitle = normalizeForMatch(basename);
-  const wantLabel = normalizeForMatch(stripSlotPrefix(basename));
+  const wantLabel = normalizeForMatch(storyLabel(basename));
 
   const exact = stories.filter(s => normalizeForMatch(s.storyTitle) === wantTitle);
   const label = exact.length > 0
     ? []
-    : stories.filter(s => normalizeForMatch(stripSlotPrefix(s.storyTitle)) === wantLabel);
+    : stories.filter(s => normalizeForMatch(storyLabel(s.storyTitle)) === wantLabel);
 
   const winners = exact.length > 0 ? exact : label;
   const via: CandidateVia = exact.length > 0 ? 'exact-title' : 'label-match';

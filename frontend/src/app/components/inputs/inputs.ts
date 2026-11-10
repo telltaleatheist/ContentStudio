@@ -953,7 +953,10 @@ export class Inputs implements OnInit, OnDestroy {
     if (choice && choice.mode === 'linked') {
       const drift = choice.driftPct === null
         ? 'drift not measured'
-        : `${choice.driftPct > 0 ? '+' : ''}${choice.driftPct.toFixed(1)}% vs final`;
+        // Owen 2026-11-10: read as closeness, not drift: -1.8% shows as 98.2%. It is still
+        // only the two LENGTHS compared (final vs the story transcript, which carries the
+        // export's 30 s padding at each end), so it says "length match", not "found".
+        : `${(100 - Math.abs(choice.driftPct)).toFixed(1)}% length match`;
       return `${choice.auto ? 'auto-linked · ' : ''}${choice.ref.storyTitle} · ${choice.ref.sourceSession} · ${drift}`;
     }
     if (choice) return 'final export only';
