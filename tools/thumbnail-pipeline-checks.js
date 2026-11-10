@@ -153,6 +153,23 @@ function syntheticWeek(root, { twin = false, screen = true } = {}) {
     }));
   }
   fs.writeFileSync(path.join(project, '2026-01-05_compounds.zip'), '');
+  // The session transcript the export's span is matched in (LEDGER #346): each story's own words laid
+  // evenly over its kept timeline (story 3 its own words even as a twin: the twin is a story file's).
+  const spread = (texts, spans) => {
+    const total = spans.reduce((t, [a, b]) => t + (b - a), 0);
+    return texts.map((text, i) => {
+      let at = (i * total) / texts.length;
+      for (const [a, b] of spans) {
+        if (at < b - a) return { track: 't0', text, timelineStart: a + at, timelineEnd: i === texts.length - 1 ? b : a + at + (0.9 * total) / texts.length };
+        at -= b - a;
+      }
+      throw new Error('word past the spans');
+    });
+  };
+  fs.writeFileSync(path.join(project, '2026-01-05_transcript.json'), JSON.stringify({
+    schemaVersion: 1, session: '2026-01-05', frameSeconds: 0.1,
+    words: [...spread(STORY_TEXT[1], [[0, 5]]), ...spread(STORY_TEXT[2], [[5, 20], [25, 45], [70, 80]]), ...spread(STORY_TEXT[3], [[45, 60]]), ...spread(words(44, 100), [[60, 70]])],
+  }));
   const master = path.join(project, '2026-01-05 master.mp4');
   fs.writeFileSync(path.join(project, '2026-01-05_alignment.json'), JSON.stringify({
     schemaVersion: 1, masterVideo: master,
@@ -332,7 +349,7 @@ async function withWorld(options, fn) {
   };
   const itemRun = (sessions, controller, over = {}) => pipeline.ItemThumbnailRun.start({ mode: 'on', setup }, {
     jobId: 'keeper-job', itemIndex: 0, sourceLabel: 'f2 - the rapture.mov', contentType: 'video',
-    videoPath: w.exportOf(over.name ?? 'f2 - the rapture'), operatorRef: undefined, segments: captions(STORY_TEXT[over.story ?? 2]),
+    videoPath: w.exportOf(over.name ?? 'f2 - the rapture'), operatorRef: undefined, segments: over.segments ?? captions(STORY_TEXT[over.story ?? 2]),
     reportFolder: over.reportFolder ?? path.join(root, 'report'), channel: assets.promptAssets().channel('youtube-fireside'),
   }, {
     sessions, aiManager, routing: routing.resolveMetadataRouting(over.routing ?? {}), models, signal: controller.signal,
@@ -387,6 +404,37 @@ check('stages: story and frames before the chapters with no model; words and ren
   assert.ok(rec.frames.every((f) => !('score' in f) && !('reading' in f) && !('flag' in f)) && !('scoring' in rec) && !('bestScenes' in rec), 'no score, reading, rows or scoring line is written');
   assert.ok(rec.lines.some((l) => /; \d+ to pick from \(the sharpest, at most 2 a scene; \d+ dropped as look-alikes\)\.$/.test(l)), rec.lines.join(' | '));
   assert.deepStrictEqual(renders, [], 'nothing drawn: the renderer is not even opened (no pair has a frame)');
+}));
+
+check('frames: an export whose transcript matches nowhere in its story samples no frame; the record\'s source lines and its failure say why (LEDGER #346)', () => withWorld({}, async ({ job, itemRun }) => {
+  const rec = await job(async (sessions, controller) => {
+    // Linked by the file name to "f1 - the rapture"; its words are in no story.
+    const run = itemRun(sessions, controller, { segments: captions(words(88, 300)) });
+    await run.beforeChapters();
+    return run.record();
+  });
+  assert.strictEqual(rec.state, 'failed', rec.line);
+  assert.strictEqual(rec.failure.stage, 'frames');
+  assert.ok(/does not match the story's transcript clearly at any place/.test(rec.failure.reason), rec.failure.reason);
+  assert.ok(rec.source.video.endsWith('2026-01-05 screen capture.mp4'), JSON.stringify(rec.source));
+  assert.ok(rec.source.lines.at(-1).startsWith('No frames: The export\'s transcript does not match'), rec.source.lines.join(' | '));
+  assert.deepStrictEqual([rec.frames, rec.scenes], [[], []], 'nothing sampled, no scenes');
+}));
+
+check('frames: only the part of the story between the export\'s first and last transcript match, said on the source lines (LEDGER #346)', () => withWorld({}, async ({ job, itemRun }) => {
+  const rec = await job(async (sessions, controller) => {
+    // Story words 100-300 of 420 only, laid 45/420 s apart over the kept timeline 5-20, 25-45, 70-80.
+    const run = itemRun(sessions, controller, { segments: captions(STORY_TEXT[2].slice(100, 301)) });
+    await run.beforeChapters();
+    return run.record();
+  });
+  assert.strictEqual(rec.state, 'made', rec.line);
+  const line = rec.source.lines.find((l) => l.startsWith('Frames limited to the part of the story in the export: '));
+  assert.ok(line, rec.source.lines.join(' | '));
+  assert.ok(/ of the story before it and .* after it are left out/.test(line), line);
+  // Word 100 starts at timeline 15.71 (master 20.71, screen 18.71 at the +2 s offset); word 300 ends at
+  // timeline 42.24 (master 52.24, screen 50.24). The story's 70-80 is after the export and left out.
+  assert.ok(rec.frames.length > 0 && rec.frames.every((f) => f.t >= 18.71 && f.t < 50.25), `a frame outside the export's span: ${rec.frames.map((f) => f.t).join(', ')}`);
 }));
 
 check('stages: words per title (one call each, the title in it), the gate\'s ranking first when it ranked them; kinds claim, stakes, reaction; no pair gets a frame and nothing is drawn, "no frame / no photo picked yet" on each', () => withWorld({}, async ({ plainCalls, job, itemRun, renders }) => {

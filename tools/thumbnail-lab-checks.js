@@ -14,7 +14,14 @@
  *     the segment table, master to screen recording by the alignment's offset and drift, cut to the
  *     recording's length; frames come only from the story's stretches of the screen recording; an
  *     untrusted alignment, a missing or split screen recording and a renamed story are refused by
- *     name. The real 2026-09-24 session is read (never written) as a fixture reference.
+ *     name.
+ *   - THE EXPORT'S SPAN (2026-11-09, LEDGER #346): only the part of the story between the first and
+ *     the last place the export's transcript matches the story's (n-grams found once in the
+ *     session, inside the story, several agreeing); a stray hit moves no end; no match, a phrase
+ *     said twice, an out-of-order export and a transcript of another frame length are refused by
+ *     name. The real 2026-11-05 session ("u2 - paxton") is read (never written) as a fixture
+ *     reference: the frames start within 3 s of where the export does, and the four frames of the
+ *     previous story the old run offered are outside.
  *   - SCENES (2026-09-28): kept frames group by how they look across the whole story (alternating
  *     clips rejoin their scene, a speaker moving inside a clip does not split it, a scene of two
  *     frames stays its own); the nearest-neighbour chain gives the same groups as merging the
@@ -677,7 +684,7 @@ check('story source: a timeline range maps through the segment table piece by pi
 check('story source: the plan, with drift, cut to the screen recording\'s length, the seconds outside it said', () => {
   const plan = storySource.planStory({
     regions: REGIONS, cuts: CUTS, manifest: storySource.manifestFacts(syntheticManifest(), 'x'),
-    placement: { offsetSeconds: 2, rate: 0.5 }, screenDuration: 45,
+    placement: { offsetSeconds: 2, rate: 0.5 }, screenDuration: 45, within: { start: 0, end: 100 },
   });
   assert.deepStrictEqual(round(plan.master), [[5, 10], [15, 25], [30, 35], [40, 55], [90, 100]]);
   assert.deepStrictEqual(round(plan.screen), [[1.5, 4], [6.5, 11.5], [14, 16.5], [19, 26.5], [44, 45]]);
@@ -685,9 +692,19 @@ check('story source: the plan, with drift, cut to the screen recording\'s length
   assert.strictEqual(plan.unmappedSeconds, 0);
   const past = storySource.planStory({
     regions: [{ start: 90, end: 110 }], cuts: [], manifest: storySource.manifestFacts(syntheticManifest(), 'x'),
-    placement: { offsetSeconds: 0, rate: 1 }, screenDuration: 500,
+    placement: { offsetSeconds: 0, rate: 1 }, screenDuration: 500, within: { start: 0, end: 200 },
   });
   assert.strictEqual(Number(past.unmappedSeconds.toFixed(6)), 10, 'a story running past the timeline\'s end says so');
+  const cut = storySource.planStory({
+    regions: REGIONS, cuts: CUTS, manifest: storySource.manifestFacts(syntheticManifest(), 'x'),
+    placement: { offsetSeconds: 0, rate: 1 }, screenDuration: 500, within: { start: 12, end: 30 },
+  });
+  assert.deepStrictEqual(round(cut.timeline), [[12, 20], [25, 30]], 'only the export\'s span of the kept timeline (LEDGER #346)');
+  assert.deepStrictEqual([cut.beforeSeconds, cut.afterSeconds].map((v) => Number(v.toFixed(6))), [7, 25], '5-12 before it; 30-45 and 70-80 after it');
+  assert.throws(() => storySource.planStory({
+    regions: REGIONS, cuts: CUTS, manifest: storySource.manifestFacts(syntheticManifest(), 'x'),
+    placement: { offsetSeconds: 0, rate: 1 }, screenDuration: 500, within: { start: 46, end: 69 },
+  }), /No kept second of this story lies between/);
 });
 
 check('story source: the screen alignment is read, and an untrusted, missing or doubled one is refused by name', () => {
@@ -701,6 +718,42 @@ check('story source: the screen alignment is read, and an untrusted, missing or 
   assert.throws(() => storySource.screenAlignment(record([entry, entry]), 'a.json'), /2 screen recording alignments/);
   assert.throws(() => storySource.screenAlignment(record([{ kind: 'video', type: 'cam1', offsetSeconds: 0.08, trusted: true }]), 'a.json'), /no alignment for a screen recording/);
 });
+
+/** Deterministic made-up words, seeded (no two seeds share a word). */
+function madeUpWords(seed, count) {
+  let s = seed;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    out.push(`w${seed}x${s % 400}`);
+  }
+  return out;
+}
+/** Words laid evenly over timeline spans, as the session transcript has them (timeline seconds). */
+function spreadWords(texts, spans) {
+  const total = spans.reduce((t, [a, b]) => t + (b - a), 0);
+  const step = total / texts.length;
+  return texts.map((text, i) => {
+    let at = i * step;
+    for (const [a, b] of spans) {
+      if (at < b - a) return { text, start: a + at, end: i === texts.length - 1 ? b : a + at + step * 0.9 };
+      at -= b - a;
+    }
+    throw new Error('word past the spans');
+  });
+}
+/** The synthetic session transcript: story 1, 2 and 3 their own words over their kept timeline. */
+const SESSION_TEXT = { 1: madeUpWords(11, 60), 2: madeUpWords(22, 420), 3: madeUpWords(33, 200) };
+const SESSION_WORDS = [
+  ...spreadWords(SESSION_TEXT[1], [[0, 5]]),
+  ...spreadWords(SESSION_TEXT[2], [[5, 20], [25, 45], [70, 80]]),
+  ...spreadWords(SESSION_TEXT[3], [[45, 70]]),
+];
+function writeSessionTranscript(project, stem, words = SESSION_WORDS, frameSeconds = 0.1) {
+  fs.writeFileSync(path.join(project, `${stem}_transcript.json`), JSON.stringify({
+    schemaVersion: 1, session: stem, frameSeconds, words: words.map((w) => ({ track: 't0', text: w.text, timelineStart: w.start, timelineEnd: w.end })),
+  }));
+}
 
 /** A synthetic week: one editor session with three stories, a screen recording, an alignment. */
 function syntheticWeek(root, { screenSeconds = 60 } = {}) {
@@ -720,6 +773,7 @@ function syntheticWeek(root, { screenSeconds = 60 } = {}) {
     }));
   }
   fs.writeFileSync(path.join(project, '2026-01-05_compounds.zip'), '');
+  writeSessionTranscript(project, '2026-01-05');
   const master = path.join(project, '2026-01-05 master.mp4');
   const alignment = { schemaVersion: 1, masterVideo: master, sources: [{ kind: 'video', type: 'screen', offsetSeconds: 2, driftFactor: null, method: 'picture-scene-change', confidence: 1, trusted: true }] };
   fs.writeFileSync(path.join(project, '2026-01-05_alignment.json'), JSON.stringify(alignment));
@@ -743,7 +797,7 @@ check('story source: frames come only from the story\'s stretches of the screen 
   try {
     const w = syntheticWeek(root);
     const manifests = [];
-    const src = await storySource.resolveStorySource(storyRef(w, 2, 'f1-the-rapture'), sourceDeps(w, manifests));
+    const src = await storySource.resolveStorySource(storyRef(w, 2, 'f1-the-rapture'), SESSION_TEXT[2].join(' '), sourceDeps(w, manifests));
     assert.deepStrictEqual(manifests, [path.join(w.project, '2026-01-05_compounds.zip')], 'the manifest is the session zip\'s');
     assert.ok(src.screenFile.endsWith('2026-01-05 screen capture.mp4'), src.screenFile);
     // Master stretches 5-10, 15-25, 30-35, 40-55, 90-100 at offset +2 s: 3-8, 13-23, 28-33, 38-53, and 88-98 lies past the 60 s recording.
@@ -751,7 +805,9 @@ check('story source: frames come only from the story\'s stretches of the screen 
     const sampled = await sampler.sampleFrames({ ffmpeg: FFMPEG, ffprobe: FFPROBE, video: src.screenFile, spans: src.plan.screen, outDir: path.join(root, 'frames') });
     assert.ok(sampled.frames.length >= 30, `${sampled.frames.length} frames sampled`);
     assert.ok(sampled.frames.every((f) => spans.some(([a, b]) => f.t >= a - 1e-6 && f.t < b)), `frames outside the story: ${sampled.frames.map((f) => f.t).join(', ')}`);
-    assert.ok(src.lines[0].startsWith('Story "f1 - the rapture" (story 2 of session 2026-01-05)') && src.lines[0].includes('5 stretches'), src.lines[0]);
+    assert.ok(src.lines[0].startsWith('Story "f1 - the rapture" (story 2 of session 2026-01-05)'), src.lines[0]);
+    assert.ok(src.lines.some((l) => l.startsWith('Frames limited to the part of the story in the export: 00:05–01:40 of the recording')), src.lines.join(' | '));
+    assert.ok(src.lines.some((l) => /in 5 stretches of the recording/.test(l)), src.lines.join(' | '));
     assert.ok(src.lines.some((l) => /records no drift factor/.test(l)), 'the rate with no drift factor is declared');
     assert.ok(src.lines.some((l) => /^10\.0 s of the story fall outside the screen recording/.test(l)), src.lines.join(' | '));
   } finally {
@@ -764,7 +820,7 @@ check('story source: an untrusted alignment, a missing or split screen recording
   try {
     const w = syntheticWeek(root, { screenSeconds: 3 });
     const ref = storyRef(w, 2, 'f1-the-rapture');
-    const find = async () => (await rejection(storySource.resolveStorySource(ref, sourceDeps(w)))).message;
+    const find = async () => (await rejection(storySource.resolveStorySource(ref, SESSION_TEXT[2].join(' '), sourceDeps(w)))).message;
     const alignmentFile = path.join(w.project, '2026-01-05_alignment.json');
 
     fs.writeFileSync(alignmentFile, JSON.stringify({ ...w.alignment, sources: [{ ...w.alignment.sources[0], trusted: false, confidence: 0.4 }] }));
@@ -781,6 +837,18 @@ check('story source: an untrusted alignment, a missing or split screen recording
     assert.ok(/There is no screen recording \("2026-01-05 screen capture\.mp4"\)/.test(await find()));
     fs.renameSync(path.join(w.project, 'elsewhere.mp4'), screen);
 
+    // LEDGER #346: an export that matches nowhere in the story samples nothing, said on the source lines.
+    const refused = await rejection(storySource.resolveStorySource(ref, madeUpWords(77, 300).join(' '), sourceDeps(w)));
+    assert.ok(refused instanceof storySource.StorySpanRefused, refused.message);
+    assert.ok(/does not match the story's transcript clearly at any place \(0 matches/.test(refused.message), refused.message);
+    assert.ok(refused.lines.at(-1).startsWith('No frames: The export\'s transcript does not match'), refused.lines.join(' | '));
+    assert.ok(refused.screenFile.endsWith('2026-01-05 screen capture.mp4'));
+    writeSessionTranscript(w.project, '2026-01-05', SESSION_WORDS, 0.04);
+    assert.ok(/gives the frame length 0\.04, the editor timeline 0\.1/.test(await find()));
+    fs.rmSync(path.join(w.project, '2026-01-05_transcript.json'));
+    assert.ok(/The session's transcript \(2026-01-05_transcript\.json\) is not on disk/.test(await find()));
+    writeSessionTranscript(w.project, '2026-01-05');
+
     const editsFile = path.join(w.project, '2026-01-05_edits.json');
     const edits = JSON.parse(fs.readFileSync(editsFile, 'utf8'));
     edits.stories[1].title = 'f1 - rapture, recut';
@@ -791,26 +859,87 @@ check('story source: an untrusted alignment, a missing or split screen recording
   }
 });
 
-// The real 2026-09-24 session, READ ONLY, as a fixture reference: "f1 - the rapture" through the
-// editor's own manifest builder, the edits and the alignment exactly as they are on Callisto.
-const REAL_PROJECT = '/Volumes/Callisto/Movies/FCPX/2026-09-20/files/2026-09-24';
-check('story source, real fixture: "f1 - the rapture" of 2026-09-24 maps to 126 stretches of the screen recording (read only)', async () => {
-  if (!fs.existsSync(path.join(REAL_PROJECT, '2026-09-24_edits.json'))) {
-    console.log(`      (not run: ${REAL_PROJECT} is not on disk)`);
+// ── the export's span of the story (Owen 2026-11-09, "take everything between where the transcripts
+// match up on each side"; LEDGER #346) ──
+
+const exportSpan = services('thumbnails/export-span.js');
+/** A previous story, the story, a next story: 300 words each, one second a word, timeline seconds. */
+const SPAN_PREV = madeUpWords(41, 300), SPAN_STORY = madeUpWords(42, 300), SPAN_NEXT = madeUpWords(43, 300);
+const SPAN_SESSION = [...SPAN_PREV, ...SPAN_STORY, ...SPAN_NEXT].map((text, i) => ({ text, start: i, end: i + 0.8 }));
+const inSpanStory = (t) => t >= 300 && t < 600;
+const spanOf = (exportWords) => exportSpan.findExportSpan({ exportText: exportWords.join(' '), sessionWords: SPAN_SESSION, inStory: inSpanStory });
+
+check('export span: from the first to the last match, the previous story\'s words in the export\'s head ignored, a re-transcribed export\'s odd words tolerated', () => {
+  // The export opens on 20 words of the previous story (the FCPX-trimmed shoulder, here kept), then
+  // story words 40-260 with every 17th word dropped and every 23rd misheard.
+  const body = SPAN_STORY.slice(40, 261).filter((_, i) => i % 17 !== 5).map((w, i) => (i % 23 === 7 ? 'uh' : w));
+  const span = spanOf([...SPAN_PREV.slice(280), ...body]);
+  assert.ok(span.ok, span.reason);
+  assert.strictEqual(span.start, 340, 'the head is story word 40');
+  assert.strictEqual(span.end, 560.8, 'the tail ends on story word 260');
+  assert.strictEqual(span.head.hits >= exportSpan.ANCHOR_HITS && span.tail.hits >= exportSpan.ANCHOR_HITS, true);
+  assert.strictEqual(span.head.words, SPAN_STORY.slice(40, 45).join(' '));
+});
+
+check('export span: one stray match never moves an end (a lone 5-word hit before the head and after the tail)', () => {
+  const stray = (a) => SPAN_STORY.slice(a, a + services('thumbnails/story-match.js').SHINGLE);
+  const noise = (seed) => madeUpWords(seed, 15);
+  const span = spanOf([...stray(5), ...noise(90), ...SPAN_STORY.slice(100, 201), ...noise(91), ...stray(280)]);
+  assert.ok(span.ok, span.reason);
+  assert.deepStrictEqual([span.start, span.end], [400, 500.8], 'story words 100-200, not 5 or 284');
+});
+
+check('export span: no match, a phrase found twice in the session, and an export playing the story out of order are each refused by name', () => {
+  const none = spanOf(madeUpWords(99, 200));
+  assert.strictEqual(none.ok, false);
+  assert.ok(/does not match the story's transcript clearly at any place \(0 matches of 5 words .* of the export's 200 words/.test(none.reason), none.reason);
+  // The story's words said again later in the session: nothing of them is found once, so nothing places.
+  const twice = exportSpan.findExportSpan({
+    exportText: SPAN_STORY.slice(0, 100).join(' '),
+    sessionWords: [...SPAN_SESSION, ...SPAN_STORY.slice(0, 100).map((text, i) => ({ text, start: 900 + i, end: 900.8 + i }))],
+    inStory: inSpanStory,
+  });
+  assert.strictEqual(twice.ok, false, 'a phrase said twice places nothing');
+  assert.ok(/\(0 matches/.test(twice.reason), twice.reason);
+  // Words of the next story only: found once, but outside the story.
+  assert.strictEqual(spanOf(SPAN_NEXT.slice(0, 100)).ok, false, 'matches outside the story place nothing');
+  const reordered = spanOf([...SPAN_STORY.slice(200, 260), ...SPAN_STORY.slice(10, 70)]);
+  assert.strictEqual(reordered.ok, false);
+  assert.ok(/plays the story out of order/.test(reordered.reason), reordered.reason);
+});
+
+// The real 2026-11-05 session, READ ONLY (Owen's "u6 - paxton", LEDGER #346): story 4 "u2 - paxton"
+// is drawn over master 3:21:51-3:39:33, and the export starts at master 12199.35 s (3:23:19, found by
+// audio cross-correlation on 2026-11-09). An export transcript is made from the session's own words
+// over master 12199.35-13170 with some dropped and misheard, as a second transcription would differ.
+// The run before this fix offered grid frames at master 3:21:55, 3:22:40, 3:22:41 and 3:23:11 (the
+// previous story, LFA, on screen); none of them may be inside the stretches now. (The 2026-09-24
+// session this check used to read is no longer on Callisto.)
+const PAXTON_PROJECT = '/Volumes/Callisto/Movies/FCPX/2026-11-01/files/2026-11-05';
+check('story source, real fixture: "u2 - paxton" of 2026-11-05 starts at the export\'s first transcript match, not the story\'s drawn start (read only)', async () => {
+  if (!fs.existsSync(path.join(PAXTON_PROJECT, '2026-11-05_edits.json'))) {
+    console.log(`      (not run: ${PAXTON_PROJECT} is not on disk)`);
     return;
   }
-  const out = execFileSync('python3', [path.join(REPO, 'editor-backend', 'cli', 'editor_manifest.py'), '--zip', path.join(REAL_PROJECT, '2026-09-24_compounds.zip')], { cwd: path.join(REPO, 'editor-backend'), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 }).toString();
+  const session = JSON.parse(fs.readFileSync(path.join(PAXTON_PROJECT, '2026-11-05_transcript.json'), 'utf8')).words;
+  const inExport = session.filter((w) => w.fileStart >= 12199.35 && w.fileStart < 13170).sort((a, b) => a.timelineStart - b.timelineStart);
+  const exportWords = inExport.filter((_, i) => i % 29 !== 3).map((w, i) => (i % 41 === 11 ? 'um' : w.text));
+  const out = execFileSync('python3', [path.join(REPO, 'editor-backend', 'cli', 'editor_manifest.py'), '--zip', path.join(PAXTON_PROJECT, '2026-11-05_compounds.zip')], { cwd: path.join(REPO, 'editor-backend'), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).toString();
   const manifest = JSON.parse(out.trim().split('\n').pop()).manifest;
   const src = await storySource.resolveStorySource(
-    { projectFolder: REAL_PROJECT, storyNumber: 6, storySlug: 'f1-the-rapture' },
+    { projectFolder: PAXTON_PROJECT, storyNumber: 4, storySlug: 'u2-paxton' },
+    exportWords.join(' '),
     { manifest: async () => manifest, duration: async (video) => (await sampler.probeVideo(FFPROBE, video)).duration },
   );
-  assert.deepStrictEqual(round(src.plan.timeline).map((s) => s.map((v) => Number(v.toFixed(4)))), [[546.3458, 1295.9965]], 'region 546.3458-1295.9965, no cut inside it');
-  assert.strictEqual(src.plan.master.length, 126);
-  assert.strictEqual(Number(storySource.totalSeconds(src.plan.master).toFixed(3)), 749.651, 'every kept timeline second, and no removed air');
-  assert.deepStrictEqual([src.plan.master[0].start, src.plan.master[125].end].map((v) => Number(v.toFixed(4))), [614.7475, 1488.4221]);
-  assert.ok(src.plan.screen.every((s, i) => Math.abs(s.start - (src.plan.master[i].start - 0.0906985)) < 1e-6), 'screen time = master time - the screen offset (0.0907 s)');
-  assert.ok(src.screenFile.endsWith('2026-09-24 screen capture.mp4'));
+  const head = src.plan.master[0].start;
+  const tail = src.plan.master[src.plan.master.length - 1].end;
+  assert.ok(Math.abs(head - 12199.35) < 3, `the frames start at master ${head.toFixed(2)}, within 3 s of the export's 12199.35`);
+  assert.ok(tail <= 13173 && tail > 13160, `the frames end at master ${tail.toFixed(2)}, by the last word given (13170)`);
+  for (const bad of [12115.24, 12160.28, 12161.28, 12191.31]) {
+    assert.ok(!src.plan.screen.some((s) => bad >= s.start && bad < s.end), `master ${bad} (the previous story on screen) is outside the stretches`);
+  }
+  assert.ok(src.lines.some((l) => /^Frames limited to the part of the story in the export: 3:23:(1[6-9]|2[0-2])–3:39:\d\d of the recording \(first and last transcript match: /.test(l)), src.lines.join(' | '));
+  assert.ok(src.screenFile.endsWith('2026-11-05 screen capture.mp4'));
 });
 
 // ── the logo and the library (2026-09-28) ──

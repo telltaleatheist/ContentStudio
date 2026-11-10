@@ -85,7 +85,7 @@ export function normalizedWords(text: string): string[] {
     .filter((w) => w.length > 0);
 }
 
-function shingles(words: readonly string[]): string[] {
+export function shingles(words: readonly string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i + SHINGLE <= words.length; i++) out.push(words.slice(i, i + SHINGLE).join(' '));
   return out;

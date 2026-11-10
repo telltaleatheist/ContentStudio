@@ -20,6 +20,14 @@
  *   4. Cut to the screen recording's own length (a stretch before it started or after it ended
  *      has no picture), and the seconds left out are said.
  *
+ * Before step 2 the kept timeline is cut to the part of the story the FINAL EXPORT is (Owen,
+ * 2026-11-09, LEDGER #346): from the first to the last place the export's transcript matches the
+ * story's (export-span.ts). He trims each story's head and tail in FCPX, and a trimmed head still
+ * shows the previous story on screen. The span is found in editor TIMELINE seconds (the session
+ * transcript's timelineStart/End, the base of the regions and cuts), so it is intersected with the
+ * kept timeline as it is, and everything after that (segment table, alignment) is unchanged. No
+ * span found is a refusal on the record's source lines (StorySpanRefused), never the whole story.
+ *
  * Every missing or doubtful input is refused by name (Law 1): no alignment record, an untrusted
  * screen alignment, no screen recording, a recording in parts, a manifest whose picture is not
  * the master the alignment was measured against.
@@ -37,6 +45,7 @@ import { storyEditsOf } from '../metadata/editor-transcript-link';
 import { sessionOfMaster, sessionVideoPatterns } from '../editor/session-sources';
 import type { TranscriptRef } from '../publish/publish-types';
 import { clock } from './frame-sampler';
+import { findExportSpan, type ExportSpan, type TimelineWord } from './export-span';
 
 export interface Span {
   start: number;
@@ -171,8 +180,11 @@ export function placementOf(a: ScreenAlignment): SourcePlacement {
 
 /** What a story maps to, before any file is read: the pure core, pinned by the checks. */
 export interface StoryPlan {
-  /** Regions minus cuts, timeline seconds. */
+  /** Regions minus cuts, cut to the export's span, timeline seconds. */
   timeline: Span[];
+  /** Seconds of the kept story before the export's span starts, and after it ends (left out). */
+  beforeSeconds: number;
+  afterSeconds: number;
   /** The master-file pieces those are made of, merged where they touch. */
   master: Span[];
   /** The same stretches in the screen recording's own seconds, cut to its length. */
@@ -183,15 +195,34 @@ export interface StoryPlan {
   unmappedSeconds: number;
 }
 
+/** The kept timeline cut to [within.start, within.end], with the seconds left out before and after. */
+export function withinSpan(kept: readonly Span[], within: Span): { timeline: Span[]; beforeSeconds: number; afterSeconds: number } {
+  const timeline: Span[] = [];
+  let beforeSeconds = 0;
+  let afterSeconds = 0;
+  for (const s of kept) {
+    beforeSeconds += Math.max(0, Math.min(s.end, within.start) - s.start);
+    afterSeconds += Math.max(0, s.end - Math.max(s.start, within.end));
+    const lo = Math.max(s.start, within.start);
+    const hi = Math.min(s.end, within.end);
+    if (hi - lo > EPS) timeline.push({ start: lo, end: hi });
+  }
+  return { timeline, beforeSeconds, afterSeconds };
+}
+
 export function planStory(input: {
   regions: readonly Span[];
   cuts: ReadonlyArray<{ startFrame: number; endFrame: number }>;
   manifest: ManifestFacts;
   placement: SourcePlacement;
   screenDuration: number;
+  /** The part of the story in the final export (findExportSpan), editor timeline seconds. */
+  within: Span;
 }): StoryPlan {
-  const timeline = keptTimeline(input.regions, input.cuts, input.manifest.frameSeconds);
-  if (timeline.length === 0) throw new Error('Every second of this story is cut, so there is nothing to take frames from.');
+  const kept = keptTimeline(input.regions, input.cuts, input.manifest.frameSeconds);
+  if (kept.length === 0) throw new Error('Every second of this story is cut, so there is nothing to take frames from.');
+  const { timeline, beforeSeconds, afterSeconds } = withinSpan(kept, input.within);
+  if (timeline.length === 0) throw new Error('No kept second of this story lies between the export\'s first and last transcript match.');
   const pieces = timeline.flatMap((span) => timelineRangeToMaster(input.manifest.segments, span.start, span.end));
   const master = merged(pieces.map((p) => ({ start: p.masterStart, end: p.masterStart + p.duration })));
   const unmappedSeconds = Math.max(0, totalSeconds(timeline) - pieces.reduce((sum, p) => sum + p.duration, 0));
@@ -206,7 +237,7 @@ export function planStory(input: {
     if (hi - lo > EPS) screen.push({ start: lo, end: hi });
   }
   if (screen.length === 0) throw new Error('No second of this story falls inside the screen recording.');
-  return { timeline, master, screen: merged(screen), outsideSeconds, unmappedSeconds };
+  return { timeline, beforeSeconds, afterSeconds, master, screen: merged(screen), outsideSeconds, unmappedSeconds };
 }
 
 /** Everything the tab states about where a run's frames come from. */
@@ -217,8 +248,21 @@ export interface StorySource {
   projectFolder: string;
   screenFile: string;
   alignment: ScreenAlignment;
+  /** The export's span in the story (found: ok true). */
+  span: Extract<ExportSpan, { ok: true }>;
   plan: StoryPlan;
   lines: string[];
+}
+
+/**
+ * No span of the story could be matched to the export: no frames are taken. `lines` are the source
+ * lines the record keeps, the last one the refusal itself.
+ */
+export class StorySpanRefused extends Error {
+  constructor(readonly screenFile: string, readonly lines: string[], reason: string) {
+    super(reason);
+    this.name = 'StorySpanRefused';
+  }
 }
 
 export interface StorySourceDeps {
@@ -235,6 +279,25 @@ function readJsonFile(file: string, what: string): unknown {
   } catch (e) {
     throw new Error(`${file} is not valid JSON: ${(e as Error).message}`);
   }
+}
+
+/**
+ * The session transcript's words (`<session>_transcript.json`, cli/transcribe.py), editor timeline
+ * seconds. Its frame length must be the timeline's, as the exporter requires before it builds the
+ * story transcripts from it (`_load_transcript_sidecar`).
+ */
+export function sessionTranscriptWords(doc: unknown, file: string, frameSeconds: number): TimelineWord[] {
+  const d = doc as { frameSeconds?: unknown; words?: unknown };
+  if (!d || typeof d !== 'object' || !Array.isArray(d.words)) throw new Error(`${file} has no words list, so the story's transcript cannot be read.`);
+  if (typeof d.frameSeconds !== 'number' || Math.abs(d.frameSeconds - frameSeconds) > 1e-9) {
+    throw new Error(`${file} gives the frame length ${JSON.stringify(d.frameSeconds)}, the editor timeline ${frameSeconds}, so the transcript is not of this timeline.`);
+  }
+  return (d.words as Array<Record<string, unknown>>).map((w, i) => {
+    if (!w || typeof w.text !== 'string' || !Number.isFinite(w.timelineStart) || !Number.isFinite(w.timelineEnd)) {
+      throw new Error(`${file}: word ${i + 1} has no text or timeline times (${JSON.stringify(w)}).`);
+    }
+    return { text: w.text, start: Number(w.timelineStart), end: Number(w.timelineEnd) };
+  });
 }
 
 /** The one `<session>_compounds.zip` of a project folder (the editor's session file). */
@@ -266,8 +329,12 @@ export function screenRecordingOf(masterVideo: string): string {
   return path.join(dir, firsts[0]);
 }
 
-/** From an item's story link to the screen recording's stretches, with the lines the tab shows. */
-export async function resolveStorySource(ref: TranscriptRef, deps: StorySourceDeps): Promise<StorySource> {
+/**
+ * From an item's story link to the screen recording's stretches, with the lines the tab shows.
+ * `exportText` is the final export's own transcript (the item's segments, as the story match reads
+ * them); the stretches are only the part of the story between its first and last match.
+ */
+export async function resolveStorySource(ref: TranscriptRef, exportText: string, deps: StorySourceDeps): Promise<StorySource> {
   const edits = storyEditsOf(ref.projectFolder, ref.storyNumber, ref.storySlug);
   const zipPath = compoundsZipOf(ref.projectFolder);
   const zipStem = path.basename(zipPath, '_compounds.zip');
@@ -279,12 +346,23 @@ export async function resolveStorySource(ref: TranscriptRef, deps: StorySourceDe
   }
   const screenFile = screenRecordingOf(alignment.masterVideo);
   const screenDuration = await deps.duration(screenFile);
-  const plan = planStory({ regions: edits.story.regions, cuts: edits.cuts, manifest, placement: placementOf(alignment), screenDuration });
+  const kept = keptTimeline(edits.story.regions, edits.cuts, manifest.frameSeconds);
+  const transcriptPath = path.join(ref.projectFolder, `${zipStem}_transcript.json`);
+  const sessionWords = sessionTranscriptWords(readJsonFile(transcriptPath, `The session's transcript (${zipStem}_transcript.json)`), transcriptPath, manifest.frameSeconds);
+  const inStory = (t: number) => kept.some((s) => t >= s.start && t <= s.end);
+  const span = findExportSpan({ exportText, sessionWords, inStory });
+  const storyLine = `Story "${edits.story.title}" (story ${edits.story.number} of session ${edits.sessionStem}): ${clock(totalSeconds(kept))} after cuts.`;
+  if (!span.ok) {
+    throw new StorySpanRefused(screenFile, [storyLine, `No frames: ${span.reason}`], span.reason);
+  }
+  const plan = planStory({ regions: edits.story.regions, cuts: edits.cuts, manifest, placement: placementOf(alignment), screenDuration, within: { start: span.start, end: span.end } });
 
-  const kept = totalSeconds(plan.timeline);
   const lines = [
-    `Story "${edits.story.title}" (story ${edits.story.number} of session ${edits.sessionStem}): ${clock(kept)} after cuts, ` +
-      `${plan.master.length} ${plan.master.length === 1 ? 'stretch' : 'stretches'} of the recording (the removed dead air between them is left out).`,
+    storyLine,
+    `Frames limited to the part of the story in the export: ${clock(plan.master[0].start)}–${clock(plan.master[plan.master.length - 1].end)} of the recording ` +
+      `(first and last transcript match: "${span.head.words}" … "${span.tail.words}"; ${span.evidence.uniqueHits} matches in all). ` +
+      `${clock(plan.beforeSeconds)} of the story before it and ${clock(plan.afterSeconds)} after it are left out; what was removed inside it is not looked for.`,
+    `${clock(totalSeconds(plan.timeline))} of the story in ${plan.master.length} ${plan.master.length === 1 ? 'stretch' : 'stretches'} of the recording (the removed dead air between them is left out).`,
     `Frames come from ${path.basename(screenFile)}, placed ${alignment.offsetSeconds >= 0 ? '+' : ''}${alignment.offsetSeconds.toFixed(3)} s against the master ` +
       `(${alignment.method}${alignment.confidence !== null ? `, confidence ${alignment.confidence.toFixed(2)}` : ''}, trusted).`,
     alignment.driftFactor === null
@@ -300,6 +378,7 @@ export async function resolveStorySource(ref: TranscriptRef, deps: StorySourceDe
     projectFolder: ref.projectFolder,
     screenFile,
     alignment,
+    span,
     plan,
     lines,
   };

@@ -59,7 +59,7 @@ import { libraryBorder, libraryLogo, libraryPhotos } from './photo-library';
 import { transcriptLines, WORD_KINDS, type WordKind } from './prompts';
 import { safeFileName, type RenderResult } from './renderer';
 import type { StoredRender } from './pipeline-record';
-import { resolveStorySource } from './story-source';
+import { resolveStorySource, StorySpanRefused } from './story-source';
 import { resolveThumbnailStory } from './story-match';
 import { writeThumbnailWords } from './words-writer';
 import { storedStretchSummary, summaryParagraphs, type StretchSummary } from '../metadata/stretch-summary';
@@ -575,10 +575,22 @@ export class ItemThumbnailRun {
       }
     }
     this.doors.progress('Thumbnails: finding frames in the story\'s screen recording...');
-    const source = await resolveStorySource(story.ref, {
-      manifest: setup.manifest,
-      duration: async (video) => (await probeVideo(setup.ffprobe, video)).duration,
-    });
+    // Only the part of the story the export is (LEDGER #346): matched by the same transcript the
+    // story match reads. No span is the stage's failure, said on the record's source lines too.
+    let source: Awaited<ReturnType<typeof resolveStorySource>>;
+    try {
+      source = await resolveStorySource(story.ref, this.item.segments.map((s) => s.text).join(' '), {
+        manifest: setup.manifest,
+        duration: async (video) => (await probeVideo(setup.ffprobe, video)).duration,
+      });
+    } catch (err) {
+      if (err instanceof StorySpanRefused) {
+        this.rec.source = { video: err.screenFile, lines: err.lines };
+        this.rec.scenes = [];
+        this.rec.frames = added;
+      }
+      throw err;
+    }
     this.video = source.screenFile;
     const sampled = await sampleFrames({
       ffmpeg: setup.ffmpeg,
