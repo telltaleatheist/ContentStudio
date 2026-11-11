@@ -6,6 +6,11 @@
       <p class="subtitle"
          title="Chips this app still owns. A video already uploaded with a date on YouTube is drawn as a mirror row on that date instead and is not in this count.">
         {{ scheduledCount() }} scheduled here · {{ tray().length }} unscheduled
+        @if (textOnlyCount() > 0) {
+          <span class="loading-note"
+                title="Reports made from text (livestreams) have no video to upload or schedule, so the calendar leaves them off.">
+            · {{ textOnlyCount() }} without a video not shown</span>
+        }
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
       <!-- The three states of a scheduled item, counted FOR ONE LANE — the one whose tab

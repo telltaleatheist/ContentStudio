@@ -858,6 +858,22 @@ export class PublishCalendar implements OnInit, OnDestroy {
   }
 
   /**
+   * The items the calendar is for: ones with a video. Owen 2026-11-10: "dont show items on the
+   * calendar if they dont have a video attached to them" — he makes reports from TEXT for
+   * livestreams, and those have nothing to upload or schedule. A video means the report was
+   * made from a file (`sourceFilename`) or the record is linked to a YouTube video. Not
+   * dropped silently: `textOnlyCount` says how many are left off, in the header.
+   */
+  private readonly videoEntries = computed(() =>
+    this.entries().filter((entry) => entry.sourceFilename !== null || !!entry.publish?.videoId)
+  );
+
+  /** How many reports with a publish record but no video (text subjects) the calendar leaves off. */
+  readonly textOnlyCount = computed(
+    () => this.entries().filter((e) => e.publish !== null).length - this.videoEntries().filter((e) => e.publish !== null).length
+  );
+
+  /**
    * Every item that has a publish record and a date on it, as chips — BOTH groups.
    *
    * Read directly only by what must not be narrowed to the board on screen: the switcher's
@@ -870,7 +886,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const mirror = this.mirrorByVideoId();
     const bySlot = this.mirrorBySlot();
     const linked = this.linkedByVideoId();
-    return this.entries()
+    return this.videoEntries()
       .filter((entry) => entry.publish !== null && this.isOpenWork(entry.publish, linked))
       .map((entry) =>
         this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot, linked)
@@ -1595,7 +1611,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   private readonly allTray = computed<TrayItem[]>(() => {
     const active = this.activeTabId();
     const linked = this.linkedByVideoId();
-    return this.entries()
+    return this.videoEntries()
       .filter(
         (entry) =>
           entry.publish !== null &&
